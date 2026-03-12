@@ -1,0 +1,38 @@
+{
+  "name": "programs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "out/main/index.js",
+  "description": "PROGRAMS is a desktop control panel for local-first AI-assisted coding with Codex.",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "test:flowchart": "node --test --experimental-strip-types tests/flowchart.test.ts",
+    "icons:mac": "node scripts/generate-mac-icon.mjs",
+    "package:mac": "npm run icons:mac && npm run build && electron-builder --mac dir",
+    "package:dmg": "npm run icons:mac && npm run build && electron-builder --mac dmg",
+    "preview": "electron-vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "mermaid": "^11.12.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "sql.js": "^1.13.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "@types/sql.js": "^1.4.9",
+    "@vitejs/plugin-react": "^4.4.1",
+    "electron": "^36.1.0",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^3.1.0",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.0"
+  }
+}

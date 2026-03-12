@@ -1,0 +1,15 @@
+dist
+dist-electron
+out
+node_modules
+.DS_Store
+*.log
+*.sqlite
+*.sqlite-journal
+*.sqlite-shm
+*.sqlite-wal
+*.tmp
+/.programs-cache
+build/icon.icns
+build/icon.iconset
+build/icon.png

@@ -1,0 +1,13 @@
+appId: com.kc.programs
+productName: PROGRAMS
+directories:
+  output: dist
+electronDist: node_modules/electron/dist
+files:
+  - out/**/*
+  - package.json
+asar: false
+mac:
+  category: public.app-category.developer-tools
+  darkModeSupport: true
+  icon: build/icon.icns

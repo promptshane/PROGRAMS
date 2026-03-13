@@ -4,6 +4,8 @@ export type Theme = "dark" | "light";
 export type RepoVisibility = "private" | "public";
 export type AiProvider = "codex" | "claude";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
+export type PlanningMode = "review" | "auto" | "none";
+export type UpdateStageStatus = "pending" | "in_progress" | "completed" | "failed" | "skipped";
 export type CodexModel = string;
 export type ClaudeModel = string;
 export interface ModelOption {
@@ -229,6 +231,11 @@ export interface PlanStep {
   status: "pending" | "in_progress" | "completed";
 }
 
+export interface DiffStats {
+  added: number;
+  removed: number;
+}
+
 export interface PlanDraft {
   projectId: string;
   provider: AiProvider;
@@ -239,16 +246,23 @@ export interface PlanDraft {
   model: CodexModel;
   claudeModel: ClaudeModel;
   reasoningEffort: AdvancedDefaults["reasoningEffort"];
+  planningMode: PlanningMode;
   autoApprove: boolean;
   contextPaths: string[];
   status: "planning" | "awaitingApproval" | "executing" | "completed" | "failed";
+  thinkingStatus: UpdateStageStatus;
+  planningStatus: UpdateStageStatus;
+  buildingStatus: UpdateStageStatus;
+  verifyingStatus: UpdateStageStatus;
   explanation: string;
   steps: PlanStep[];
   summary: string | null;
   impact: string | null;
   flowchartChanges: string | null;
   diff: string | null;
+  diffStats: DiffStats | null;
   finalText: string | null;
+  verificationDetails: string | null;
   errorMessage: string | null;
   lastUpdatedAt: string;
 }
@@ -337,6 +351,16 @@ export interface ContextPathPickResult {
   paths: string[];
 }
 
+export interface DroppedContextPathResult {
+  paths: string[];
+  rejectedCount: number;
+}
+
+export interface ResolveDroppedContextPathsInput {
+  projectId: string;
+  paths: string[];
+}
+
 export interface SettingsUpdateInput {
   theme?: Theme;
   uiMode?: UiMode;
@@ -363,9 +387,16 @@ export interface CodexAuthStatus {
 export interface ClaudeAuthStatus {
   available: boolean;
   loggedIn: boolean;
+  ready: boolean;
+  canConnect: boolean;
   binaryPath: string | null;
   version: string | null;
+  email: string | null;
+  displayName: string | null;
+  planType: string | null;
   errorMessage: string | null;
+  runtimeErrorMessage: string | null;
+  connectErrorMessage: string | null;
 }
 
 export interface GitHubAuthStatus {
@@ -475,6 +506,7 @@ export interface StartPlanInput {
   model: CodexModel;
   claudeModel: ClaudeModel;
   reasoningEffort: AdvancedDefaults["reasoningEffort"];
+  planningMode: PlanningMode;
   autoApprove: boolean;
   contextPaths: string[];
 }

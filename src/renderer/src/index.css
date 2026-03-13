@@ -134,6 +134,23 @@ code {
   min-height: 100vh;
 }
 
+.windowDragStrip {
+  position: fixed;
+  top: 0;
+  left: 132px;
+  right: clamp(140px, 18vw, 240px);
+  height: 44px;
+  z-index: 8;
+  app-region: drag;
+  -webkit-app-region: drag;
+  user-select: none;
+}
+
+.windowNoDrag {
+  app-region: no-drag;
+  -webkit-app-region: no-drag;
+}
+
 .shellContent {
   position: relative;
   z-index: 1;
@@ -141,6 +158,12 @@ code {
   margin-left: var(--sidebar-width);
   padding: 24px;
   transition: margin-left 240ms ease;
+}
+
+.shellContent-detailLocked {
+  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .shellTopBar {
@@ -419,6 +442,24 @@ code {
   margin-top: 22px;
 }
 
+.projectLayout-detail {
+  min-height: 0;
+  height: calc(100% - 22px);
+  grid-template-rows: auto minmax(0, 1fr);
+  align-content: stretch;
+  overflow: hidden;
+}
+
+.projectDetailWorkspace {
+  display: grid;
+  gap: 18px;
+  min-height: 0;
+  height: 100%;
+  grid-template-rows: auto minmax(0, 1fr);
+  align-content: stretch;
+  overflow: hidden;
+}
+
 .dashboardGrid {
   display: grid;
   grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.8fr);
@@ -653,7 +694,7 @@ code {
   display: flex;
   flex-direction: column;
   gap: 18px;
-  padding-right: 46px;
+  padding-right: 0;
 }
 
 .summaryMetaCard {
@@ -671,13 +712,47 @@ code {
   align-content: start;
   gap: 12px;
   min-height: 0;
+  flex: 1 1 auto;
 }
 
 .summaryHeaderRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 20px;
+}
+
+.summaryActionRail {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 24px;
+  flex-direction: row;
+  gap: 8px;
+  align-self: start;
+}
+
+.summaryActionButton {
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 700;
+  box-shadow: 0 10px 20px rgba(0, 0, 0, 0.16);
+}
+
+.summaryActionButton.actionButton-run,
+.summaryActionButton.actionButton-stop,
+.summaryActionButton.actionButton-open {
+  box-shadow: 0 10px 20px rgba(6, 10, 14, 0.12);
+}
+
+/* override base .actionButton sizing — double-class = higher specificity */
+.summaryActionButton.actionButton {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  min-height: unset;
+  padding: 0;
+  flex-shrink: 0;
+  line-height: 1;
 }
 
 .summaryTimestamp {
@@ -695,84 +770,6 @@ code {
 .summaryDetailButton {
   color: var(--text);
   font-weight: 600;
-}
-
-.summaryMenu {
-  position: absolute;
-  top: 18px;
-  right: 18px;
-  z-index: 2;
-}
-
-.summaryMenuPanel {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  min-width: 180px;
-  padding: 8px;
-  display: grid;
-  gap: 6px;
-  background: var(--panel-strong);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  box-shadow: var(--shadow-sm);
-}
-
-.summaryMenuPanel button {
-  border: none;
-  background: transparent;
-  color: var(--text);
-  text-align: left;
-  padding: 10px 12px;
-  border-radius: 10px;
-}
-
-.summaryMenuPanel button:hover {
-  background: var(--button-secondary);
-}
-
-.summaryMenuPanel button.dangerMenuItem {
-  color: var(--error);
-}
-
-.summaryQuickActionGrid {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 10px;
-  max-width: 320px;
-}
-
-.summarySquareButton {
-  width: 92px;
-  min-height: 92px;
-  display: inline-flex;
-  align-items: flex-end;
-  justify-content: flex-start;
-  padding: 14px;
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  background: color-mix(in srgb, var(--panel-soft) 88%, transparent);
-  color: var(--text);
-  text-align: left;
-  font-size: 0.84rem;
-  font-weight: 600;
-  line-height: 1.2;
-  overflow-wrap: anywhere;
-  transition: transform 140ms ease, border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
-}
-
-.summarySquareButton:hover,
-.summarySquareButton:focus-visible {
-  transform: translateY(-1px);
-  border-color: color-mix(in srgb, var(--accent-strong) 38%, var(--border));
-  background: var(--panel-strong);
-  box-shadow: 0 16px 28px rgba(0, 0, 0, 0.16);
-}
-
-.summarySquareButton.active {
-  border-color: color-mix(in srgb, var(--accent-strong) 52%, var(--border));
-  background: color-mix(in srgb, var(--accent-soft) 18%, var(--panel-strong));
 }
 
 .summaryMetaRow {
@@ -896,7 +893,19 @@ code {
   border-color: var(--border-strong);
 }
 
-.updateSection,
+.updateSection {
+  display: grid;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  align-self: stretch;
+}
+
+.updateSection > .updateCard {
+  min-height: 100%;
+  height: 100%;
+}
+
 .runtimeCard {
   display: grid;
   gap: 14px;
@@ -943,7 +952,7 @@ code {
 
 .actionBar {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
 }
 
@@ -960,6 +969,8 @@ code {
   color: #f8fbfd;
   font-weight: 700;
   letter-spacing: 0.01em;
+  text-align: center;
+  line-height: 1.15;
   transition: transform 140ms ease, border-color 140ms ease, background 140ms ease, color 140ms ease;
 }
 
@@ -989,9 +1000,12 @@ code {
 }
 
 .actionButton-open {
-  background: var(--button-open);
-  border-color: var(--button-open-border);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--panel-strong) 88%, transparent), color-mix(in srgb, var(--button-open) 100%, transparent)),
+    var(--button-open);
+  border-color: color-mix(in srgb, var(--button-open-border) 72%, var(--border-strong));
   color: var(--text);
+  box-shadow: 0 18px 34px rgba(6, 10, 14, 0.08);
 }
 
 .actionButton-update {
@@ -1005,6 +1019,24 @@ code {
   border-color: var(--button-secondary-border);
   color: var(--button-secondary-text);
   box-shadow: 0 18px 34px rgba(6, 10, 14, 0.08);
+}
+
+.actionButton-run:disabled {
+  background: color-mix(in srgb, var(--button-run) 52%, var(--panel-soft));
+  border-color: color-mix(in srgb, var(--button-run-border) 72%, transparent);
+  color: color-mix(in srgb, #f8fbfd 72%, transparent);
+}
+
+.actionButton-stop:disabled {
+  background: color-mix(in srgb, var(--button-stop) 52%, var(--panel-soft));
+  border-color: color-mix(in srgb, var(--button-stop-border) 72%, transparent);
+  color: color-mix(in srgb, #f8fbfd 72%, transparent);
+}
+
+.actionButton-open:disabled {
+  background: color-mix(in srgb, var(--button-open) 52%, var(--panel-soft));
+  border-color: color-mix(in srgb, var(--button-open-border) 72%, var(--border-strong));
+  color: color-mix(in srgb, var(--text) 72%, transparent);
 }
 
 .runningIndicator,
@@ -1054,6 +1086,72 @@ code {
   gap: 16px;
   padding: 22px;
   border-radius: var(--radius-xl);
+}
+
+.updateCard {
+  position: relative;
+  min-height: 0;
+  height: 100%;
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.updateCard.updateCard-withDock {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.updateCardSpacer {
+  min-height: 0;
+}
+
+.updateFooterStack {
+  display: grid;
+  gap: 12px;
+  min-height: 0;
+  align-self: end;
+  margin-top: auto;
+}
+
+.updateStatusShelf {
+  display: grid;
+  gap: 12px;
+  max-height: min(320px, 42vh);
+  overflow: hidden;
+  padding: 0 2px;
+  border: none;
+  background: transparent;
+  box-shadow: none;
+}
+
+.updateSection.dragActive .composerShell {
+  border-color: color-mix(in srgb, var(--success) 42%, var(--border-strong));
+  box-shadow: 0 18px 32px rgba(17, 138, 84, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.updateDropOverlay {
+  position: absolute;
+  inset: 14px;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  border-radius: calc(var(--radius-xl) - 8px);
+  border: 1px dashed color-mix(in srgb, var(--success) 46%, var(--border-strong));
+  background: color-mix(in srgb, var(--panel-strong) 82%, rgba(17, 138, 84, 0.18));
+  color: var(--text);
+  pointer-events: none;
+  text-align: center;
+  backdrop-filter: blur(18px);
+}
+
+.updateDropOverlay span {
+  max-width: 22rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
 }
 
 .planCanvas,
@@ -1142,8 +1240,8 @@ code {
   gap: 8px;
   padding: 8px 12px;
   border-radius: 999px;
-  border: 1px solid var(--button-secondary-border);
-  background: var(--panel-soft);
+  border: 1px solid color-mix(in srgb, var(--button-secondary-border) 86%, transparent);
+  background: color-mix(in srgb, var(--panel-soft) 62%, transparent);
   color: var(--text);
 }
 
@@ -1195,32 +1293,47 @@ select {
 }
 
 .composerInput {
-  min-height: 136px;
+  min-height: 76px;
   resize: none;
   border: none;
-  padding: 0;
+  padding: 14px 20px 10px;
   background: transparent;
   box-shadow: none;
-  line-height: 1.55;
+  line-height: 1.5;
+  overflow-y: hidden;
+}
+
+.composerInput:focus,
+.composerInput:focus-visible {
+  outline: none;
+  border: none;
+  box-shadow: none;
 }
 
 .composerShell {
-  display: grid;
-  gap: 16px;
-  padding: 18px 18px 16px;
-  border-radius: 26px;
-  border: 1px solid color-mix(in srgb, var(--border-strong) 84%, transparent);
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--panel-strong) 88%, transparent), color-mix(in srgb, var(--panel-soft) 96%, transparent)),
-    color-mix(in srgb, var(--panel-soft) 90%, transparent);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px 14px;
+  border-radius: 28px;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 62%, transparent);
+  background: linear-gradient(180deg, rgba(18, 22, 29, 0.94), rgba(18, 23, 30, 0.9));
+  box-shadow: 0 16px 28px rgba(0, 0, 0, 0.14), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.composerAttachmentRow {
+  display: flex;
+  align-items: center;
+  min-height: 0;
 }
 
 .composerControlRow {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
   gap: 12px;
+  margin-top: 4px;
 }
 
 .composerControlCluster {
@@ -1257,6 +1370,244 @@ select {
 
 .composerSubmitButton {
   box-shadow: 0 16px 32px rgba(0, 0, 0, 0.22);
+}
+
+.composerStopButton {
+  background: #e53e3e;
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  transition: background 140ms ease, transform 140ms ease;
+}
+
+.composerStopButton:hover {
+  background: #c53030;
+  transform: translateY(-1px);
+}
+
+.composerStopButton svg {
+  width: 14px;
+  height: 14px;
+}
+
+.updateStageHeader {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 12px;
+}
+
+.updateStageTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.updateStageStatusText {
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.updateStageTitleButton {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  background: none;
+  border: none;
+  color: var(--fg);
+  font-size: 0.95rem;
+  font-weight: 600;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 120ms ease;
+}
+
+.updateStageTitleButton:hover {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+}
+
+.updateStageStatusBadge {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--surface-2, rgba(255, 255, 255, 0.04));
+  white-space: nowrap;
+}
+
+.updateStageFullPrompt {
+  padding: 10px 14px;
+  background: var(--surface-2, rgba(255, 255, 255, 0.03));
+  border-radius: 8px;
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--muted);
+  max-height: 160px;
+  overflow-y: auto;
+  animation: bottomSheetIn 180ms ease;
+}
+
+.updateStageFullPrompt p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.updateStageElapsed {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.7;
+}
+
+.updateStageDiffStats {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  flex: 0 0 auto;
+  justify-self: end;
+  padding-right: 2px;
+}
+
+.updateStageDiffStats-added {
+  color: var(--success);
+}
+
+.updateStageDiffStats-removed {
+  color: var(--error);
+}
+
+.updateStageStrip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.updateStageButton {
+  min-height: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 0 14px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 62%, transparent);
+  background: color-mix(in srgb, var(--button-secondary) 72%, transparent);
+  color: var(--text);
+  transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+
+.updateStageButton:hover {
+  transform: translateY(-1px);
+}
+
+.updateStageButton.active {
+  background: color-mix(in srgb, var(--panel-strong) 82%, transparent);
+  border-color: color-mix(in srgb, var(--success) 26%, var(--border-strong));
+}
+
+.updateStageDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.3);
+  flex: 0 0 auto;
+}
+
+.updateStageDot-pending,
+.updateStageDot-skipped {
+  background: rgba(156, 170, 186, 0.5);
+}
+
+.updateStageDot-completed {
+  background: #10b981;
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.14);
+}
+
+.updateStageDot-failed {
+  background: #ef4444;
+  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.14);
+}
+
+.updateStageDot-in_progress {
+  background: #ef4444;
+  box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.16);
+  animation: updateStageBlink 1.15s ease-in-out infinite;
+}
+
+@keyframes updateStageBlink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+
+  50% {
+    opacity: 0.32;
+  }
+}
+
+.updateStageDetails {
+  max-height: min(260px, 32vh);
+  overflow: auto;
+  padding: 14px 16px;
+  border-radius: 20px;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 52%, transparent);
+  background: color-mix(in srgb, var(--panel-soft) 72%, transparent);
+}
+
+.updateStageDetailBlock {
+  display: grid;
+  gap: 14px;
+}
+
+.updateStageDetailBlock p {
+  margin: 0;
+}
+
+.updateStageCodeBlock {
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 54%, transparent);
+  background: rgba(7, 12, 17, 0.74);
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: auto;
+}
+
+.updateStageActions {
+  justify-content: flex-end;
+}
+
+@media (max-width: 960px) {
+  .updateStageHeader {
+    grid-template-columns: 1fr;
+  }
+
+  .updateStageDiffStats {
+    justify-self: start;
+    padding-right: 0;
+  }
+
+  .updateStageStrip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .composerMenu {
@@ -1676,6 +2027,233 @@ select {
   line-height: 1.35;
 }
 
+/* ── Interactive Flowchart Viewer ─────────────────────── */
+.flowchartViewer {
+  position: relative;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  min-height: 340px;
+}
+
+.flowchartViewer--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+}
+
+.flowchartViewport {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  background: var(--panel-soft);
+  border: 1px solid var(--border);
+  min-height: 300px;
+}
+
+.flowchartCanvas {
+  position: relative;
+  transform-origin: 0 0;
+  transition: transform 0.3s ease-out;
+}
+
+/* ── Flowchart Nodes ──────────────────────────────────── */
+.flowchartNode {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 16px;
+  border: 1.5px solid var(--border-strong);
+  background: var(--panel-strong);
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 500;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: opacity 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease, background 0.25s ease;
+  z-index: 1;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.flowchartNode:hover {
+  border-color: var(--accent);
+}
+
+.flowchartNode:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.flowchartNodeLabel {
+  pointer-events: none;
+}
+
+/* Node kind shapes */
+.flowchartNode--entry {
+  border-radius: 100px;
+  background: var(--panel);
+  border-color: var(--accent);
+  font-weight: 600;
+}
+
+.flowchartNode--page {
+  border-radius: var(--radius-sm);
+}
+
+.flowchartNode--action {
+  border-radius: 100px;
+  background: var(--panel-soft);
+}
+
+.flowchartNode--system {
+  border-radius: var(--radius-sm);
+  border-style: double;
+  border-width: 3px;
+}
+
+/* Node states */
+.flowchartNode--selected {
+  box-shadow: 0 0 0 3px var(--accent), 0 8px 24px rgba(0, 0, 0, 0.18);
+  border-color: var(--accent-strong);
+  z-index: 3;
+}
+
+.flowchartNode--hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* Diff colors */
+.flowchartNode--added {
+  border-color: #10B981;
+  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.25);
+}
+
+.flowchartNode--modified {
+  border-color: #F59E0B;
+  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.25);
+}
+
+.flowchartNode--removed {
+  border-color: #FB7185;
+  box-shadow: 0 0 0 2px rgba(251, 113, 133, 0.25);
+  opacity: 0.6;
+  text-decoration: line-through;
+}
+
+/* ── Flowchart Edges ──────────────────────────────────── */
+.flowchartEdgeLayer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.flowchartEdgePath {
+  stroke: var(--muted);
+  stroke-width: 1.5;
+  fill: none;
+}
+
+.flowchartArrowhead {
+  fill: var(--muted);
+}
+
+.flowchartEdgeLabel {
+  fill: var(--muted);
+  font-size: 0.72rem;
+  font-family: inherit;
+}
+
+/* ── Flowchart Controls ───────────────────────────────── */
+.flowchartControls {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  gap: 4px;
+  z-index: 10;
+}
+
+.flowchartControlBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--panel-strong);
+  color: var(--text);
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.flowchartControlBtn:hover:not(:disabled) {
+  background: var(--panel);
+  border-color: var(--accent);
+}
+
+.flowchartControlBtn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.flowchartControlBtn--reset {
+  width: auto;
+  padding: 0 12px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+}
+
+/* ── Node Description Panel ───────────────────────────── */
+.nodeDescriptionPanel {
+  padding: 14px 18px;
+  background: var(--panel-strong);
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 var(--radius-md) var(--radius-md);
+  animation: nodeDescSlideIn 0.2s ease-out;
+}
+
+@keyframes nodeDescSlideIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.nodeDescriptionHeader {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.nodeDescriptionTitle {
+  font-size: 0.88rem;
+  color: var(--text);
+}
+
+.nodeDescriptionKind {
+  font-size: 0.72rem;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.nodeDescriptionText {
+  font-size: 0.82rem;
+  color: var(--muted);
+  line-height: 1.45;
+  margin: 0;
+}
+
 .historyItem {
   display: grid;
   gap: 10px;
@@ -1813,7 +2391,7 @@ select {
   position: fixed;
   top: 10px;
   right: 18px;
-  z-index: 20;
+  z-index: 42;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1836,6 +2414,7 @@ select {
   justify-content: flex-start;
   align-items: center;
   gap: 16px;
+  width: 100%;
 }
 
 .iconButton {
@@ -2412,6 +2991,13 @@ select {
   gap: 12px;
 }
 
+.connectionActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
 @media (max-width: 1040px) {
   .dashboardGrid,
   .projectSummaryCard {
@@ -2419,12 +3005,12 @@ select {
   }
 
   .summaryHeaderRow {
-    flex-direction: column;
+    grid-template-columns: 1fr;
   }
 
-  .summaryQuickActionGrid {
-    justify-content: flex-start;
-    max-width: none;
+  .summaryActionRail {
+    width: 100%;
+    justify-self: stretch;
   }
 
   .appHeader,
@@ -2452,6 +3038,10 @@ select {
   .shellTopBar {
     left: 92px;
   }
+
+  .windowDragStrip {
+    left: 126px;
+  }
 }
 
 @media (max-width: 760px) {
@@ -2475,6 +3065,11 @@ select {
   .shellTopBar {
     top: 8px;
     left: 80px;
+  }
+
+  .windowDragStrip {
+    left: 104px;
+    right: 148px;
   }
 
   .appShellWithSidebar {
@@ -2526,19 +3121,9 @@ select {
     padding: 22px 20px;
   }
 
-  .summaryMain {
-    padding-right: 36px;
-  }
-
   .summaryHeaderRow,
   .summaryLinkRow {
     width: 100%;
-  }
-
-  .summarySquareButton {
-    flex: 1 1 92px;
-    width: auto;
-    min-height: 84px;
   }
 
   .headerActions,
@@ -2636,14 +3221,14 @@ select {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 14px;
+  padding: 8px 10px;
   cursor: pointer;
-  border-radius: var(--radius-sm);
-  background: var(--color-surface, rgba(255, 255, 255, 0.04));
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.035);
 }
 
 .planHeaderCompact:hover {
-  background: var(--color-surface-hover, rgba(255, 255, 255, 0.06));
+  background: rgba(255, 255, 255, 0.055);
 }
 
 .planStatusDot {
@@ -2662,7 +3247,15 @@ select {
 .planDetailsScroll {
   max-height: 200px;
   overflow-y: auto;
-  padding: 12px 14px 0;
+  padding: 4px 4px 0;
+}
+
+.updateStatusShelf .planPanel {
+  gap: 10px;
+}
+
+.updateStatusShelf .composerFooter {
+  margin-top: 0;
 }
 
 /* ── Pending update banner ──────────────────────────── */
@@ -2765,12 +3358,13 @@ select {
 
 .detailsTabBar {
   display: flex;
-  flex-wrap: wrap;
   gap: 10px;
   margin-bottom: 18px;
 }
 
 .detailsTabBar .tabOption {
+  flex: 1;
+  text-align: center;
   padding: 12px 16px;
   border-radius: 14px;
   border: 1px solid transparent;
@@ -2785,6 +3379,28 @@ select {
 .detailsTabBar .tabOption:disabled {
   border-color: color-mix(in srgb, var(--border) 72%, transparent);
   background: transparent;
+}
+
+.detailsPlaceholderGrid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  padding: 16px 20px;
+}
+
+.detailsPlaceholderCard {
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel-soft);
+}
+
+.detailsPlaceholderCard .fieldLabel {
+  margin-bottom: 6px;
+}
+
+.detailsPlaceholderCard .helperText {
+  margin: 4px 0 0;
 }
 
 .detailsPanel,

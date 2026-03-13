@@ -339,6 +339,30 @@ const selectPreferredCodexModels = (models: z.infer<typeof modelListItemSchema>[
   return [...deduped, ...fallback].slice(0, DEFAULT_MODEL_CATALOG.codex.length);
 };
 
+const parseUnifiedDiffStats = (diff: string | null): PlanDraft["diffStats"] => {
+  if (!diff) {
+    return null;
+  }
+
+  let added = 0;
+  let removed = 0;
+
+  for (const line of diff.split(/\r?\n/)) {
+    if (line.startsWith("+++") || line.startsWith("---")) {
+      continue;
+    }
+    if (line.startsWith("+")) {
+      added += 1;
+      continue;
+    }
+    if (line.startsWith("-")) {
+      removed += 1;
+    }
+  }
+
+  return added || removed ? { added, removed } : null;
+};
+
 export class CodexService {
   private child: ChildProcessWithoutNullStreams | null = null;
   private responseId = 1;
@@ -358,9 +382,51 @@ export class CodexService {
     return this.planDrafts.get(projectId) ?? null;
   }
 
+  syncDraft(draft: PlanDraft): void {
+    draft.lastUpdatedAt = new Date().toISOString();
+    this.planDrafts.set(draft.projectId, draft);
+    this.emit({ type: "project.plan", projectId: draft.projectId, plan: { ...draft } });
+  }
+
   clearPlan(projectId: string): void {
     this.planDrafts.delete(projectId);
     this.emit({ type: "project.plan", projectId, plan: null });
+  }
+
+  createDirectExecutionDraft(project: Project, input: StartPlanInput): PlanDraft {
+    const draft: PlanDraft = {
+      projectId: project.id,
+      provider: "codex",
+      threadId: project.threadId,
+      turnId: null,
+      prompt: input.prompt,
+      speed: input.speed,
+      model: input.model,
+      claudeModel: input.claudeModel,
+      reasoningEffort: input.reasoningEffort,
+      planningMode: input.planningMode,
+      autoApprove: input.autoApprove,
+      contextPaths: [...input.contextPaths],
+      status: "executing",
+      thinkingStatus: "in_progress",
+      planningStatus: "skipped",
+      buildingStatus: "pending",
+      verifyingStatus: "pending",
+      explanation: "Codex is working directly without a draft plan.",
+      steps: [],
+      summary: null,
+      impact: null,
+      flowchartChanges: null,
+      diff: null,
+      diffStats: null,
+      finalText: null,
+      verificationDetails: null,
+      errorMessage: null,
+      lastUpdatedAt: new Date().toISOString(),
+    };
+
+    this.syncDraft(draft);
+    return draft;
   }
 
   async inspectInstallation(settings: Settings): Promise<CodexInstallationInfo> {
@@ -576,7 +642,7 @@ export class CodexService {
     settings: Settings,
     speed: SpeedMode,
     model: StartPlanInput["model"],
-  ): Promise<string> {
+  ): Promise<{ threadId: string; isNew: boolean }> {
     await this.ensureStarted(settings);
 
     if (project.threadId) {
@@ -585,9 +651,9 @@ export class CodexService {
           threadId: project.threadId,
           includeTurns: false,
         });
-        return project.threadId;
+        return { threadId: project.threadId, isNew: false };
       } catch {
-        // Fall through to create a new thread.
+        // Stale thread — fall through to create a new one.
       }
     }
 
@@ -608,7 +674,7 @@ export class CodexService {
       throw new Error("Codex did not return a valid project thread.");
     }
 
-    return threadId;
+    return { threadId, isNew: true };
   }
 
   async runOneShot(
@@ -618,7 +684,7 @@ export class CodexService {
     model: string,
     outputSchema?: JsonSchema,
   ): Promise<string> {
-    const threadId = await this.ensureThread(project, settings, "normal", model);
+    const { threadId } = await this.ensureThread(project, settings, "normal", model);
 
     const result = (await this.sendRequest("turn/start", {
       threadId,
@@ -655,7 +721,7 @@ export class CodexService {
   }
 
   async startPlanningTurn(project: Project, settings: Settings, input: StartPlanInput): Promise<PlanDraft> {
-    const threadId = await this.ensureThread(project, settings, input.speed, input.model);
+    const { threadId } = await this.ensureThread(project, settings, input.speed, input.model);
 
     return new Promise<PlanDraft>(async (resolve, reject) => {
       const draft: PlanDraft = {
@@ -668,22 +734,28 @@ export class CodexService {
         model: input.model,
         claudeModel: input.claudeModel,
         reasoningEffort: input.reasoningEffort,
+        planningMode: input.planningMode,
         autoApprove: input.autoApprove,
         contextPaths: [...input.contextPaths],
         status: "planning",
+        thinkingStatus: "in_progress",
+        planningStatus: "in_progress",
+        buildingStatus: "pending",
+        verifyingStatus: "pending",
         explanation: "Codex is building the plan.",
         steps: [],
         summary: null,
         impact: null,
         flowchartChanges: null,
         diff: null,
+        diffStats: null,
         finalText: null,
+        verificationDetails: null,
         errorMessage: null,
         lastUpdatedAt: new Date().toISOString(),
       };
 
-      this.planDrafts.set(project.id, draft);
-      this.emit({ type: "project.plan", projectId: project.id, plan: draft });
+      this.syncDraft(draft);
 
       try {
         const result = (await this.sendRequest("turn/start", {
@@ -720,23 +792,22 @@ export class CodexService {
         };
 
         draft.turnId = turnId;
-        draft.lastUpdatedAt = new Date().toISOString();
         this.activeTurns.set(project.id, activeTurn);
-        this.emit({ type: "project.plan", projectId: project.id, plan: { ...draft } });
+        this.syncDraft(draft);
       } catch (error) {
         draft.status = "failed";
+        draft.thinkingStatus = "failed";
+        draft.planningStatus = "failed";
         draft.errorMessage = error instanceof Error ? error.message : "Planning failed.";
-        this.emit({ type: "project.plan", projectId: project.id, plan: { ...draft } });
+        this.syncDraft(draft);
         reject(error instanceof Error ? error : new Error("Planning failed."));
       }
     });
   }
 
   async executeApprovedPlan(project: Project, settings: Settings, draft: PlanDraft): Promise<ExecutionPayload> {
-    if (!draft.threadId) {
-      throw new Error("The project does not have an active Codex thread.");
-    }
-    const threadId = draft.threadId;
+    const threadId = draft.threadId ?? (await this.ensureThread(project, settings, draft.speed, draft.model)).threadId;
+    draft.threadId = threadId;
 
     return new Promise<ExecutionPayload>(async (resolve, reject) => {
       try {
@@ -760,9 +831,18 @@ export class CodexService {
 
         draft.turnId = result.turn?.id ?? null;
         draft.status = "executing";
+        if (draft.planningMode === "none") {
+          draft.thinkingStatus = "in_progress";
+          draft.planningStatus = "skipped";
+        } else {
+          draft.thinkingStatus = "completed";
+          draft.planningStatus = "completed";
+        }
+        draft.buildingStatus = "in_progress";
+        draft.verifyingStatus = "pending";
         draft.errorMessage = null;
-        draft.lastUpdatedAt = new Date().toISOString();
-        this.emit({ type: "project.plan", projectId: project.id, plan: { ...draft } });
+        draft.verificationDetails = null;
+        this.syncDraft(draft);
 
         this.activeTurns.set(project.id, {
           projectId: project.id,
@@ -781,9 +861,12 @@ export class CodexService {
         });
       } catch (error) {
         draft.status = "failed";
+        draft.buildingStatus = "failed";
         draft.errorMessage = error instanceof Error ? error.message : "Execution failed.";
-        draft.lastUpdatedAt = new Date().toISOString();
-        this.emit({ type: "project.plan", projectId: project.id, plan: { ...draft } });
+        if (draft.planningMode === "none" && draft.thinkingStatus === "in_progress") {
+          draft.thinkingStatus = "failed";
+        }
+        this.syncDraft(draft);
         reject(error instanceof Error ? error : new Error("Execution failed."));
       }
     });
@@ -1075,9 +1158,9 @@ export class CodexService {
           step: step.step,
           status: step.status === "inProgress" ? "in_progress" : step.status,
         }));
-        turn.draft.lastUpdatedAt = new Date().toISOString();
-        this.planDrafts.set(turn.projectId, turn.draft);
-        this.emit({ type: "project.plan", projectId: turn.projectId, plan: { ...turn.draft } });
+        turn.draft.thinkingStatus = "in_progress";
+        turn.draft.planningStatus = "in_progress";
+        this.syncDraft(turn.draft);
         return;
       }
       case "turn/diff/updated": {
@@ -1088,8 +1171,9 @@ export class CodexService {
         }
 
         turn.draft.diff = payload.diff;
-        turn.draft.lastUpdatedAt = new Date().toISOString();
-        this.emit({ type: "project.plan", projectId: turn.projectId, plan: { ...turn.draft } });
+        turn.draft.buildingStatus = "in_progress";
+        turn.draft.diffStats = parseUnifiedDiffStats(payload.diff);
+        this.syncDraft(turn.draft);
         return;
       }
       case "item/started":
@@ -1106,8 +1190,13 @@ export class CodexService {
             turn.pendingItems.set(payload.item.id, payload.item);
             turn.finalMessages.push(payload.item.text);
             turn.draft.finalText = payload.item.text;
-            turn.draft.lastUpdatedAt = new Date().toISOString();
-            this.emit({ type: "project.plan", projectId: turn.projectId, plan: { ...turn.draft } });
+            if (turn.phase === "plan") {
+              turn.draft.thinkingStatus = "in_progress";
+              turn.draft.planningStatus = "in_progress";
+            } else {
+              turn.draft.buildingStatus = "in_progress";
+            }
+            this.syncDraft(turn.draft);
           }
 
           if (oneShot) {
@@ -1149,9 +1238,17 @@ export class CodexService {
     if (parsedStatus.status !== "completed") {
       const error = this.turnCompletionError(parsedStatus);
       turn.draft.status = "failed";
+      if (turn.phase === "plan") {
+        turn.draft.thinkingStatus = "failed";
+        turn.draft.planningStatus = "failed";
+      } else {
+        turn.draft.buildingStatus = "failed";
+        if (turn.draft.planningMode === "none" && turn.draft.thinkingStatus === "in_progress") {
+          turn.draft.thinkingStatus = "failed";
+        }
+      }
       turn.draft.errorMessage = error.message;
-      turn.draft.lastUpdatedAt = new Date().toISOString();
-      this.emit({ type: "project.plan", projectId: turn.projectId, plan: { ...turn.draft } });
+      this.syncDraft(turn.draft);
       turn.reject(error);
       return;
     }
@@ -1162,26 +1259,30 @@ export class CodexService {
       if (turn.phase === "plan") {
         const parsed = planResultSchema.parse(parseJsonFromText(finalText));
         turn.draft.status = "awaitingApproval";
+        turn.draft.thinkingStatus = "completed";
+        turn.draft.planningStatus = "completed";
         turn.draft.summary = parsed.summary;
         turn.draft.impact = parsed.impact;
         turn.draft.flowchartChanges = parsed.flowchartChanges;
         turn.draft.errorMessage = null;
-        turn.draft.lastUpdatedAt = new Date().toISOString();
-        this.planDrafts.set(turn.projectId, turn.draft);
-        this.emit({ type: "project.plan", projectId: turn.projectId, plan: { ...turn.draft } });
+        this.syncDraft(turn.draft);
         turn.resolve({ ...turn.draft });
         return;
       }
 
       const parsed = executionResultSchema.parse(parseJsonFromText(finalText));
       const flowchartSnapshot = materializeFlowchartSnapshot(parsed.flowchartGraph);
-      turn.draft.status = "completed";
+      turn.draft.status = "executing";
+      if (turn.draft.planningMode === "none") {
+        turn.draft.thinkingStatus = "completed";
+      }
+      turn.draft.buildingStatus = "completed";
+      turn.draft.verifyingStatus = "in_progress";
       turn.draft.summary = parsed.summary;
       turn.draft.errorMessage = null;
       turn.draft.finalText = finalText;
-      turn.draft.lastUpdatedAt = new Date().toISOString();
-      this.planDrafts.set(turn.projectId, turn.draft);
-      this.emit({ type: "project.plan", projectId: turn.projectId, plan: { ...turn.draft } });
+      turn.draft.verificationDetails = "Saving local changes and update history.";
+      this.syncDraft(turn.draft);
       turn.resolve({
         draft: { ...turn.draft },
         summary: parsed.summary,
@@ -1192,10 +1293,18 @@ export class CodexService {
       });
     } catch (error) {
       turn.draft.status = "failed";
+      if (turn.phase === "plan") {
+        turn.draft.thinkingStatus = "failed";
+        turn.draft.planningStatus = "failed";
+      } else {
+        turn.draft.buildingStatus = "failed";
+        if (turn.draft.planningMode === "none" && turn.draft.thinkingStatus === "in_progress") {
+          turn.draft.thinkingStatus = "failed";
+        }
+      }
       turn.draft.errorMessage =
         error instanceof Error ? error.message : "Codex returned an unexpected result.";
-      turn.draft.lastUpdatedAt = new Date().toISOString();
-      this.emit({ type: "project.plan", projectId: turn.projectId, plan: { ...turn.draft } });
+      this.syncDraft(turn.draft);
       turn.reject(error instanceof Error ? error : new Error("Codex returned an unexpected result."));
     }
   }

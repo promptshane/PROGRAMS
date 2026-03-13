@@ -1,6 +1,18 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type DragEvent as ReactDragEvent,
+  type ReactNode,
+} from "react";
 import mermaid from "mermaid";
 import { normalizeFlowchartGraph } from "@shared/flowchart";
+import { InteractiveFlowchart } from "./components/InteractiveFlowchart";
+import { FlowchartDiff } from "./components/FlowchartDiff";
 import {
   DEFAULT_MODEL_CATALOG,
   type AiProvider,
@@ -35,10 +47,12 @@ import {
   type UsageSnapshot,
   type PendingPlannedUpdate,
   type PlanningChatMessage,
+  type PlanningMode,
   type PlanningChatResponse,
   type GenerateFlowchartInput,
   type PlanningChatInput,
   type SavePlannedUpdateInput,
+  type UpdateStageStatus,
 } from "@shared/types";
 
 interface ToastItem {
@@ -68,7 +82,7 @@ interface ComposerOptions {
   claudeModel: ClaudeModel;
   reasoningEffort: Settings["advancedDefaults"]["reasoningEffort"];
   speed: SpeedMode;
-  autoApprove: boolean;
+  planningMode: PlanningMode;
   contextPaths: string[];
 }
 
@@ -130,9 +144,16 @@ const emptyAuth: AuthSnapshot = {
   claude: {
     available: false,
     loggedIn: false,
+    ready: false,
+    canConnect: false,
     binaryPath: null,
     version: null,
+    email: null,
+    displayName: null,
+    planType: null,
     errorMessage: null,
+    runtimeErrorMessage: null,
+    connectErrorMessage: null,
   },
   github: {
     configured: false,
@@ -339,6 +360,17 @@ const labelForReasoningEffort = (reasoningEffort: ComposerOptions["reasoningEffo
   }
 };
 
+const labelForPlanningMode = (planningMode: PlanningMode): string => {
+  switch (planningMode) {
+    case "review":
+      return "Review";
+    case "auto":
+      return "Auto";
+    case "none":
+      return "No Plan";
+  }
+};
+
 const labelForComposerModel = (options: ComposerOptions, modelCatalog: ModelCatalog): string =>
   options.provider === "claude"
     ? labelForModel(options.claudeModel, modelCatalog.claude, fallbackClaudeModelLabel)
@@ -350,11 +382,26 @@ const getComposerDefaults = (settings: Settings): ComposerOptions => ({
   claudeModel: settings.advancedDefaults.claudeModel,
   reasoningEffort: settings.advancedDefaults.reasoningEffort,
   speed: settings.defaultSpeed,
-  autoApprove: settings.autoApprovePlans,
+  planningMode: settings.autoApprovePlans ? "auto" : "review",
   contextPaths: [],
 });
 
 const dedupePaths = (paths: string[]): string[] => Array.from(new Set(paths)).sort();
+
+const COMPOSER_MIN_HEIGHT = 76;
+const COMPOSER_MAX_HEIGHT = 224;
+
+const hasFileDragPayload = (dataTransfer: DataTransfer | null): boolean => {
+  if (!dataTransfer) {
+    return false;
+  }
+
+  if (Array.from(dataTransfer.types).includes("Files")) {
+    return true;
+  }
+
+  return Array.from(dataTransfer.items ?? []).some((item) => item.kind === "file");
+};
 
 const normalizeHexColor = (value: string): string | null => {
   const match = value.trim().match(/^#?([\da-f]{3}|[\da-f]{6})$/i);
@@ -516,7 +563,7 @@ function App() {
   const [launchingProjects, setLaunchingProjects] = useState<Record<string, boolean>>({});
   const [currentPage, setCurrentPage] = useState<AppPage>("programs");
   const [showSidebar, setShowSidebar] = useState(false);
-  const [showUpdatePanel, setShowUpdatePanel] = useState(false);
+  const [showUpdatePanel, setShowUpdatePanel] = useState(true);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [composerValue, setComposerValue] = useState("");
   const [composerOptions, setComposerOptions] = useState<ComposerOptions>(getComposerDefaults(emptySettings));
@@ -540,7 +587,10 @@ function App() {
   const [pendingUpdates, setPendingUpdates] = useState<Record<string, PendingPlannedUpdate | null>>({});
   const [outlineReports, setOutlineReports] = useState<Record<string, ProjectOutlineReport | null | undefined>>({});
   const [envSnapshots, setEnvSnapshots] = useState<Record<string, EnvFileSnapshot | undefined>>({});
+  const [isUpdateDropTarget, setIsUpdateDropTarget] = useState(false);
   const updateSectionRef = useRef<HTMLDivElement | null>(null);
+  const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const updateDropDepthRef = useRef(0);
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
@@ -651,8 +701,13 @@ function App() {
   }, [selectedProjectId]);
 
   useEffect(() => {
-    setShowUpdatePanel(false);
+    setShowUpdatePanel(Boolean(selectedProjectId));
   }, [selectedProjectId]);
+
+  useEffect(() => {
+    updateDropDepthRef.current = 0;
+    setIsUpdateDropTarget(false);
+  }, [selectedProjectId, showUpdatePanel]);
 
   useEffect(() => {
     if (!programsApi || !storedDataProjectId) {
@@ -677,11 +732,17 @@ function App() {
     });
   }, [programsApi, connectionsProjectId]);
 
-  useEffect(() => {
-    if (showUpdatePanel) {
-      updateSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  useLayoutEffect(() => {
+    const textarea = composerInputRef.current;
+    if (!textarea) {
+      return;
     }
-  }, [showUpdatePanel]);
+
+    textarea.style.height = "auto";
+    const nextHeight = Math.min(COMPOSER_MAX_HEIGHT, Math.max(COMPOSER_MIN_HEIGHT, textarea.scrollHeight));
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > COMPOSER_MAX_HEIGHT ? "auto" : "hidden";
+  }, [composerValue, showUpdatePanel, selectedProjectId]);
 
   useEffect(() => {
     if (currentPage !== "programs") {
@@ -1171,6 +1232,30 @@ function App() {
     });
   };
 
+  const handleDisconnectCodex = async () => {
+    await withBusy("auth.codex", async () => {
+      const status = await window.programs.logoutCodex();
+      setAuth((current) => ({ ...current, codex: status }));
+      await refreshSetup();
+    });
+  };
+
+  const handleDisconnectClaude = async () => {
+    await withBusy("auth.claude", async () => {
+      const status = await window.programs.logoutClaude();
+      setAuth((current) => ({ ...current, claude: status }));
+      await refreshSetup();
+    });
+  };
+
+  const handleDisconnectGitHub = async () => {
+    await withBusy("auth.github", async () => {
+      const status = await window.programs.logoutGitHub();
+      setAuth((current) => ({ ...current, github: status }));
+      await refreshSetup();
+    });
+  };
+
   const handleSetupCodex = async () => {
     await withBusy("auth.codex", async () => {
       const status = await window.programs.setupCodex();
@@ -1354,6 +1439,84 @@ function App() {
     });
   };
 
+  const resetUpdateDropTarget = () => {
+    updateDropDepthRef.current = 0;
+    setIsUpdateDropTarget(false);
+  };
+
+  const handleUpdateSectionDragEnter = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!hasFileDragPayload(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    updateDropDepthRef.current += 1;
+    setIsUpdateDropTarget(true);
+  };
+
+  const handleUpdateSectionDragOver = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!hasFileDragPayload(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    if (!isUpdateDropTarget) {
+      setIsUpdateDropTarget(true);
+    }
+  };
+
+  const handleUpdateSectionDragLeave = (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!hasFileDragPayload(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    updateDropDepthRef.current = Math.max(0, updateDropDepthRef.current - 1);
+    if (updateDropDepthRef.current === 0) {
+      setIsUpdateDropTarget(false);
+    }
+  };
+
+  const handleUpdateSectionDrop = async (event: ReactDragEvent<HTMLDivElement>) => {
+    if (!selectedProject || !hasFileDragPayload(event.dataTransfer)) {
+      return;
+    }
+
+    event.preventDefault();
+    resetUpdateDropTarget();
+
+    const nativePaths = window.programs.resolveDroppedFilePaths(Array.from(event.dataTransfer.files));
+    if (nativePaths.length === 0) {
+      return;
+    }
+
+    try {
+      const result = await window.programs.resolveDroppedContextPaths({
+        projectId: selectedProject.id,
+        paths: nativePaths,
+      });
+
+      if (result.paths.length) {
+        setComposerOptions((current) => ({
+          ...current,
+          contextPaths: dedupePaths([...current.contextPaths, ...result.paths]),
+        }));
+      }
+
+      if (result.rejectedCount > 0) {
+        pushToast(
+          result.paths.length
+            ? "Some dropped items were ignored. Only files and folders inside this project can be attached here."
+            : "Only files and folders inside this project can be attached here.",
+          "error",
+        );
+      }
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "PROGRAMS could not attach the dropped files.", "error");
+    }
+  };
+
   const handlePlanAction = async () => {
     if (!selectedProject) {
       return;
@@ -1378,7 +1541,8 @@ function App() {
       model: composerOptions.model,
       claudeModel: composerOptions.claudeModel,
       reasoningEffort: composerOptions.reasoningEffort,
-      autoApprove: composerOptions.autoApprove,
+      planningMode: composerOptions.planningMode,
+      autoApprove: composerOptions.planningMode === "auto",
       contextPaths: composerOptions.contextPaths,
     } as const;
 
@@ -1449,48 +1613,48 @@ function App() {
     selectedProject?.runtimeConfig.lastRunUrl ?? selectedProject?.runtimeConfig.openUrl ?? null;
   const isProjectRunning = Boolean(selectedRuntime?.running);
   const canStopProject = Boolean(selectedRuntime?.running);
+  const canOpenProject = Boolean(currentRuntimeUrl || lastKnownRuntimeUrl);
   const showRunningState = isProjectRunning || busyKey === "project.run";
-  const canCancelPlan = activePlan ? activePlan.status !== "completed" && activePlan.status !== "failed" : false;
   const canConfirmPlan = activePlan?.status === "awaitingApproval";
+  const showUpdateDock = Boolean(activePlan);
+  const isSelectedProjectView = currentPage === "programs" && Boolean(selectedProject);
   const homeAppUpdateButton = getHomeAppUpdateButtonState(appUpdate);
   const currentPageDefinition = APP_PAGE_OPTIONS.find((page) => page.id === currentPage) ?? APP_PAGE_OPTIONS[1];
   const programsTopBar = (
-    <div className="homeTopBar">
+    <div className="homeTopBar windowNoDrag">
       {!selectedProject ? (
         homeAppUpdateButton === "prepare" ? (
-          <button className="secondaryButton homeUpdateButton" disabled>
+          <button className="secondaryButton homeUpdateButton windowNoDrag" disabled>
             {busyKey === "app.update" || appUpdate.buildState === "installing" ? "Updating..." : "Preparing update..."}
           </button>
         ) : homeAppUpdateButton === "install" ? (
           <button
-            className="secondaryButton homeUpdateButton"
+            className="secondaryButton homeUpdateButton windowNoDrag"
             onClick={() => void handleInstallAppUpdate()}
             disabled={busyKey === "app.update"}
           >
             {busyKey === "app.update" ? "Updating..." : "Update App"}
           </button>
         ) : homeAppUpdateButton === "issue" ? (
-          <button className="secondaryButton homeUpdateButton" onClick={openSettingsModal}>
+          <button className="secondaryButton homeUpdateButton windowNoDrag" onClick={openSettingsModal}>
             Update issue
           </button>
         ) : null
       ) : null}
       <button
-        className={showUsageSheet ? "iconButton active" : "iconButton"}
+        className={showUsageSheet ? "iconButton active windowNoDrag" : "iconButton windowNoDrag"}
         onClick={() => setShowUsageSheet((current) => !current)}
         aria-label="Open usage overview"
       >
         <TimerIcon />
       </button>
-      <button className="iconButton" onClick={openSettingsModal} aria-label="Open settings">
+      <button className="iconButton windowNoDrag" onClick={openSettingsModal} aria-label="Open settings">
         <SettingsIcon />
       </button>
     </div>
   );
   const programsPage = !selectedProject ? (
     <section className="minimalHome">
-      {programsTopBar}
-
       <div className="tileGrid">
         {projects.map((project) => (
           <HomeProjectTile
@@ -1510,177 +1674,162 @@ function App() {
       </div>
     </section>
   ) : (
-    <section className="projectLayout">
-      <div className="projectTopBar">
-        <button className="textButton" onClick={() => setSelectedProjectId(null)}>
+    <section className="projectLayout projectLayout-detail">
+      <div className="projectTopBar windowNoDrag">
+        <button className="textButton windowNoDrag" onClick={() => setSelectedProjectId(null)}>
           Back
         </button>
       </div>
 
-      {programsTopBar}
-
-      <div className="projectSummaryCard">
-        <ProjectSummaryMenu
-          projectName={selectedProject.name}
-          onEdit={() => openProjectEditor(selectedProject)}
-          onUnlink={() => setUnlinkProjectId(selectedProject.id)}
-        />
-        <div className="summaryMain">
-          <div className="summaryHeaderRow">
-            <div className="summaryCopy">
-              <h2>{selectedProject.name}</h2>
-              <p className="summaryTimestamp">Last updated at {formatDate(selectedProject.lastUpdatedAt)}</p>
-              <div className="summaryLinkRow">
-                <button className="textButton planButtonWrapper summaryDetailButton" onClick={() => setProgramDetailsProjectId(selectedProject.id)}>
-                  System Details
-                  {pendingUpdates[selectedProject.id] ? <span className="notificationBadge" /> : null}
+      <div className={showUpdatePanel ? "projectDetailWorkspace updateOpen" : "projectDetailWorkspace"}>
+        <div className="projectSummaryCard">
+          <div className="summaryMain">
+            <div className="summaryHeaderRow">
+              <div className="summaryCopy">
+                <h2>{selectedProject.name}</h2>
+                <p className="summaryTimestamp">Last updated at {formatDate(selectedProject.lastUpdatedAt)}</p>
+                <div className="summaryLinkRow">
+                  <button
+                    className="textButton planButtonWrapper summaryDetailButton"
+                    onClick={() => setProgramDetailsProjectId(selectedProject.id)}
+                  >
+                    System Details
+                    {pendingUpdates[selectedProject.id] ? <span className="notificationBadge" /> : null}
+                  </button>
+                </div>
+                {selectedProject.lastError ? <div className="errorBanner">{selectedProject.lastError}</div> : null}
+              </div>
+              <div className="summaryActionRail">
+                <button
+                  className={
+                    showRunningState
+                      ? "actionButton actionButton-open summaryActionButton"
+                      : "actionButton actionButton-run summaryActionButton"
+                  }
+                  onClick={showRunningState ? handleOpen : handleRun}
+                  disabled={
+                    showRunningState
+                      ? !canOpenProject || busyKey === "project.open"
+                      : busyKey === "project.run"
+                  }
+                >
+                  {showRunningState ? "Open" : "Run"}
+                </button>
+                <button
+                  className="actionButton actionButton-stop summaryActionButton"
+                  onClick={handleKill}
+                  disabled={!canStopProject || busyKey === "project.kill"}
+                >
+                  Stop
                 </button>
               </div>
-              {selectedProject.lastError ? <div className="errorBanner">{selectedProject.lastError}</div> : null}
-            </div>
-            <div className="summaryQuickActionGrid">
-              <SummarySquareActionButton
-                label="Stored Data"
-                active={storedDataProjectId === selectedProject.id}
-                onClick={() => setStoredDataProjectId(selectedProject.id)}
-              />
-              <SummarySquareActionButton
-                label="Connections"
-                active={connectionsProjectId === selectedProject.id}
-                onClick={() => setConnectionsProjectId(selectedProject.id)}
-              />
-              <SummarySquareActionButton
-                label="Runtime"
-                active={runtimeProjectId === selectedProject.id}
-                onClick={() => setRuntimeProjectId(selectedProject.id)}
-              />
             </div>
           </div>
         </div>
-      </div>
 
-      <div className="actionBar">
-        <button
-          className="actionButton actionButton-run"
-          onClick={handleRun}
-          disabled={showRunningState}
-        >
-          {showRunningState ? <RunningIndicator /> : "Run"}
-        </button>
-        <button
-          className="actionButton actionButton-stop"
-          onClick={handleKill}
-          disabled={!canStopProject || busyKey === "project.kill"}
-        >
-          Stop
-        </button>
-        <button className="actionButton actionButton-open" onClick={handleOpen} disabled={!currentRuntimeUrl}>
-          Open
-        </button>
-        <button
-          className={showUpdatePanel ? "actionButton actionButton-cancel" : "actionButton actionButton-update"}
-          onClick={() => setShowUpdatePanel((current) => !current)}
-          aria-expanded={showUpdatePanel}
-        >
-          {showUpdatePanel ? "Cancel" : "Update"}
-        </button>
-      </div>
+        {showUpdatePanel ? (
+          <div
+            ref={updateSectionRef}
+            className={isUpdateDropTarget ? "updateSection dragActive" : "updateSection"}
+            onDragEnter={handleUpdateSectionDragEnter}
+            onDragOver={handleUpdateSectionDragOver}
+            onDragLeave={handleUpdateSectionDragLeave}
+            onDrop={(event) => void handleUpdateSectionDrop(event)}
+          >
+            <div className={showUpdateDock ? "updateCard updateCard-withDock" : "updateCard"}>
+              <div className="updateCardSpacer" />
 
-      {showUpdatePanel ? (
-        <div ref={updateSectionRef} className="updateSection">
-          <div className="updateCard">
-            <PlanPanel plan={activePlan} />
+              <div className="updateFooterStack">
+                {showUpdateDock ? (
+                  <UpdateStagePanel
+                    plan={activePlan}
+                    canConfirmPlan={canConfirmPlan}
+                    confirmBusy={busyKey === "plan.approve"}
+                    onConfirm={handleConfirmUpdate}
+                  />
+                ) : null}
 
-            <div className="composerShell">
-              <textarea
-                value={composerValue}
-                onChange={(event) => setComposerValue(event.target.value)}
-                className="composerInput"
-                placeholder={
-                  activePlan?.status === "awaitingApproval"
-                    ? `Ask ${providerLabel(composerOptions.provider)} to revise the current plan.`
-                    : "Describe the next change."
-                }
-              />
-
-              {composerOptions.contextPaths.length ? (
-                <div className="chipList">
-                  {composerOptions.contextPaths.map((path) => (
-                    <button
-                      key={path}
-                      className="pathChip"
-                      onClick={() =>
-                        setComposerOptions((current) => ({
-                          ...current,
-                          contextPaths: current.contextPaths.filter((item) => item !== path),
-                        }))
-                      }
-                    >
-                      {path}
-                      <span aria-hidden="true">×</span>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-
-              <ComposerControlBar
-                options={composerOptions}
-                modelCatalog={modelCatalog}
-                addFilesBusy={busyKey === "context.pick"}
-                sendBusy={busyKey === "plan.send"}
-                onCodexModelChange={(model) =>
-                  setComposerOptions((current) => ({
-                    ...current,
-                    provider: "codex",
-                    model,
-                    speed: "normal",
-                    reasoningEffort: "xhigh",
-                  }))
-                }
-                onClaudeModelChange={(claudeModel) =>
-                  setComposerOptions((current) => ({
-                    ...current,
-                    provider: "claude",
-                    claudeModel,
-                  }))
-                }
-                onReasoningChange={(reasoningEffort) =>
-                  setComposerOptions((current) => ({ ...current, reasoningEffort }))
-                }
-                onSpeedChange={(speed) => setComposerOptions((current) => ({ ...current, speed }))}
-                onAutoApproveChange={(autoApprove) =>
-                  setComposerOptions((current) => ({ ...current, autoApprove }))
-                }
-                onAddFiles={() => void handlePickContextPaths()}
-                onSubmit={handlePlanAction}
-                submitLabel={activePlan?.status === "awaitingApproval" ? "Revise update" : "Send update"}
-              />
-            </div>
-
-            {canCancelPlan || canConfirmPlan ? (
-              <div className="composerFooter">
-                <div className="approvalActions">
-                  {canCancelPlan ? (
-                    <button className="secondaryButton" onClick={handleCancelPlan} disabled={busyKey === "plan.cancel"}>
-                      Cancel
-                    </button>
+                <div className="composerShell">
+                  {composerOptions.contextPaths.length ? (
+                    <div className="composerAttachmentRow">
+                      <div className="chipList">
+                        {composerOptions.contextPaths.map((path) => (
+                          <button
+                            key={path}
+                            className="pathChip"
+                            onClick={() =>
+                              setComposerOptions((current) => ({
+                                ...current,
+                                contextPaths: current.contextPaths.filter((item) => item !== path),
+                              }))
+                            }
+                          >
+                            {path}
+                            <span aria-hidden="true">×</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
                   ) : null}
-                  {canConfirmPlan ? (
-                    <button
-                      className="primaryButton"
-                      onClick={handleConfirmUpdate}
-                      disabled={busyKey === "plan.approve"}
-                    >
-                      Confirm
-                    </button>
-                  ) : null}
+
+                  <textarea
+                    ref={composerInputRef}
+                    value={composerValue}
+                    onChange={(event) => setComposerValue(event.target.value)}
+                    className="composerInput"
+                    placeholder={
+                      activePlan?.status === "awaitingApproval"
+                        ? `Ask ${providerLabel(composerOptions.provider)} to revise the current plan.`
+                        : "Describe the next change."
+                    }
+                  />
+
+                  <ComposerControlBar
+                    options={composerOptions}
+                    modelCatalog={modelCatalog}
+                    addFilesBusy={busyKey === "context.pick"}
+                    sendBusy={busyKey === "plan.send"}
+                    isRunning={Boolean(activePlan && activePlan.status !== "completed" && activePlan.status !== "failed" && activePlan.status !== "awaitingApproval")}
+                    onCodexModelChange={(model) =>
+                      setComposerOptions((current) => ({
+                        ...current,
+                        provider: "codex",
+                        model,
+                        speed: "normal",
+                        reasoningEffort: "xhigh",
+                      }))
+                    }
+                    onClaudeModelChange={(claudeModel) =>
+                      setComposerOptions((current) => ({
+                        ...current,
+                        provider: "claude",
+                        claudeModel,
+                      }))
+                    }
+                    onReasoningChange={(reasoningEffort) =>
+                      setComposerOptions((current) => ({ ...current, reasoningEffort }))
+                    }
+                    onSpeedChange={(speed) => setComposerOptions((current) => ({ ...current, speed }))}
+                    onPlanningModeChange={(planningMode) =>
+                      setComposerOptions((current) => ({ ...current, planningMode }))
+                    }
+                    onAddFiles={() => void handlePickContextPaths()}
+                    onSubmit={handlePlanAction}
+                    onStop={handleCancelPlan}
+                    submitLabel={activePlan?.status === "awaitingApproval" ? "Revise update" : "Send update"}
+                  />
                 </div>
               </div>
-            ) : null}
-          </div>
-        </div>
-      ) : null}
 
+              {isUpdateDropTarget ? (
+                <div className="updateDropOverlay" aria-hidden="true">
+                  <span>Drop files anywhere in this area to attach them</span>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+      </div>
     </section>
   );
 
@@ -1711,10 +1860,11 @@ function App() {
   return (
     <div className={showSidebar ? "appShell appShellWithSidebar sidebarOpen" : "appShell appShellWithSidebar"}>
       <div className={showSidebar ? "shellFrame sidebarOpen" : "shellFrame"}>
-        <div className="shellTopBar">
+        <div className="windowDragStrip" aria-hidden="true" />
+        <div className="shellTopBar windowNoDrag">
           <button
             type="button"
-            className={showSidebar ? "sidebarToggleButton active" : "sidebarToggleButton"}
+            className={showSidebar ? "sidebarToggleButton active windowNoDrag" : "sidebarToggleButton windowNoDrag"}
             onClick={() => setShowSidebar((current) => !current)}
             aria-label={showSidebar ? "Hide sidebar" : "Show sidebar"}
             aria-expanded={showSidebar}
@@ -1722,6 +1872,7 @@ function App() {
             <SidebarToggleIcon />
           </button>
         </div>
+        {currentPage === "programs" ? programsTopBar : null}
 
         <aside className="shellSidebar" aria-label="App navigation">
           <nav className="shellSidebarNav">
@@ -1738,7 +1889,7 @@ function App() {
           </nav>
         </aside>
 
-        <main className="shellContent">
+        <main className={isSelectedProjectView ? "shellContent shellContent-detailLocked" : "shellContent"}>
           {currentPage === "homepage" ? (
             <HomepagePlanner
               projects={projects}
@@ -1990,6 +2141,9 @@ function App() {
           onSave={(next) => void handleSaveSettings(next)}
           onConnectCodex={() => void handleConnectCodex()}
           onConnectClaude={() => void handleConnectClaude()}
+          onDisconnectCodex={() => void handleDisconnectCodex()}
+          onDisconnectClaude={() => void handleDisconnectClaude()}
+          onDisconnectGitHub={() => void handleDisconnectGitHub()}
           onSetupCodex={() => void handleSetupCodex()}
           onSetupClaude={() => void handleSetupClaude()}
           onSetupAction={(check) => void withBusy(`setup-${check.id}`, async () => handleSetupAction(check))}
@@ -2123,26 +2277,30 @@ function ComposerControlBar({
   modelCatalog,
   addFilesBusy,
   sendBusy,
+  isRunning,
   onCodexModelChange,
   onClaudeModelChange,
   onReasoningChange,
   onSpeedChange,
-  onAutoApproveChange,
+  onPlanningModeChange,
   onAddFiles,
   onSubmit,
+  onStop,
   submitLabel,
 }: {
   options: ComposerOptions;
   modelCatalog: ModelCatalog;
   addFilesBusy: boolean;
   sendBusy: boolean;
+  isRunning: boolean;
   onCodexModelChange: (model: CodexModel) => void;
   onClaudeModelChange: (model: ClaudeModel) => void;
   onReasoningChange: (reasoningEffort: ComposerOptions["reasoningEffort"]) => void;
   onSpeedChange: (speed: SpeedMode) => void;
-  onAutoApproveChange: (autoApprove: boolean) => void;
+  onPlanningModeChange: (planningMode: PlanningMode) => void;
   onAddFiles: () => void;
   onSubmit: () => void;
+  onStop: () => void;
   submitLabel: string;
 }) {
   const [openMenu, setOpenMenu] = useState<ComposerMenuKey | null>(null);
@@ -2259,97 +2417,121 @@ function ComposerControlBar({
               </div>
             </ComposerMenu>
 
-            <ComposerMenu
-              label={`Thinking: ${labelForReasoningEffort(options.reasoningEffort)}`}
-              open={openMenu === "thinking"}
-              onToggle={() => setOpenMenu((current) => (current === "thinking" ? null : "thinking"))}
-              onClose={closeMenus}
-            >
-              <div className="composerMenuSection">
-                <span className="composerMenuSectionTitle">Thinking depth</span>
-                <ComposerMenuOption
-                  label="Low"
-                  active={options.reasoningEffort === "low"}
-                  onClick={() => {
-                    onReasoningChange("low");
-                    closeMenus();
-                  }}
-                />
-                <ComposerMenuOption
-                  label="Normal"
-                  active={options.reasoningEffort === "medium"}
-                  onClick={() => {
-                    onReasoningChange("medium");
-                    closeMenus();
-                  }}
-                />
-                <ComposerMenuOption
-                  label="High"
-                  active={options.reasoningEffort === "high"}
-                  onClick={() => {
-                    onReasoningChange("high");
-                    closeMenus();
-                  }}
-                />
-                <ComposerMenuOption
-                  label="Extra high"
-                  active={options.reasoningEffort === "xhigh"}
-                  onClick={() => {
-                    onReasoningChange("xhigh");
-                    closeMenus();
-                  }}
-                />
-              </div>
-            </ComposerMenu>
           </>
         ) : null}
 
         <ComposerMenu
-          label="Plan"
+          label={`Thinking: ${labelForReasoningEffort(options.reasoningEffort)}`}
+          open={openMenu === "thinking"}
+          onToggle={() => setOpenMenu((current) => (current === "thinking" ? null : "thinking"))}
+          onClose={closeMenus}
+        >
+          <div className="composerMenuSection">
+            <span className="composerMenuSectionTitle">Thinking depth</span>
+            <ComposerMenuOption
+              label="Low"
+              active={options.reasoningEffort === "low"}
+              onClick={() => {
+                onReasoningChange("low");
+                closeMenus();
+              }}
+            />
+            <ComposerMenuOption
+              label="Normal"
+              active={options.reasoningEffort === "medium"}
+              onClick={() => {
+                onReasoningChange("medium");
+                closeMenus();
+              }}
+            />
+            <ComposerMenuOption
+              label="High"
+              active={options.reasoningEffort === "high"}
+              onClick={() => {
+                onReasoningChange("high");
+                closeMenus();
+              }}
+            />
+            <ComposerMenuOption
+              label="Extra high"
+              active={options.reasoningEffort === "xhigh"}
+              onClick={() => {
+                onReasoningChange("xhigh");
+                closeMenus();
+              }}
+            />
+          </div>
+        </ComposerMenu>
+
+        <ComposerMenu
+          label={`Planning: ${labelForPlanningMode(options.planningMode)}`}
           open={openMenu === "plan"}
           onToggle={() => setOpenMenu((current) => (current === "plan" ? null : "plan"))}
           onClose={closeMenus}
           align="end"
         >
           <div className="composerMenuSection">
-            <span className="composerMenuSectionTitle">Approval</span>
+            <span className="composerMenuSectionTitle">Planning mode</span>
             <ComposerMenuOption
               label="Review plan"
               detail="Pause after the draft so you can confirm it."
-              active={!options.autoApprove}
+              active={options.planningMode === "review"}
               onClick={() => {
-                onAutoApproveChange(false);
+                onPlanningModeChange("review");
                 closeMenus();
               }}
             />
             <ComposerMenuOption
               label="Auto-accept plan"
               detail="Apply the update as soon as the plan is ready."
-              active={options.autoApprove}
+              active={options.planningMode === "auto"}
               onClick={() => {
-                onAutoApproveChange(true);
+                onPlanningModeChange("auto");
+                closeMenus();
+              }}
+            />
+            <ComposerMenuOption
+              label="No plan"
+              detail="Skip drafting and start building immediately."
+              active={options.planningMode === "none"}
+              onClick={() => {
+                onPlanningModeChange("none");
                 closeMenus();
               }}
             />
           </div>
           <p className="composerMenuNote">
-            PROGRAMS still drafts a plan first. This only changes whether it stops for approval.
+            Review pauses for approval, Auto applies the draft immediately, and No Plan skips the draft entirely.
           </p>
         </ComposerMenu>
       </div>
 
-      <button
-        className="primaryButton composerSubmitButton"
-        onClick={() => {
-          closeMenus();
-          onSubmit();
-        }}
-        disabled={sendBusy}
-        aria-label={submitLabel}
-        title={submitLabel}
-      >
-        <ArrowUpIcon />
-      </button>
+      {isRunning ? (
+        <button
+          className="composerSubmitButton composerStopButton"
+          onClick={() => {
+            closeMenus();
+            onStop();
+          }}
+          aria-label="Stop update"
+          title="Stop update"
+        >
+          <StopIcon />
+        </button>
+      ) : (
+        <button
+          className="primaryButton composerSubmitButton"
+          onClick={() => {
+            closeMenus();
+            onSubmit();
+          }}
+          disabled={sendBusy}
+          aria-label={submitLabel}
+          title={submitLabel}
+        >
+          <ArrowUpIcon />
+        </button>
+      )}
     </div>
   );
 }
@@ -2583,101 +2765,6 @@ function ProjectOptionsSheet({
   );
 }
 
-function ProjectSummaryMenu({
-  projectName,
-  onEdit,
-  onUnlink,
-}: {
-  projectName: string;
-  onEdit: () => void;
-  onUnlink: () => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
-
-    const handlePointerDown = (event: MouseEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setOpen(false);
-      }
-    };
-
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [open]);
-
-  const handleEdit = () => {
-    setOpen(false);
-    onEdit();
-  };
-
-  const handleUnlink = () => {
-    setOpen(false);
-    onUnlink();
-  };
-
-  return (
-    <div ref={menuRef} className="summaryMenu">
-      <button
-        type="button"
-        className={open ? "iconButton summaryMenuToggle active" : "iconButton summaryMenuToggle"}
-        aria-label={`Project options for ${projectName}`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onClick={() => setOpen((current) => !current)}
-      >
-        <MoreIcon />
-      </button>
-      {open ? (
-        <div className="summaryMenuPanel" role="menu" aria-label={`${projectName} options`}>
-          <button type="button" onClick={handleEdit}>
-            Edit project
-          </button>
-          <button type="button" className="dangerMenuItem" onClick={handleUnlink}>
-            Unlink project
-          </button>
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function SummarySquareActionButton({
-  label,
-  active = false,
-  onClick,
-}: {
-  label: string;
-  active?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      className={active ? "summarySquareButton active" : "summarySquareButton"}
-      onClick={onClick}
-      aria-pressed={active}
-    >
-      <span>{label}</span>
-    </button>
-  );
-}
-
 function UsageOverviewSheet({
   auth,
   usage,
@@ -2722,7 +2809,7 @@ function UsageOverviewSheet({
     cards.push({
       key: "claude",
       name: "Claude",
-      subtitle: auth.claude.loggedIn ? "Signed in" : "Local history",
+      subtitle: auth.claude.loggedIn ? formatUsageSubtitle(auth.claude.email, auth.claude.planType ?? "Signed in") : "Local history",
       badge: usage.claude.status === "ready" ? (claudeUsesLocalMetrics ? "Local" : "Live") : "Status",
       windows: usage.claude.windows,
       note: claudeNote,
@@ -2791,73 +2878,211 @@ function UsageMetricBar({ window }: { window: UsageWindow }) {
   );
 }
 
-function PlanPanel({ plan }: { plan: PlanDraft | null }) {
-  const [expanded, setExpanded] = useState(false);
+type UpdateStageKey = "thinking" | "planning" | "building" | "verifying";
+
+function UpdateStagePanel({
+  plan,
+  canConfirmPlan,
+  confirmBusy,
+  onConfirm,
+}: {
+  plan: PlanDraft | null;
+  canConfirmPlan: boolean;
+  confirmBusy: boolean;
+  onConfirm: () => void;
+}) {
+  const [openStage, setOpenStage] = useState<UpdateStageKey | null>(null);
+  const [showFullPrompt, setShowFullPrompt] = useState(false);
+  const [elapsed, setElapsed] = useState(0);
+  const autoOpenedRequestKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!plan || plan.status === "completed" || plan.status === "failed") {
+      return;
+    }
+    const start = Date.now();
+    const interval = setInterval(() => setElapsed(Math.floor((Date.now() - start) / 1000)), 1000);
+    return () => clearInterval(interval);
+  }, [plan?.status, plan?.prompt]);
+
+  useEffect(() => {
+    if (!plan) {
+      setOpenStage(null);
+      autoOpenedRequestKeyRef.current = null;
+      return;
+    }
+
+    const requestKey = `${plan.provider}:${plan.prompt}:${plan.turnId ?? "pending"}`;
+    if (autoOpenedRequestKeyRef.current === requestKey) {
+      return;
+    }
+
+    const preferredStage =
+      ([
+        ["thinking", plan.thinkingStatus],
+        ["planning", plan.planningStatus],
+        ["building", plan.buildingStatus],
+        ["verifying", plan.verifyingStatus],
+      ] as const).find(([, status]) => status === "failed")?.[0] ??
+      ([
+        ["thinking", plan.thinkingStatus],
+        ["planning", plan.planningStatus],
+        ["building", plan.buildingStatus],
+        ["verifying", plan.verifyingStatus],
+      ] as const).find(([, status]) => status === "in_progress")?.[0] ??
+      "thinking";
+
+    autoOpenedRequestKeyRef.current = requestKey;
+    setOpenStage(preferredStage);
+  }, [
+    plan,
+    plan?.prompt,
+    plan?.provider,
+    plan?.turnId,
+  ]);
 
   if (!plan) {
     return null;
   }
 
-  const isActive = plan.status === "planning" || plan.status === "executing";
-  const statusLabel = plan.status === "planning" ? "Thinking..." : plan.status === "executing" ? "Working..." : labelForPlanStatus(plan.status);
+  const stageItems: Array<{
+    key: UpdateStageKey;
+    label: string;
+    status: UpdateStageStatus;
+  }> = [
+    { key: "thinking", label: "Thinking", status: plan.thinkingStatus },
+    { key: "planning", label: "Planning", status: plan.planningStatus },
+    { key: "building", label: "Building", status: plan.buildingStatus },
+    { key: "verifying", label: "Verifying", status: plan.verifyingStatus },
+  ];
 
-  return (
-    <div className="planPanel">
-      <div className="planHeaderCompact" onClick={() => setExpanded((e) => !e)}>
-        {isActive ? <span className="planStatusDot" /> : null}
-        <span className="sectionTag">{providerLabel(plan.provider)}</span>
-        <span>{statusLabel}</span>
-        <button className="textButton" style={{ marginLeft: "auto" }}>{expanded ? "Hide" : "Show details"}</button>
+  const detail =
+    openStage === "thinking" ? (
+      <div className="updateStageDetailBlock">
+        <p><TypewriterText text={plan.explanation || "The model has not shared any thinking details yet."} /></p>
       </div>
-
-      {expanded ? (
-        <div className="planDetailsScroll">
-          <p>{plan.explanation}</p>
-
-          {plan.steps.length ? (
-            <ol className="planList">
-              {plan.steps.map((step) => (
-                <li key={step.step}>
-                  <span className={`stepPill step-${step.status}`}>{step.status.replace("_", " ")}</span>
-                  {step.step}
-                </li>
-              ))}
-            </ol>
-          ) : null}
-
-          <div className="planMetaGrid">
-            {plan.summary ? (
-              <div>
-                <strong>Summary</strong>
-                <p>{plan.summary}</p>
-              </div>
-            ) : null}
-            {plan.impact ? (
-              <div>
-                <strong>Impact</strong>
-                <p>{plan.impact}</p>
-              </div>
-            ) : null}
-            {plan.flowchartChanges ? (
-              <div>
-                <strong>Flowchart changes</strong>
-                <p>{plan.flowchartChanges}</p>
-              </div>
-            ) : null}
-          </div>
-
-          {plan.contextPaths.length ? (
-            <div className="planMetaGrid">
-              <div>
-                <strong>Priority context</strong>
-                <p>{plan.contextPaths.join(", ")}</p>
-              </div>
+    ) : openStage === "planning" ? (
+      <div className="updateStageDetailBlock">
+        {plan.planningMode === "none" ? <p>Skipped by request.</p> : null}
+        {plan.steps.length ? (
+          <ol className="planList">
+            {plan.steps.map((step) => (
+              <li key={step.step}>
+                <span className={`stepPill step-${step.status}`}>{step.status.replace("_", " ")}</span>
+                {step.step}
+              </li>
+            ))}
+          </ol>
+        ) : null}
+        <div className="planMetaGrid">
+          {plan.summary ? (
+            <div>
+              <strong>Summary</strong>
+              <p><TypewriterText text={plan.summary} /></p>
             </div>
           ) : null}
+          {plan.impact ? (
+            <div>
+              <strong>Impact</strong>
+              <p><TypewriterText text={plan.impact} /></p>
+            </div>
+          ) : null}
+          {plan.flowchartChanges ? (
+            <div>
+              <strong>Flowchart changes</strong>
+              <p><TypewriterText text={plan.flowchartChanges} /></p>
+            </div>
+          ) : null}
+        </div>
+        {plan.contextPaths.length ? (
+          <div className="planMetaGrid">
+            <div>
+              <strong>Priority context</strong>
+              <p>{plan.contextPaths.join(", ")}</p>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    ) : openStage === "building" ? (
+      <div className="updateStageDetailBlock">
+        {plan.diff ? (
+          <pre className="updateStageCodeBlock">{plan.diff}</pre>
+        ) : plan.diffStats ? (
+          <p>
+            Current diff: +{plan.diffStats.added.toLocaleString()} / -{plan.diffStats.removed.toLocaleString()}
+          </p>
+        ) : (
+          <p>Waiting for file changes.</p>
+        )}
+      </div>
+    ) : openStage === "verifying" ? (
+      <div className="updateStageDetailBlock">
+        <p>
+          <TypewriterText text={plan.verificationDetails ??
+            (plan.verifyingStatus === "completed"
+              ? "Verification finished."
+              : plan.verifyingStatus === "failed"
+                ? "Verification needs attention."
+                : "Waiting for verification.")} />
+        </p>
+        {plan.errorMessage ? <div className="errorBanner">{plan.errorMessage}</div> : null}
+      </div>
+    ) : null;
 
-          {plan.errorMessage ? <div className="errorBanner">{plan.errorMessage}</div> : null}
+  return (
+    <div className="updateStatusShelf">
+      <div className="updateStageHeader">
+        <div className="updateStageTitleRow">
+          <button
+            className="updateStageTitleButton"
+            onClick={() => setShowFullPrompt((prev) => !prev)}
+            title="Click to view full update request"
+          >
+            {plan.prompt.length > 50
+              ? plan.prompt.slice(0, 47).trim() + "..."
+              : plan.prompt.charAt(0).toUpperCase() + plan.prompt.slice(1)}
+          </button>
+          <span className="updateStageStatusBadge">{labelForPlanStatus(plan.status)}</span>
+          {elapsed > 0 && plan.status !== "completed" && plan.status !== "failed" ? (
+            <span className="updateStageElapsed">{elapsed < 60 ? `${elapsed}s` : `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`}</span>
+          ) : null}
+        </div>
+        {plan.diffStats ? (
+          <div className="updateStageDiffStats" aria-label="Changed lines">
+            <span className="updateStageDiffStats-added">+{plan.diffStats.added.toLocaleString()}</span>
+            <span className="updateStageDiffStats-removed">-{plan.diffStats.removed.toLocaleString()}</span>
+          </div>
+        ) : null}
+      </div>
+      {showFullPrompt ? (
+        <div className="updateStageFullPrompt">
+          <p>{plan.prompt}</p>
         </div>
       ) : null}
+
+      {detail ? <div className="updateStageDetails">{detail}</div> : null}
+
+      {canConfirmPlan ? (
+        <div className="approvalActions updateStageActions">
+          <button className="primaryButton" onClick={onConfirm} disabled={confirmBusy}>
+            Confirm
+          </button>
+        </div>
+      ) : null}
+
+      <div className="updateStageStrip">
+        {stageItems.map((stage) => (
+          <button
+            key={stage.key}
+            type="button"
+            className={openStage === stage.key ? "updateStageButton active" : "updateStageButton"}
+            onClick={() => setOpenStage((current) => (current === stage.key ? null : stage.key))}
+          >
+            <span className={`updateStageDot updateStageDot-${stage.status}`} aria-hidden="true" />
+            <span>{stage.label}</span>
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -2877,6 +3102,9 @@ function SettingsModal({
   onSave,
   onConnectCodex,
   onConnectClaude,
+  onDisconnectCodex,
+  onDisconnectClaude,
+  onDisconnectGitHub,
   onSetupCodex,
   onSetupClaude,
   onSetupAction,
@@ -2895,6 +3123,9 @@ function SettingsModal({
   onSave: (settings: Settings) => void;
   onConnectCodex: () => void;
   onConnectClaude: () => void;
+  onDisconnectCodex: () => void;
+  onDisconnectClaude: () => void;
+  onDisconnectGitHub: () => void;
   onSetupCodex: () => void;
   onSetupClaude: () => void;
   onSetupAction: (check: SetupCheck) => void;
@@ -2932,7 +3163,47 @@ function SettingsModal({
   }, [draft.advancedDefaults.claudeModel, modelCatalog.claude]);
   const gitInstallCheck = setup.checks.find((check) => check.id === "gitInstall") ?? null;
   const codexTone = auth.codex.loggedIn ? "confirmed" : auth.codex.available ? "info" : "action_required";
-  const claudeTone: StatusTone = auth.claude.loggedIn ? "confirmed" : auth.claude.available ? "info" : "info";
+  const claudeTone: StatusTone = !auth.claude.available
+    ? "info"
+    : auth.claude.loggedIn
+      ? auth.claude.ready
+        ? auth.claude.canConnect
+          ? "confirmed"
+          : "info"
+        : "action_required"
+      : auth.claude.canConnect
+        ? "info"
+        : "action_required";
+  const claudeIdentity = auth.claude.email || auth.claude.displayName || "Connected.";
+  const claudeConnectedDetail = auth.claude.planType ? `${claudeIdentity} · ${auth.claude.planType}` : claudeIdentity;
+  const claudeNeedsUpdateForConnect = auth.claude.loggedIn && auth.claude.ready && !auth.claude.canConnect;
+  const claudeDetail = auth.claude.loggedIn
+    ? auth.claude.ready
+      ? claudeNeedsUpdateForConnect
+        ? `${claudeConnectedDetail}. Update Claude Code to keep in-app sign-in compatible.`
+        : claudeConnectedDetail
+      : `${claudeConnectedDetail}. ${auth.claude.runtimeErrorMessage ?? "Claude needs attention before it can run in PROGRAMS."}`
+    : auth.claude.available
+      ? auth.claude.canConnect
+        ? "Installed. Connect it to use Claude for updates."
+        : auth.claude.connectErrorMessage ?? "Update Claude Code to connect it in PROGRAMS."
+      : "Install and connect Claude Code in one step.";
+  const claudeActionLabel = !auth.claude.available
+    ? "Install & Connect"
+    : auth.claude.loggedIn
+      ? auth.claude.ready
+        ? claudeNeedsUpdateForConnect
+          ? "Update Claude"
+          : null
+        : "Repair"
+      : auth.claude.canConnect
+        ? "Connect"
+        : "Update Claude";
+  const claudeAction = !auth.claude.available || claudeNeedsUpdateForConnect || (auth.claude.loggedIn && !auth.claude.ready)
+    ? onSetupClaude
+    : !auth.claude.loggedIn && auth.claude.canConnect
+      ? onConnectClaude
+      : undefined;
   const isAdvancedMode = draft.uiMode === "advanced";
   const appUpdateTone: StatusTone =
     appUpdate.buildState === "failed"
@@ -3097,22 +3368,34 @@ function SettingsModal({
               }
               actionLabel={!auth.codex.available ? "Install & Connect" : !auth.codex.loggedIn ? "Connect" : null}
               onAction={!auth.codex.available ? onSetupCodex : !auth.codex.loggedIn ? onConnectCodex : undefined}
+              disconnectLabel={auth.codex.loggedIn ? "Disconnect" : null}
+              onDisconnect={auth.codex.loggedIn ? onDisconnectCodex : undefined}
               disabled={busyKey === "auth.codex"}
             />
 
             <ConnectionRow
               title="Claude"
               tone={claudeTone}
-              detail={
-                auth.claude.loggedIn
-                  ? "Connected."
-                  : auth.claude.available
-                    ? "Installed. Connect it to use Claude for updates."
-                    : "Install and connect Claude Code in one step."
-              }
-              actionLabel={!auth.claude.available ? "Install & Connect" : !auth.claude.loggedIn ? "Connect" : null}
-              onAction={!auth.claude.available ? onSetupClaude : !auth.claude.loggedIn ? onConnectClaude : undefined}
+              detail={claudeDetail}
+              actionLabel={claudeActionLabel}
+              onAction={claudeAction}
+              disconnectLabel={auth.claude.loggedIn ? "Disconnect" : null}
+              onDisconnect={auth.claude.loggedIn ? onDisconnectClaude : undefined}
               disabled={busyKey === "auth.claude"}
+            />
+
+            <ConnectionRow
+              title="GitHub"
+              tone={auth.github.loggedIn ? "confirmed" : "info"}
+              detail={
+                auth.github.loggedIn
+                  ? auth.github.login ? `Signed in as ${auth.github.login}` : "Connected."
+                  : "Connect GitHub to sync projects with remote repositories."
+              }
+              actionLabel={null}
+              disconnectLabel={auth.github.loggedIn ? "Disconnect" : null}
+              onDisconnect={auth.github.loggedIn ? onDisconnectGitHub : undefined}
+              disabled={busyKey === "auth.github"}
             />
 
             <ConnectionRow
@@ -3306,6 +3589,8 @@ function ConnectionRow({
   detail,
   actionLabel,
   onAction,
+  disconnectLabel,
+  onDisconnect,
   disabled = false,
 }: {
   title: string;
@@ -3313,6 +3598,8 @@ function ConnectionRow({
   detail: string;
   actionLabel: string | null;
   onAction?: () => void;
+  disconnectLabel?: string | null;
+  onDisconnect?: () => void;
   disabled?: boolean;
 }) {
   return (
@@ -3324,11 +3611,18 @@ function ConnectionRow({
         </div>
         <p className="helperText">{detail}</p>
       </div>
-      {actionLabel && onAction ? (
-        <button className="secondaryButton" onClick={onAction} disabled={disabled}>
-          {actionLabel}
-        </button>
-      ) : null}
+      <div className="connectionActions">
+        {actionLabel && onAction ? (
+          <button className="secondaryButton" onClick={onAction} disabled={disabled}>
+            {actionLabel}
+          </button>
+        ) : null}
+        {disconnectLabel && onDisconnect ? (
+          <button className="secondaryButton dangerButton" onClick={onDisconnect} disabled={disabled}>
+            {disconnectLabel}
+          </button>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -3379,10 +3673,10 @@ function ProgramDetailsModal({
     final: hasFinal,
   };
   const tabOptions: Array<{ id: ProgramDetailsTab; label: string }> = [
-    { id: "history", label: "History" },
-    { id: "current", label: "Current" },
-    { id: "planned", label: "Planned" },
-    { id: "final", label: "Final" },
+    { id: "history", label: "Update History" },
+    { id: "current", label: "Current System" },
+    { id: "planned", label: "Planned Updates" },
+    { id: "final", label: "Final Product" },
   ];
 
   useEffect(() => {
@@ -3400,7 +3694,7 @@ function ProgramDetailsModal({
   }, [activeTab]);
 
   return (
-    <Modal title={`${project.name} System Details`} onClose={onClose} wide>
+    <Modal title="" onClose={onClose} wide>
       <div className="detailsTabBar" role="tablist" aria-label={`${project.name} system details sections`}>
         {tabOptions.map((tab) => (
           <button
@@ -3428,14 +3722,26 @@ function ProgramDetailsModal({
                 <span className="helperText">{formatDate(selectedUpdate.createdAt)}</span>
               </div>
               {previousFlowchart ? (
-                <MermaidChartDiff
-                  oldChart={previousFlowchart}
-                  newChart={selectedUpdate.flowchart}
-                  flowchartGraph={selectedUpdate.flowchartGraph ?? previousFlowchartGraph}
-                  theme={theme}
-                />
+                (selectedUpdate.flowchartGraph || previousFlowchartGraph) ? (
+                  <FlowchartDiff
+                    oldGraph={previousFlowchartGraph}
+                    newGraph={selectedUpdate.flowchartGraph}
+                    theme={theme}
+                  />
+                ) : (
+                  <MermaidChartDiff
+                    oldChart={previousFlowchart}
+                    newChart={selectedUpdate.flowchart}
+                    flowchartGraph={selectedUpdate.flowchartGraph ?? previousFlowchartGraph}
+                    theme={theme}
+                  />
+                )
               ) : (
-                <MermaidChart chart={selectedUpdate.flowchart} flowchartGraph={selectedUpdate.flowchartGraph} theme={theme} />
+                selectedUpdate.flowchartGraph ? (
+                  <InteractiveFlowchart graph={selectedUpdate.flowchartGraph} theme={theme} />
+                ) : (
+                  <MermaidChart chart={selectedUpdate.flowchart} flowchartGraph={selectedUpdate.flowchartGraph} theme={theme} />
+                )
               )}
               <div className="modalActions">
                 <button className="secondaryButton" onClick={() => setSelectedUpdateId(null)}>
@@ -3483,13 +3789,29 @@ function ProgramDetailsModal({
       ) : null}
 
       {activeTab === "current" ? (
-        <CurrentFlowchartPanel
-          flowchart={currentFlowchart}
-          flowchartGraph={currentFlowchartGraph}
-          theme={theme}
-          busyKey={busyKey}
-          onGenerateFlowchart={onGenerateFlowchart}
-        />
+        <>
+          <CurrentFlowchartPanel
+            flowchart={currentFlowchart}
+            flowchartGraph={currentFlowchartGraph}
+            theme={theme}
+            busyKey={busyKey}
+            onGenerateFlowchart={onGenerateFlowchart}
+          />
+          <div className="detailsPlaceholderGrid">
+            <div className="detailsPlaceholderCard">
+              <span className="fieldLabel">Stored Data</span>
+              <p className="helperText">Data stores and persistence layers used by this project.</p>
+            </div>
+            <div className="detailsPlaceholderCard">
+              <span className="fieldLabel">Connections</span>
+              <p className="helperText">External services and APIs connected to this project.</p>
+            </div>
+            <div className="detailsPlaceholderCard">
+              <span className="fieldLabel">Runtime</span>
+              <p className="helperText">Runtime environment and process information.</p>
+            </div>
+          </div>
+        </>
       ) : null}
 
       {activeTab === "planned" && pendingUpdate ? (
@@ -3502,12 +3824,20 @@ function ProgramDetailsModal({
             <span className="helperText">{formatDate(pendingUpdate.createdAt)}</span>
           </div>
           <p className="modalLead">This compares the current saved system flow to the planned end state.</p>
-          <MermaidChartDiff
-            oldChart={pendingUpdate.previousFlowchart}
-            newChart={pendingUpdate.flowchart}
-            flowchartGraph={pendingUpdate.flowchartGraph ?? pendingUpdate.previousFlowchartGraph}
-            theme={theme}
-          />
+          {(pendingUpdate.flowchartGraph || pendingUpdate.previousFlowchartGraph) ? (
+            <FlowchartDiff
+              oldGraph={pendingUpdate.previousFlowchartGraph}
+              newGraph={pendingUpdate.flowchartGraph}
+              theme={theme}
+            />
+          ) : (
+            <MermaidChartDiff
+              oldChart={pendingUpdate.previousFlowchart}
+              newChart={pendingUpdate.flowchart}
+              flowchartGraph={pendingUpdate.flowchartGraph ?? pendingUpdate.previousFlowchartGraph}
+              theme={theme}
+            />
+          )}
         </div>
       ) : null}
 
@@ -3524,7 +3854,11 @@ function ProgramDetailsModal({
             </button>
           </div>
           <p className="modalLead">This is the saved final flowchart that will become the new current system state.</p>
-          <MermaidChart chart={pendingUpdate.flowchart} flowchartGraph={pendingUpdate.flowchartGraph} theme={theme} />
+          {pendingUpdate.flowchartGraph ? (
+            <InteractiveFlowchart graph={pendingUpdate.flowchartGraph} theme={theme} />
+          ) : (
+            <MermaidChart chart={pendingUpdate.flowchart} flowchartGraph={pendingUpdate.flowchartGraph} theme={theme} />
+          )}
         </div>
       ) : null}
     </Modal>
@@ -3603,7 +3937,11 @@ function CurrentFlowchartPanel({
               {busyKey === "generate-flowchart" ? "Regenerating..." : "Regenerate Flowchart"}
             </button>
           </div>
-          <MermaidChart chart={flowchart} flowchartGraph={flowchartGraph} theme={theme} />
+          {flowchartGraph ? (
+            <InteractiveFlowchart graph={flowchartGraph} theme={theme} />
+          ) : (
+            <MermaidChart chart={flowchart} flowchartGraph={flowchartGraph} theme={theme} />
+          )}
         </>
       )}
     </div>
@@ -4146,7 +4484,7 @@ function Modal({
     <div className="modalOverlay" onClick={onClose}>
       <div className={wide ? "modalFrame wide" : "modalFrame"} onClick={(event) => event.stopPropagation()}>
         <div className="modalHeader">
-          <h3>{title}</h3>
+          {title ? <h3>{title}</h3> : null}
           <button className="textButton" onClick={onClose}>
             Close
           </button>
@@ -4299,6 +4637,33 @@ function PlusIcon() {
   );
 }
 
+function TypewriterText({ text, speed = 8 }: { text: string; speed?: number }) {
+  const [displayed, setDisplayed] = useState("");
+  const prevTextRef = useRef("");
+
+  useEffect(() => {
+    const prev = prevTextRef.current;
+    if (text.startsWith(prev) && prev.length < text.length) {
+      const newPortion = text.slice(prev.length);
+      let i = 0;
+      const interval = setInterval(() => {
+        if (i < newPortion.length) {
+          i++;
+          setDisplayed(prev + newPortion.slice(0, i));
+        } else {
+          clearInterval(interval);
+          prevTextRef.current = text;
+        }
+      }, speed);
+      return () => clearInterval(interval);
+    }
+    setDisplayed(text);
+    prevTextRef.current = text;
+  }, [text, speed]);
+
+  return <>{displayed}</>;
+}
+
 function ArrowUpIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -4310,6 +4675,14 @@ function ArrowUpIcon() {
         strokeLinecap="round"
         strokeLinejoin="round"
       />
+    </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" />
     </svg>
   );
 }
@@ -4616,12 +4989,22 @@ function HomepagePlanner({
           </button>
           {showFlowchart ? (
             previousFlowchart && currentFlowchart !== previousFlowchart ? (
-              <MermaidChartDiff
-                oldChart={previousFlowchart}
-                newChart={currentFlowchart}
-                flowchartGraph={currentFlowchartGraph ?? previousFlowchartGraph}
-                theme={theme}
-              />
+              (currentFlowchartGraph || previousFlowchartGraph) ? (
+                <FlowchartDiff
+                  oldGraph={previousFlowchartGraph}
+                  newGraph={currentFlowchartGraph}
+                  theme={theme}
+                />
+              ) : (
+                <MermaidChartDiff
+                  oldChart={previousFlowchart}
+                  newChart={currentFlowchart}
+                  flowchartGraph={currentFlowchartGraph ?? previousFlowchartGraph}
+                  theme={theme}
+                />
+              )
+            ) : currentFlowchartGraph ? (
+              <InteractiveFlowchart graph={currentFlowchartGraph} theme={theme} />
             ) : (
               <MermaidChart chart={currentFlowchart} flowchartGraph={currentFlowchartGraph} theme={theme} />
             )
@@ -4646,7 +5029,11 @@ function HomepagePlanner({
               <div className="plannerMessageContent">{msg.content}</div>
               {msg.flowchart ? (
                 <div className="plannerMessageFlowchart">
-                  <MermaidChart chart={msg.flowchart} flowchartGraph={msg.flowchartGraph} theme={theme} />
+                  {msg.flowchartGraph ? (
+                    <InteractiveFlowchart graph={msg.flowchartGraph} theme={theme} />
+                  ) : (
+                    <MermaidChart chart={msg.flowchart} flowchartGraph={msg.flowchartGraph} theme={theme} />
+                  )}
                 </div>
               ) : null}
             </div>

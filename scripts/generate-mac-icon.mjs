@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
@@ -10,7 +10,6 @@ const buildDir = join(rootDir, "build");
 const pngPath = join(buildDir, "icon.png");
 const iconsetDir = join(buildDir, "icon.iconset");
 const icnsPath = join(buildDir, "icon.icns");
-const fallbackIcnsPath = join(rootDir, "node_modules", "electron", "dist", "Electron.app", "Contents", "Resources", "electron.icns");
 const canvasSize = 1024;
 
 const ensureDarwin = () => {
@@ -95,6 +94,22 @@ const encodePng = (width, height, rgbaBytes) => {
     chunk("IDAT", deflateSync(scanlines)),
     chunk("IEND", Buffer.alloc(0)),
   ]);
+};
+
+const encodeIcns = (entries) => {
+  const blocks = entries.map(([type, data]) => {
+    const header = Buffer.alloc(8);
+    header.write(type, 0, 4, "ascii");
+    header.writeUInt32BE(data.length + 8, 4);
+    return Buffer.concat([header, data]);
+  });
+  const fileHeader = Buffer.alloc(8);
+  const totalSize = 8 + blocks.reduce((sum, block) => sum + block.length, 0);
+
+  fileHeader.write("icns", 0, 4, "ascii");
+  fileHeader.writeUInt32BE(totalSize, 4);
+
+  return Buffer.concat([fileHeader, ...blocks]);
 };
 
 const pointInRoundedRect = (px, py, x, y, width, height, radius) => {
@@ -183,58 +198,90 @@ const fillCircle = (pixels, centerX, centerY, radius, color, feather = 0) => {
   }
 };
 
+const pointInPolygon = (px, py, points) => {
+  let inside = false;
+
+  for (let i = 0, j = points.length - 1; i < points.length; j = i, i += 1) {
+    const [xi, yi] = points[i];
+    const [xj, yj] = points[j];
+    const intersects =
+      yi > py !== yj > py && px < ((xj - xi) * (py - yi)) / ((yj - yi) || Number.EPSILON) + xi;
+
+    if (intersects) {
+      inside = !inside;
+    }
+  }
+
+  return inside;
+};
+
+const fillPolygon = (pixels, points, colorAt) => {
+  const xs = points.map(([x]) => x);
+  const ys = points.map(([, y]) => y);
+  const left = Math.floor(Math.min(...xs));
+  const top = Math.floor(Math.min(...ys));
+  const right = Math.ceil(Math.max(...xs));
+  const bottom = Math.ceil(Math.max(...ys));
+
+  for (let py = top; py < bottom; py += 1) {
+    for (let px = left; px < right; px += 1) {
+      if (!pointInPolygon(px + 0.5, py + 0.5, points)) {
+        continue;
+      }
+
+      blendPixel(pixels, px, py, colorAt(px, py));
+    }
+  }
+};
+
 const drawIcon = () => {
   const pixels = Buffer.alloc(canvasSize * canvasSize * 4);
-  const pageFrom = rgba("#18252f");
-  const pageTo = rgba("#0b1015");
-  const glowColor = rgba("#6ee7b7", 0.22);
-  const shadowColor = rgba("#04090d", 0.34);
-  const panelFrom = rgba("#1b2732", 0.98);
-  const panelTo = rgba("#0e151c", 0.98);
-  const lightFrom = rgba("#f4fbff", 0.98);
-  const lightTo = rgba("#d2e0e6", 0.92);
+  const backgroundTop = rgba("#11295d");
+  const backgroundBottom = rgba("#07112a");
+  const shadowColor = rgba("#020814", 0.34);
+  const highlightGlow = rgba("#3e67c6", 0.24);
+  const boltAura = rgba("#ffe36c", 0.18);
+  const boltShadow = rgba("#03122e", 0.28);
+  const boltTop = rgba("#fff4a3");
+  const boltBottom = rgba("#ffbf00");
+  const cardX = 96;
+  const cardY = 96;
+  const cardSize = 832;
+  const cardRadius = 210;
+  const boltPoints = [
+    [590, 138],
+    [340, 542],
+    [478, 542],
+    [420, 886],
+    [688, 462],
+    [548, 462],
+  ];
+  const shadowBoltPoints = boltPoints.map(([x, y]) => [x + 16, y + 22]);
 
   fillCanvas(pixels, () => [0, 0, 0, 0]);
 
-  fillRoundedRect(pixels, 120, 120, 784, 784, 190, (x, y) => {
-    const amount = clamp(((x - 120) / 784) * 0.58 + ((y - 120) / 784) * 0.42, 0, 1);
-    return mixColor(pageFrom, pageTo, amount);
+  fillRoundedRect(pixels, cardX + 12, cardY + 22, cardSize, cardSize, cardRadius, () => shadowColor);
+  fillRoundedRect(pixels, cardX, cardY, cardSize, cardSize, cardRadius, (x, y) => {
+    const amount = clamp(((x - cardX) / cardSize) * 0.42 + ((y - cardY) / cardSize) * 0.58, 0, 1);
+    return mixColor(backgroundTop, backgroundBottom, amount);
   });
 
-  fillCircle(pixels, 286, 236, 278, glowColor, 130);
-
-  fillRoundedRect(pixels, 232, 244, 596, 596, 114, () => shadowColor);
-  fillRoundedRect(pixels, 214, 214, 596, 596, 114, (x, y) => {
-    const amount = clamp(((x - 214) / 596) * 0.46 + ((y - 214) / 596) * 0.54, 0, 1);
-    return mixColor(panelFrom, panelTo, amount);
+  fillRoundedRect(pixels, cardX, cardY, cardSize, cardSize, cardRadius, (x, y) => {
+    const distance = Math.sqrt((x - 292) ** 2 + (y - 252) ** 2);
+    const alpha = Math.pow(clamp(1 - distance / 320, 0, 1), 1.8) * (highlightGlow[3] / 255);
+    return [highlightGlow[0], highlightGlow[1], highlightGlow[2], Math.round(alpha * 255)];
+  });
+  fillRoundedRect(pixels, cardX, cardY, cardSize, cardSize, cardRadius, (x, y) => {
+    const distance = Math.sqrt((x - 508) ** 2 + (y - 506) ** 2);
+    const alpha = Math.pow(clamp(1 - distance / 260, 0, 1), 1.6) * (boltAura[3] / 255);
+    return [boltAura[0], boltAura[1], boltAura[2], Math.round(alpha * 255)];
   });
 
-  fillRoundedRect(pixels, 284, 286, 456, 108, 54, (x, y) => {
-    const amount = clamp(((x - 284) / 456) * 0.35 + ((y - 286) / 108) * 0.65, 0, 1);
-    return mixColor(lightFrom, lightTo, amount);
+  fillPolygon(pixels, shadowBoltPoints, () => boltShadow);
+  fillPolygon(pixels, boltPoints, (x, y) => {
+    const amount = clamp(((x - 340) / 348) * 0.22 + ((y - 138) / 748) * 0.78, 0, 1);
+    return mixColor(boltTop, boltBottom, amount);
   });
-  fillRoundedRect(pixels, 316, 320, 144, 16, 8, () => rgba("#16222b", 0.92));
-  fillRoundedRect(pixels, 316, 350, 100, 16, 8, () => rgba("#556775", 0.56));
-  fillCircle(pixels, 668, 340, 12, rgba("#10b981"));
-  fillCircle(pixels, 706, 340, 12, rgba("#0ea5e9", 0.96));
-
-  fillRoundedRect(pixels, 284, 454, 196, 196, 52, (x, y) => {
-    const amount = clamp(((x - 284) / 196) * 0.24 + ((y - 454) / 196) * 0.76, 0, 1);
-    return mixColor(rgba("#18c98c"), rgba("#0e8b65"), amount);
-  });
-  fillRoundedRect(pixels, 322, 500, 118, 22, 11, () => rgba("#083223", 0.85));
-  fillRoundedRect(pixels, 322, 540, 86, 18, 9, () => rgba("#e5fff3", 0.7));
-
-  fillRoundedRect(pixels, 544, 454, 196, 196, 52, (x, y) => {
-    const amount = clamp(((x - 544) / 196) * 0.22 + ((y - 454) / 196) * 0.78, 0, 1);
-    return mixColor(rgba("#1bb3f4"), rgba("#0d7dbd"), amount);
-  });
-  fillRoundedRect(pixels, 582, 500, 118, 22, 11, () => rgba("#0a2c3c", 0.82));
-  fillRoundedRect(pixels, 582, 540, 86, 18, 9, () => rgba("#eaf8ff", 0.72));
-
-  fillRoundedRect(pixels, 284, 682, 456, 56, 28, () => rgba("#16222b", 0.88));
-  fillRoundedRect(pixels, 320, 700, 150, 18, 9, () => rgba("#e8f0f4", 0.84));
-  fillRoundedRect(pixels, 578, 700, 126, 18, 9, () => rgba("#8ea0af", 0.42));
 
   writeFileSync(pngPath, encodePng(canvasSize, canvasSize, pixels));
 };
@@ -243,6 +290,20 @@ const writeIconVariant = (size, name) => {
   execFileSync("sips", ["-z", String(size), String(size), pngPath, "--out", join(iconsetDir, name)], {
     stdio: "ignore",
   });
+};
+
+const writeIcns = () => {
+  const entries = [
+    ["icp4", readFileSync(join(iconsetDir, "icon_16x16.png"))],
+    ["icp5", readFileSync(join(iconsetDir, "icon_32x32.png"))],
+    ["icp6", readFileSync(join(iconsetDir, "icon_32x32@2x.png"))],
+    ["ic07", readFileSync(join(iconsetDir, "icon_128x128.png"))],
+    ["ic08", readFileSync(join(iconsetDir, "icon_256x256.png"))],
+    ["ic09", readFileSync(join(iconsetDir, "icon_512x512.png"))],
+    ["ic10", readFileSync(join(iconsetDir, "icon_512x512@2x.png"))],
+  ];
+
+  writeFileSync(icnsPath, encodeIcns(entries));
 };
 
 ensureDarwin();
@@ -265,13 +326,6 @@ drawIcon();
   [1024, "icon_512x512@2x.png"],
 ].forEach(([size, name]) => writeIconVariant(size, name));
 
-try {
-  execFileSync("iconutil", ["-c", "icns", iconsetDir, "-o", icnsPath], {
-    stdio: "ignore",
-  });
-} catch {
-  copyFileSync(fallbackIcnsPath, icnsPath);
-  console.warn("PROGRAMS fell back to Electron's default .icns asset for this build.");
-}
+writeIcns();
 
 console.log(`Generated ${icnsPath}`);

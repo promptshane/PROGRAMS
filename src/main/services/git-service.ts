@@ -1,6 +1,7 @@
 import { dirname, join } from "node:path";
 import { ensureDirectory, pathExists } from "@main/utils/fs";
 import { execCommand } from "@main/utils/process";
+import type { DiffStats } from "@shared/types";
 
 export interface GitRemoteInfo {
   isRepo: boolean;
@@ -11,6 +12,41 @@ export interface GitRemoteInfo {
 export type GitInstallRequestResult = "alreadyAvailable" | "requested" | "manualDownload";
 
 export class GitService {
+  async readWorkingTreeDiffStats(localPath: string): Promise<DiffStats | null> {
+    const result = await execCommand("git diff --numstat", localPath);
+    if (result.code !== 0) {
+      return null;
+    }
+
+    let added = 0;
+    let removed = 0;
+    let sawTextDiff = false;
+
+    for (const line of result.stdout.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+
+      const [addedRaw, removedRaw] = trimmed.split("\t");
+      if (!addedRaw || !removedRaw || addedRaw === "-" || removedRaw === "-") {
+        continue;
+      }
+
+      const nextAdded = Number(addedRaw);
+      const nextRemoved = Number(removedRaw);
+      if (!Number.isFinite(nextAdded) || !Number.isFinite(nextRemoved)) {
+        continue;
+      }
+
+      added += nextAdded;
+      removed += nextRemoved;
+      sawTextDiff = true;
+    }
+
+    return sawTextDiff ? { added, removed } : null;
+  }
+
   async isAvailable(): Promise<boolean> {
     const result = await execCommand("git --version", process.cwd());
     return result.code === 0;

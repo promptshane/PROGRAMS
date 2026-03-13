@@ -12,6 +12,7 @@ import type {
   ProjectCreateInput,
   ProjectEnableSyncInput,
   RenameProjectInput,
+  ResolveDroppedContextPathsInput,
   RetrySyncInput,
   SavePlannedUpdateInput,
   SettingsUpdateInput,
@@ -39,6 +40,7 @@ export const registerIpc = (backend: ProgramsBackend): void => {
 
   ipcMain.handle("auth.claude.status", () => backend.getClaudeStatus());
   ipcMain.handle("auth.claude.login", () => backend.loginClaude());
+  ipcMain.handle("auth.claude.logout", () => backend.logoutClaude());
 
   ipcMain.handle("auth.github.status", () => backend.getGitHubStatus());
   ipcMain.handle("auth.github.inspectAttachPath", (_event, localPath: string) => backend.inspectAttachPath(localPath));
@@ -124,6 +126,29 @@ export const registerIpc = (backend: ProgramsBackend): void => {
     return {
       canceled: false,
       paths,
+    };
+  });
+
+  ipcMain.handle("system.resolveDroppedContextPaths", async (_event, input: ResolveDroppedContextPathsInput) => {
+    const detail = await backend.readProject(input.projectId);
+    const projectRoot = detail.project.localPath;
+    let rejectedCount = 0;
+    const paths = Array.from(
+      new Set(
+        input.paths.flatMap((path) => {
+          if (!path || !isSubPath(projectRoot, path)) {
+            rejectedCount += 1;
+            return [];
+          }
+
+          return [relative(projectRoot, path) || "."];
+        }),
+      ),
+    ).sort();
+
+    return {
+      paths,
+      rejectedCount,
     };
   });
 

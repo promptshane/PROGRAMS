@@ -1,51 +1,51 @@
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <linearGradient id="bg" x1="152" y1="120" x2="896" y2="920" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#18252F" />
-      <stop offset="0.52" stop-color="#101820" />
-      <stop offset="1" stop-color="#0B1015" />
+    <linearGradient id="bg" x1="194" y1="122" x2="856" y2="928" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#11295D" />
+      <stop offset="0.45" stop-color="#0B1B40" />
+      <stop offset="1" stop-color="#07112A" />
     </linearGradient>
-    <linearGradient id="panel" x1="262" y1="238" x2="772" y2="812" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#1B2732" />
-      <stop offset="1" stop-color="#0E151C" />
-    </linearGradient>
-    <linearGradient id="highlight" x1="284" y1="290" x2="734" y2="768" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#F4FBFF" stop-opacity="0.98" />
-      <stop offset="1" stop-color="#D2E0E6" stop-opacity="0.92" />
-    </linearGradient>
-    <radialGradient id="glow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(280 228) rotate(48.9248) scale(485.675)">
-      <stop stop-color="#6EE7B7" stop-opacity="0.22" />
-      <stop offset="1" stop-color="#6EE7B7" stop-opacity="0" />
+    <radialGradient id="bgGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(296 252) rotate(43.4089) scale(472.083)">
+      <stop stop-color="#3E67C6" stop-opacity="0.34" />
+      <stop offset="1" stop-color="#3E67C6" stop-opacity="0" />
     </radialGradient>
-    <filter id="shadow" x="110" y="110" width="804" height="804" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+    <radialGradient id="boltAura" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(510 506) rotate(90) scale(310 262)">
+      <stop stop-color="#FFE36C" stop-opacity="0.28" />
+      <stop offset="1" stop-color="#FFE36C" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="boltFill" x1="456" y1="144" x2="626" y2="888" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFF4A3" />
+      <stop offset="0.52" stop-color="#FFD83B" />
+      <stop offset="1" stop-color="#FFBF00" />
+    </linearGradient>
+    <filter id="surfaceShadow" x="58" y="64" width="908" height="908" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
       <feFlood flood-opacity="0" result="BackgroundImageFix" />
       <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha" />
-      <feOffset dy="18" />
-      <feGaussianBlur stdDeviation="20" />
+      <feOffset dy="22" />
+      <feGaussianBlur stdDeviation="19" />
       <feComposite in2="hardAlpha" operator="out" />
-      <feColorMatrix type="matrix" values="0 0 0 0 0.0156863 0 0 0 0 0.0313726 0 0 0 0 0.0470588 0 0 0 0.38 0" />
+      <feColorMatrix type="matrix" values="0 0 0 0 0.0117647 0 0 0 0 0.027451 0 0 0 0 0.0705882 0 0 0 0.42 0" />
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_2" />
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_2" result="shape" />
+    </filter>
+    <filter id="boltShadow" x="254" y="108" width="500" height="840" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix" />
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha" />
+      <feOffset dx="12" dy="20" />
+      <feGaussianBlur stdDeviation="14" />
+      <feComposite in2="hardAlpha" operator="out" />
+      <feColorMatrix type="matrix" values="0 0 0 0 0.0156863 0 0 0 0 0.0313726 0 0 0 0 0.0941176 0 0 0 0.42 0" />
       <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_2" />
       <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_2" result="shape" />
     </filter>
   </defs>
-  <rect x="120" y="120" width="784" height="784" rx="190" fill="url(#bg)" />
-  <rect x="120" y="120" width="784" height="784" rx="190" fill="url(#glow)" />
-  <g filter="url(#shadow)">
-    <rect x="214" y="214" width="596" height="596" rx="114" fill="url(#panel)" />
-    <rect x="214.75" y="214.75" width="594.5" height="594.5" rx="113.25" stroke="white" stroke-opacity="0.08" stroke-width="1.5" />
+  <g filter="url(#surfaceShadow)">
+    <rect x="96" y="96" width="832" height="832" rx="210" fill="url(#bg)" />
+    <rect x="96" y="96" width="832" height="832" rx="210" fill="url(#bgGlow)" />
+    <rect x="96.75" y="96.75" width="830.5" height="830.5" rx="209.25" stroke="white" stroke-opacity="0.08" stroke-width="1.5" />
   </g>
-  <rect x="284" y="286" width="456" height="108" rx="54" fill="url(#highlight)" />
-  <rect x="316" y="320" width="144" height="16" rx="8" fill="#16222B" fill-opacity="0.92" />
-  <rect x="316" y="350" width="100" height="16" rx="8" fill="#556775" fill-opacity="0.56" />
-  <circle cx="668" cy="340" r="12" fill="#10B981" />
-  <circle cx="706" cy="340" r="12" fill="#0EA5E9" fill-opacity="0.96" />
-  <rect x="284" y="454" width="196" height="196" rx="52" fill="#10B981" />
-  <rect x="322" y="500" width="118" height="22" rx="11" fill="#083223" fill-opacity="0.85" />
-  <rect x="322" y="540" width="86" height="18" rx="9" fill="#E5FFF3" fill-opacity="0.7" />
-  <rect x="544" y="454" width="196" height="196" rx="52" fill="#0EA5E9" />
-  <rect x="582" y="500" width="118" height="22" rx="11" fill="#0A2C3C" fill-opacity="0.82" />
-  <rect x="582" y="540" width="86" height="18" rx="9" fill="#EAF8FF" fill-opacity="0.72" />
-  <rect x="284" y="682" width="456" height="56" rx="28" fill="#16222B" fill-opacity="0.88" />
-  <rect x="320" y="700" width="150" height="18" rx="9" fill="#E8F0F4" fill-opacity="0.84" />
-  <rect x="578" y="700" width="126" height="18" rx="9" fill="#8EA0AF" fill-opacity="0.42" />
+  <path d="M590 138L340 542H478L420 886L688 462H548L590 138Z" fill="url(#boltAura)" />
+  <g filter="url(#boltShadow)">
+    <path d="M590 138L340 542H478L420 886L688 462H548L590 138Z" fill="url(#boltFill)" />
+  </g>
 </svg>

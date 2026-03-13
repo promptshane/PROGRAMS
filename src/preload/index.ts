@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from "electron";
+import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
   AppUpdateStatus,
   AppEvent,
@@ -6,6 +6,7 @@ import type {
   AttachPathInspection,
   BootstrapPayload,
   ContextPathPickResult,
+  DroppedContextPathResult,
   DirectoryPickMode,
   DirectoryPickResult,
   EnvFileSnapshot,
@@ -21,6 +22,7 @@ import type {
   ProjectOutlineReport,
   ProjectEnableSyncInput,
   RenameProjectInput,
+  ResolveDroppedContextPathsInput,
   RetrySyncInput,
   SavePlannedUpdateInput,
   Settings,
@@ -50,6 +52,7 @@ const api = {
 
   getClaudeStatus: () => ipcRenderer.invoke("auth.claude.status"),
   loginClaude: () => ipcRenderer.invoke("auth.claude.login"),
+  logoutClaude: () => ipcRenderer.invoke("auth.claude.logout"),
 
   getGitHubStatus: () => ipcRenderer.invoke("auth.github.status"),
   inspectAttachPath: (localPath: string): Promise<AttachPathInspection> =>
@@ -105,6 +108,12 @@ const api = {
     ipcRenderer.invoke("system.pickDirectory", mode),
   pickContextPaths: (projectId: string): Promise<ContextPathPickResult> =>
     ipcRenderer.invoke("system.pickContextPaths", projectId),
+  resolveDroppedFilePaths: (files: File[]): string[] =>
+    files
+      .map((file) => webUtils.getPathForFile(file))
+      .filter((path): path is string => Boolean(path)),
+  resolveDroppedContextPaths: (input: ResolveDroppedContextPathsInput): Promise<DroppedContextPathResult> =>
+    ipcRenderer.invoke("system.resolveDroppedContextPaths", input),
   openExternal: (target: string): Promise<void> => ipcRenderer.invoke("system.openExternal", target),
 
   onEvent: (listener: (event: AppEvent) => void) => {

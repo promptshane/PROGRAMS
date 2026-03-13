@@ -12,6 +12,14 @@ import {
   flowchartGraphSchema,
   materializeFlowchartSnapshot,
 } from "@main/utils/flowchart";
+import {
+  buildClaudeAuthStatus,
+  buildClaudePrintArgs,
+  type ClaudeCliFeatures,
+  type ClaudeLocalAuthMetadata,
+  parseClaudeCliFeatures,
+  parseClaudeLocalAuthMetadata,
+} from "@main/utils/claude-cli";
 import { execCommand, getCommandEnv } from "@main/utils/process";
 import type {
   ClaudeAuthStatus,
@@ -239,9 +247,181 @@ ${FLOWCHART_PROMPT_RULES}
 `.trim();
 };
 
+const mapClaudeEffortLevel = (reasoningEffort: PlanDraft["reasoningEffort"]): "low" | "medium" | "high" | "max" => {
+  switch (reasoningEffort) {
+    case "low":
+      return "low";
+    case "medium":
+      return "medium";
+    case "high":
+      return "high";
+    case "xhigh":
+      return "max";
+  }
+};
+
+const buildClaudeSettingsArg = (reasoningEffort: PlanDraft["reasoningEffort"]): string =>
+  JSON.stringify({
+    effortLevel: mapClaudeEffortLevel(reasoningEffort),
+  });
+
+const parseNumstatDiffStats = (stdout: string): PlanDraft["diffStats"] => {
+  let added = 0;
+  let removed = 0;
+
+  for (const line of stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const [addedRaw, removedRaw] = trimmed.split("\t");
+    if (!addedRaw || !removedRaw || addedRaw === "-" || removedRaw === "-") {
+      continue;
+    }
+
+    const nextAdded = Number(addedRaw);
+    const nextRemoved = Number(removedRaw);
+    if (!Number.isFinite(nextAdded) || !Number.isFinite(nextRemoved)) {
+      continue;
+    }
+
+    added += nextAdded;
+    removed += nextRemoved;
+  }
+
+  return added || removed ? { added, removed } : null;
+};
+
+const mergeStreamingExplanation = (current: string, incoming: string): string => {
+  if (!incoming.trim()) {
+    return current;
+  }
+
+  const next = incoming;
+  if (!current) {
+    return next;
+  }
+
+  if (next.includes(current)) {
+    return next;
+  }
+
+  if (current.endsWith(next) || current.includes(next)) {
+    return current;
+  }
+
+  return `${current}${next}`;
+};
+
+const cleanClaudeProcessMessage = (value: string): string | null => {
+  const lines = value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) {
+    return null;
+  }
+
+  return lines.find((line) => /^(error:|Error:)/.test(line)) ?? lines.at(-1) ?? null;
+};
+
+const extractClaudeTextBlocks = (value: unknown): string => {
+  if (typeof value === "string") {
+    return value;
+  }
+
+  if (!Array.isArray(value)) {
+    return "";
+  }
+
+  return value
+    .map((entry) => {
+      if (typeof entry === "string") {
+        return entry;
+      }
+
+      if (!entry || typeof entry !== "object") {
+        return "";
+      }
+
+      const candidate = entry as { type?: string; text?: unknown; content?: unknown };
+      if (candidate.type === "text" && typeof candidate.text === "string") {
+        return candidate.text;
+      }
+
+      if (typeof candidate.text === "string") {
+        return candidate.text;
+      }
+
+      if (typeof candidate.content === "string") {
+        return candidate.content;
+      }
+
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n");
+};
+
+const extractClaudeEventText = (event: {
+  content?: unknown;
+  message?: { content?: unknown } | null;
+  delta?: { text?: unknown } | null;
+}): string => {
+  if (typeof event.delta?.text === "string") {
+    return event.delta.text;
+  }
+
+  const direct = extractClaudeTextBlocks(event.content);
+  if (direct) {
+    return direct;
+  }
+
+  if (typeof event.content === "string") {
+    return event.content;
+  }
+
+  const messageContent = event.message?.content;
+  const fromMessage = extractClaudeTextBlocks(messageContent);
+  if (fromMessage) {
+    return fromMessage;
+  }
+
+  return typeof messageContent === "string" ? messageContent : "";
+};
+
+const isLikelyJsonResponse = (value: string): boolean => {
+  const trimmed = value.trim();
+  return trimmed.startsWith("{") || trimmed.startsWith("```");
+};
+
+const extractClaudeResultEventError = (event: {
+  errors?: unknown;
+  result?: unknown;
+  content?: unknown;
+  message?: { content?: unknown } | null;
+}): string | null => {
+  if (Array.isArray(event.errors)) {
+    for (const entry of event.errors) {
+      if (typeof entry === "string" && entry.trim()) {
+        return entry.trim();
+      }
+    }
+  }
+
+  if (typeof event.result === "string" && event.result.trim()) {
+    return event.result.trim();
+  }
+
+  const text = extractClaudeEventText(event);
+  return text.trim() || null;
+};
+
 export class ClaudeService {
   private readonly planDrafts = new Map<string, PlanDraft>();
   private readonly activeProcesses = new Map<string, ChildProcess>();
+  private readonly pendingDiffRefresh = new Set<string>();
 
   constructor(private readonly emit: Emit) {}
 
@@ -249,9 +429,51 @@ export class ClaudeService {
     return this.planDrafts.get(projectId) ?? null;
   }
 
+  syncDraft(draft: PlanDraft): void {
+    draft.lastUpdatedAt = new Date().toISOString();
+    this.planDrafts.set(draft.projectId, draft);
+    this.emit({ type: "project.plan", projectId: draft.projectId, plan: { ...draft } });
+  }
+
   clearPlan(projectId: string): void {
     this.planDrafts.delete(projectId);
     this.emit({ type: "project.plan", projectId, plan: null });
+  }
+
+  createDirectExecutionDraft(project: Project, input: StartPlanInput): PlanDraft {
+    const draft: PlanDraft = {
+      projectId: project.id,
+      provider: "claude",
+      threadId: null,
+      turnId: null,
+      prompt: input.prompt,
+      speed: input.speed,
+      model: input.model,
+      claudeModel: input.claudeModel,
+      reasoningEffort: input.reasoningEffort,
+      planningMode: input.planningMode,
+      autoApprove: input.autoApprove,
+      contextPaths: [...input.contextPaths],
+      status: "executing",
+      thinkingStatus: "in_progress",
+      planningStatus: "skipped",
+      buildingStatus: "pending",
+      verifyingStatus: "pending",
+      explanation: "Claude is working directly without a draft plan.",
+      steps: [],
+      summary: null,
+      impact: null,
+      flowchartChanges: null,
+      diff: null,
+      diffStats: null,
+      finalText: null,
+      verificationDetails: null,
+      errorMessage: null,
+      lastUpdatedAt: new Date().toISOString(),
+    };
+
+    this.syncDraft(draft);
+    return draft;
   }
 
   async getUsage(settings: Settings): Promise<ProviderUsage> {
@@ -281,9 +503,11 @@ export class ClaudeService {
       const recentActivitySummary = sumClaudeActivity(recentActivity);
       const latestActivitySummary = latestActivity ? sumClaudeActivity([latestActivity]) : sumClaudeActivity([]);
 
+      const allTimeTokens = statsCache.dailyModelTokens.reduce((total, entry) => total + sumClaudeTokens(entry), 0);
+
       const windows = [
         {
-          label: "Latest Day",
+          label: "Today",
           usedPercent: null,
           valueLabel: `${formatClaudeNumber(latestTokens)} tokens`,
           detail: buildClaudeDetailLabel(latestActivitySummary, formatClaudeDateLabel(statsCache.lastComputedDate)),
@@ -301,20 +525,22 @@ export class ClaudeService {
         {
           label: "All Time",
           usedPercent: null,
-          valueLabel: `${formatClaudeNumber(statsCache.totalSessions)} sessions`,
-          detail: `${formatClaudeNumber(statsCache.totalMessages)} messages since ${formatClaudeDateLabel(statsCache.firstSessionDate)}`,
+          valueLabel: `${formatClaudeNumber(allTimeTokens)} tokens`,
+          detail: `${formatClaudeNumber(statsCache.totalSessions)} sessions · ${formatClaudeNumber(statsCache.totalMessages)} messages since ${formatClaudeDateLabel(statsCache.firstSessionDate)}`,
           resetsAt: null,
           windowDurationMins: null,
         },
       ];
 
-      let note = `Local Claude Code history from stats cache, updated ${formatClaudeDateLabel(statsCache.lastComputedDate)}.`;
+      let note = `Claude Code activity through ${formatClaudeDateLabel(statsCache.lastComputedDate)}.`;
       if (!auth.available) {
-        note = `${note} Install Claude Code to refresh it here.`;
+        note = `${note} Install Claude Code to keep this up to date.`;
       } else if (!auth.loggedIn) {
-        note = `${note} Sign in to Claude Code to refresh it here.`;
+        note = `${note} Sign in to Claude Code to refresh.`;
+      } else if (!auth.ready) {
+        note = `${note} ${auth.runtimeErrorMessage ?? "PROGRAMS needs a newer Claude Code install to refresh."}`;
       } else {
-        note = `${note} Live plan-limit percentages and reset timers are not exposed in this local cache yet.`;
+        note = `${note} Check console.anthropic.com for billing details.`;
       }
 
       return {
@@ -336,7 +562,15 @@ export class ClaudeService {
       return {
         status: "requiresLogin",
         windows: [],
-        note: "Connect Claude to use Claude from PROGRAMS.",
+        note: auth.connectErrorMessage ?? "Connect Claude to use Claude from PROGRAMS.",
+      };
+    }
+
+    if (!auth.ready) {
+      return {
+        status: "unsupported",
+        windows: [],
+        note: auth.runtimeErrorMessage ?? "PROGRAMS needs a newer Claude Code install before Claude can run here.",
       };
     }
 
@@ -350,60 +584,61 @@ export class ClaudeService {
   async getAuthStatus(settings: Settings): Promise<ClaudeAuthStatus> {
     const binaryPath = await this.detectBinaryPath(settings);
     if (!binaryPath) {
-      return {
+      return buildClaudeAuthStatus({
         available: false,
-        loggedIn: false,
         binaryPath: null,
         version: null,
-        errorMessage: "Claude Code CLI is not installed.",
-      };
+        localAuth: null,
+        features: null,
+      });
     }
 
-    const versionResult = await execCommand(`"${binaryPath}" --version`, process.cwd());
-    const version =
-      versionResult.code === 0
-        ? versionResult.stdout.trim() || null
-        : null;
+    const [versionResult, localAuth, features] = await Promise.all([
+      execCommand(`"${binaryPath}" --version`, process.cwd()),
+      this.readLocalAuthMetadata(),
+      this.readCliFeatures(binaryPath),
+    ]);
 
-    // Check auth by running a minimal command
-    const authResult = await execCommand(
-      `"${binaryPath}" -p "respond with ok" --max-turns 1 --output-format json 2>/dev/null`,
-      process.cwd(),
-    );
-    const loggedIn = authResult.code === 0;
-
-    return {
+    return buildClaudeAuthStatus({
       available: true,
-      loggedIn,
       binaryPath,
-      version,
-      errorMessage: loggedIn ? null : "Claude Code is not signed in.",
-    };
+      version:
+        versionResult.code === 0
+          ? versionResult.stdout.trim() || versionResult.stderr.trim() || null
+          : null,
+      localAuth,
+      features,
+    });
   }
 
   async login(settings: Settings): Promise<ClaudeAuthStatus> {
-    const binaryPath = await this.detectBinaryPath(settings);
-    if (!binaryPath) {
+    const current = await this.getAuthStatus(settings);
+    if (!current.available || !current.binaryPath) {
       throw new Error("Install Claude Code CLI before signing in. Run: npm install -g @anthropic-ai/claude-code");
     }
+    const binaryPath = current.binaryPath;
 
-    // Open the Claude login flow in the user's browser
+    if (current.loggedIn && current.ready) {
+      this.emit({ type: "auth.claude", status: current });
+      return current;
+    }
+
+    if (!current.canConnect) {
+      throw new Error(current.connectErrorMessage ?? "Update Claude Code to connect your Claude account from PROGRAMS.");
+    }
+
     const commandEnv = await getCommandEnv();
-    const child = spawn(binaryPath, ["login"], {
+    const child = spawn(binaryPath, ["auth", "login"], {
       env: commandEnv,
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    // Collect any URLs from stdout/stderr and open them
-    const handleLine = (line: string) => {
-      const urlMatch = line.match(/https:\/\/\S+/);
-      if (urlMatch) {
-        // The login command outputs a URL - we let the CLI handle opening it
-      }
-    };
-
-    readline.createInterface({ input: child.stdout }).on("line", handleLine);
-    readline.createInterface({ input: child.stderr }).on("line", handleLine);
+    readline.createInterface({ input: child.stdout }).on("line", () => {
+      // Drain stdout while the CLI manages the auth flow.
+    });
+    readline.createInterface({ input: child.stderr }).on("line", () => {
+      // Drain stderr while the CLI manages the auth flow.
+    });
 
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -427,6 +662,27 @@ export class ClaudeService {
     });
 
     const status = await this.getAuthStatus(settings);
+    if (!status.loggedIn) {
+      throw new Error("Claude sign-in did not complete. Try again.");
+    }
+    if (!status.ready) {
+      throw new Error(status.runtimeErrorMessage ?? "Claude signed in, but PROGRAMS still cannot run it.");
+    }
+    this.emit({ type: "auth.claude", status });
+    return status;
+  }
+
+  async logout(settings: Settings): Promise<ClaudeAuthStatus> {
+    const current = await this.getAuthStatus(settings);
+    if (!current.available || !current.binaryPath) {
+      return this.getAuthStatus(settings);
+    }
+    const binaryPath = current.binaryPath;
+
+    const command = current.canConnect ? `"${binaryPath}" auth logout` : `"${binaryPath}" logout`;
+    await execCommand(command, process.cwd());
+
+    const status = await this.getAuthStatus(settings);
     this.emit({ type: "auth.claude", status });
     return status;
   }
@@ -438,17 +694,16 @@ export class ClaudeService {
     model: string,
     _outputSchema?: Record<string, unknown>,
   ): Promise<string> {
-    const binaryPath = await this.requireBinaryPath(settings);
+    const status = await this.requireReadyStatus(settings);
     const commandEnv = await getCommandEnv();
+    const binaryPath = status.binaryPath!;
 
     return new Promise<string>((resolve, reject) => {
-      const args = [
-        "-p", prompt,
-        "--model", model,
-        "--print",
-        "--max-turns", "5",
-        "--output-format", "stream-json",
-      ];
+      const args = buildClaudePrintArgs({
+        prompt,
+        model,
+        maxTurns: 5,
+      });
 
       const child = spawn(binaryPath, args, {
         cwd: project.localPath,
@@ -457,22 +712,22 @@ export class ClaudeService {
       });
 
       const chunks: string[] = [];
+      let stderr = "";
 
       readline.createInterface({ input: child.stdout }).on("line", (line) => {
         chunks.push(line);
       });
 
-      readline.createInterface({ input: child.stderr }).on("line", () => {
-        // Drain stderr
+      readline.createInterface({ input: child.stderr }).on("line", (line) => {
+        stderr = stderr ? `${stderr}\n${line}` : line;
       });
 
       child.on("exit", (code) => {
-        if (code !== 0) {
-          reject(new Error("Claude could not complete the request."));
-          return;
-        }
-
         try {
+          if (code !== 0) {
+            throw new Error(this.extractErrorMessage(chunks, stderr) ?? "Claude could not complete the request.");
+          }
+
           const finalText = this.extractFinalResult(chunks);
           resolve(finalText);
         } catch (error) {
@@ -487,8 +742,9 @@ export class ClaudeService {
   }
 
   async startPlanningTurn(project: Project, settings: Settings, input: StartPlanInput): Promise<PlanDraft> {
-    const binaryPath = await this.requireBinaryPath(settings);
+    const status = await this.requireReadyStatus(settings);
     const commandEnv = await getCommandEnv();
+    const binaryPath = status.binaryPath!;
 
     const draft: PlanDraft = {
       projectId: project.id,
@@ -500,32 +756,37 @@ export class ClaudeService {
       model: input.model,
       claudeModel: input.claudeModel,
       reasoningEffort: input.reasoningEffort,
+      planningMode: input.planningMode,
       autoApprove: input.autoApprove,
       contextPaths: [...input.contextPaths],
       status: "planning",
+      thinkingStatus: "in_progress",
+      planningStatus: "in_progress",
+      buildingStatus: "pending",
+      verifyingStatus: "pending",
       explanation: "Claude is building the plan.",
       steps: [],
       summary: null,
       impact: null,
       flowchartChanges: null,
       diff: null,
+      diffStats: null,
       finalText: null,
+      verificationDetails: null,
       errorMessage: null,
       lastUpdatedAt: new Date().toISOString(),
     };
 
-    this.planDrafts.set(project.id, draft);
-    this.emit({ type: "project.plan", projectId: project.id, plan: { ...draft } });
+    this.syncDraft(draft);
 
     return new Promise<PlanDraft>((resolve, reject) => {
       const prompt = buildPlanningPrompt(project, input.prompt, input.contextPaths);
-      const args = [
-        "-p", prompt,
-        "--model", input.claudeModel,
-        "--print",
-        "--max-turns", "5",
-        "--output-format", "stream-json",
-      ];
+      const args = buildClaudePrintArgs({
+        prompt,
+        model: input.claudeModel,
+        settingsArg: buildClaudeSettingsArg(input.reasoningEffort),
+        maxTurns: 5,
+      });
 
       const child = spawn(binaryPath, args, {
         cwd: project.localPath,
@@ -535,47 +796,44 @@ export class ClaudeService {
 
       this.activeProcesses.set(project.id, child);
       const chunks: string[] = [];
+      let stderr = "";
 
       readline.createInterface({ input: child.stdout }).on("line", (line) => {
         chunks.push(line);
-        this.handleStreamEvent(project.id, draft, line);
+        this.handleStreamEvent(project.id, project.localPath, draft, line);
       });
 
-      readline.createInterface({ input: child.stderr }).on("line", () => {
-        // Drain stderr
+      readline.createInterface({ input: child.stderr }).on("line", (line) => {
+        stderr = stderr ? `${stderr}\n${line}` : line;
       });
 
       child.on("exit", (code) => {
         this.activeProcesses.delete(project.id);
 
-        if (code !== 0) {
-          draft.status = "failed";
-          draft.errorMessage = "Claude could not complete the plan.";
-          draft.lastUpdatedAt = new Date().toISOString();
-          this.emit({ type: "project.plan", projectId: project.id, plan: { ...draft } });
-          reject(new Error(draft.errorMessage));
-          return;
-        }
-
         try {
+          if (code !== 0) {
+            throw new Error(this.extractErrorMessage(chunks, stderr) ?? "Claude could not complete the plan.");
+          }
+
           const finalText = this.extractFinalResult(chunks);
           const parsed = planResultSchema.parse(parseJsonFromText(finalText));
           draft.status = "awaitingApproval";
+          draft.thinkingStatus = "completed";
+          draft.planningStatus = "completed";
           draft.summary = parsed.summary;
           draft.impact = parsed.impact;
           draft.flowchartChanges = parsed.flowchartChanges;
           draft.finalText = finalText;
           draft.errorMessage = null;
-          draft.lastUpdatedAt = new Date().toISOString();
-          this.planDrafts.set(project.id, draft);
-          this.emit({ type: "project.plan", projectId: project.id, plan: { ...draft } });
+          this.syncDraft(draft);
           resolve({ ...draft });
         } catch (error) {
           draft.status = "failed";
+          draft.thinkingStatus = "failed";
+          draft.planningStatus = "failed";
           draft.errorMessage =
             error instanceof Error ? error.message : "Claude returned an unexpected result.";
-          draft.lastUpdatedAt = new Date().toISOString();
-          this.emit({ type: "project.plan", projectId: project.id, plan: { ...draft } });
+          this.syncDraft(draft);
           reject(error instanceof Error ? error : new Error("Claude returned an unexpected result."));
         }
       });
@@ -583,27 +841,29 @@ export class ClaudeService {
       child.on("error", (err) => {
         this.activeProcesses.delete(project.id);
         draft.status = "failed";
+        draft.thinkingStatus = "failed";
+        draft.planningStatus = "failed";
         draft.errorMessage = err.message;
-        draft.lastUpdatedAt = new Date().toISOString();
-        this.emit({ type: "project.plan", projectId: project.id, plan: { ...draft } });
+        this.syncDraft(draft);
         reject(err);
       });
     });
   }
 
   async executeApprovedPlan(project: Project, settings: Settings, draft: PlanDraft): Promise<ExecutionPayload> {
-    const binaryPath = await this.requireBinaryPath(settings);
+    const status = await this.requireReadyStatus(settings);
     const commandEnv = await getCommandEnv();
+    const binaryPath = status.binaryPath!;
 
     return new Promise<ExecutionPayload>(async (resolve, reject) => {
       const prompt = await buildExecutionPrompt(project, draft);
-      const args = [
-        "-p", prompt,
-        "--model", draft.claudeModel,
-        "--max-turns", "20",
-        "--output-format", "stream-json",
-        "--allowedTools", "Edit,Write,Bash(npm install:*),Bash(npx:*),Read,Glob,Grep",
-      ];
+      const args = buildClaudePrintArgs({
+        prompt,
+        model: draft.claudeModel,
+        settingsArg: buildClaudeSettingsArg(draft.reasoningEffort),
+        maxTurns: 20,
+        allowedTools: "Edit,Write,Bash(npm install:*),Bash(npx:*),Read,Glob,Grep",
+      });
 
       const child = spawn(binaryPath, args, {
         cwd: project.localPath,
@@ -613,44 +873,53 @@ export class ClaudeService {
 
       this.activeProcesses.set(project.id, child);
       const chunks: string[] = [];
+      let stderr = "";
 
       draft.status = "executing";
+      if (draft.planningMode === "none") {
+        draft.thinkingStatus = "in_progress";
+        draft.planningStatus = "skipped";
+      } else {
+        draft.thinkingStatus = "completed";
+        draft.planningStatus = "completed";
+      }
+      draft.buildingStatus = "in_progress";
+      draft.verifyingStatus = "pending";
       draft.errorMessage = null;
-      draft.lastUpdatedAt = new Date().toISOString();
-      this.emit({ type: "project.plan", projectId: project.id, plan: { ...draft } });
+      draft.verificationDetails = null;
+      this.syncDraft(draft);
 
       readline.createInterface({ input: child.stdout }).on("line", (line) => {
         chunks.push(line);
-        this.handleStreamEvent(project.id, draft, line);
+        this.handleStreamEvent(project.id, project.localPath, draft, line);
       });
 
-      readline.createInterface({ input: child.stderr }).on("line", () => {
-        // Drain stderr
+      readline.createInterface({ input: child.stderr }).on("line", (line) => {
+        stderr = stderr ? `${stderr}\n${line}` : line;
       });
 
       child.on("exit", (code) => {
         this.activeProcesses.delete(project.id);
 
-        if (code !== 0) {
-          draft.status = "failed";
-          draft.errorMessage = "Claude could not finish the update.";
-          draft.lastUpdatedAt = new Date().toISOString();
-          this.emit({ type: "project.plan", projectId: project.id, plan: { ...draft } });
-          reject(new Error(draft.errorMessage));
-          return;
-        }
-
         try {
+          if (code !== 0) {
+            throw new Error(this.extractErrorMessage(chunks, stderr) ?? "Claude could not finish the update.");
+          }
+
           const finalText = this.extractFinalResult(chunks);
           const parsed = executionResultSchema.parse(parseJsonFromText(finalText));
           const flowchartSnapshot = materializeFlowchartSnapshot(parsed.flowchartGraph);
-          draft.status = "completed";
+          draft.status = "executing";
+          if (draft.planningMode === "none") {
+            draft.thinkingStatus = "completed";
+          }
+          draft.buildingStatus = "completed";
+          draft.verifyingStatus = "in_progress";
           draft.summary = parsed.summary;
           draft.finalText = finalText;
           draft.errorMessage = null;
-          draft.lastUpdatedAt = new Date().toISOString();
-          this.planDrafts.set(project.id, draft);
-          this.emit({ type: "project.plan", projectId: project.id, plan: { ...draft } });
+          draft.verificationDetails = "Saving local changes and update history.";
+          this.syncDraft(draft);
           resolve({
             draft: { ...draft },
             summary: parsed.summary,
@@ -661,10 +930,13 @@ export class ClaudeService {
           });
         } catch (error) {
           draft.status = "failed";
+          draft.buildingStatus = "failed";
+          if (draft.planningMode === "none" && draft.thinkingStatus === "in_progress") {
+            draft.thinkingStatus = "failed";
+          }
           draft.errorMessage =
             error instanceof Error ? error.message : "Claude returned an unexpected result.";
-          draft.lastUpdatedAt = new Date().toISOString();
-          this.emit({ type: "project.plan", projectId: project.id, plan: { ...draft } });
+          this.syncDraft(draft);
           reject(error instanceof Error ? error : new Error("Claude returned an unexpected result."));
         }
       });
@@ -672,9 +944,12 @@ export class ClaudeService {
       child.on("error", (err) => {
         this.activeProcesses.delete(project.id);
         draft.status = "failed";
+        draft.buildingStatus = "failed";
+        if (draft.planningMode === "none" && draft.thinkingStatus === "in_progress") {
+          draft.thinkingStatus = "failed";
+        }
         draft.errorMessage = err.message;
-        draft.lastUpdatedAt = new Date().toISOString();
-        this.emit({ type: "project.plan", projectId: project.id, plan: { ...draft } });
+        this.syncDraft(draft);
         reject(err);
       });
     });
@@ -696,20 +971,39 @@ export class ClaudeService {
     this.clearPlan(projectId);
   }
 
-  private handleStreamEvent(projectId: string, draft: PlanDraft, line: string): void {
+  private handleStreamEvent(projectId: string, projectPath: string, draft: PlanDraft, line: string): void {
     try {
-      const event = JSON.parse(line) as { type?: string; content?: string; message?: { content?: string }; subtype?: string };
-      if (event.type === "assistant" && event.content) {
-        draft.explanation = event.content;
-        draft.lastUpdatedAt = new Date().toISOString();
-        this.emit({ type: "project.plan", projectId, plan: { ...draft } });
-      } else if (event.type === "content_block_delta" || event.subtype === "text") {
-        // Streaming text update
-        const text = event.content || "";
-        if (text) {
-          draft.explanation = text;
-          draft.lastUpdatedAt = new Date().toISOString();
-          this.emit({ type: "project.plan", projectId, plan: { ...draft } });
+      const event = JSON.parse(line) as {
+        type?: string;
+        subtype?: string;
+        content?: unknown;
+        delta?: { text?: unknown } | null;
+        message?: { content?: unknown } | null;
+      };
+      const text = extractClaudeEventText(event);
+      if (event.type === "assistant" && text) {
+        draft.explanation = mergeStreamingExplanation(draft.explanation, text);
+        if (draft.status === "planning") {
+          draft.thinkingStatus = "in_progress";
+          draft.planningStatus = "in_progress";
+        } else if (draft.status === "executing") {
+          draft.buildingStatus = "in_progress";
+        }
+        this.syncDraft(draft);
+        if (draft.status === "executing") {
+          void this.refreshDiffStats(projectId, projectPath, draft);
+        }
+      } else if ((event.type === "content_block_delta" || event.subtype === "text") && text) {
+        draft.explanation = mergeStreamingExplanation(draft.explanation, text);
+        if (draft.status === "planning") {
+          draft.thinkingStatus = "in_progress";
+          draft.planningStatus = "in_progress";
+        } else if (draft.status === "executing") {
+          draft.buildingStatus = "in_progress";
+        }
+        this.syncDraft(draft);
+        if (draft.status === "executing") {
+          void this.refreshDiffStats(projectId, projectPath, draft);
         }
       }
     } catch {
@@ -717,30 +1011,58 @@ export class ClaudeService {
     }
   }
 
+  private async refreshDiffStats(projectId: string, projectPath: string, draft: PlanDraft): Promise<void> {
+    if (this.pendingDiffRefresh.has(projectId)) {
+      return;
+    }
+
+    this.pendingDiffRefresh.add(projectId);
+    try {
+      const result = await execCommand("git diff --numstat", projectPath);
+      if (result.code !== 0) {
+        return;
+      }
+
+      draft.diffStats = parseNumstatDiffStats(result.stdout);
+      this.syncDraft(draft);
+    } finally {
+      this.pendingDiffRefresh.delete(projectId);
+    }
+  }
+
   private extractFinalResult(chunks: string[]): string {
-    // Walk backward through stream events to find the final result message
     for (let i = chunks.length - 1; i >= 0; i--) {
       try {
-        const event = JSON.parse(chunks[i]) as { type?: string; result?: string; content?: string; message?: { content?: string } };
-        // stream-json format: look for the result event
-        if (event.type === "result" && event.result) {
-          return event.result;
+        const event = JSON.parse(chunks[i]) as {
+          type?: string;
+          result?: unknown;
+          is_error?: boolean;
+          errors?: unknown;
+          content?: unknown;
+          delta?: { text?: unknown } | null;
+          message?: { content?: unknown } | null;
+        };
+        if (event.type === "result") {
+          if (event.is_error) {
+            throw new Error(extractClaudeResultEventError(event) ?? "Claude returned an error.");
+          }
+          if (typeof event.result === "string" && event.result.trim()) {
+            return event.result;
+          }
         }
-        // Fallback: look for assistant message content containing JSON
-        const text = event.content || event.message?.content || "";
-        if (text && (text.includes('"summary"') || text.includes('"flowchartGraph"'))) {
+
+        const text = extractClaudeEventText(event);
+        if (text && isLikelyJsonResponse(text)) {
           return text;
         }
       } catch {
-        // Not JSON
         const raw = chunks[i].trim();
-        if (raw && (raw.includes('"summary"') || raw.includes('"flowchartGraph"'))) {
+        if (raw && isLikelyJsonResponse(raw)) {
           return raw;
         }
       }
     }
 
-    // Last resort: concatenate all non-event text
     throw new Error("Claude did not return a valid result.");
   }
 
@@ -780,12 +1102,63 @@ export class ClaudeService {
     }
   }
 
-  private async requireBinaryPath(settings: Settings): Promise<string> {
-    const binaryPath = await this.detectBinaryPath(settings);
-    if (!binaryPath) {
+  private async requireReadyStatus(settings: Settings): Promise<ClaudeAuthStatus> {
+    const status = await this.getAuthStatus(settings);
+    if (!status.available || !status.binaryPath) {
       throw new Error("Install Claude Code CLI before using Claude in PROGRAMS. Run: npm install -g @anthropic-ai/claude-code");
     }
-    return binaryPath;
+    if (!status.loggedIn) {
+      throw new Error(status.connectErrorMessage ?? "Sign in to Claude Code before using Claude in PROGRAMS.");
+    }
+    if (!status.ready) {
+      throw new Error(status.runtimeErrorMessage ?? "Update Claude Code before using Claude in PROGRAMS.");
+    }
+    return status;
+  }
+
+  private extractErrorMessage(chunks: string[], stderr: string): string | null {
+    for (let i = chunks.length - 1; i >= 0; i--) {
+      try {
+        const event = JSON.parse(chunks[i]) as {
+          type?: string;
+          is_error?: boolean;
+          errors?: unknown;
+          result?: unknown;
+          content?: unknown;
+          message?: { content?: unknown } | null;
+        };
+        if (event.type === "result" && event.is_error) {
+          return extractClaudeResultEventError(event);
+        }
+      } catch {
+        // Ignore non-JSON lines while searching for the final result error.
+      }
+    }
+
+    return cleanClaudeProcessMessage(stderr);
+  }
+
+  private async readLocalAuthMetadata(): Promise<ClaudeLocalAuthMetadata | null> {
+    if (!process.env.HOME) {
+      return null;
+    }
+
+    try {
+      const raw = await readFile(join(process.env.HOME, ".claude.json"), "utf8");
+      return parseClaudeLocalAuthMetadata(raw);
+    } catch {
+      return null;
+    }
+  }
+
+  private async readCliFeatures(binaryPath: string): Promise<ClaudeCliFeatures | null> {
+    const helpResult = await execCommand(`"${binaryPath}" --help`, process.cwd());
+    const helpText = `${helpResult.stdout}\n${helpResult.stderr}`.trim();
+    if (!helpText) {
+      return null;
+    }
+
+    return parseClaudeCliFeatures(helpText);
   }
 
   private async readStatsCache(): Promise<ClaudeStatsCache | null> {

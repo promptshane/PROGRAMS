@@ -30,6 +30,8 @@ import {
   readFlowchartSnapshot,
   writeFlowchartSnapshot,
 } from "@main/utils/flowchart";
+import { emitSettledAppUpdateStatus } from "@main/utils/app-update";
+import { getProviderPreflightError } from "@main/utils/provider-auth";
 import { parseEnvEntries, parseProjectOutlineReportResponse, serializeEnvEntries } from "@main/utils/project-outline";
 import { detectRuntimeConfig, deriveAttachedProjectName, deriveProjectDescription, slugifyRepositoryName } from "@main/utils/project";
 import { ensureDirectory, pathExists, readTextFile, writeTextFile } from "@main/utils/fs";
@@ -347,6 +349,7 @@ export class ProgramsBackend {
   async generateOutlineReport(input: GenerateProjectOutlineReportInput): Promise<ProjectOutlineReport> {
     await this.ensureInitialized();
     const settings = await this.store.readSettings();
+    await this.requireProviderReady(input.provider ?? settings.advancedDefaults.provider, settings);
     const project = await this.requireProject(input.projectId);
     const provider = input.provider ?? settings.advancedDefaults.provider;
     const model = provider === "claude"
@@ -400,6 +403,7 @@ export class ProgramsBackend {
   async generateFlowchart(input: GenerateFlowchartInput): Promise<GenerateFlowchartResult> {
     await this.ensureInitialized();
     const settings = await this.store.readSettings();
+    await this.requireProviderReady(input.provider, settings);
     const project = await this.requireProject(input.projectId);
     const repoHints = await collectFlowchartRepoHints(project.localPath);
 
@@ -438,6 +442,7 @@ ${FLOWCHART_OUTPUT_CONTRACT}
   async planningChat(input: PlanningChatInput): Promise<PlanningChatResponse> {
     await this.ensureInitialized();
     const settings = await this.store.readSettings();
+    await this.requireProviderReady(input.provider, settings);
     const project = await this.requireProject(input.projectId);
 
     let session: PlanningSession;
@@ -581,6 +586,7 @@ Changes described: ${pending.description}`;
       model: settings.advancedDefaults.model,
       claudeModel: settings.advancedDefaults.claudeModel,
       reasoningEffort: settings.advancedDefaults.reasoningEffort,
+      planningMode: settings.autoApprovePlans ? "auto" : "review",
       autoApprove: settings.autoApprovePlans,
       contextPaths: [],
     };
@@ -970,7 +976,22 @@ Changes described: ${pending.description}`;
         settings = await this.store.updateSettings({ claudeBinaryPath: status.binaryPath });
       }
 
+      const needsRepair = !status.canConnect || (status.loggedIn && !status.ready);
+      if (needsRepair) {
+        this.emit({
+          type: "toast",
+          level: "info",
+          message: "Updating Claude Code for PROGRAMS.",
+        });
+        await this.installClaudeCli();
+        status = await this.claude.getAuthStatus(settings);
+      }
+
       if (!status.loggedIn) {
+        if (!status.canConnect) {
+          await shell.openExternal(CLAUDE_DOWNLOAD_URL);
+          throw new Error(status.connectErrorMessage ?? "PROGRAMS could not open the Claude sign-in flow. It opened the official Claude Code docs.");
+        }
         this.emit({
           type: "toast",
           level: "info",
@@ -983,6 +1004,11 @@ Changes described: ${pending.description}`;
         settings = await this.store.updateSettings({ claudeBinaryPath: status.binaryPath });
       }
 
+      if (!status.ready) {
+        await shell.openExternal(CLAUDE_DOWNLOAD_URL);
+        throw new Error(status.runtimeErrorMessage ?? "PROGRAMS could not use Claude Code yet. It opened the official Claude Code docs.");
+      }
+
       await this.emitSetupUpdated(settings, undefined, status);
       return status;
     } catch (error) {
@@ -993,7 +1019,18 @@ Changes described: ${pending.description}`;
 
   async loginClaude(): Promise<ClaudeAuthStatus> {
     const settings = await this.store.readSettings();
+    const current = await this.claude.getAuthStatus(settings);
+    if ((!current.loggedIn && !current.canConnect) || (current.loggedIn && !current.ready)) {
+      return this.setupClaude();
+    }
     const status = await this.claude.login(settings);
+    await this.emitSetupUpdated(settings, undefined, status);
+    return status;
+  }
+
+  async logoutClaude(): Promise<ClaudeAuthStatus> {
+    const settings = await this.store.readSettings();
+    const status = await this.claude.logout(settings);
     await this.emitSetupUpdated(settings, undefined, status);
     return status;
   }
@@ -1267,12 +1304,31 @@ Changes described: ${pending.description}`;
     return provider === "claude" ? this.claude : this.codex;
   }
 
+  private async requireProviderReady(provider: StartPlanInput["provider"], settings: Settings): Promise<void> {
+    const status = provider === "claude"
+      ? await this.claude.getAuthStatus(settings)
+      : await this.codex.getAuthStatus(settings);
+    const message = getProviderPreflightError(provider, status);
+    if (message) {
+      throw new Error(message);
+    }
+  }
+
   async startPlan(input: StartPlanInput): Promise<{ started: true }> {
     const settings = await this.store.readSettings();
+    await this.requireProviderReady(input.provider, settings);
     const project = await this.requireProject(input.projectId);
-    await this.updateProjectStatus(project, "planning", null);
     const service = this.aiService(input.provider);
     const providerLabel = input.provider === "claude" ? "Claude" : "Codex";
+
+    if (input.planningMode === "none") {
+      const executingProject = await this.updateProjectStatus(project, "executing", null);
+      const draft = service.createDirectExecutionDraft(executingProject, input);
+      void this.executePlan(executingProject, settings, draft).catch(() => undefined);
+      return { started: true };
+    }
+
+    await this.updateProjectStatus(project, "planning", null);
 
     void service
       .startPlanningTurn(project, settings, input)
@@ -1292,6 +1348,13 @@ Changes described: ${pending.description}`;
       })
       .catch(async (error) => {
         const latest = await this.requireProject(project.id);
+        // Persist any new threadId even on failure so we don't keep retrying a stale one.
+        const activeDraft = service.getActivePlan(project.id);
+        if (activeDraft?.threadId && activeDraft.threadId !== latest.threadId) {
+          latest.threadId = activeDraft.threadId;
+          latest.updatedAt = new Date().toISOString();
+          await this.store.updateProject(latest);
+        }
         await this.updateProjectStatus(
           latest,
           "error",
@@ -1396,6 +1459,7 @@ Changes described: ${pending.description}`;
   }
 
   private async executePlan(project: Project, settings: Settings, draft: PlanDraft): Promise<void> {
+    await this.requireProviderReady(draft.provider, settings);
     const executingProject = await this.updateProjectStatus(project, "executing", null);
     const service = this.aiService(draft.provider);
     const providerLabel = draft.provider === "claude" ? "Claude" : "Codex";
@@ -1417,10 +1481,22 @@ Changes described: ${pending.description}`;
         await this.store.updateProject(latest);
         this.emit({ type: "project.updated", project: latest });
 
+        result.draft.verifyingStatus = "in_progress";
+        result.draft.verificationDetails = "Updating flowchart and preparing the local save.";
+        result.draft.diffStats = await this.git.readWorkingTreeDiffStats(latest.localPath);
+        service.syncDraft(result.draft);
+
         const commitSha = await this.git.commitAll(latest.localPath, result.commitMessage);
         if (!commitSha) {
+          result.draft.status = "completed";
+          if (result.draft.planningMode === "none" && result.draft.thinkingStatus === "in_progress") {
+            result.draft.thinkingStatus = "completed";
+          }
+          result.draft.buildingStatus = "completed";
+          result.draft.verifyingStatus = "completed";
+          result.draft.verificationDetails = "No local file changes were needed.";
+          service.syncDraft(result.draft);
           latest = await this.updateProjectStatus(latest, "idle", null);
-          service.clearPlan(latest.id);
           this.emit({
             type: "toast",
             level: "info",
@@ -1450,7 +1526,14 @@ Changes described: ${pending.description}`;
         await this.store.updateProject(latest);
         this.emit({ type: "project.updated", project: latest });
         await this.emitHistory(latest.id);
-        service.clearPlan(latest.id);
+        result.draft.status = "completed";
+        if (result.draft.planningMode === "none" && result.draft.thinkingStatus === "in_progress") {
+          result.draft.thinkingStatus = "completed";
+        }
+        result.draft.buildingStatus = "completed";
+        result.draft.verifyingStatus = "completed";
+        result.draft.verificationDetails = "Update saved locally.";
+        service.syncDraft(result.draft);
         this.emit({
           type: "toast",
           level: "success",
@@ -1459,6 +1542,22 @@ Changes described: ${pending.description}`;
       })
       .catch(async (error) => {
         const latest = await this.requireProject(executingProject.id);
+        const currentDraft = service.getActivePlan(executingProject.id);
+        if (currentDraft) {
+          currentDraft.status = "failed";
+          currentDraft.errorMessage =
+            error instanceof Error ? error.message : `PROGRAMS could not finish the update with ${providerLabel}.`;
+          currentDraft.verificationDetails = currentDraft.errorMessage;
+          if (currentDraft.verifyingStatus === "in_progress" || currentDraft.buildingStatus === "completed") {
+            currentDraft.verifyingStatus = "failed";
+          } else {
+            currentDraft.buildingStatus = "failed";
+            if (currentDraft.planningMode === "none" && currentDraft.thinkingStatus === "in_progress") {
+              currentDraft.thinkingStatus = "failed";
+            }
+          }
+          service.syncDraft(currentDraft);
+        }
         await this.updateProjectStatus(
           latest,
           "error",
@@ -1726,15 +1825,55 @@ Changes described: ${pending.description}`;
         id: "claudeLogin",
         section: "assistant",
         label: "Connect Claude",
-        status: !claudeInstalled ? "info" : claudeStatus.loggedIn ? "confirmed" : "info",
+        status: !claudeInstalled
+          ? "info"
+          : claudeStatus.loggedIn
+            ? claudeStatus.ready
+              ? claudeStatus.canConnect
+                ? "confirmed"
+                : "info"
+              : "action_required"
+            : claudeStatus.canConnect
+              ? "info"
+              : "action_required",
         version: null,
         detail: !claudeInstalled
           ? "Install Claude Code first."
           : claudeStatus.loggedIn
-            ? "Confirmed and ready."
-            : "Sign in to use your Claude subscription.",
-        actionLabel: !claudeInstalled ? null : claudeStatus.loggedIn ? null : "Connect",
-        actionKind: !claudeInstalled ? "none" : claudeStatus.loggedIn ? "none" : "claudeLogin",
+            ? claudeStatus.ready
+              ? claudeStatus.canConnect
+                ? claudeStatus.email
+                  ? `Confirmed as ${claudeStatus.email}.`
+                  : "Confirmed and ready."
+                : claudeStatus.email
+                  ? `Confirmed as ${claudeStatus.email}. Update Claude Code to keep in-app sign-in compatible.`
+                  : "Confirmed. Update Claude Code to keep in-app sign-in compatible."
+              : claudeStatus.runtimeErrorMessage ?? "Claude needs attention before it can run in PROGRAMS."
+            : claudeStatus.canConnect
+              ? "Sign in to use your Claude subscription."
+              : claudeStatus.connectErrorMessage ?? "Update Claude Code to connect your Claude account from PROGRAMS.",
+        actionLabel: !claudeInstalled
+          ? null
+          : claudeStatus.loggedIn
+            ? claudeStatus.ready
+              ? claudeStatus.canConnect
+                ? null
+                : "Update Claude"
+              : "Repair"
+            : claudeStatus.canConnect
+              ? "Connect"
+              : "Update Claude",
+        actionKind: !claudeInstalled
+          ? "none"
+          : claudeStatus.loggedIn
+            ? claudeStatus.ready
+              ? claudeStatus.canConnect
+                ? "none"
+                : "setupClaude"
+              : "setupClaude"
+            : claudeStatus.canConnect
+              ? "claudeLogin"
+              : "setupClaude",
         actionTarget: null,
         secondaryActionLabel: null,
         secondaryActionKind: "none",
@@ -1960,16 +2099,28 @@ Changes described: ${pending.description}`;
         throw new Error(message);
       }
 
-      this.appUpdateFailedKey = null;
-      this.appUpdateBuildError = null;
-      this.appUpdatePackagingKey = null;
-      this.emitAppUpdateStatus(await this.refreshAppUpdateStatus(settings, false));
+      await emitSettledAppUpdateStatus({
+        applySettlement: () => {
+          this.appUpdatePackagingJob = null;
+          this.appUpdateFailedKey = null;
+          this.appUpdateBuildError = null;
+          this.appUpdatePackagingKey = null;
+        },
+        readStatus: () => this.refreshAppUpdateStatus(settings, false),
+        emitStatus: (status) => this.emitAppUpdateStatus(status),
+      });
     } catch (error) {
-      this.appUpdatePackagingKey = null;
-      this.appUpdateFailedKey = packageKey;
-      this.appUpdateBuildError =
-        error instanceof Error ? error.message : "PROGRAMS could not package the latest app build.";
-      this.emitAppUpdateStatus(await this.refreshAppUpdateStatus(settings, false));
+      const message = error instanceof Error ? error.message : "PROGRAMS could not package the latest app build.";
+      await emitSettledAppUpdateStatus({
+        applySettlement: () => {
+          this.appUpdatePackagingJob = null;
+          this.appUpdatePackagingKey = null;
+          this.appUpdateFailedKey = packageKey;
+          this.appUpdateBuildError = message;
+        },
+        readStatus: () => this.refreshAppUpdateStatus(settings, false),
+        emitStatus: (status) => this.emitAppUpdateStatus(status),
+      });
     }
   }
 

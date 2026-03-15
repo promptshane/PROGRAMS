@@ -1,5 +1,24 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
+  AgentAttachMaterialsInput,
+  AgentAttachMaterialsResult,
+  AgentChatInput,
+  AgentChatResponse,
+  AgentConfirmStageInput,
+  AgentCoreDetails,
+  AgentExecuteUpdateInput,
+  AgentProcessTodosInput,
+  AgentReorderUpdatesInput,
+  AgentSession,
+  AgentStage,
+  AgentSubmitTodosInput,
+  AgentSubmitTodosResponse,
+  AgentUpdateScratchpadInput,
+  CoreDetailsChatInput,
+  CoreDetailsChatResponse,
+  AgentSuggestUpdateInput,
+  AgentSuggestUpdateResponse,
+  AgentApplyCoreDetailsInput,
   AppUpdateStatus,
   AppEvent,
   ApprovePlanInput,
@@ -13,6 +32,7 @@ import type {
   GenerateFlowchartInput,
   GenerateFlowchartResult,
   GenerateProjectOutlineReportInput,
+  HomeScratchpadItem,
   PendingPlannedUpdate,
   PlanningChatInput,
   PlanningChatResponse,
@@ -103,6 +123,52 @@ const api = {
     ipcRenderer.invoke("planning.getPending", projectId),
   applyPlannedUpdate: (projectId: string): Promise<{ started: true }> =>
     ipcRenderer.invoke("planning.applyUpdate", projectId),
+
+  getAgentSession: (projectId: string): Promise<AgentSession | null> =>
+    ipcRenderer.invoke("agents.getSession", projectId),
+  agentChat: (input: AgentChatInput): Promise<AgentChatResponse> =>
+    ipcRenderer.invoke("agents.chat", input),
+  agentConfirmStage: (input: AgentConfirmStageInput): Promise<AgentSession> =>
+    ipcRenderer.invoke("agents.confirmStage", input),
+  agentUpdateScratchpad: (input: AgentUpdateScratchpadInput): Promise<AgentSession> =>
+    ipcRenderer.invoke("agents.updateScratchpad", input),
+  agentSubmitTodos: (input: AgentSubmitTodosInput): Promise<AgentSubmitTodosResponse> =>
+    ipcRenderer.invoke("agents.submitTodos", input),
+  agentReorderUpdates: (input: AgentReorderUpdatesInput): Promise<AgentSession> =>
+    ipcRenderer.invoke("agents.reorderUpdates", input),
+  agentExecuteUpdate: (input: AgentExecuteUpdateInput): Promise<{ started: true }> =>
+    ipcRenderer.invoke("agents.executeUpdate", input),
+  agentResetStage: (projectId: string, stage: AgentStage): Promise<AgentSession> =>
+    ipcRenderer.invoke("agents.resetStage", projectId, stage),
+  deleteAgentSession: (projectId: string): Promise<void> =>
+    ipcRenderer.invoke("agents.deleteSession", projectId),
+  agentAttachMaterials: (input: AgentAttachMaterialsInput): Promise<AgentAttachMaterialsResult> =>
+    ipcRenderer.invoke("agents.attachMaterials", input),
+  agentGetCoreDetails: (projectId: string): Promise<AgentCoreDetails> =>
+    ipcRenderer.invoke("agents.getCoreDetails", projectId),
+  agentCoreDetailsChat: (input: CoreDetailsChatInput): Promise<CoreDetailsChatResponse> =>
+    ipcRenderer.invoke("agents.coreDetailsChat", input),
+  agentSuggestUpdate: (input: AgentSuggestUpdateInput): Promise<AgentSuggestUpdateResponse> =>
+    ipcRenderer.invoke("agents.suggestUpdate", input),
+  agentApplyCoreDetails: (input: AgentApplyCoreDetailsInput): Promise<AgentSession> =>
+    ipcRenderer.invoke("agents.applyCoreDetails", input),
+  agentProcessTodosFromProgram: (input: AgentProcessTodosInput): Promise<AgentSubmitTodosResponse> =>
+    ipcRenderer.invoke("agents.processTodosFromProgram", input),
+
+  // Cascade
+  agentGenerateCascade: (projectId: string, triggeredByStage: string, provider: string, model: string): Promise<import("@shared/types").CascadeProposal | null> =>
+    ipcRenderer.invoke("agents.generateCascade", projectId, triggeredByStage, provider, model),
+  agentAcceptCascade: (input: import("@shared/types").AgentAcceptCascadeInput): Promise<import("@shared/types").AgentSession> =>
+    ipcRenderer.invoke("agents.acceptCascade", input),
+
+  // Home scratchpad
+  readHomeScratchpad: (): Promise<HomeScratchpadItem[]> =>
+    ipcRenderer.invoke("home.readScratchpad"),
+  updateHomeScratchpad: (input: { items: HomeScratchpadItem[] }): Promise<HomeScratchpadItem[]> =>
+    ipcRenderer.invoke("home.updateScratchpad", input),
+
+  pickMaterialFiles: (): Promise<{ canceled: boolean; paths: string[] }> =>
+    ipcRenderer.invoke("system.pickMaterialFiles"),
 
   pickDirectory: (mode: DirectoryPickMode): Promise<DirectoryPickResult> =>
     ipcRenderer.invoke("system.pickDirectory", mode),

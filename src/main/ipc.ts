@@ -3,7 +3,19 @@ import { dialog, ipcMain, shell } from "electron";
 import { isSubPath } from "@main/utils/fs";
 import type { ProgramsBackend } from "@main/backend";
 import type {
+  AgentAttachMaterialsInput,
+  AgentChatInput,
+  AgentConfirmStageInput,
+  AgentExecuteUpdateInput,
+  AgentProcessTodosInput,
+  AgentReorderUpdatesInput,
+  AgentStage,
+  AgentSubmitTodosInput,
+  AgentUpdateScratchpadInput,
   ApprovePlanInput,
+  CoreDetailsChatInput,
+  AgentSuggestUpdateInput,
+  AgentApplyCoreDetailsInput,
   DirectoryPickMode,
   GenerateFlowchartInput,
   GenerateProjectOutlineReportInput,
@@ -86,6 +98,63 @@ export const registerIpc = (backend: ProgramsBackend): void => {
     backend.getPendingUpdate(projectId));
   ipcMain.handle("planning.applyUpdate", (_event, projectId: string) =>
     backend.applyPlannedUpdate(projectId));
+
+  ipcMain.handle("agents.getSession", (_event, projectId: string) =>
+    backend.getAgentSession(projectId));
+  ipcMain.handle("agents.chat", (_event, input: AgentChatInput) =>
+    backend.agentChat(input));
+  ipcMain.handle("agents.confirmStage", (_event, input: AgentConfirmStageInput) =>
+    backend.agentConfirmStage(input));
+  ipcMain.handle("agents.updateScratchpad", (_event, input: AgentUpdateScratchpadInput) =>
+    backend.agentUpdateScratchpad(input));
+  ipcMain.handle("agents.submitTodos", (_event, input: AgentSubmitTodosInput) =>
+    backend.agentSubmitTodos(input));
+  ipcMain.handle("agents.reorderUpdates", (_event, input: AgentReorderUpdatesInput) =>
+    backend.agentReorderUpdates(input));
+  ipcMain.handle("agents.executeUpdate", (_event, input: AgentExecuteUpdateInput) =>
+    backend.agentExecuteUpdate(input));
+  ipcMain.handle("agents.resetStage", (_event, projectId: string, stage: AgentStage) =>
+    backend.agentResetStage(projectId, stage));
+  ipcMain.handle("agents.deleteSession", (_event, projectId: string) =>
+    backend.deleteAgentSession(projectId));
+  ipcMain.handle("agents.attachMaterials", (_event, input: AgentAttachMaterialsInput) =>
+    backend.agentAttachMaterials(input));
+  ipcMain.handle("agents.getCoreDetails", (_event, projectId: string) =>
+    backend.agentGetCoreDetails(projectId));
+  ipcMain.handle("agents.coreDetailsChat", (_event, input: CoreDetailsChatInput) =>
+    backend.agentCoreDetailsChat(input));
+  ipcMain.handle("agents.suggestUpdate", (_event, input: AgentSuggestUpdateInput) =>
+    backend.agentSuggestUpdate(input));
+  ipcMain.handle("agents.applyCoreDetails", (_event, input: AgentApplyCoreDetailsInput) =>
+    backend.agentApplyCoreDetails(input));
+  ipcMain.handle("agents.processTodosFromProgram", (_event, input: AgentProcessTodosInput) =>
+    backend.agentProcessTodosFromProgram(input));
+
+  // Cascade
+  ipcMain.handle("agents.generateCascade", (_event, projectId: string, triggeredByStage: string, provider: string, model: string) =>
+    backend.agentGenerateCascade(projectId, triggeredByStage as import("@shared/types").AgentStage, provider as import("@shared/types").AiProvider, model));
+  ipcMain.handle("agents.acceptCascade", (_event, input: import("@shared/types").AgentAcceptCascadeInput) =>
+    backend.agentAcceptCascade(input));
+
+  // Home scratchpad
+  ipcMain.handle("home.readScratchpad", () => backend.readHomeScratchpad());
+  ipcMain.handle("home.updateScratchpad", (_event, input: { items: import("@shared/types").HomeScratchpadItem[] }) =>
+    backend.updateHomeScratchpad(input));
+
+  ipcMain.handle("system.pickMaterialFiles", async () => {
+    const result = await dialog.showOpenDialog({
+      buttonLabel: "Attach files",
+      properties: ["openFile", "multiSelections"],
+      filters: [
+        { name: "Documents", extensions: ["txt", "md", "pptx", "ppt", "pdf", "docx", "csv", "json"] },
+        { name: "All Files", extensions: ["*"] },
+      ],
+    });
+    return {
+      canceled: result.canceled,
+      paths: result.canceled ? [] : result.filePaths,
+    };
+  });
 
   ipcMain.handle("system.pickDirectory", async (_event, mode: DirectoryPickMode = "attach") => {
     const result = await dialog.showOpenDialog({

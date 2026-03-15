@@ -2,13 +2,20 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { app } from "electron";
 import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
-import { CLAUDE_MODEL_OPTIONS, CODEX_MODEL_OPTIONS } from "@shared/types";
+import { CLAUDE_MODEL_OPTIONS, CODEX_MODEL_OPTIONS, AGENT_STAGES } from "@shared/types";
 import type {
+  AgentPlannedUpdate,
+  AgentSession,
+  AgentStage,
+  AgentStageData,
+  AiProvider,
   FlowchartGraph,
+  HomeScratchpadItem,
   PendingPlannedUpdate,
   PlanningSession,
   ProjectOutlineReport,
   Project,
+  ScratchpadItem,
   Settings,
   SettingsUpdateInput,
   SetupState,
@@ -241,6 +248,19 @@ export class ProjectStore {
         updated_at TEXT NOT NULL,
         FOREIGN KEY(project_id) REFERENCES projects(id)
       );
+
+      CREATE TABLE IF NOT EXISTS agent_sessions (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL UNIQUE,
+        current_stage TEXT NOT NULL DEFAULT 'function',
+        stages_json TEXT NOT NULL DEFAULT '{}',
+        scratchpad_json TEXT NOT NULL DEFAULT '[]',
+        planned_updates_json TEXT NOT NULL DEFAULT '[]',
+        provider TEXT NOT NULL DEFAULT 'claude',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY(project_id) REFERENCES projects(id)
+      );
     `);
 
     this.ensureColumn("updates", "flowchart_graph_json", "TEXT");
@@ -248,6 +268,21 @@ export class ProjectStore {
     this.ensureColumn("pending_planned_updates", "previous_flowchart_graph_json", "TEXT");
     this.ensureColumn("planning_sessions", "current_flowchart_graph_json", "TEXT");
     this.ensureColumn("planning_sessions", "previous_flowchart_graph_json", "TEXT");
+    this.ensureColumn("agent_sessions", "attached_materials_json", "TEXT DEFAULT '[]'");
+    this.ensureColumn("agent_sessions", "core_pillars_json", "TEXT DEFAULT '[]'");
+    this.ensureColumn("agent_sessions", "core_details_chat_json", "TEXT DEFAULT '[]'");
+    this.ensureColumn("agent_sessions", "conversation_mode", "TEXT DEFAULT 'guided'");
+    this.ensureColumn("agent_sessions", "unified_messages_json", "TEXT DEFAULT '[]'");
+    this.ensureColumn("agent_sessions", "cascade_pending_json", "TEXT");
+    this.ensureColumn("agent_sessions", "misc_materials_json", "TEXT DEFAULT '[]'");
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS home_scratchpad (
+        id TEXT PRIMARY KEY DEFAULT 'singleton',
+        items_json TEXT NOT NULL DEFAULT '[]',
+        updated_at TEXT NOT NULL DEFAULT ''
+      );
+    `);
 
     this.persist();
   }
@@ -377,6 +412,9 @@ export class ProjectStore {
            error_message = NULL
        WHERE status IN ('pushed', 'pendingSync')`,
     );
+    this.run(
+      `UPDATE agent_sessions SET current_stage = 'iterations' WHERE current_stage = 'execution'`,
+    );
   }
 
   async readSettings(): Promise<Settings> {
@@ -497,6 +535,7 @@ export class ProjectStore {
     this.run("DELETE FROM pending_planned_updates WHERE project_id = ?", [projectId]);
     this.run("DELETE FROM planning_sessions WHERE project_id = ?", [projectId]);
     this.run("DELETE FROM project_outline_reports WHERE project_id = ?", [projectId]);
+    this.run("DELETE FROM agent_sessions WHERE project_id = ?", [projectId]);
     this.run("DELETE FROM projects WHERE id = ?", [projectId]);
   }
 
@@ -695,5 +734,154 @@ export class ProjectStore {
       [report.projectId, JSON.stringify(report), report.generatedAt],
     );
     return report;
+  }
+
+  // --- Agent Sessions ---
+
+  private mapAgentSessionRow(row: {
+    id: string;
+    project_id: string;
+    current_stage: string;
+    stages_json: string;
+    scratchpad_json: string;
+    planned_updates_json: string;
+    attached_materials_json?: string;
+    core_pillars_json?: string;
+    core_details_chat_json?: string;
+    provider: string;
+    created_at: string;
+    updated_at: string;
+  }): AgentSession {
+    const defaultStageData: AgentStageData = { messages: [], confirmed: null };
+    let stages: Record<AgentStage, AgentStageData>;
+    try {
+      const parsed = JSON.parse(row.stages_json);
+      stages = {} as Record<AgentStage, AgentStageData>;
+      for (const s of AGENT_STAGES) {
+        stages[s] = parsed[s] ?? { ...defaultStageData };
+      }
+    } catch {
+      stages = {} as Record<AgentStage, AgentStageData>;
+      for (const s of AGENT_STAGES) {
+        stages[s] = { ...defaultStageData };
+      }
+    }
+
+    // Backward compat: default source on scratchpad items
+    const scratchpad: ScratchpadItem[] = (JSON.parse(row.scratchpad_json || "[]") as ScratchpadItem[]).map((item) => ({
+      ...item,
+      source: item.source ?? "user",
+    }));
+
+    // Backward compat: default sourceTodoIds on planned updates
+    const plannedUpdates: AgentPlannedUpdate[] = (JSON.parse(row.planned_updates_json || "[]") as AgentPlannedUpdate[]).map((item) => ({
+      ...item,
+      sourceTodoIds: item.sourceTodoIds ?? [],
+    }));
+
+    // Normalize currentStage
+    let currentStage = row.current_stage as AgentStage;
+    if (!AGENT_STAGES.includes(currentStage)) currentStage = "function";
+
+    // Determine conversation mode: auto-detect "general" for existing sessions
+    let conversationMode: "guided" | "general" = ((row as Record<string, unknown>).conversation_mode as string ?? "guided") as "guided" | "general";
+    if (conversationMode === "guided") {
+      const hasFunction = stages.function?.confirmed != null;
+      const hasThesis = stages.thesis?.confirmed != null;
+      const hasPillars = stages.core_pillars?.confirmed != null;
+      const hasFlow = stages.full_flow?.confirmed != null;
+      if (hasFunction && hasThesis && hasPillars && hasFlow) {
+        conversationMode = "general";
+      }
+    }
+
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      currentStage,
+      conversationMode,
+      stages,
+      unifiedMessages: JSON.parse(((row as Record<string, unknown>).unified_messages_json as string) || "[]"),
+      scratchpad,
+      plannedUpdates,
+      corePillars: JSON.parse(row.core_pillars_json || "[]"),
+      coreDetailsChatHistory: JSON.parse(row.core_details_chat_json || "[]"),
+      attachedMaterials: JSON.parse(row.attached_materials_json || "[]"),
+      miscMaterials: JSON.parse(((row as Record<string, unknown>).misc_materials_json as string) || "[]"),
+      cascadePending: JSON.parse(((row as Record<string, unknown>).cascade_pending_json as string) || "null"),
+      provider: row.provider as AiProvider,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  async getAgentSession(projectId: string): Promise<AgentSession | null> {
+    const row = this.getRows<{
+      id: string;
+      project_id: string;
+      current_stage: string;
+      stages_json: string;
+      scratchpad_json: string;
+      planned_updates_json: string;
+      provider: string;
+      created_at: string;
+      updated_at: string;
+    }>(
+      "SELECT * FROM agent_sessions WHERE project_id = ?",
+      [projectId],
+    )[0];
+
+    if (!row) return null;
+    return this.mapAgentSessionRow(row);
+  }
+
+  async saveAgentSession(session: AgentSession): Promise<void> {
+    this.run(
+      `REPLACE INTO agent_sessions (
+         id, project_id, current_stage, stages_json, scratchpad_json,
+         planned_updates_json, core_pillars_json, core_details_chat_json,
+         attached_materials_json, provider, created_at, updated_at,
+         conversation_mode, unified_messages_json, cascade_pending_json, misc_materials_json
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        session.id,
+        session.projectId,
+        session.currentStage,
+        JSON.stringify(session.stages),
+        JSON.stringify(session.scratchpad),
+        JSON.stringify(session.plannedUpdates),
+        JSON.stringify(session.corePillars),
+        JSON.stringify(session.coreDetailsChatHistory),
+        JSON.stringify(session.attachedMaterials),
+        session.provider,
+        session.createdAt,
+        session.updatedAt,
+        session.conversationMode,
+        JSON.stringify(session.unifiedMessages),
+        JSON.stringify(session.cascadePending),
+        JSON.stringify(session.miscMaterials),
+      ],
+    );
+  }
+
+  async deleteAgentSession(projectId: string): Promise<void> {
+    this.run("DELETE FROM agent_sessions WHERE project_id = ?", [projectId]);
+  }
+
+  // --- Home Scratchpad ---
+
+  async getHomeScratchpad(): Promise<HomeScratchpadItem[]> {
+    const rows = this.getRows<{ items_json: string }>(
+      "SELECT items_json FROM home_scratchpad WHERE id = 'singleton'",
+    );
+    if (rows.length === 0) return [];
+    return JSON.parse(rows[0].items_json);
+  }
+
+  async saveHomeScratchpad(items: HomeScratchpadItem[]): Promise<void> {
+    this.run(
+      `INSERT OR REPLACE INTO home_scratchpad (id, items_json, updated_at) VALUES ('singleton', ?, ?)`,
+      [JSON.stringify(items), new Date().toISOString()],
+    );
   }
 }

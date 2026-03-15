@@ -14,7 +14,18 @@ import { normalizeFlowchartGraph } from "@shared/flowchart";
 import { InteractiveFlowchart } from "./components/InteractiveFlowchart";
 import { FlowchartDiff } from "./components/FlowchartDiff";
 import {
+  AGENT_STAGES,
+  AGENT_STAGE_LABELS,
   DEFAULT_MODEL_CATALOG,
+  type AgentChatMessage,
+  type AgentChatResponse,
+  type AgentCoreDetails,
+  type AgentPlannedUpdate,
+  type CoreDetailsProposal,
+  type CorePillar,
+  type AgentSession,
+  type AgentStage,
+  type AgentStageConfirmation,
   type AiProvider,
   type AppUpdateStatus,
   type AppEvent,
@@ -27,6 +38,8 @@ import {
   type FlowchartGraph,
   type GenerateFlowchartResult,
   type GenerateProjectOutlineReportInput,
+  type HomeScratchpadItem,
+  type CascadeProposal,
   type ModelCatalog,
   type ModelOption,
   type PlanDraft,
@@ -35,6 +48,7 @@ import {
   type ProjectDetail,
   type ProjectOutlineReport,
   type RuntimeState,
+  type ScratchpadItem,
   type Settings,
   type SetupCheck,
   type SetupSnapshot,
@@ -86,7 +100,7 @@ interface ComposerOptions {
   contextPaths: string[];
 }
 
-type ProgramDetailsTab = "history" | "current" | "planned" | "final";
+type ProgramDetailsTab = "history" | "current" | "planned" | "final" | "agentUpdates";
 
 const THEME_STORAGE_KEY = "programs.theme";
 const DEFAULT_ICON_COLORS = [
@@ -211,7 +225,7 @@ const emptyRuntimeState = (projectId: string): RuntimeState => ({
 const emptyModelCatalog: ModelCatalog = DEFAULT_MODEL_CATALOG;
 
 type HomeTileDotState = "ready" | "launching" | "running" | "updating" | "runningUpdating" | "error";
-type AppPage = "homepage" | "programs" | "calendar" | "health" | "system";
+type AppPage = "homepage" | "programs" | "agents" | "calendar" | "health" | "system";
 type UsageScheduleTone = "under" | "onTrack" | "over";
 
 const USAGE_SCHEDULE_TOLERANCE = 6;
@@ -226,6 +240,10 @@ const APP_PAGE_OPTIONS: Array<{
   {
     id: "programs",
     label: "Programs",
+  },
+  {
+    id: "agents",
+    label: "Agents",
   },
   {
     id: "calendar",
@@ -584,6 +602,14 @@ function App() {
   const [projectFormError, setProjectFormError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [agentSession, setAgentSession] = useState<AgentSession | null>(null);
+  const [agentSelectedProjectId, setAgentSelectedProjectId] = useState<string | null>(null);
+  const [agentViewStage, setAgentViewStage] = useState<AgentStage>("function");
+  const agentSelectedProjectIdRef = useRef(agentSelectedProjectId);
+  agentSelectedProjectIdRef.current = agentSelectedProjectId;
+  const [coreDetailsProjectId, setCoreDetailsProjectId] = useState<string | null>(null);
+  const [showTodoNotepad, setShowTodoNotepad] = useState(false);
+  const [programAgentSession, setProgramAgentSession] = useState<AgentSession | null>(null);
   const [pendingUpdates, setPendingUpdates] = useState<Record<string, PendingPlannedUpdate | null>>({});
   const [outlineReports, setOutlineReports] = useState<Record<string, ProjectOutlineReport | null | undefined>>({});
   const [envSnapshots, setEnvSnapshots] = useState<Record<string, EnvFileSnapshot | undefined>>({});
@@ -702,6 +728,15 @@ function App() {
 
   useEffect(() => {
     setShowUpdatePanel(Boolean(selectedProjectId));
+  }, [selectedProjectId]);
+
+  // Load agent session for programs page features (Core Details, To-Do, Agent Updates)
+  useEffect(() => {
+    if (selectedProjectId) {
+      window.programs.getAgentSession(selectedProjectId).then(setProgramAgentSession);
+    } else {
+      setProgramAgentSession(null);
+    }
   }, [selectedProjectId]);
 
   useEffect(() => {
@@ -944,6 +979,21 @@ function App() {
             ...current,
             [event.projectId]: event.report,
           }));
+          return;
+        case "agent.session":
+          if (event.projectId === agentSelectedProjectIdRef.current) {
+            setAgentSession(event.session);
+            if (event.session) {
+              setAgentViewStage(event.session.currentStage);
+            }
+          }
+          // Also update programAgentSession for programs page features
+          setProgramAgentSession((prev) => {
+            if (prev && prev.projectId === event.projectId) {
+              return event.session;
+            }
+            return prev;
+          });
           return;
       }
     });
@@ -1696,6 +1746,12 @@ function App() {
                     System Details
                     {pendingUpdates[selectedProject.id] ? <span className="notificationBadge" /> : null}
                   </button>
+                  <button
+                    className="textButton planButtonWrapper summaryDetailButton"
+                    onClick={() => setCoreDetailsProjectId(selectedProject.id)}
+                  >
+                    Core Details
+                  </button>
                 </div>
                 {selectedProject.lastError ? <div className="errorBanner">{selectedProject.lastError}</div> : null}
               </div>
@@ -1829,6 +1885,24 @@ function App() {
             </div>
           </div>
         ) : null}
+
+        <button
+          className="todoFloatingButton"
+          onClick={() => setShowTodoNotepad(!showTodoNotepad)}
+        >
+          To-do
+        </button>
+
+        {showTodoNotepad ? (
+          <TodoNotepad
+            projectId={selectedProject.id}
+            agentSession={programAgentSession}
+            settings={settings}
+            onClose={() => setShowTodoNotepad(false)}
+            onSessionUpdate={setProgramAgentSession}
+            pushToast={pushToast}
+          />
+        ) : null}
       </div>
     </section>
   );
@@ -1891,38 +1965,30 @@ function App() {
 
         <main className={isSelectedProjectView ? "shellContent shellContent-detailLocked" : "shellContent"}>
           {currentPage === "homepage" ? (
-            <HomepagePlanner
+            <HomepageScratchpad projects={projects} />
+          ) : currentPage === "agents" ? (
+            <AgentsPage
               projects={projects}
-              projectDetails={projectDetails}
               settings={settings}
+              agentSession={agentSession}
+              agentSelectedProjectId={agentSelectedProjectId}
+              agentViewStage={agentViewStage}
               modelCatalog={modelCatalog}
-              theme={theme}
-              onApplyUpdate={(projectId, flowchart, flowchartGraph, description) => {
-                void (async () => {
-                  await window.programs.savePlannedUpdate({
-                    projectId,
-                    flowchart,
-                    flowchartGraph,
-                    previousFlowchart: projectDetails[projectId]?.flowchart ?? "",
-                    previousFlowchartGraph: projectDetails[projectId]?.flowchartGraph ?? null,
-                    description,
-                  });
-                  setSelectedProjectId(projectId);
-                  setCurrentPage("programs");
-                  void window.programs.applyPlannedUpdate(projectId);
-                })();
+              onSelectProject={async (projectId) => {
+                setAgentSelectedProjectId(projectId);
+                setAgentSession(null);
+                setAgentViewStage("function");
+                if (projectId) {
+                  const session = await window.programs.getAgentSession(projectId);
+                  setAgentSession(session);
+                  if (session) setAgentViewStage(session.currentStage);
+                }
               }}
-              onSavePlan={async (projectId, flowchart, flowchartGraph, previousFlowchart, previousFlowchartGraph, description) => {
-                await window.programs.savePlannedUpdate({
-                  projectId,
-                  flowchart,
-                  flowchartGraph,
-                  previousFlowchart,
-                  previousFlowchartGraph,
-                  description,
-                });
-                pushToast("Plan saved. Apply it from the program's View Plan.", "success");
+              onSetViewStage={setAgentViewStage}
+              onSessionUpdate={(session) => {
+                setAgentSession(session);
               }}
+              pushToast={pushToast}
             />
           ) : currentPage === "programs" ? (
             programsPage
@@ -2169,8 +2235,10 @@ function App() {
           currentFlowchart={projectDetails[programDetailsProjectId]?.flowchart ?? createFallbackPlan(programDetailsProject)}
           currentFlowchartGraph={projectDetails[programDetailsProjectId]?.flowchartGraph ?? null}
           pendingUpdate={pendingUpdates[programDetailsProjectId] ?? null}
+          agentSession={programAgentSession}
           busyKey={busyKey}
           theme={theme}
+          settings={settings}
           onClose={() => setProgramDetailsProjectId(null)}
           onGenerateFlowchart={async (provider: AiProvider) => {
             await withBusy("generate-flowchart", async () => {
@@ -2201,6 +2269,16 @@ function App() {
             });
           }}
           onUndo={(update) => void handleUndoUpdate(update)}
+        />
+      ) : null}
+
+      {coreDetailsProjectId ? (
+        <CoreDetailsPanel
+          projectId={coreDetailsProjectId}
+          settings={settings}
+          agentSession={programAgentSession}
+          onClose={() => setCoreDetailsProjectId(null)}
+          pushToast={pushToast}
         />
       ) : null}
 
@@ -2735,6 +2813,111 @@ function PlaceholderWorkspace({
         <button className="primaryButton placeholderReturnButton" onClick={onReturn}>
           Open Programs
         </button>
+      </div>
+    </section>
+  );
+}
+
+function HomepageScratchpad({ projects }: { projects: Project[] }) {
+  const [items, setItems] = useState<HomeScratchpadItem[]>([]);
+  const [newText, setNewText] = useState("");
+  const [newProjectId, setNewProjectId] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    void window.programs.readHomeScratchpad().then((data) => {
+      setItems(data);
+      setLoaded(true);
+    });
+  }, []);
+
+  const persist = (updated: HomeScratchpadItem[]) => {
+    setItems(updated);
+    void window.programs.updateHomeScratchpad({ items: updated });
+  };
+
+  const handleAdd = () => {
+    if (!newText.trim()) return;
+    const item: HomeScratchpadItem = {
+      id: crypto.randomUUID(),
+      text: newText.trim(),
+      projectId: newProjectId,
+      completed: false,
+      createdAt: new Date().toISOString(),
+    };
+    persist([...items, item]);
+    setNewText("");
+  };
+
+  const handleRemove = (id: string) => {
+    persist(items.filter((i) => i.id !== id));
+  };
+
+  // Group items by project
+  const grouped = useMemo(() => {
+    const groups: Record<string, { label: string; items: HomeScratchpadItem[] }> = {};
+    for (const item of items) {
+      const key = item.projectId ?? "__unassigned";
+      if (!groups[key]) {
+        const project = item.projectId ? projects.find((p) => p.id === item.projectId) : null;
+        groups[key] = { label: project?.name ?? "Unassigned", items: [] };
+      }
+      groups[key].items.push(item);
+    }
+    return groups;
+  }, [items, projects]);
+
+  if (!loaded) return null;
+
+  return (
+    <section className="homepageScratchpad">
+      <h2 className="homeScratchpadTitle">Scratchpad</h2>
+
+      <div className="homeScratchpadInputRow">
+        <input
+          type="text"
+          className="homeScratchpadTextInput"
+          value={newText}
+          onChange={(e) => setNewText(e.target.value)}
+          placeholder="Add a note..."
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              handleAdd();
+            }
+          }}
+        />
+        <select
+          className="homeScratchpadProjectSelect"
+          value={newProjectId ?? ""}
+          onChange={(e) => setNewProjectId(e.target.value || null)}
+        >
+          <option value="">Unassigned</option>
+          {projects.map((p) => (
+            <option key={p.id} value={p.id}>{p.name}</option>
+          ))}
+        </select>
+        <button className="primaryButton" onClick={handleAdd} disabled={!newText.trim()}>
+          Add
+        </button>
+      </div>
+
+      <div className="homeScratchpadGroups">
+        {Object.entries(grouped).map(([key, group]) => (
+          <div key={key} className="homeScratchpadGroup">
+            <h4 className="homeScratchpadGroupLabel">{group.label}</h4>
+            {group.items.map((item) => (
+              <div key={item.id} className="homeScratchpadItem">
+                <span className="homeScratchpadBullet">&bull;</span>
+                <span className="homeScratchpadItemText">{item.text}</span>
+                <button className="deleteBtn" onClick={() => handleRemove(item.id)}>&times;</button>
+              </div>
+            ))}
+          </div>
+        ))}
+        {items.length === 0 ? (
+          <p className="homeScratchpadEmpty">No notes yet. Add bullet points above and assign them to a project.</p>
+        ) : null}
       </div>
     </section>
   );
@@ -3633,8 +3816,10 @@ function ProgramDetailsModal({
   currentFlowchart,
   currentFlowchartGraph,
   pendingUpdate,
+  agentSession,
   busyKey,
   theme,
+  settings,
   onClose,
   onGenerateFlowchart,
   onApplyPendingUpdate,
@@ -3645,8 +3830,10 @@ function ProgramDetailsModal({
   currentFlowchart: string;
   currentFlowchartGraph: FlowchartGraph | null;
   pendingUpdate: PendingPlannedUpdate | null;
+  agentSession: AgentSession | null;
   busyKey: string | null;
   theme: Theme;
+  settings: Settings;
   onClose: () => void;
   onGenerateFlowchart: (provider: AiProvider) => Promise<void>;
   onApplyPendingUpdate: () => Promise<void>;
@@ -3662,6 +3849,7 @@ function ProgramDetailsModal({
   const hasHistory = savedUpdates.length > 0;
   const hasPlanned = Boolean(pendingUpdate?.previousFlowchart);
   const hasFinal = Boolean(pendingUpdate);
+  const hasAgentUpdates = (agentSession?.plannedUpdates.length ?? 0) > 0;
   const selectedUpdate = savedUpdates.find((u) => u.id === selectedUpdateId) ?? null;
   const selectedIndex = selectedUpdate ? savedUpdates.indexOf(selectedUpdate) : -1;
   const previousFlowchart = selectedIndex > 0 ? savedUpdates[selectedIndex - 1].flowchart : null;
@@ -3671,21 +3859,23 @@ function ProgramDetailsModal({
     current: true,
     planned: hasPlanned,
     final: hasFinal,
+    agentUpdates: hasAgentUpdates,
   };
   const tabOptions: Array<{ id: ProgramDetailsTab; label: string }> = [
     { id: "history", label: "Update History" },
     { id: "current", label: "Current System" },
     { id: "planned", label: "Planned Updates" },
+    { id: "agentUpdates", label: "Agent Updates" },
     { id: "final", label: "Final Product" },
   ];
 
   useEffect(() => {
     const activeTabAvailable =
-      activeTab === "history" ? hasHistory : activeTab === "planned" ? hasPlanned : activeTab === "final" ? hasFinal : true;
+      activeTab === "history" ? hasHistory : activeTab === "planned" ? hasPlanned : activeTab === "final" ? hasFinal : activeTab === "agentUpdates" ? hasAgentUpdates : true;
     if (!activeTabAvailable) {
       setActiveTab("current");
     }
-  }, [activeTab, hasFinal, hasHistory, hasPlanned]);
+  }, [activeTab, hasFinal, hasHistory, hasPlanned, hasAgentUpdates]);
 
   useEffect(() => {
     if (activeTab !== "history") {
@@ -3859,6 +4049,47 @@ function ProgramDetailsModal({
           ) : (
             <MermaidChart chart={pendingUpdate.flowchart} flowchartGraph={pendingUpdate.flowchartGraph} theme={theme} />
           )}
+        </div>
+      ) : null}
+
+      {activeTab === "agentUpdates" && agentSession ? (
+        <div className="detailsPanel">
+          <p className="modalLead">Planned updates from the iteration agent. Apply them one at a time.</p>
+          <div className="agentPlannedUpdatesList">
+            {agentSession.plannedUpdates
+              .sort((a, b) => a.order - b.order)
+              .map((update, idx) => (
+                <div key={update.id} className="agentPlannedUpdateItem">
+                  <span className="orderBadge">{idx + 1}</span>
+                  <div className="updateContent">
+                    <div className="updateTitle">{update.title}</div>
+                    <div className="updateDescription">{update.description}</div>
+                  </div>
+                  <div className="updateActions">
+                    <StatusChip
+                      tone={update.status === "completed" ? "confirmed" : update.status === "failed" ? "action_required" : update.status === "in_progress" ? "info" : "neutral"}
+                    >{update.status}</StatusChip>
+                    {update.status === "pending" ? (
+                      <button
+                        className="primaryButton"
+                        onClick={() => {
+                          void window.programs.agentExecuteUpdate({
+                            projectId: project.id,
+                            updateId: update.id,
+                            provider: settings.advancedDefaults.provider,
+                            model: settings.advancedDefaults.model,
+                            claudeModel: settings.advancedDefaults.claudeModel,
+                          });
+                          onClose();
+                        }}
+                      >
+                        Apply Update
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+          </div>
         </div>
       ) : null}
     </Modal>
@@ -4821,280 +5052,938 @@ function MermaidChartDiff({
   return <MermaidChart chart={diffChart} flowchartGraph={flowchartGraph} theme={theme} />;
 }
 
-function HomepagePlanner({
-  projects,
-  projectDetails,
-  settings,
-  modelCatalog,
-  theme,
-  onApplyUpdate,
-  onSavePlan,
-}: {
-  projects: Project[];
-  projectDetails: Record<string, ProjectDetail>;
-  settings: Settings;
-  modelCatalog: ModelCatalog;
-  theme: Theme;
-  onApplyUpdate: (projectId: string, flowchart: string, flowchartGraph: FlowchartGraph | null, description: string) => void;
-  onSavePlan: (
-    projectId: string,
-    flowchart: string,
-    flowchartGraph: FlowchartGraph | null,
-    previousFlowchart: string,
-    previousFlowchartGraph: FlowchartGraph | null,
-    description: string,
-  ) => Promise<void>;
-}) {
-  const [chatMessages, setChatMessages] = useState<PlanningChatMessage[]>([]);
-  const [inputValue, setInputValue] = useState("");
-  const [attachedProjectId, setAttachedProjectId] = useState<string | null>(null);
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [selectedProvider, setSelectedProvider] = useState<AiProvider>(settings.advancedDefaults.provider);
-  const [showFlowchart, setShowFlowchart] = useState(true);
-  const [currentFlowchart, setCurrentFlowchart] = useState<string | null>(null);
-  const [currentFlowchartGraph, setCurrentFlowchartGraph] = useState<FlowchartGraph | null>(null);
-  const [previousFlowchart, setPreviousFlowchart] = useState<string | null>(null);
-  const [previousFlowchartGraph, setPreviousFlowchartGraph] = useState<FlowchartGraph | null>(null);
-  const chatEndRef = useRef<HTMLDivElement | null>(null);
-
-  const attachedProject = useMemo(
-    () => projects.find((p) => p.id === attachedProjectId) ?? null,
-    [projects, attachedProjectId],
+function CoreDetailsPillarExpanded({ pillar }: { pillar: CorePillar }) {
+  const [expandedChildId, setExpandedChildId] = useState<string | null>(null);
+  return (
+    <div className="corePillarExpanded">
+      <div className="pillarDetailRow">
+        <span className="pillarDetailLabel">Function:</span>
+        <span className={pillar.function?.status === "assumed" ? "assumedText" : ""}>
+          {pillar.function?.summary ?? "Not defined"}
+        </span>
+      </div>
+      <div className="pillarDetailRow">
+        <span className="pillarDetailLabel">Thesis:</span>
+        <span className={pillar.thesis?.status === "assumed" ? "assumedText" : ""}>
+          {pillar.thesis?.summary ?? "Not defined"}
+        </span>
+      </div>
+      {pillar.fullFlow ? (
+        <div className="pillarDetailRow">
+          <span className="pillarDetailLabel">Full-Flow:</span>
+          <span className={pillar.fullFlow.status === "assumed" ? "assumedText" : ""}>
+            {pillar.fullFlow.summary}
+          </span>
+        </div>
+      ) : null}
+      {pillar.corePillars.length > 0 ? (
+        <div className="pillarChildren">
+          <span className="pillarDetailLabel" style={{ marginBottom: 4, display: "block" }}>Sub-Pillars:</span>
+          <div className="corePillarChips">
+            {pillar.corePillars.map((child) => (
+              <button
+                key={child.id}
+                className={`corePillarChip${expandedChildId === child.id ? " active" : ""}`}
+                onClick={() => setExpandedChildId(expandedChildId === child.id ? null : child.id)}
+              >
+                {child.name}
+              </button>
+            ))}
+          </div>
+          {expandedChildId ? (() => {
+            const child = pillar.corePillars.find((c) => c.id === expandedChildId);
+            if (!child) return null;
+            return (
+              <div className="corePillarExpanded" style={{ marginTop: 8 }}>
+                <div className="pillarDetailRow">
+                  <span className="pillarDetailLabel">Function:</span>
+                  <span className={child.function?.status === "assumed" ? "assumedText" : ""}>
+                    {child.function?.summary ?? "Not defined"}
+                  </span>
+                </div>
+                <div className="pillarDetailRow">
+                  <span className="pillarDetailLabel">Thesis:</span>
+                  <span className={child.thesis?.status === "assumed" ? "assumedText" : ""}>
+                    {child.thesis?.summary ?? "Not defined"}
+                  </span>
+                </div>
+              </div>
+            );
+          })() : null}
+        </div>
+      ) : null}
+    </div>
   );
+}
 
-  const attachedFlowchart = attachedProjectId ? projectDetails[attachedProjectId]?.flowchart ?? null : null;
-  const attachedFlowchartGraph = attachedProjectId ? projectDetails[attachedProjectId]?.flowchartGraph ?? null : null;
-
-  useEffect(() => {
-    if (attachedFlowchart && !currentFlowchart) {
-      setCurrentFlowchart(attachedFlowchart);
-      setCurrentFlowchartGraph(attachedFlowchartGraph);
-      setPreviousFlowchart(attachedFlowchart);
-      setPreviousFlowchartGraph(attachedFlowchartGraph);
-    }
-  }, [attachedFlowchart, attachedFlowchartGraph, currentFlowchart]);
-
-  useEffect(() => {
-    if (attachedFlowchartGraph && currentFlowchart === attachedFlowchart && !currentFlowchartGraph) {
-      setCurrentFlowchartGraph(attachedFlowchartGraph);
-    }
-    if (attachedFlowchartGraph && previousFlowchart === attachedFlowchart && !previousFlowchartGraph) {
-      setPreviousFlowchartGraph(attachedFlowchartGraph);
-    }
-  }, [
-    attachedFlowchart,
-    attachedFlowchartGraph,
-    currentFlowchart,
-    currentFlowchartGraph,
-    previousFlowchart,
-    previousFlowchartGraph,
-  ]);
-
-  useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [chatMessages]);
+function CoreDetailsPanel({
+  projectId,
+  settings,
+  agentSession,
+  onClose,
+  pushToast,
+}: {
+  projectId: string;
+  settings: Settings;
+  agentSession: AgentSession | null;
+  onClose: () => void;
+  pushToast: (message: string, level: "info" | "success" | "error") => void;
+}) {
+  const [inputValue, setInputValue] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [expandedPillarId, setExpandedPillarId] = useState<string | null>(null);
+  const [updateAiMessage, setUpdateAiMessage] = useState<string | null>(null);
+  const [pendingProposal, setPendingProposal] = useState<CoreDetailsProposal | null>(null);
+  const [editedProposal, setEditedProposal] = useState<CoreDetailsProposal | null>(null);
+  const [coreDetails, setCoreDetails] = useState<AgentCoreDetails>({
+    function: agentSession?.stages.function.confirmed ?? null,
+    thesis: agentSession?.stages.thesis.confirmed ?? null,
+    corePillars: agentSession?.corePillars ?? [],
+    fullFlow: agentSession?.stages.full_flow.confirmed ?? null,
+  });
 
   const handleSend = async () => {
-    if (!inputValue.trim() || !attachedProjectId) return;
+    if (!inputValue.trim()) return;
     setIsLoading(true);
-    const userMsg = inputValue;
+    const msg = inputValue;
     setInputValue("");
-
     try {
-      const response: PlanningChatResponse = await window.programs.planningChat({
-        projectId: attachedProjectId,
-        provider: selectedProvider,
+      const response = await window.programs.agentSuggestUpdate({
+        projectId,
+        provider: settings.advancedDefaults.provider,
         model: settings.advancedDefaults.model,
         claudeModel: settings.advancedDefaults.claudeModel,
-        message: userMsg,
-        sessionId,
+        message: msg,
       });
-
-      setSessionId(response.sessionId);
-      setChatMessages((current) => [
-        ...current,
-        { id: crypto.randomUUID(), role: "user", content: userMsg, flowchart: null, flowchartGraph: null, createdAt: new Date().toISOString() },
-        response.message,
-      ]);
-
-      if (response.updatedFlowchart) {
-        setCurrentFlowchart(response.updatedFlowchart);
-        setCurrentFlowchartGraph(response.updatedFlowchartGraph);
+      setUpdateAiMessage(response.aiMessage);
+      if (response.proposal) {
+        setPendingProposal(response.proposal);
+        setEditedProposal(response.proposal);
       }
     } catch (error) {
-      setChatMessages((current) => [
-        ...current,
-        { id: crypto.randomUUID(), role: "user", content: userMsg, flowchart: null, flowchartGraph: null, createdAt: new Date().toISOString() },
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: error instanceof Error ? error.message : "Something went wrong.",
-          flowchart: null,
-          flowchartGraph: null,
-          createdAt: new Date().toISOString(),
-        },
-      ]);
+      pushToast(error instanceof Error ? error.message : "Failed to get suggestion.", "error");
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleAttachChange = (projectId: string) => {
-    setAttachedProjectId(projectId);
-    setChatMessages([]);
-    setSessionId(null);
-    setCurrentFlowchart(null);
-    setCurrentFlowchartGraph(null);
-    setPreviousFlowchart(null);
-    setPreviousFlowchartGraph(null);
+  const handleApply = async (proposal: CoreDetailsProposal) => {
+    try {
+      const session = await window.programs.agentApplyCoreDetails({ projectId, proposal });
+      setCoreDetails({
+        function: session.stages.function.confirmed ?? null,
+        thesis: session.stages.thesis.confirmed ?? null,
+        corePillars: session.corePillars,
+        fullFlow: session.stages.full_flow.confirmed ?? null,
+      });
+      setPendingProposal(null);
+      setEditedProposal(null);
+      setUpdateAiMessage(null);
+      pushToast("Core details updated.", "success");
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Failed to apply update.", "error");
+    }
   };
 
-  const lastDescription = chatMessages.filter((m) => m.role === "assistant").at(-1)?.content ?? "Planned flowchart update";
+  const expandedPillar = expandedPillarId
+    ? coreDetails.corePillars.find((p) => p.id === expandedPillarId) ?? null
+    : null;
 
   return (
-    <section className="homepagePlanner">
-      <div className="plannerTopBar">
+    <Modal title="Core Details" onClose={onClose}>
+      <div className="coreDetailsPanel">
+        <div className="coreDetailItem">
+          <h4>Function</h4>
+          <p>{coreDetails.function?.summary ?? "Not yet defined. Define in Agents page."}</p>
+        </div>
+        <div className="coreDetailItem">
+          <h4>Thesis</h4>
+          <p>{coreDetails.thesis?.summary ?? "Not yet defined. Define in Agents page."}</p>
+        </div>
+        <div className="coreDetailItem">
+          <h4>Core Pillars</h4>
+          {coreDetails.corePillars.length > 0 ? (
+            <>
+              <div className="corePillarChips">
+                {coreDetails.corePillars.map((pillar) => (
+                  <button
+                    key={pillar.id}
+                    className={`corePillarChip${expandedPillarId === pillar.id ? " active" : ""}`}
+                    onClick={() => setExpandedPillarId(expandedPillarId === pillar.id ? null : pillar.id)}
+                  >
+                    {pillar.name}
+                  </button>
+                ))}
+              </div>
+              {expandedPillar ? <CoreDetailsPillarExpanded pillar={expandedPillar} /> : null}
+            </>
+          ) : (
+            <p>Not yet defined. Define in Agents page.</p>
+          )}
+        </div>
+        <div className="coreDetailItem">
+          <h4>Full-Flow</h4>
+          {coreDetails.fullFlow?.steps && coreDetails.fullFlow.steps.length > 0 ? (
+            <ol className="flowStepList">
+              {coreDetails.fullFlow.steps.map((step) => (
+                <li key={step.id} className="flowStepItem">
+                  <div>
+                    <div>{step.description}</div>
+                    {step.pillarIds.length > 0 ? (
+                      <div className="flowStepPillars">
+                        {step.pillarIds.map((pid) => {
+                          const pillar = coreDetails.corePillars.find((p) => p.id === pid);
+                          return pillar ? (
+                            <span key={pid} className="flowStepPillarTag">{pillar.name}</span>
+                          ) : null;
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p>{coreDetails.fullFlow?.summary ?? "Not yet defined. Define in Agents page."}</p>
+          )}
+        </div>
+
+        <div className="coreDetailsChatSection">
+          <h4>Update Core Details</h4>
+          {updateAiMessage ? (
+            <div className="updateAiMessage">{updateAiMessage}</div>
+          ) : null}
+          {editedProposal ? (
+            <div className="pendingProposalCard">
+              <h5>Proposed Changes</h5>
+              {editedProposal.updatedFunction != null ? (
+                <div className="proposalField">
+                  <div className="proposalFieldLabel">Function</div>
+                  <textarea
+                    className="proposalFieldValue"
+                    value={editedProposal.updatedFunction}
+                    onChange={(e) => setEditedProposal({ ...editedProposal, updatedFunction: e.target.value })}
+                  />
+                </div>
+              ) : null}
+              {editedProposal.updatedThesis != null ? (
+                <div className="proposalField">
+                  <div className="proposalFieldLabel">Thesis</div>
+                  <textarea
+                    className="proposalFieldValue"
+                    value={editedProposal.updatedThesis}
+                    onChange={(e) => setEditedProposal({ ...editedProposal, updatedThesis: e.target.value })}
+                  />
+                </div>
+              ) : null}
+              {editedProposal.updatedFullFlow != null ? (
+                <div className="proposalField">
+                  <div className="proposalFieldLabel">Full-Flow</div>
+                  <textarea
+                    className="proposalFieldValue"
+                    value={editedProposal.updatedFullFlow}
+                    onChange={(e) => setEditedProposal({ ...editedProposal, updatedFullFlow: e.target.value })}
+                  />
+                </div>
+              ) : null}
+              {editedProposal.updatedCorePillars != null ? (
+                <div className="proposalField">
+                  <div className="proposalFieldLabel">Core Pillars</div>
+                  <p className="coreDetailValue" style={{ fontSize: "0.8rem", margin: "2px 0 0" }}>
+                    {editedProposal.updatedCorePillars.map((p) => p.name).join(", ")}
+                  </p>
+                </div>
+              ) : null}
+              <div className="proposalActions">
+                <button className="primaryButton" onClick={() => void handleApply(editedProposal)}>Confirm</button>
+                <button className="secondaryButton" onClick={() => { setPendingProposal(null); setEditedProposal(null); setUpdateAiMessage(null); }}>Dismiss</button>
+              </div>
+            </div>
+          ) : null}
+          <div className="plannerInputArea" style={{ marginTop: 8 }}>
+            <textarea
+              className="plannerInput"
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              placeholder="Describe what to update..."
+              disabled={isLoading}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  void handleSend();
+                }
+              }}
+            />
+            <button
+              className="primaryButton"
+              onClick={() => void handleSend()}
+              disabled={!inputValue.trim() || isLoading}
+            >
+              {isLoading ? <RunningIndicator /> : "Send"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function TodoNotepad({
+  projectId,
+  agentSession,
+  settings,
+  onClose,
+  onSessionUpdate,
+  pushToast,
+}: {
+  projectId: string;
+  agentSession: AgentSession | null;
+  settings: Settings;
+  onClose: () => void;
+  onSessionUpdate: (session: AgentSession | null) => void;
+  pushToast: (message: string, level: "info" | "success" | "error") => void;
+}) {
+  const [inputValue, setInputValue] = useState("");
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  const scratchpad = agentSession?.scratchpad ?? [];
+  const activeTodos = scratchpad.filter((s) => !s.completed);
+  const completedTodos = scratchpad.filter((s) => s.completed);
+
+  const handleAddTodo = () => {
+    if (!inputValue.trim() || !agentSession) return;
+    const newItem: ScratchpadItem = {
+      id: crypto.randomUUID(),
+      text: inputValue.trim(),
+      completed: false,
+      source: "user",
+      createdAt: new Date().toISOString(),
+    };
+    const updated = [...agentSession.scratchpad, newItem];
+    setInputValue("");
+    void window.programs.agentUpdateScratchpad({
+      projectId,
+      scratchpad: updated,
+    });
+  };
+
+  const handleRemoveTodo = (itemId: string) => {
+    if (!agentSession) return;
+    const updated = agentSession.scratchpad.filter((s) => s.id !== itemId);
+    void window.programs.agentUpdateScratchpad({
+      projectId,
+      scratchpad: updated,
+    });
+  };
+
+  const handleProcessTodos = async () => {
+    if (activeTodos.length === 0) return;
+    setIsProcessing(true);
+    try {
+      await window.programs.agentProcessTodosFromProgram({
+        projectId,
+        provider: settings.advancedDefaults.provider,
+        model: settings.advancedDefaults.model,
+        claudeModel: settings.advancedDefaults.claudeModel,
+        newTodos: [],
+      });
+      pushToast("To-dos processed into planned updates.", "success");
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Failed to process to-dos.", "error");
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  return (
+    <div className="todoNotepadOverlay">
+      <div className="todoNotepadHeader">
+        <span>To-do</span>
+        <button className="deleteBtn" onClick={onClose}>&times;</button>
+      </div>
+      <div className="todoNotepadList">
+        {activeTodos.map((item) => (
+          <div key={item.id} className={`todoItem todoItem--${item.source}`}>
+            <span className="todoItemText">{item.text}</span>
+            <button className="deleteBtn" onClick={() => handleRemoveTodo(item.id)}>&times;</button>
+          </div>
+        ))}
+        {completedTodos.length > 0 ? (
+          <>
+            <div className="todoCompletedDivider">Processed</div>
+            {completedTodos.map((item) => (
+              <div key={item.id} className="todoItem todoItem--completed">
+                <span className="todoItemText">{item.text}</span>
+              </div>
+            ))}
+          </>
+        ) : null}
+      </div>
+      <div className="todoNotepadInput">
+        <input
+          type="text"
+          value={inputValue}
+          onChange={(e) => setInputValue(e.target.value)}
+          placeholder="Add a to-do..."
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              handleAddTodo();
+            }
+          }}
+        />
+      </div>
+      {activeTodos.length > 0 ? (
+        <button
+          className="primaryButton"
+          style={{ width: "100%", marginTop: 8 }}
+          onClick={() => void handleProcessTodos()}
+          disabled={isProcessing}
+        >
+          {isProcessing ? "Processing..." : "Process To-dos"}
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function SimpleFlowchart({
+  pillars,
+  confirmation,
+  selectedNodeId,
+  onSelectNode,
+}: {
+  pillars: CorePillar[];
+  confirmation: AgentStageConfirmation | null;
+  selectedNodeId: string | null;
+  onSelectNode: (id: string) => void;
+}) {
+  const defaultText = confirmation?.flowchartParagraph ?? confirmation?.summary ?? null;
+  const nodeDescriptions = confirmation?.nodeDescriptions ?? {};
+
+  const selectedDescription = selectedNodeId ? nodeDescriptions[selectedNodeId] ?? null : null;
+
+  return (
+    <div className="simpleFlowchart">
+      <div className="simpleFlowchartNodes">
+        {pillars.map((pillar, idx) => (
+          <div key={pillar.id} className="simpleFlowchartNodeGroup">
+            {idx > 0 && <div className="simpleFlowchartArrow">&rarr;</div>}
+            <button
+              className={`simpleFlowchartNode${selectedNodeId === pillar.id ? " selected" : ""}`}
+              onClick={() => onSelectNode(pillar.id)}
+              title={pillar.name}
+            >
+              {pillar.name}
+            </button>
+          </div>
+        ))}
+      </div>
+      <div className="simpleFlowchartDescription">
+        {selectedDescription ?? defaultText ?? <em className="coreDetailEmpty">No flow description yet</em>}
+      </div>
+    </div>
+  );
+}
+
+function CascadeCard({
+  cascade,
+  onAccept,
+  onReject,
+}: {
+  cascade: CascadeProposal;
+  onAccept: (acceptedStages: AgentStage[], editedSummaries?: Record<string, string>) => void;
+  onReject: () => void;
+}) {
+  const [checkedStages, setCheckedStages] = useState<Record<string, boolean>>(() => {
+    const init: Record<string, boolean> = {};
+    for (const u of cascade.proposedUpdates) init[u.stage] = true;
+    return init;
+  });
+  const [editedTexts, setEditedTexts] = useState<Record<string, string>>(() => {
+    const init: Record<string, string> = {};
+    for (const u of cascade.proposedUpdates) init[u.stage] = u.updatedSummary;
+    return init;
+  });
+
+  const handleToggle = (stage: string) => {
+    setCheckedStages((prev) => ({ ...prev, [stage]: !prev[stage] }));
+  };
+
+  const handleAccept = () => {
+    const accepted = cascade.proposedUpdates
+      .filter((u) => checkedStages[u.stage])
+      .map((u) => u.stage);
+    const edited: Record<string, string> = {};
+    for (const u of cascade.proposedUpdates) {
+      if (checkedStages[u.stage] && editedTexts[u.stage] !== u.updatedSummary) {
+        edited[u.stage] = editedTexts[u.stage];
+      }
+    }
+    onAccept(accepted, Object.keys(edited).length > 0 ? edited : undefined);
+  };
+
+  return (
+    <div className="cascadeCard">
+      <h5 className="cascadeCardTitle">Cascade Updates</h5>
+      <p className="cascadeCardSubtitle">
+        Updating <strong>{AGENT_STAGE_LABELS[cascade.triggeredByStage]}</strong> may affect these sections:
+      </p>
+      <div className="cascadeItems">
+        {cascade.proposedUpdates.map((update) => (
+          <div key={update.stage} className="cascadeItem">
+            <label className="cascadeItemHeader">
+              <input
+                type="checkbox"
+                checked={checkedStages[update.stage] ?? false}
+                onChange={() => handleToggle(update.stage)}
+              />
+              <span className="cascadeItemLabel">{AGENT_STAGE_LABELS[update.stage]}</span>
+            </label>
+            <textarea
+              className="cascadeItemText"
+              value={editedTexts[update.stage] ?? ""}
+              onChange={(e) => setEditedTexts((prev) => ({ ...prev, [update.stage]: e.target.value }))}
+              disabled={!checkedStages[update.stage]}
+            />
+          </div>
+        ))}
+      </div>
+      <div className="cascadeActions">
+        <button className="primaryButton" onClick={handleAccept}>
+          Accept Selected
+        </button>
+        <button className="secondaryButton" onClick={onReject}>
+          Reject All
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function AgentsPage({
+  projects,
+  settings,
+  agentSession,
+  agentSelectedProjectId,
+  agentViewStage,
+  modelCatalog,
+  onSelectProject,
+  onSetViewStage,
+  onSessionUpdate,
+  pushToast,
+}: {
+  projects: Project[];
+  settings: Settings;
+  agentSession: AgentSession | null;
+  agentSelectedProjectId: string | null;
+  agentViewStage: AgentStage;
+  modelCatalog: ModelCatalog;
+  onSelectProject: (projectId: string | null) => void;
+  onSetViewStage: (stage: AgentStage) => void;
+  onSessionUpdate: (session: AgentSession) => void;
+  pushToast: (message: string, level: "info" | "success" | "error") => void;
+}) {
+  const [inputValue, setInputValue] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
+  const [agentProvider, setAgentProvider] = useState<AiProvider>(settings.advancedDefaults.provider);
+  const [agentCodexModel, setAgentCodexModel] = useState<CodexModel>(settings.advancedDefaults.model);
+  const [agentClaudeModel, setAgentClaudeModel] = useState<ClaudeModel>(settings.advancedDefaults.claudeModel);
+  const [agentModelMenuOpen, setAgentModelMenuOpen] = useState(false);
+  const [updateAiMessage, setUpdateAiMessage] = useState<string | null>(null);
+  const [pendingProposal, setPendingProposal] = useState<CoreDetailsProposal | null>(null);
+  const [editedProposal, setEditedProposal] = useState<CoreDetailsProposal | null>(null);
+  const [expandedPillarId, setExpandedPillarId] = useState<string | null>(null);
+
+  const handleSuggestUpdate = async () => {
+    if (!inputValue.trim() || !agentSelectedProjectId) return;
+    setIsLoading(true);
+    const msg = inputValue;
+    setInputValue("");
+    try {
+      const response = await window.programs.agentSuggestUpdate({
+        projectId: agentSelectedProjectId,
+        provider: agentProvider,
+        model: agentCodexModel,
+        claudeModel: agentClaudeModel,
+        message: msg,
+      });
+      setUpdateAiMessage(response.aiMessage);
+      if (response.proposal) {
+        setPendingProposal(response.proposal);
+        setEditedProposal(response.proposal);
+      }
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Something went wrong.", "error");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleApplyCoreDetails = async (proposal: CoreDetailsProposal) => {
+    if (!agentSelectedProjectId) return;
+    try {
+      const session = await window.programs.agentApplyCoreDetails({
+        projectId: agentSelectedProjectId,
+        proposal,
+      });
+      onSessionUpdate(session);
+      setPendingProposal(null);
+      setEditedProposal(null);
+      setUpdateAiMessage(null);
+      pushToast("Core details updated.", "success");
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Failed to apply update.", "error");
+    }
+  };
+
+
+  const handleMoveUpdate = (updateId: string, direction: -1 | 1) => {
+    if (!agentSelectedProjectId || !agentSession) return;
+    const updates = [...agentSession.plannedUpdates];
+    const idx = updates.findIndex((u) => u.id === updateId);
+    if (idx < 0) return;
+    const newIdx = idx + direction;
+    if (newIdx < 0 || newIdx >= updates.length) return;
+    [updates[idx], updates[newIdx]] = [updates[newIdx], updates[idx]];
+    const ids = updates.map((u) => u.id);
+    void window.programs.agentReorderUpdates({ projectId: agentSelectedProjectId, updateIds: ids });
+  };
+
+  const handleExecuteUpdate = async (updateId: string) => {
+    if (!agentSelectedProjectId) return;
+    try {
+      await window.programs.agentExecuteUpdate({
+        projectId: agentSelectedProjectId,
+        updateId,
+        provider: agentProvider,
+        model: agentCodexModel,
+        claudeModel: agentClaudeModel,
+      });
+      pushToast("Update execution started.", "success");
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Failed to execute update.", "error");
+    }
+  };
+
+
+
+  const handleAttachMaterials = async () => {
+    if (!agentSelectedProjectId) return;
+    const result = await window.programs.pickMaterialFiles();
+    if (result.canceled || result.paths.length === 0) return;
+    try {
+      await window.programs.agentAttachMaterials({
+        projectId: agentSelectedProjectId,
+        filePaths: result.paths,
+      });
+      pushToast("Materials attached.", "success");
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Failed to attach materials.", "error");
+    }
+  };
+
+  const handleRemoveMaterial = (filePath: string) => {
+    if (!agentSelectedProjectId || !agentSession) return;
+    const remaining = agentSession.attachedMaterials.filter((p) => p !== filePath);
+    void window.programs.agentAttachMaterials({
+      projectId: agentSelectedProjectId,
+      filePaths: remaining,
+      replace: true,
+    });
+  };
+
+  const showPlannedUpdates = (agentSession?.plannedUpdates.length ?? 0) > 0;
+
+  return (
+    <section className="agentsPage">
+      <div className="agentsTopBar">
         <select
           className="plannerSelect"
-          value={attachedProjectId ?? ""}
-          onChange={(e) => handleAttachChange(e.target.value)}
+          value={agentSelectedProjectId ?? ""}
+          onChange={(e) => onSelectProject(e.target.value || null)}
         >
-          <option value="" disabled>Attach a program</option>
+          <option value="" disabled>Select a program</option>
           {projects.map((p) => (
             <option key={p.id} value={p.id}>{p.name}</option>
           ))}
         </select>
 
-        <div className="speedToggle">
-          <button
-            className={`toggleOption ${selectedProvider === "codex" ? "active" : ""}`}
-            onClick={() => setSelectedProvider("codex")}
+        <div className="composerControlCluster">
+          <ComposerMenu
+            label={agentProvider === "claude"
+              ? labelForModel(agentClaudeModel, modelCatalog.claude, fallbackClaudeModelLabel)
+              : labelForModel(agentCodexModel, modelCatalog.codex, fallbackCodexModelLabel)}
+            open={agentModelMenuOpen}
+            onToggle={() => setAgentModelMenuOpen((v) => !v)}
+            onClose={() => setAgentModelMenuOpen(false)}
           >
-            Codex
-          </button>
-          <button
-            className={`toggleOption ${selectedProvider === "claude" ? "active" : ""}`}
-            onClick={() => setSelectedProvider("claude")}
-          >
-            Claude
-          </button>
+            <div className="composerMenuSection">
+              <span className="composerMenuSectionTitle">GPT models</span>
+              {modelCatalog.codex.map((model) => (
+                <ComposerMenuOption
+                  key={model.id}
+                  label={model.label}
+                  detail={model.detail ?? undefined}
+                  active={agentProvider === "codex" && agentCodexModel === model.id}
+                  onClick={() => {
+                    setAgentProvider("codex");
+                    setAgentCodexModel(model.id);
+                    setAgentModelMenuOpen(false);
+                  }}
+                />
+              ))}
+            </div>
+            <div className="composerMenuSection">
+              <span className="composerMenuSectionTitle">Claude models</span>
+              {modelCatalog.claude.map((model) => (
+                <ComposerMenuOption
+                  key={model.id}
+                  label={model.label}
+                  detail={model.detail ?? undefined}
+                  active={agentProvider === "claude" && agentClaudeModel === model.id}
+                  onClick={() => {
+                    setAgentProvider("claude");
+                    setAgentClaudeModel(model.id);
+                    setAgentModelMenuOpen(false);
+                  }}
+                />
+              ))}
+            </div>
+          </ComposerMenu>
         </div>
       </div>
 
-      {attachedProject && currentFlowchart ? (
-        <div className="plannerFlowchartPreview">
-          <button className="textButton" onClick={() => setShowFlowchart((s) => !s)}>
-            {showFlowchart ? "Hide flowchart" : "Show flowchart"}
-          </button>
-          {showFlowchart ? (
-            previousFlowchart && currentFlowchart !== previousFlowchart ? (
-              (currentFlowchartGraph || previousFlowchartGraph) ? (
-                <FlowchartDiff
-                  oldGraph={previousFlowchartGraph}
-                  newGraph={currentFlowchartGraph}
-                  theme={theme}
-                />
-              ) : (
-                <MermaidChartDiff
-                  oldChart={previousFlowchart}
-                  newChart={currentFlowchart}
-                  flowchartGraph={currentFlowchartGraph ?? previousFlowchartGraph}
-                  theme={theme}
-                />
-              )
-            ) : currentFlowchartGraph ? (
-              <InteractiveFlowchart graph={currentFlowchartGraph} theme={theme} />
-            ) : (
-              <MermaidChart chart={currentFlowchart} flowchartGraph={currentFlowchartGraph} theme={theme} />
-            )
+      {agentSelectedProjectId ? (
+        <>
+          {(agentSession?.attachedMaterials.length ?? 0) > 0 ? (
+            <div className="agentMaterialsBar">
+              <button className="secondaryButton" style={{ fontSize: "0.75rem", padding: "4px 10px" }} onClick={() => void handleAttachMaterials()}>
+                Attach Materials
+              </button>
+              {(agentSession?.attachedMaterials ?? []).map((filePath) => (
+                <span key={filePath} className="materialChip">
+                  {filePath.split("/").pop()}
+                  <button onClick={() => void handleRemoveMaterial(filePath)}>&times;</button>
+                </span>
+              ))}
+            </div>
           ) : null}
-        </div>
-      ) : null}
 
-      <div className="plannerChatArea">
-        {!attachedProjectId ? (
-          <div className="placeholderPanel">
-            <h4>Plan an update</h4>
-            <p>Attach a program above, then describe what you want to change.</p>
-          </div>
-        ) : chatMessages.length === 0 ? (
-          <div className="placeholderPanel">
-            <h4>Start planning</h4>
-            <p>Describe what you want to change about {attachedProject?.name}.</p>
-          </div>
-        ) : (
-          chatMessages.map((msg) => (
-            <div key={msg.id} className={`plannerMessage plannerMessage-${msg.role}`}>
-              <div className="plannerMessageContent">{msg.content}</div>
-              {msg.flowchart ? (
-                <div className="plannerMessageFlowchart">
-                  {msg.flowchartGraph ? (
-                    <InteractiveFlowchart graph={msg.flowchartGraph} theme={theme} />
+          <div className="agentContentLayout">
+            <div className="agentChatPane">
+              {/* Core Details Display */}
+              <div className="agentCoreDetailsSection">
+                <div className="coreDetailCard">
+                  <h4>Function</h4>
+                  <p className="coreDetailValue">
+                    {agentSession?.stages.function.confirmed?.summary ?? <em className="coreDetailEmpty">Not yet defined</em>}
+                  </p>
+                </div>
+                <div className="coreDetailCard">
+                  <h4>Thesis</h4>
+                  <p className="coreDetailValue">
+                    {agentSession?.stages.thesis.confirmed?.summary ?? <em className="coreDetailEmpty">Not yet defined</em>}
+                  </p>
+                </div>
+                <div className="coreDetailCard coreDetailCard-full">
+                  <h4>Core Pillars</h4>
+                  {(agentSession?.corePillars.length ?? 0) > 0 ? (
+                    <>
+                      <div className="corePillarChips">
+                        {agentSession!.corePillars.map((p) => (
+                          <button
+                            key={p.id}
+                            className={`corePillarChip${expandedPillarId === p.id ? " active" : ""}`}
+                            onClick={() => setExpandedPillarId(expandedPillarId === p.id ? null : p.id)}
+                          >
+                            {p.name}
+                          </button>
+                        ))}
+                      </div>
+                      {expandedPillarId ? (() => {
+                        const pillar = agentSession!.corePillars.find((x) => x.id === expandedPillarId);
+                        return pillar ? <CoreDetailsPillarExpanded pillar={pillar} /> : null;
+                      })() : null}
+                    </>
+                  ) : <em className="coreDetailEmpty">Not yet defined</em>}
+                </div>
+                <div className="coreDetailCard coreDetailCard-full">
+                  <h4>Full-Flow</h4>
+                  {(agentSession?.corePillars.length ?? 0) > 0 && agentSession?.stages.full_flow.confirmed ? (
+                    <SimpleFlowchart
+                      pillars={agentSession.corePillars}
+                      confirmation={agentSession.stages.full_flow.confirmed}
+                      selectedNodeId={expandedPillarId}
+                      onSelectNode={(id) => setExpandedPillarId(expandedPillarId === id ? null : id)}
+                    />
                   ) : (
-                    <MermaidChart chart={msg.flowchart} flowchartGraph={msg.flowchartGraph} theme={theme} />
+                    <p className="coreDetailValue">
+                      {agentSession?.stages.full_flow.confirmed?.summary ?? <em className="coreDetailEmpty">Not yet defined</em>}
+                    </p>
                   )}
+                </div>
+              </div>
+
+              {/* Stage Indicator */}
+              <div className="agentStageIndicator">
+                Currently: {agentSession?.conversationMode === "general" ? "General" : AGENT_STAGE_LABELS[agentSession?.currentStage ?? "function"]}
+              </div>
+
+              {/* Unified Conversation */}
+              <div className="agentUnifiedConversation">
+                {(agentSession?.unifiedMessages ?? []).map((msg) => (
+                  <div key={msg.id} className={`agentConvoMessage agentConvoMessage-${msg.role}`}>
+                    <div className="agentConvoContent">{msg.content}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Cascade Proposal Card */}
+              {agentSession?.cascadePending ? (
+                <CascadeCard
+                  cascade={agentSession.cascadePending}
+                  onAccept={(acceptedStages, editedSummaries) => {
+                    if (!agentSelectedProjectId || !agentSession?.cascadePending) return;
+                    void window.programs.agentAcceptCascade({
+                      projectId: agentSelectedProjectId,
+                      cascadeId: agentSession.cascadePending.id,
+                      acceptedStages,
+                      editedSummaries,
+                    }).then((session) => {
+                      onSessionUpdate(session);
+                      pushToast("Cascade updates applied.", "success");
+                    });
+                  }}
+                  onReject={() => {
+                    if (!agentSelectedProjectId || !agentSession?.cascadePending) return;
+                    void window.programs.agentAcceptCascade({
+                      projectId: agentSelectedProjectId,
+                      cascadeId: agentSession.cascadePending.id,
+                      acceptedStages: [],
+                    }).then((session) => {
+                      onSessionUpdate(session);
+                    });
+                  }}
+                />
+              ) : null}
+
+              {/* Proposed Changes (from suggest update) */}
+              {editedProposal ? (
+                <div className="pendingProposalCard">
+                  <h5>Proposed Changes</h5>
+                  {editedProposal.updatedFunction != null ? (
+                    <div className="proposalField">
+                      <div className="proposalFieldLabel">Function</div>
+                      <textarea
+                        className="proposalFieldValue"
+                        value={editedProposal.updatedFunction}
+                        onChange={(e) => setEditedProposal({ ...editedProposal, updatedFunction: e.target.value })}
+                      />
+                    </div>
+                  ) : null}
+                  {editedProposal.updatedThesis != null ? (
+                    <div className="proposalField">
+                      <div className="proposalFieldLabel">Thesis</div>
+                      <textarea
+                        className="proposalFieldValue"
+                        value={editedProposal.updatedThesis}
+                        onChange={(e) => setEditedProposal({ ...editedProposal, updatedThesis: e.target.value })}
+                      />
+                    </div>
+                  ) : null}
+                  {editedProposal.updatedFullFlow != null ? (
+                    <div className="proposalField">
+                      <div className="proposalFieldLabel">Full-Flow</div>
+                      <textarea
+                        className="proposalFieldValue"
+                        value={editedProposal.updatedFullFlow}
+                        onChange={(e) => setEditedProposal({ ...editedProposal, updatedFullFlow: e.target.value })}
+                      />
+                    </div>
+                  ) : null}
+                  {editedProposal.updatedCorePillars != null ? (
+                    <div className="proposalField">
+                      <div className="proposalFieldLabel">Core Pillars</div>
+                      <p className="coreDetailValue" style={{ fontSize: "0.8rem", margin: "2px 0 0" }}>
+                        {editedProposal.updatedCorePillars.map((p) => p.name).join(", ")}
+                      </p>
+                    </div>
+                  ) : null}
+                  <div className="proposalActions">
+                    <button className="primaryButton" onClick={() => void handleApplyCoreDetails(editedProposal)}>
+                      Confirm
+                    </button>
+                    <button className="secondaryButton" onClick={() => { setPendingProposal(null); setEditedProposal(null); setUpdateAiMessage(null); }}>
+                      Dismiss
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {/* Input Area */}
+              <div className="plannerInputArea">
+                <textarea
+                  className="plannerInput"
+                  value={inputValue}
+                  onChange={(e) => setInputValue(e.target.value)}
+                  placeholder={agentSession?.conversationMode === "general" ? "Talk to the agent about your program..." : "Describe what comes to mind..."}
+                  disabled={isLoading}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void handleSuggestUpdate();
+                    }
+                  }}
+                />
+                <button
+                  className="primaryButton"
+                  onClick={() => void handleSuggestUpdate()}
+                  disabled={!inputValue.trim() || isLoading}
+                >
+                  {isLoading ? <RunningIndicator /> : "Send"}
+                </button>
+              </div>
+
+              {showPlannedUpdates ? (
+                <div className="agentPlannedUpdatesList">
+                  <h4 style={{ margin: "0 0 8px", fontSize: "0.875rem", color: "var(--text)" }}>Planned Updates</h4>
+                  {agentSession!.plannedUpdates
+                    .sort((a, b) => a.order - b.order)
+                    .map((update, idx) => (
+                      <div key={update.id} className="agentPlannedUpdateItem">
+                        <span className="orderBadge">{idx + 1}</span>
+                        <div className="updateContent">
+                          <div className="updateTitle">{update.title}</div>
+                          <div className="updateDescription">{update.description}</div>
+                        </div>
+                        <div className="reorderButtons">
+                          <button onClick={() => handleMoveUpdate(update.id, -1)} disabled={idx === 0}>&#9650;</button>
+                          <button onClick={() => handleMoveUpdate(update.id, 1)} disabled={idx === agentSession!.plannedUpdates.length - 1}>&#9660;</button>
+                        </div>
+                        <div className="updateActions">
+                          <StatusChip
+                            tone={update.status === "completed" ? "confirmed" : update.status === "failed" ? "action_required" : update.status === "in_progress" ? "info" : "neutral"}
+                          >{update.status}</StatusChip>
+                          {update.status === "pending" ? (
+                            <button className="primaryButton" onClick={() => void handleExecuteUpdate(update.id)}>
+                              Send to Program
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
                 </div>
               ) : null}
             </div>
-          ))
-        )}
-        {isLoading ? (
-          <div className="plannerMessage plannerMessage-assistant">
-            <div className="plannerMessageContent"><RunningIndicator /></div>
           </div>
-        ) : null}
-        <div ref={chatEndRef} />
-      </div>
-
-      {attachedProjectId && chatMessages.length > 0 && currentFlowchart && currentFlowchart !== previousFlowchart ? (
-        <div className="plannerActionBar">
-          <button
-            className="secondaryButton"
-            onClick={() =>
-              void onSavePlan(
-                attachedProjectId,
-                currentFlowchart,
-                currentFlowchartGraph,
-                previousFlowchart ?? "",
-                previousFlowchartGraph,
-                lastDescription,
-              )
-            }
-          >
-            Save Plan
-          </button>
-          <button
-            className="primaryButton"
-            onClick={() => onApplyUpdate(attachedProjectId, currentFlowchart, currentFlowchartGraph, lastDescription)}
-          >
-            Apply Update
-          </button>
+        </>
+      ) : (
+        <div className="placeholderPanel" style={{ marginTop: 48 }}>
+          <h4>Agents</h4>
+          <p>Select a program above to start the agent workflow.</p>
         </div>
-      ) : null}
-
-      <div className="plannerInputArea">
-        <textarea
-          className="plannerInput"
-          value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          placeholder={attachedProjectId ? "Describe what you want to change..." : "Attach a program first"}
-          disabled={!attachedProjectId || isLoading}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              void handleSend();
-            }
-          }}
-        />
-        <button
-          className="primaryButton"
-          onClick={() => void handleSend()}
-          disabled={!attachedProjectId || !inputValue.trim() || isLoading}
-        >
-          Send
-        </button>
-      </div>
+      )}
     </section>
   );
 }

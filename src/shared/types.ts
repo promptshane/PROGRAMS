@@ -496,7 +496,8 @@ export type AppEvent =
   | { type: "project.plan"; projectId: string; plan: PlanDraft | null }
   | { type: "project.history"; projectId: string; updates: UpdateRecord[] }
   | { type: "project.pendingUpdate"; projectId: string; pending: PendingPlannedUpdate | null }
-  | { type: "project.outlineReport"; projectId: string; report: ProjectOutlineReport | null };
+  | { type: "project.outlineReport"; projectId: string; report: ProjectOutlineReport | null }
+  | { type: "agent.session"; projectId: string; session: AgentSession | null };
 
 export interface StartPlanInput {
   projectId: string;
@@ -613,4 +614,247 @@ export interface SavePlannedUpdateInput {
 export interface WriteProjectEnvFileInput {
   projectId: string;
   entries: EnvVariableEntry[];
+}
+
+// --- Agent System ---
+
+export type AgentStage = "function" | "thesis" | "core_pillars" | "full_flow" | "iterations" | "execution";
+
+export const AGENT_STAGES: AgentStage[] = ["function", "thesis", "core_pillars", "full_flow", "iterations", "execution"];
+
+export const AGENT_STAGE_LABELS: Record<AgentStage, string> = {
+  function: "Function",
+  thesis: "Thesis",
+  core_pillars: "Core Pillars",
+  full_flow: "Full-Flow",
+  iterations: "Iterations",
+  execution: "Execution",
+};
+
+export interface AgentChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+}
+
+export interface ScratchpadItem {
+  id: string;
+  text: string;
+  completed: boolean;
+  source: "user" | "agent";
+  createdAt: string;
+}
+
+export interface AgentPlannedUpdate {
+  id: string;
+  title: string;
+  description: string;
+  order: number;
+  status: "pending" | "in_progress" | "completed" | "failed";
+  sourceTodoIds: string[];
+}
+
+export interface AgentStageConfirmation {
+  summary: string;
+  currentState?: string;
+  finalGoal?: string;
+  steps?: FlowStep[];
+  flowchartParagraph?: string;
+  nodeDescriptions?: Record<string, string>;
+}
+
+export type DetailStatus = "assumed" | "confirmed" | "edited";
+
+export interface CorePillarDetail {
+  summary: string;
+  status: DetailStatus;
+}
+
+export interface CorePillar {
+  id: string;
+  name: string;
+  function: CorePillarDetail | null;
+  thesis: CorePillarDetail | null;
+  corePillars: CorePillar[];
+  fullFlow: CorePillarDetail | null;
+}
+
+export interface FlowStep {
+  id: string;
+  description: string;
+  pillarIds: string[];
+}
+
+export interface AgentStageData {
+  messages: AgentChatMessage[];
+  confirmed: AgentStageConfirmation | null;
+}
+
+export interface CascadeProposal {
+  id: string;
+  triggeredByStage: AgentStage;
+  proposedUpdates: { stage: AgentStage; updatedSummary: string }[];
+  createdAt: string;
+}
+
+export interface AgentSession {
+  id: string;
+  projectId: string;
+  currentStage: AgentStage;
+  conversationMode: "guided" | "general";
+  stages: Record<AgentStage, AgentStageData>;
+  unifiedMessages: AgentChatMessage[];
+  scratchpad: ScratchpadItem[];
+  plannedUpdates: AgentPlannedUpdate[];
+  corePillars: CorePillar[];
+  coreDetailsChatHistory: AgentChatMessage[];
+  attachedMaterials: string[];
+  miscMaterials: string[];
+  cascadePending: CascadeProposal | null;
+  provider: AiProvider;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AgentChatInput {
+  projectId: string;
+  stage: AgentStage;
+  provider: AiProvider;
+  model: CodexModel;
+  claudeModel: ClaudeModel;
+  message: string;
+}
+
+export interface AgentChatResponse {
+  sessionId: string;
+  message: AgentChatMessage;
+  confirmationSuggested: boolean;
+  suggestedConfirmation: AgentStageConfirmation | null;
+}
+
+export interface AgentConfirmStageInput {
+  projectId: string;
+  stage: AgentStage;
+  confirmation: AgentStageConfirmation;
+}
+
+export interface AgentUpdateScratchpadInput {
+  projectId: string;
+  scratchpad: ScratchpadItem[];
+}
+
+export interface AgentSubmitTodosInput {
+  projectId: string;
+  provider: AiProvider;
+  model: CodexModel;
+  claudeModel: ClaudeModel;
+}
+
+export interface AgentSubmitTodosResponse {
+  sessionId: string;
+  plannedUpdates: AgentPlannedUpdate[];
+  message: AgentChatMessage;
+}
+
+export interface AgentReorderUpdatesInput {
+  projectId: string;
+  updateIds: string[];
+}
+
+export interface AgentExecuteUpdateInput {
+  projectId: string;
+  updateId: string;
+  provider: AiProvider;
+  model: CodexModel;
+  claudeModel: ClaudeModel;
+}
+
+export interface AgentAttachMaterialsInput {
+  projectId: string;
+  filePaths: string[];
+  replace?: boolean;
+}
+
+export interface AgentAttachMaterialsResult {
+  session: AgentSession;
+  attachedPaths: string[];
+  failedPaths: string[];
+}
+
+export interface AgentCoreDetails {
+  function: AgentStageConfirmation | null;
+  thesis: AgentStageConfirmation | null;
+  corePillars: CorePillar[];
+  fullFlow: AgentStageConfirmation | null;
+}
+
+export interface CoreDetailsProposal {
+  id: string;
+  aiMessage: string;
+  updatedFunction: string | null;
+  updatedThesis: string | null;
+  updatedCorePillars: { name: string; functionSummary: string | null; thesisSummary: string | null }[] | null;
+  updatedFullFlow: string | null;
+}
+
+export interface AgentSuggestUpdateInput {
+  projectId: string;
+  provider: AiProvider;
+  model: CodexModel;
+  claudeModel: ClaudeModel;
+  message: string;
+  focusArea?: "function" | "thesis" | "core_pillars" | "full_flow" | null;
+}
+
+export interface AgentSuggestUpdateResponse {
+  aiMessage: string;
+  proposal: CoreDetailsProposal | null;
+}
+
+export interface AgentApplyCoreDetailsInput {
+  projectId: string;
+  proposal: CoreDetailsProposal;
+}
+
+export interface AgentAcceptCascadeInput {
+  projectId: string;
+  cascadeId: string;
+  acceptedStages: AgentStage[];
+  editedSummaries?: Record<string, string>;
+}
+
+export interface CoreDetailsChatInput {
+  projectId: string;
+  provider: AiProvider;
+  model: CodexModel;
+  claudeModel: ClaudeModel;
+  message: string;
+}
+
+export interface CoreDetailsChatResponse {
+  message: AgentChatMessage;
+  updatedCoreDetails: AgentCoreDetails | null;
+}
+
+export interface AgentProcessTodosInput {
+  projectId: string;
+  provider: AiProvider;
+  model: CodexModel;
+  claudeModel: ClaudeModel;
+  newTodos: string[];
+}
+
+// --- Homepage Scratchpad ---
+
+export interface HomeScratchpadItem {
+  id: string;
+  text: string;
+  projectId: string | null;
+  completed: boolean;
+  createdAt: string;
+}
+
+export interface UpdateHomeScratchpadInput {
+  items: HomeScratchpadItem[];
 }

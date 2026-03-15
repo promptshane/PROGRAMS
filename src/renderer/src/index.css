@@ -303,6 +303,115 @@ code {
   width: fit-content;
 }
 
+/* Homepage Scratchpad */
+.homepageScratchpad {
+  padding: 48px 32px;
+  max-width: 680px;
+}
+
+.homeScratchpadTitle {
+  margin: 0 0 20px;
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.homeScratchpadInputRow {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+
+.homeScratchpadTextInput {
+  flex: 1;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--button-secondary);
+  color: var(--text);
+  font-size: 0.875rem;
+  font-family: inherit;
+}
+
+.homeScratchpadTextInput:focus {
+  outline: none;
+  border-color: var(--color-primary, #3B82F6);
+}
+
+.homeScratchpadProjectSelect {
+  min-width: 140px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--button-secondary);
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-family: inherit;
+}
+
+.homeScratchpadGroups {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.homeScratchpadGroup {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 14px;
+}
+
+.homeScratchpadGroupLabel {
+  margin: 0 0 8px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.homeScratchpadItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 0;
+  font-size: 0.875rem;
+  color: var(--text);
+}
+
+.homeScratchpadBullet {
+  color: var(--color-primary, #3B82F6);
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
+.homeScratchpadItemText {
+  flex: 1;
+  min-width: 0;
+}
+
+.homeScratchpadItem .deleteBtn {
+  opacity: 0;
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0 4px;
+}
+
+.homeScratchpadItem:hover .deleteBtn {
+  opacity: 1;
+}
+
+.homeScratchpadEmpty {
+  color: var(--muted);
+  font-size: 0.875rem;
+  margin: 0;
+}
+
 .loadingGate,
 .appHeader,
 .heroCard,
@@ -451,6 +560,7 @@ code {
 }
 
 .projectDetailWorkspace {
+  position: relative;
   display: grid;
   gap: 18px;
   min-height: 0;
@@ -3583,20 +3693,245 @@ select {
 }
 
 /* ── Homepage planner ───────────────────────────────── */
-.homepagePlanner {
+/* --- Agents Page --- */
+
+.agentsPage {
   display: flex;
   flex-direction: column;
   height: 100%;
   gap: 0;
 }
 
-.plannerTopBar {
+.agentsTopBar {
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 16px 0;
   flex-shrink: 0;
 }
+
+.agentStageStepper {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+  padding: 0 0 12px;
+  flex-shrink: 0;
+}
+
+.agentStageButton {
+  min-height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 62%, transparent);
+  background: color-mix(in srgb, var(--button-secondary) 72%, transparent);
+  color: var(--muted);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+
+.agentStageButton:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.agentStageButton.active {
+  background: color-mix(in srgb, var(--panel-strong) 82%, transparent);
+  border-color: color-mix(in srgb, var(--success) 26%, var(--border-strong));
+  color: var(--text);
+}
+
+.agentStageButton.completed {
+  color: var(--text);
+}
+
+.agentStageButton.future {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.agentStageDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+.agentStageDot-confirmed {
+  background: #10b981;
+  box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.14);
+}
+
+.agentStageDot-active {
+  background: #3b82f6;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.16);
+  animation: updateStageBlink 1.15s ease-in-out infinite;
+}
+
+.agentStageDot-pending {
+  background: rgba(156, 170, 186, 0.4);
+}
+
+.agentContentLayout {
+  flex: 1;
+  display: flex;
+  gap: 14px;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.agentChatPane {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+
+.agentConfirmationCard {
+  margin: 12px 0;
+  padding: 16px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--success) 8%, var(--panel-strong));
+  border: 1px solid color-mix(in srgb, var(--success) 25%, transparent);
+}
+
+.agentConfirmationCard h4 {
+  margin: 0 0 8px;
+  font-size: 0.875rem;
+  color: var(--text);
+}
+
+.agentConfirmationCard p {
+  margin: 0 0 12px;
+  font-size: 0.8125rem;
+  color: var(--muted);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.agentConfirmationActions {
+  display: flex;
+  gap: 8px;
+}
+
+.agentConfirmedBanner {
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-strong);
+  border: 1px solid color-mix(in srgb, var(--success) 18%, var(--border));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.agentConfirmedBanner .confirmedText {
+  font-size: 0.8125rem;
+  color: var(--muted);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agentPlannedUpdatesList {
+  padding: 10px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.agentPlannedUpdateItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  border: 1px solid var(--border);
+}
+
+.agentPlannedUpdateItem .orderBadge {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--button-secondary);
+  border: 1px solid var(--border-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text);
+  flex-shrink: 0;
+}
+
+.agentPlannedUpdateItem .updateContent {
+  flex: 1;
+  min-width: 0;
+}
+
+.agentPlannedUpdateItem .updateTitle {
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.agentPlannedUpdateItem .updateDescription {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
+.agentPlannedUpdateItem .updateActions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.agentPlannedUpdateItem .reorderButtons {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.agentPlannedUpdateItem .reorderButtons button {
+  padding: 1px 6px;
+  font-size: 0.625rem;
+  border: 1px solid var(--border);
+  background: var(--button-secondary);
+  color: var(--muted);
+  border-radius: 4px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.agentPlannedUpdateItem .reorderButtons button:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.agentEditModeGrid {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 0 0 12px;
+  flex-shrink: 0;
+}
+
+/* --- Planner Chat (shared) --- */
 
 .plannerSelect {
   flex: 1;
@@ -3609,18 +3944,6 @@ select {
   font-size: 0.875rem;
   appearance: none;
   cursor: pointer;
-}
-
-.plannerFlowchartPreview {
-  flex-shrink: 0;
-  padding: 0 0 12px;
-  max-height: 320px;
-  overflow-y: auto;
-}
-
-.plannerFlowchartPreview .mermaidSurface {
-  max-height: 260px;
-  overflow-y: auto;
 }
 
 .plannerChatArea {
@@ -3664,14 +3987,6 @@ select {
   overflow: hidden;
 }
 
-.plannerActionBar {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 8px 0;
-  flex-shrink: 0;
-}
-
 .plannerInputArea {
   display: flex;
   gap: 8px;
@@ -3702,4 +4017,713 @@ select {
 .plannerInput:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* --- Agent Materials Bar --- */
+
+.agentMaterialsBar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+.materialChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: var(--panel-strong);
+  border: 1px solid var(--border);
+  font-size: 0.75rem;
+  color: var(--text);
+}
+
+.materialChip button {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 0.875rem;
+  padding: 0 2px;
+  line-height: 1;
+}
+
+.materialChip button:hover {
+  color: var(--text);
+}
+
+/* --- Agent Stage Divider --- */
+
+.agentStageDivider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0 6px;
+}
+
+.agentStageDivider::before,
+.agentStageDivider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.agentStageDivider span {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+/* --- Core Details Panel --- */
+
+.coreDetailsPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.coreDetailItem {
+  padding: 14px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  border: 1px solid var(--border);
+}
+
+.coreDetailItem h4 {
+  margin: 0 0 6px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.coreDetailItem p {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--muted);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.coreDetailsChatSection {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+
+.coreDetailsChatSection h4 {
+  margin: 0 0 8px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* --- Core Pillar Chips & Expanded Details --- */
+
+.corePillarChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.corePillarChip {
+  padding: 4px 12px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: var(--panel-soft);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+  color: var(--text);
+  font-family: inherit;
+}
+
+.corePillarChip:hover,
+.corePillarChip.active {
+  background: color-mix(in srgb, var(--success) 10%, var(--panel-soft));
+  border-color: var(--success);
+}
+
+.corePillarExpanded {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-strong);
+}
+
+.pillarDetailRow {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.pillarDetailLabel {
+  font-weight: 600;
+  color: var(--text);
+  min-width: 70px;
+  flex-shrink: 0;
+}
+
+.pillarChildren {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.assumedText {
+  color: var(--error);
+  font-style: italic;
+}
+
+/* --- Structured Full-Flow Steps --- */
+
+.flowStepList {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  counter-reset: flow-step;
+}
+
+.flowStepItem {
+  counter-increment: flow-step;
+  display: flex;
+  gap: 10px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.8125rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.flowStepItem::before {
+  content: counter(flow-step);
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--button-secondary);
+  border: 1px solid var(--border-strong);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 600;
+  flex-shrink: 0;
+  color: var(--text);
+}
+
+.flowStepPillars {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+.flowStepPillarTag {
+  font-size: 0.65rem;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+/* --- Core Details Display (AgentsPage) --- */
+
+.agentCoreDetailsSection {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.coreDetailCard {
+  background: var(--panel-soft);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+}
+
+.coreDetailCard-full {
+  grid-column: 1 / -1;
+}
+
+.coreDetailCard h4 {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 5px;
+}
+
+.coreDetailValue {
+  font-size: 0.8125rem;
+  color: var(--text);
+  margin: 0;
+  line-height: 1.5;
+}
+
+.coreDetailEmpty {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  font-style: normal;
+}
+
+/* --- Update Agent Section --- */
+
+.agentUpdateSection {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.agentUpdateSection h4 {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 8px;
+}
+
+.focusTabs {
+  display: flex;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.focusTab {
+  padding: 3px 9px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: transparent;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 120ms ease;
+}
+
+.focusTab:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.focusTab.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.updateAiMessage {
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  padding: 7px 10px;
+  background: var(--panel-soft);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 4px 4px 0;
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+
+/* --- Pending Proposal Card --- */
+
+.pendingProposalCard {
+  background: var(--panel-soft);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+
+.pendingProposalCard h5 {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 8px;
+}
+
+.proposalField {
+  margin-bottom: 7px;
+}
+
+.proposalFieldLabel {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  margin-bottom: 3px;
+}
+
+.proposalFieldValue {
+  font-size: 0.8125rem;
+  color: var(--text);
+  padding: 5px 8px;
+  background: var(--panel-strong);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 40px;
+  font-family: inherit;
+  line-height: 1.4;
+}
+
+.proposalActions {
+  display: flex;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+/* --- Simple Flowchart (Horizontal Node Chain) --- */
+
+.simpleFlowchart {
+  margin-top: 6px;
+}
+
+.simpleFlowchartNodes {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  overflow-x: auto;
+  padding: 6px 0;
+}
+
+.simpleFlowchartNodeGroup {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.simpleFlowchartArrow {
+  font-size: 1rem;
+  color: var(--muted);
+  margin: 0 6px;
+  user-select: none;
+}
+
+.simpleFlowchartNode {
+  padding: 6px 14px;
+  border-radius: 20px;
+  border: 1.5px solid var(--border-strong);
+  background: var(--panel-soft);
+  color: var(--text);
+  font-size: 0.75rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 140ms ease;
+  white-space: nowrap;
+}
+
+.simpleFlowchartNode:hover {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+
+.simpleFlowchartNode.selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent-strong);
+  font-weight: 600;
+}
+
+.simpleFlowchartDescription {
+  margin-top: 8px;
+  font-size: 0.8125rem;
+  color: var(--text);
+  line-height: 1.55;
+  padding: 8px 10px;
+  background: var(--panel-soft);
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  min-height: 36px;
+}
+
+/* --- Cascade Card --- */
+
+.cascadeCard {
+  background: var(--panel-soft);
+  border: 1.5px solid color-mix(in srgb, var(--accent) 30%, var(--border-strong));
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  margin-bottom: 10px;
+}
+
+.cascadeCardTitle {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin: 0 0 4px;
+}
+
+.cascadeCardSubtitle {
+  font-size: 0.8125rem;
+  color: var(--muted);
+  margin: 0 0 10px;
+  line-height: 1.4;
+}
+
+.cascadeItems {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cascadeItem {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cascadeItemHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--text);
+}
+
+.cascadeItemHeader input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+.cascadeItemLabel {
+  font-weight: 600;
+}
+
+.cascadeItemText {
+  font-size: 0.8rem;
+  color: var(--text);
+  padding: 5px 8px;
+  background: var(--panel-strong);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 48px;
+  font-family: inherit;
+  line-height: 1.4;
+}
+
+.cascadeItemText:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.cascadeActions {
+  display: flex;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+/* --- Agent Stage Indicator --- */
+
+.agentStageIndicator {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 8px 16px 2px;
+}
+
+/* --- Unified Conversation --- */
+
+.agentUnifiedConversation {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 16px;
+  overflow-y: auto;
+  max-height: 400px;
+}
+
+.agentConvoMessage {
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  max-width: 85%;
+}
+
+.agentConvoMessage-user {
+  align-self: flex-end;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--text);
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.agentConvoMessage-assistant {
+  align-self: flex-start;
+  background: var(--panel-soft);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.agentConvoContent {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* --- To-do Floating Button --- */
+
+.todoFloatingButton {
+  position: absolute;
+  bottom: 16px;
+  right: 16px;
+  padding: 6px 16px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--panel-strong);
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  z-index: 10;
+  transition: transform 140ms ease, background 140ms ease;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.todoFloatingButton:hover {
+  transform: translateY(-1px);
+  background: color-mix(in srgb, var(--panel-strong) 80%, var(--text));
+}
+
+/* --- To-do Notepad Overlay --- */
+
+.todoNotepadOverlay {
+  position: absolute;
+  bottom: 48px;
+  right: 16px;
+  width: 300px;
+  max-height: 400px;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.22);
+  z-index: 20;
+  overflow: hidden;
+}
+
+.todoNotepadHeader {
+  padding: 10px 14px;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.todoNotepadHeader .deleteBtn {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 1.1rem;
+  padding: 0 4px;
+}
+
+.todoNotepadList {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 0;
+}
+
+.todoItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 14px;
+  font-size: 0.8125rem;
+  color: var(--text);
+}
+
+.todoItem .todoItemText {
+  flex: 1;
+  min-width: 0;
+}
+
+.todoItem .deleteBtn {
+  opacity: 0;
+  flex-shrink: 0;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 1rem;
+  padding: 0 4px;
+}
+
+.todoItem:hover .deleteBtn {
+  opacity: 1;
+}
+
+.todoItem--user .todoItemText::before {
+  content: "\2022 ";
+  color: #3b82f6;
+}
+
+.todoItem--agent .todoItemText::before {
+  content: "\2022 ";
+  color: #10b981;
+}
+
+.todoItem--completed {
+  opacity: 0.4;
+}
+
+.todoItem--completed .todoItemText {
+  text-decoration: line-through;
+}
+
+.todoCompletedDivider {
+  padding: 8px 14px 4px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+.todoNotepadInput {
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.todoNotepadInput input {
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--button-secondary);
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-family: inherit;
+}
+
+.todoNotepadInput input:focus {
+  outline: none;
+  border-color: var(--color-primary, #3B82F6);
 }

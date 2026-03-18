@@ -145,6 +145,7 @@ export interface ProjectRuntimeConfig {
   lastRunUrl: string | null;
   initialIdea: string | null;
   githubRepoName: string | null;
+  attachedSkillId?: string | null;
 }
 
 export type FlowchartDirection = "TD" | "LR";
@@ -249,6 +250,8 @@ export interface PlanDraft {
   planningMode: PlanningMode;
   autoApprove: boolean;
   contextPaths: string[];
+  skillInstructions: string | null;
+  coreDetailsContext: string | null;
   status: "planning" | "awaitingApproval" | "executing" | "completed" | "failed";
   thinkingStatus: UpdateStageStatus;
   planningStatus: UpdateStageStatus;
@@ -399,13 +402,20 @@ export interface ClaudeAuthStatus {
   connectErrorMessage: string | null;
 }
 
+export type GitHubClientIdSource = "bundled" | "override" | null;
+
 export interface GitHubAuthStatus {
   configured: boolean;
+  canConnect: boolean;
+  clientIdSource: GitHubClientIdSource;
+  hasStoredToken: boolean;
   loggedIn: boolean;
+  verified: boolean;
   login: string | null;
   avatarUrl: string | null;
   expiresAt: string | null;
   errorMessage: string | null;
+  loginPrompt: GitHubLoginPrompt | null;
 }
 
 export interface GitHubLoginPrompt {
@@ -465,6 +475,11 @@ export interface AppUpdateStatus {
   launchedAppUpdatedAt: string | null;
   currentUpdatedAt: string | null;
   candidateUpdatedAt: string | null;
+  currentRendererAssetName: string | null;
+  currentRendererAssetUpdatedAt: string | null;
+  candidateRendererAssetName: string | null;
+  candidateRendererAssetUpdatedAt: string | null;
+  rendererAssetMatch: boolean | null;
   buildState: "idle" | "packaging" | "ready" | "installing" | "failed";
   buildError: string | null;
   requiresAdminPrompt: boolean;
@@ -480,6 +495,7 @@ export interface BootstrapPayload {
   setup: SetupSnapshot;
   appUpdate: AppUpdateStatus;
   modelCatalog: ModelCatalog;
+  skills: Skill[];
 }
 
 export type AppEvent =
@@ -497,7 +513,9 @@ export type AppEvent =
   | { type: "project.history"; projectId: string; updates: UpdateRecord[] }
   | { type: "project.pendingUpdate"; projectId: string; pending: PendingPlannedUpdate | null }
   | { type: "project.outlineReport"; projectId: string; report: ProjectOutlineReport | null }
-  | { type: "agent.session"; projectId: string; session: AgentSession | null };
+  | { type: "agent.session"; projectId: string; session: AgentSession | null }
+  | { type: "app.event"; event: "todos.updated" }
+  | { type: "auth.claude.codePrompt"; prompt: string };
 
 export interface StartPlanInput {
   projectId: string;
@@ -510,6 +528,8 @@ export interface StartPlanInput {
   planningMode: PlanningMode;
   autoApprove: boolean;
   contextPaths: string[];
+  skillInstructions?: string | null;
+  coreDetailsContext?: string | null;
 }
 
 export interface ApprovePlanInput {
@@ -638,6 +658,14 @@ export interface AgentChatMessage {
   createdAt: string;
 }
 
+export interface SlackChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  directorId: DirectorId | null;
+  content: string;
+  createdAt: string;
+}
+
 export interface ScratchpadItem {
   id: string;
   text: string;
@@ -657,6 +685,7 @@ export interface AgentPlannedUpdate {
 
 export interface AgentStageConfirmation {
   summary: string;
+  status?: DetailStatus;
   currentState?: string;
   finalGoal?: string;
   steps?: FlowStep[];
@@ -666,6 +695,134 @@ export interface AgentStageConfirmation {
 
 export type DetailStatus = "assumed" | "confirmed" | "edited";
 
+// --- Director System (formerly Multi-Agent) ---
+
+export type DirectorId =
+  | "project-manager"      // Jeff
+  | "creative-director"    // Dan
+  | "rd-director"          // Todd
+  | "programming-director" // Ping
+  | "validation-director"; // Brad
+
+/** @deprecated Use DirectorId */
+export type AgentId = DirectorId;
+
+export const DIRECTOR_NAMES: Record<DirectorId, string> = {
+  "project-manager": "Jeff",
+  "creative-director": "Dan",
+  "rd-director": "Todd",
+  "programming-director": "Ping",
+  "validation-director": "Brad",
+};
+
+export const DIRECTOR_LABELS: Record<DirectorId, string> = {
+  "project-manager": "Project Manager",
+  "creative-director": "Creative Director",
+  "rd-director": "R&D Director",
+  "programming-director": "Programming Director",
+  "validation-director": "Validation Director",
+};
+
+export const DIRECTOR_COLORS: Record<DirectorId, string> = {
+  "project-manager": "#991B1B",
+  "creative-director": "#C2410C",
+  "rd-director": "#166534",
+  "programming-director": "#A16207",
+  "validation-director": "#5B21B6",
+};
+
+/** @deprecated Use DIRECTOR_LABELS */
+export const AGENT_LABELS: Record<DirectorId, string> = DIRECTOR_LABELS;
+
+// --- Focus Modes ---
+
+export type CreativeFocusMode = "conversation" | "core-details" | "vibes";
+export type RdFocusMode = "research" | "version-planning" | "update-planning";
+export type ValidationFocusMode = "identify-goal" | "test-current-state" | "compare";
+export type DirectorFocusMode = CreativeFocusMode | RdFocusMode | ValidationFocusMode;
+
+// --- Director Progress Tracking ---
+
+export type DirectorStage = "creative" | "rd" | "programming" | "validation";
+export type DirectorStageStatus = "not-started" | "in-progress" | "completed";
+
+export interface ProjectDirectorProgress {
+  creative: DirectorStageStatus;
+  rd: DirectorStageStatus;
+  programming: DirectorStageStatus;
+  validation: DirectorStageStatus;
+  currentDirector: DirectorId | null;
+}
+
+// --- Project Category ---
+
+export type ProjectCategory = "program" | "general-project" | "idea-in-progress";
+
+// --- Pillar Types ---
+
+export type PillarType = "core" | "side" | "ghost" | "tbd" | "hard-stop";
+
+export interface VibeAttachment {
+  id: string;
+  filePath: string;
+  fileName: string;
+  description: string | null;
+  fileType: "image" | "text" | "screenshot" | "note" | "other";
+  createdAt: string;
+}
+
+export interface DirectorConversation {
+  directorId: DirectorId;
+  focusMode: DirectorFocusMode | null;
+  messages: AgentChatMessage[];
+  lastActiveAt: string | null;
+}
+
+/** @deprecated Use DirectorConversation */
+export type AgentConversation = DirectorConversation;
+
+export interface FeasibilityAssessment {
+  id: string;
+  area: string;
+  assessment: string;
+  stackRecommendation: string | null;
+  complexity: "low" | "medium" | "high";
+  costNotes: string | null;
+  status: DetailStatus;
+}
+
+export interface VersionPlan {
+  id: string;
+  label: string;
+  description: string;
+  goals: string[];
+  status: DetailStatus;
+  order: number;
+}
+
+export interface VersionUpdate {
+  id: string;
+  versionId: string;
+  title: string;
+  description: string;
+  order: number;
+  status: "pending" | "in_progress" | "completed" | "failed";
+  dependencies: string[];
+}
+
+export interface ValidationResult {
+  id: string;
+  updateId: string;
+  validationType: "visual" | "functional";
+  passed: boolean;
+  summary: string;
+  details: string;
+  screenshotPaths: string[];
+  createdAt: string;
+}
+
+export type ValidationFrequency = "every-update" | "every-version" | "manual";
+
 export interface CorePillarDetail {
   summary: string;
   status: DetailStatus;
@@ -674,10 +831,14 @@ export interface CorePillarDetail {
 export interface CorePillar {
   id: string;
   name: string;
+  pillarType: PillarType;
   function: CorePillarDetail | null;
   thesis: CorePillarDetail | null;
   corePillars: CorePillar[];
   fullFlow: CorePillarDetail | null;
+  vibes: VibeAttachment[];
+  description: string | null;
+  connectedPillarIds: string[];
 }
 
 export interface FlowStep {
@@ -698,6 +859,15 @@ export interface CascadeProposal {
   createdAt: string;
 }
 
+export interface DynamicSubAgent {
+  id: string;
+  skillId: string;
+  name: string;
+  role: string;
+  assignedUpdates: string[];
+  conversation: AgentChatMessage[];
+}
+
 export interface AgentSession {
   id: string;
   projectId: string;
@@ -715,6 +885,27 @@ export interface AgentSession {
   provider: AiProvider;
   createdAt: string;
   updatedAt: string;
+  // Director system fields
+  directorConversations: Record<string, DirectorConversation>;
+  versions: VersionPlan[];
+  versionUpdates: VersionUpdate[];
+  feasibilityAssessments: FeasibilityAssessment[];
+  validationResults: ValidationResult[];
+  validationFrequency: ValidationFrequency;
+  activeDirectorId: DirectorId | null;
+  directorProgress: ProjectDirectorProgress;
+  creativeFocusMode: CreativeFocusMode | null;
+  rdFocusMode: RdFocusMode | null;
+  validationFocusMode: ValidationFocusMode | null;
+  danInternalNotes: string[];
+  projectCategory: ProjectCategory;
+  dynamicSubAgents: DynamicSubAgent[];
+  slackMessages: SlackChatMessage[];
+  slackActiveDirectorId: DirectorId;
+  /** @deprecated Use directorConversations */
+  agentConversations: Record<string, DirectorConversation>;
+  /** @deprecated Use activeDirectorId */
+  activeAgentId: DirectorId | null;
 }
 
 export interface AgentChatInput {
@@ -857,4 +1048,242 @@ export interface HomeScratchpadItem {
 
 export interface UpdateHomeScratchpadInput {
   items: HomeScratchpadItem[];
+}
+
+// --- Unified To-do ---
+
+export interface UnifiedTodoItem {
+  id: string;
+  text: string;
+  projectId: string | null;
+  completed: boolean;
+  processedIntoPillar: boolean;
+  source: "user" | "agent";
+  createdAt: string;
+}
+
+export interface ListTodosInput {
+  projectId?: string | null;
+  includeProcessed?: boolean;
+}
+
+export interface AddTodoInput {
+  text: string;
+  projectId: string | null;
+  source?: "user" | "agent";
+}
+
+export interface UpdateTodosInput {
+  items: UnifiedTodoItem[];
+}
+
+// --- Git Sync ---
+
+export interface GitSyncInput {
+  projectId: string;
+  commitMessage?: string;
+}
+
+export interface GitSyncResult {
+  committed: boolean;
+  pushed: boolean;
+  commitSha: string | null;
+  error: string | null;
+}
+
+// --- Program Update Mode ---
+
+export type ProgramUpdateMode = "talk" | "plan" | "work";
+
+// --- Skills ---
+
+export type SkillSourceType = "skill" | "plugin";
+export type SkillInstallStatus = "ready" | "installing" | "error";
+export type SkillProviderCompatibility = "claude" | "codex" | "universal";
+
+export interface Skill {
+  id: string;
+  name: string;
+  description: string;
+  sourceProvider: SkillProviderCompatibility;
+  sourceType: SkillSourceType;
+  instructions: string;
+  originalFilePath: string | null;
+  isUniversal: boolean;
+  installStatus: SkillInstallStatus;
+  installSlug: string | null;
+  installPath: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DownloadSkillInput {
+  filePath: string;
+  name?: string;
+}
+
+export interface InstallSkillCatalogInput {
+  catalogId: "frontend-design-universal" | "user-testing-universal";
+}
+
+export interface ConvertSkillInput {
+  skillId: string;
+}
+
+export interface AttachSkillInput {
+  projectId: string;
+  skillId: string | null;
+}
+
+export type PlaywrightAction =
+  | {
+      type: "wait";
+      ms: number;
+    }
+  | {
+      type: "click";
+      selector: string;
+    }
+  | {
+      type: "fill";
+      selector: string;
+      value: string;
+    }
+  | {
+      type: "press";
+      key: string;
+      selector?: string | null;
+    }
+  | {
+      type: "hover";
+      selector: string;
+    };
+
+export interface PlaywrightRunInput {
+  projectId: string;
+  url?: string | null;
+  actions?: PlaywrightAction[];
+  headless?: boolean;
+  settleMs?: number;
+}
+
+export interface PlaywrightRunResult {
+  runId: string;
+  projectId: string;
+  url: string;
+  outputDir: string;
+  screenshots: string[];
+  consoleMessages: string[];
+  pageErrors: string[];
+  textSnapshot: string | null;
+  renderGameText: string | null;
+  startedAt: string;
+  completedAt: string;
+  success: boolean;
+  errorMessage: string | null;
+}
+
+export interface ClaudeConnectionTestResult {
+  ok: boolean;
+  model: string;
+  message: string;
+  raw: string | null;
+}
+
+// --- Multi-Agent IPC Types ---
+
+export interface DirectorChatInput {
+  projectId: string;
+  directorId: DirectorId;
+  focusMode: DirectorFocusMode | null;
+  provider: AiProvider;
+  model: CodexModel;
+  claudeModel: ClaudeModel;
+  message: string;
+}
+
+export interface DirectorChatResponse {
+  sessionId: string;
+  directorId: DirectorId;
+  message: AgentChatMessage;
+  routeSuggestion: { directorId: DirectorId; reason: string } | null;
+  structuredData: DirectorStructuredData | null;
+  internalNotes: string[] | null;
+  suggestCreateProject: boolean;
+}
+
+export type DirectorStructuredData =
+  | { type: "feasibility"; assessments: FeasibilityAssessment[] }
+  | { type: "versions"; versions: VersionPlan[] }
+  | { type: "versionUpdates"; updates: VersionUpdate[] }
+  | { type: "routedUpdates"; routed: { updateId: string; assignedTo: string }[] }
+  | { type: "executionPlan"; updateId: string; steps: string[]; readyToExecute: boolean }
+  | { type: "validationResult"; result: ValidationResult }
+  | { type: "goalSummary"; summary: string; pillarIds: string[] }
+  | { type: "comparison"; passed: boolean; improvementAreas: string[]; summary: string };
+
+/** @deprecated Use DirectorChatInput */
+export type MultiAgentChatInput = DirectorChatInput;
+/** @deprecated Use DirectorChatResponse */
+export type MultiAgentChatResponse = DirectorChatResponse;
+/** @deprecated Use DirectorStructuredData */
+export type MultiAgentStructuredData = DirectorStructuredData;
+
+export interface SlackChatInput {
+  projectId: string;
+  provider: AiProvider;
+  model: CodexModel;
+  claudeModel: ClaudeModel;
+  message: string;
+  targetDirectorId?: DirectorId | null;
+}
+
+export interface SlackChatResponse {
+  sessionId: string;
+  directorId: DirectorId;
+  message: SlackChatMessage;
+  handoffTo: DirectorId | null;
+  handoffReason: string | null;
+}
+
+export interface AttachVibeInput {
+  projectId: string;
+  pillarId: string;
+  filePaths: string[];
+  descriptions?: (string | null)[];
+}
+
+export interface RemoveVibeInput {
+  projectId: string;
+  pillarId: string;
+  vibeId: string;
+}
+
+export interface ConfirmAgentDataInput {
+  projectId: string;
+  dataType: "feasibility" | "versions" | "versionUpdates";
+  itemId?: string;
+}
+
+export interface RouteUpdateToProgrammingInput {
+  projectId: string;
+  updateId: string;
+  provider: AiProvider;
+  model: CodexModel;
+  claudeModel: ClaudeModel;
+}
+
+export interface RunValidationInput {
+  projectId: string;
+  updateId: string;
+  validationType: "visual" | "functional";
+  provider: AiProvider;
+  model: CodexModel;
+  claudeModel: ClaudeModel;
+}
+
+export interface SetValidationFrequencyInput {
+  projectId: string;
+  frequency: ValidationFrequency;
 }

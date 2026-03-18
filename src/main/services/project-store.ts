@@ -9,17 +9,29 @@ import type {
   AgentStage,
   AgentStageData,
   AiProvider,
+  CorePillar,
+  CreativeFocusMode,
+  DirectorConversation,
+  DirectorId,
+  DirectorFocusMode,
+  DynamicSubAgent,
   FlowchartGraph,
   HomeScratchpadItem,
   PendingPlannedUpdate,
   PlanningSession,
+  ProjectCategory,
+  ProjectDirectorProgress,
   ProjectOutlineReport,
   Project,
+  RdFocusMode,
   ScratchpadItem,
+  Skill,
   Settings,
   SettingsUpdateInput,
   SetupState,
+  UnifiedTodoItem,
   UpdateRecord,
+  ValidationFocusMode,
 } from "@shared/types";
 import { DEFAULT_SETTINGS, DEFAULT_SETUP_STATE } from "@main/defaults";
 import { ensureDirectory, pathExists } from "@main/utils/fs";
@@ -275,6 +287,27 @@ export class ProjectStore {
     this.ensureColumn("agent_sessions", "unified_messages_json", "TEXT DEFAULT '[]'");
     this.ensureColumn("agent_sessions", "cascade_pending_json", "TEXT");
     this.ensureColumn("agent_sessions", "misc_materials_json", "TEXT DEFAULT '[]'");
+    // Multi-agent system columns (legacy)
+    this.ensureColumn("agent_sessions", "agent_conversations_json", "TEXT DEFAULT '{}'");
+    this.ensureColumn("agent_sessions", "versions_json", "TEXT DEFAULT '[]'");
+    this.ensureColumn("agent_sessions", "version_updates_json", "TEXT DEFAULT '[]'");
+    this.ensureColumn("agent_sessions", "feasibility_json", "TEXT DEFAULT '[]'");
+    this.ensureColumn("agent_sessions", "validation_results_json", "TEXT DEFAULT '[]'");
+    this.ensureColumn("agent_sessions", "validation_frequency", "TEXT DEFAULT 'manual'");
+    this.ensureColumn("agent_sessions", "active_agent_id", "TEXT");
+    // Director system columns
+    this.ensureColumn("agent_sessions", "director_conversations_json", "TEXT DEFAULT '{}'");
+    this.ensureColumn("agent_sessions", "director_progress_json", "TEXT DEFAULT '{}'");
+    this.ensureColumn("agent_sessions", "creative_focus_mode", "TEXT");
+    this.ensureColumn("agent_sessions", "rd_focus_mode", "TEXT");
+    this.ensureColumn("agent_sessions", "validation_focus_mode", "TEXT");
+    this.ensureColumn("agent_sessions", "dan_internal_notes_json", "TEXT DEFAULT '[]'");
+    this.ensureColumn("agent_sessions", "project_category", "TEXT DEFAULT 'general-project'");
+    this.ensureColumn("agent_sessions", "dynamic_sub_agents_json", "TEXT DEFAULT '[]'");
+    this.ensureColumn("agent_sessions", "active_director_id", "TEXT");
+    // Slack chat columns
+    this.ensureColumn("agent_sessions", "slack_messages_json", "TEXT DEFAULT '[]'");
+    this.ensureColumn("agent_sessions", "slack_active_director_id", "TEXT DEFAULT 'project-manager'");
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS home_scratchpad (
@@ -282,9 +315,80 @@ export class ProjectStore {
         items_json TEXT NOT NULL DEFAULT '[]',
         updated_at TEXT NOT NULL DEFAULT ''
       );
+
+      CREATE TABLE IF NOT EXISTS unified_todos (
+        id TEXT PRIMARY KEY,
+        text TEXT NOT NULL,
+        project_id TEXT,
+        completed INTEGER NOT NULL DEFAULT 0,
+        processed_into_pillar INTEGER NOT NULL DEFAULT 0,
+        source TEXT NOT NULL DEFAULT 'user',
+        created_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS skills (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        source_provider TEXT NOT NULL DEFAULT 'claude',
+        source_type TEXT NOT NULL DEFAULT 'skill',
+        instructions TEXT NOT NULL,
+        original_file_path TEXT,
+        is_universal INTEGER NOT NULL DEFAULT 0,
+        install_status TEXT NOT NULL DEFAULT 'ready',
+        install_slug TEXT,
+        install_path TEXT,
+        last_error TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
     `);
 
+    this.ensureColumn("skills", "source_type", "TEXT NOT NULL DEFAULT 'skill'");
+    this.ensureColumn("skills", "install_status", "TEXT NOT NULL DEFAULT 'ready'");
+    this.ensureColumn("skills", "install_slug", "TEXT");
+    this.ensureColumn("skills", "install_path", "TEXT");
+    this.ensureColumn("skills", "last_error", "TEXT");
+
+    this.migrateExistingTodosOnce();
+
     this.persist();
+  }
+
+  private migrateExistingTodosOnce(): void {
+    // Check if we've already migrated
+    const existingCount = this.getRows<{ cnt: number }>("SELECT COUNT(*) as cnt FROM unified_todos");
+    if (existingCount[0]?.cnt > 0) return;
+
+    // Migrate from home_scratchpad
+    const scratchpadRows = this.getRows<{ items_json: string }>("SELECT items_json FROM home_scratchpad LIMIT 1");
+    if (scratchpadRows.length > 0 && scratchpadRows[0].items_json) {
+      try {
+        const items = JSON.parse(scratchpadRows[0].items_json) as HomeScratchpadItem[];
+        for (const item of items) {
+          this.db.run(
+            "INSERT OR IGNORE INTO unified_todos (id, text, project_id, completed, processed_into_pillar, source, created_at) VALUES (?, ?, ?, ?, 0, 'user', ?)",
+            [item.id, item.text, item.projectId ?? null, item.completed ? 1 : 0, item.createdAt],
+          );
+        }
+      } catch { /* ignore parse errors */ }
+    }
+
+    // Migrate from agent_sessions scratchpad
+    const agentRows = this.getRows<{ project_id: string; scratchpad_json: string }>(
+      "SELECT project_id, scratchpad_json FROM agent_sessions WHERE scratchpad_json != '[]'",
+    );
+    for (const row of agentRows) {
+      try {
+        const items = JSON.parse(row.scratchpad_json) as ScratchpadItem[];
+        for (const item of items) {
+          this.db.run(
+            "INSERT OR IGNORE INTO unified_todos (id, text, project_id, completed, processed_into_pillar, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [item.id, item.text, row.project_id, item.completed ? 1 : 0, item.completed ? 1 : 0, item.source, item.createdAt],
+          );
+        }
+      } catch { /* ignore parse errors */ }
+    }
   }
 
   private ensureColumn(table: string, column: string, definition: string): void {
@@ -795,23 +899,112 @@ export class ProjectStore {
       }
     }
 
+    const r = row as Record<string, unknown>;
+
+    // Parse legacy agent conversations and migrate to director conversations
+    const legacyAgentConvos: Record<string, DirectorConversation> = JSON.parse((r.agent_conversations_json as string) || "{}");
+    let directorConvos: Record<string, DirectorConversation>;
+    try {
+      directorConvos = JSON.parse((r.director_conversations_json as string) || "{}");
+    } catch { directorConvos = {}; }
+
+    // If directorConvos is empty but legacy has data, migrate old sub-agent conversations into directors
+    if (Object.keys(directorConvos).length === 0 && Object.keys(legacyAgentConvos).length > 0) {
+      const SUB_AGENT_TO_DIRECTOR: Record<string, DirectorId> = {
+        "core-architect": "creative-director",
+        "vibe-artist": "creative-director",
+        "version-planner": "rd-director",
+        "update-planner": "rd-director",
+        "front-end": "programming-director",
+        "back-end": "programming-director",
+        "visual-validator": "validation-director",
+        "functional-validator": "validation-director",
+      };
+      for (const [key, conv] of Object.entries(legacyAgentConvos)) {
+        const targetId = SUB_AGENT_TO_DIRECTOR[key] ?? key;
+        if (!directorConvos[targetId]) {
+          directorConvos[targetId] = { directorId: targetId as DirectorId, focusMode: null, messages: [], lastActiveAt: null };
+        }
+        if (conv.messages?.length) {
+          directorConvos[targetId].messages.push(...conv.messages);
+          if (conv.lastActiveAt && (!directorConvos[targetId].lastActiveAt || conv.lastActiveAt > directorConvos[targetId].lastActiveAt!)) {
+            directorConvos[targetId].lastActiveAt = conv.lastActiveAt;
+          }
+        }
+      }
+    }
+
+    // Parse director progress with backward-compat derivation
+    let directorProgress: ProjectDirectorProgress;
+    try {
+      const parsed = JSON.parse((r.director_progress_json as string) || "{}");
+      if (parsed.creative) {
+        directorProgress = parsed;
+      } else {
+        throw new Error("empty");
+      }
+    } catch {
+      const fc = stages.function?.confirmed != null;
+      const tc = stages.thesis?.confirmed != null;
+      const cpc = stages.core_pillars?.confirmed != null;
+      const ffc = stages.full_flow?.confirmed != null;
+      directorProgress = {
+        creative: fc && tc && cpc && ffc ? "completed" : fc ? "in-progress" : "not-started",
+        rd: "not-started",
+        programming: "not-started",
+        validation: "not-started",
+        currentDirector: null,
+      };
+    }
+
+    // Backward-compat: add pillarType to pillars that lack it
+    const rawPillars: CorePillar[] = JSON.parse(row.core_pillars_json || "[]");
+    const migratePillars = (pillars: CorePillar[]): CorePillar[] =>
+      pillars.map((p) => ({
+        ...p,
+        pillarType: p.pillarType ?? "core",
+        description: p.description ?? null,
+        connectedPillarIds: p.connectedPillarIds ?? [],
+        corePillars: migratePillars(p.corePillars ?? []),
+      }));
+
     return {
       id: row.id,
       projectId: row.project_id,
       currentStage,
       conversationMode,
       stages,
-      unifiedMessages: JSON.parse(((row as Record<string, unknown>).unified_messages_json as string) || "[]"),
+      unifiedMessages: JSON.parse((r.unified_messages_json as string) || "[]"),
       scratchpad,
       plannedUpdates,
-      corePillars: JSON.parse(row.core_pillars_json || "[]"),
+      corePillars: migratePillars(rawPillars),
       coreDetailsChatHistory: JSON.parse(row.core_details_chat_json || "[]"),
       attachedMaterials: JSON.parse(row.attached_materials_json || "[]"),
-      miscMaterials: JSON.parse(((row as Record<string, unknown>).misc_materials_json as string) || "[]"),
-      cascadePending: JSON.parse(((row as Record<string, unknown>).cascade_pending_json as string) || "null"),
+      miscMaterials: JSON.parse((r.misc_materials_json as string) || "[]"),
+      cascadePending: JSON.parse((r.cascade_pending_json as string) || "null"),
       provider: row.provider as AiProvider,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      // Director system fields
+      directorConversations: directorConvos,
+      versions: JSON.parse((r.versions_json as string) || "[]"),
+      versionUpdates: JSON.parse((r.version_updates_json as string) || "[]"),
+      feasibilityAssessments: JSON.parse((r.feasibility_json as string) || "[]"),
+      validationResults: JSON.parse((r.validation_results_json as string) || "[]"),
+      validationFrequency: ((r.validation_frequency as string) || "manual") as AgentSession["validationFrequency"],
+      activeDirectorId: ((r.active_director_id as string | null) ?? (r.active_agent_id as string | null) ?? null) as DirectorId | null,
+      directorProgress,
+      creativeFocusMode: ((r.creative_focus_mode as string) || null) as CreativeFocusMode | null,
+      rdFocusMode: ((r.rd_focus_mode as string) || null) as RdFocusMode | null,
+      validationFocusMode: ((r.validation_focus_mode as string) || null) as ValidationFocusMode | null,
+      danInternalNotes: JSON.parse((r.dan_internal_notes_json as string) || "[]"),
+      projectCategory: ((r.project_category as string) || "general-project") as ProjectCategory,
+      dynamicSubAgents: JSON.parse((r.dynamic_sub_agents_json as string) || "[]") as DynamicSubAgent[],
+      slackMessages: JSON.parse((r.slack_messages_json as string) || "[]"),
+      slackActiveDirectorId: ((r.slack_active_director_id as string) || "project-manager") as DirectorId,
+      // Deprecated aliases (kept for backward compat)
+      agentConversations: directorConvos,
+      activeAgentId: ((r.active_director_id as string | null) ?? (r.active_agent_id as string | null) ?? null) as DirectorId | null,
     };
   }
 
@@ -841,8 +1034,14 @@ export class ProjectStore {
          id, project_id, current_stage, stages_json, scratchpad_json,
          planned_updates_json, core_pillars_json, core_details_chat_json,
          attached_materials_json, provider, created_at, updated_at,
-         conversation_mode, unified_messages_json, cascade_pending_json, misc_materials_json
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         conversation_mode, unified_messages_json, cascade_pending_json, misc_materials_json,
+         agent_conversations_json, versions_json, version_updates_json,
+         feasibility_json, validation_results_json, validation_frequency, active_agent_id,
+         director_conversations_json, director_progress_json,
+         creative_focus_mode, rd_focus_mode, validation_focus_mode,
+         dan_internal_notes_json, project_category, dynamic_sub_agents_json, active_director_id,
+         slack_messages_json, slack_active_director_id
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         session.id,
         session.projectId,
@@ -860,6 +1059,24 @@ export class ProjectStore {
         JSON.stringify(session.unifiedMessages),
         JSON.stringify(session.cascadePending),
         JSON.stringify(session.miscMaterials),
+        JSON.stringify(session.directorConversations),
+        JSON.stringify(session.versions),
+        JSON.stringify(session.versionUpdates),
+        JSON.stringify(session.feasibilityAssessments),
+        JSON.stringify(session.validationResults),
+        session.validationFrequency,
+        session.activeDirectorId,
+        JSON.stringify(session.directorConversations),
+        JSON.stringify(session.directorProgress),
+        session.creativeFocusMode,
+        session.rdFocusMode,
+        session.validationFocusMode,
+        JSON.stringify(session.danInternalNotes),
+        session.projectCategory,
+        JSON.stringify(session.dynamicSubAgents),
+        session.activeDirectorId,
+        JSON.stringify(session.slackMessages ?? []),
+        session.slackActiveDirectorId ?? "project-manager",
       ],
     );
   }
@@ -883,5 +1100,173 @@ export class ProjectStore {
       `INSERT OR REPLACE INTO home_scratchpad (id, items_json, updated_at) VALUES ('singleton', ?, ?)`,
       [JSON.stringify(items), new Date().toISOString()],
     );
+  }
+
+  // --- Unified To-dos ---
+
+  listTodos(projectId?: string | null, includeProcessed = false): UnifiedTodoItem[] {
+    let sql = "SELECT * FROM unified_todos";
+    const params: (string | null)[] = [];
+    const clauses: string[] = [];
+
+    if (projectId !== undefined && projectId !== null) {
+      clauses.push("project_id = ?");
+      params.push(projectId);
+    }
+    if (!includeProcessed) {
+      clauses.push("processed_into_pillar = 0");
+    }
+    if (clauses.length) {
+      sql += ` WHERE ${clauses.join(" AND ")}`;
+    }
+    sql += " ORDER BY created_at ASC";
+
+    const rows = this.getRows<{
+      id: string;
+      text: string;
+      project_id: string | null;
+      completed: number;
+      processed_into_pillar: number;
+      source: string;
+      created_at: string;
+    }>(sql, params);
+
+    return rows.map((row) => ({
+      id: row.id,
+      text: row.text,
+      projectId: row.project_id,
+      completed: row.completed === 1,
+      processedIntoPillar: row.processed_into_pillar === 1,
+      source: (row.source as "user" | "agent") || "user",
+      createdAt: row.created_at,
+    }));
+  }
+
+  addTodo(item: UnifiedTodoItem): void {
+    this.run(
+      "INSERT OR REPLACE INTO unified_todos (id, text, project_id, completed, processed_into_pillar, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+      [item.id, item.text, item.projectId, String(item.completed ? 1 : 0), String(item.processedIntoPillar ? 1 : 0), item.source, item.createdAt],
+    );
+  }
+
+  removeTodo(id: string): void {
+    this.run("DELETE FROM unified_todos WHERE id = ?", [id]);
+  }
+
+  markTodoProcessed(id: string): void {
+    this.run("UPDATE unified_todos SET processed_into_pillar = 1 WHERE id = ?", [id]);
+  }
+
+  saveTodos(items: UnifiedTodoItem[]): void {
+    this.db.exec("DELETE FROM unified_todos");
+    for (const item of items) {
+      this.addTodo(item);
+    }
+  }
+
+  // --- Skills ---
+
+  listSkills(): Skill[] {
+    const rows = this.getRows<{
+      id: string;
+      name: string;
+      description: string;
+      source_provider: string;
+      source_type: string;
+      instructions: string;
+      original_file_path: string | null;
+      is_universal: number;
+      install_status: string;
+      install_slug: string | null;
+      install_path: string | null;
+      last_error: string | null;
+      created_at: string;
+      updated_at: string;
+    }>("SELECT * FROM skills ORDER BY created_at DESC");
+
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      sourceProvider: row.source_provider as Skill["sourceProvider"],
+      sourceType: row.source_type as Skill["sourceType"],
+      instructions: row.instructions,
+      originalFilePath: row.original_file_path,
+      isUniversal: row.is_universal === 1,
+      installStatus: row.install_status as Skill["installStatus"],
+      installSlug: row.install_slug,
+      installPath: row.install_path,
+      lastError: row.last_error,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    }));
+  }
+
+  readSkill(id: string): Skill | null {
+    const rows = this.getRows<{
+      id: string;
+      name: string;
+      description: string;
+      source_provider: string;
+      source_type: string;
+      instructions: string;
+      original_file_path: string | null;
+      is_universal: number;
+      install_status: string;
+      install_slug: string | null;
+      install_path: string | null;
+      last_error: string | null;
+      created_at: string;
+      updated_at: string;
+    }>("SELECT * FROM skills WHERE id = ?", [id]);
+
+    if (rows.length === 0) return null;
+    const row = rows[0];
+    return {
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      sourceProvider: row.source_provider as Skill["sourceProvider"],
+      sourceType: row.source_type as Skill["sourceType"],
+      instructions: row.instructions,
+      originalFilePath: row.original_file_path,
+      isUniversal: row.is_universal === 1,
+      installStatus: row.install_status as Skill["installStatus"],
+      installSlug: row.install_slug,
+      installPath: row.install_path,
+      lastError: row.last_error,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  saveSkill(skill: Skill): void {
+    this.run(
+      `INSERT OR REPLACE INTO skills (
+         id, name, description, source_provider, source_type, instructions, original_file_path,
+         is_universal, install_status, install_slug, install_path, last_error, created_at, updated_at
+       )
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        skill.id,
+        skill.name,
+        skill.description,
+        skill.sourceProvider,
+        skill.sourceType,
+        skill.instructions,
+        skill.originalFilePath,
+        String(skill.isUniversal ? 1 : 0),
+        skill.installStatus,
+        skill.installSlug,
+        skill.installPath,
+        skill.lastError,
+        skill.createdAt,
+        skill.updatedAt,
+      ],
+    );
+  }
+
+  deleteSkill(id: string): void {
+    this.run("DELETE FROM skills WHERE id = ?", [id]);
   }
 }

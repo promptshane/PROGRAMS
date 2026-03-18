@@ -18,7 +18,7 @@ export const getProviderPreflightError = (
 
   const claude = status as ClaudeAuthStatus;
   if (!claude.loggedIn) {
-    return claude.connectErrorMessage ?? claude.errorMessage ?? "Connect Claude before using it in PROGRAMS.";
+    return claude.connectErrorMessage ?? claude.errorMessage ?? "Claude is not connected. Open Settings to connect your Claude account.";
   }
 
   if (!claude.ready) {

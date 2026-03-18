@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from "electron";
+import { app, BrowserWindow, shell } from "electron";
 import { join } from "node:path";
 import { ProgramsBackend } from "@main/backend";
 import { registerIpc } from "@main/ipc";
@@ -6,6 +6,7 @@ import { ClaudeService } from "@main/services/claude-service";
 import { CodexService } from "@main/services/codex-service";
 import { GitHubService } from "@main/services/github-service";
 import { GitService } from "@main/services/git-service";
+import { PlaywrightService } from "@main/services/playwright-service";
 import { ProjectStore } from "@main/services/project-store";
 import { RunnerService } from "@main/services/runner-service";
 import { SecureStore } from "@main/services/secure-store";
@@ -82,13 +83,15 @@ void app.whenReady().then(async () => {
   const gitService = new GitService();
   const githubService = new GitHubService(secureStore, emitToWindows);
   const runnerService = new RunnerService(emitToWindows);
+  const playwrightService = new PlaywrightService();
   const codexService = new CodexService(emitToWindows);
-  const claudeService = new ClaudeService(emitToWindows);
+  const claudeService = new ClaudeService(emitToWindows, (url) => shell.openExternal(url));
   const backend = new ProgramsBackend(
     store,
     gitService,
     githubService,
     runnerService,
+    playwrightService,
     codexService,
     claudeService,
     emitToWindows,

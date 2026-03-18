@@ -1,6 +1,6 @@
 import { dirname, join } from "node:path";
 import { ensureDirectory, pathExists } from "@main/utils/fs";
-import { execCommand } from "@main/utils/process";
+import { execCommand, execFileCommand } from "@main/utils/process";
 import type { DiffStats } from "@shared/types";
 
 export interface GitRemoteInfo {
@@ -10,6 +10,31 @@ export interface GitRemoteInfo {
 }
 
 export type GitInstallRequestResult = "alreadyAvailable" | "requested" | "manualDownload";
+
+interface GitHubAuthOptions {
+  remoteUrl?: string | null;
+  token?: string | null;
+}
+
+const isGitHubHttpsRemote = (remoteUrl: string | null | undefined): boolean =>
+  Boolean(remoteUrl?.trim() && /^https:\/\/github\.com\//i.test(remoteUrl.trim()));
+
+const buildGitHubAuthConfigArgs = (options?: GitHubAuthOptions): string[] => {
+  if (!options?.token || !isGitHubHttpsRemote(options.remoteUrl)) {
+    return [];
+  }
+
+  const basicAuth = Buffer.from(`x-access-token:${options.token}`).toString("base64");
+  return [
+    "-c",
+    `http.extraheader=AUTHORIZATION: basic ${basicAuth}`,
+  ];
+};
+
+const buildGitEnv = (): NodeJS.ProcessEnv => ({
+  ...process.env,
+  GIT_TERMINAL_PROMPT: "0",
+});
 
 export class GitService {
   async readWorkingTreeDiffStats(localPath: string): Promise<DiffStats | null> {
@@ -139,13 +164,23 @@ ${result.stderr}`.toLowerCase();
     }
   }
 
-  async hasRemoteBranch(localPath: string, branch: string): Promise<boolean> {
-    const result = await execCommand(`git ls-remote --heads origin ${branch}`, localPath);
+  async hasRemoteBranch(localPath: string, branch: string, auth?: GitHubAuthOptions): Promise<boolean> {
+    const result = await execFileCommand(
+      "git",
+      [...buildGitHubAuthConfigArgs(auth), "ls-remote", "--heads", "origin", branch],
+      localPath,
+      buildGitEnv(),
+    );
     return result.code === 0 && result.stdout.trim().length > 0;
   }
 
-  async fetch(localPath: string): Promise<void> {
-    const result = await execCommand("git fetch origin", localPath);
+  async fetch(localPath: string, auth?: GitHubAuthOptions): Promise<void> {
+    const result = await execFileCommand(
+      "git",
+      [...buildGitHubAuthConfigArgs(auth), "fetch", "origin"],
+      localPath,
+      buildGitEnv(),
+    );
     if (result.code !== 0) {
       throw new Error(result.stderr || "Could not check GitHub for the latest version.");
     }
@@ -156,8 +191,8 @@ ${result.stderr}`.toLowerCase();
     return result.stdout.trim().length > 0;
   }
 
-  async fastForward(localPath: string, branch: string): Promise<void> {
-    const hasBranch = await this.hasRemoteBranch(localPath, branch);
+  async fastForward(localPath: string, branch: string, auth?: GitHubAuthOptions): Promise<void> {
+    const hasBranch = await this.hasRemoteBranch(localPath, branch, auth);
     if (!hasBranch) {
       return;
     }
@@ -210,8 +245,13 @@ ${result.stderr}`.toLowerCase();
     return result.code === 0 && result.stdout.trim() ? result.stdout.trim() : null;
   }
 
-  async push(localPath: string, branch: string): Promise<void> {
-    const result = await execCommand(`git push -u origin ${branch}`, localPath);
+  async push(localPath: string, branch: string, auth?: GitHubAuthOptions): Promise<void> {
+    const result = await execFileCommand(
+      "git",
+      [...buildGitHubAuthConfigArgs(auth), "push", "-u", "origin", branch],
+      localPath,
+      buildGitEnv(),
+    );
     if (result.code !== 0) {
       throw new Error(result.stderr || "Could not sync this update to GitHub.");
     }

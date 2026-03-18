@@ -8,6 +8,12 @@ export interface ClaudeLocalAuthMetadata {
   planType: string | null;
 }
 
+export interface ClaudeCliAuthMetadata {
+  loggedIn: boolean;
+  authMethod: string | null;
+  apiProvider: string | null;
+}
+
 export interface ClaudeCliFeatures {
   supportsAuthCommands: boolean;
   supportsStreamJsonVerbose: boolean;
@@ -23,6 +29,12 @@ const claudeLocalAuthSchema = z.object({
     .nullable()
     .optional()
     .catch(null),
+});
+
+const claudeCliAuthSchema = z.object({
+  loggedIn: z.boolean().catch(false),
+  authMethod: z.string().trim().min(1).nullable().optional().catch(null),
+  apiProvider: z.string().trim().min(1).nullable().optional().catch(null),
 });
 
 const formatBillingType = (value: string | null): string | null => {
@@ -51,6 +63,22 @@ export const parseClaudeLocalAuthMetadata = (raw: string): ClaudeLocalAuthMetada
   };
 };
 
+export const parseClaudeCliAuthMetadata = (raw: string): ClaudeCliAuthMetadata => {
+  const trimmed = raw.trim();
+  const jsonStart = trimmed.indexOf("{");
+  const jsonEnd = trimmed.lastIndexOf("}");
+  const jsonPayload =
+    jsonStart >= 0 && jsonEnd > jsonStart
+      ? trimmed.slice(jsonStart, jsonEnd + 1)
+      : trimmed;
+  const parsed = claudeCliAuthSchema.parse(JSON.parse(jsonPayload));
+  return {
+    loggedIn: parsed.loggedIn,
+    authMethod: parsed.authMethod ?? null,
+    apiProvider: parsed.apiProvider ?? null,
+  };
+};
+
 export const parseClaudeCliFeatures = (helpText: string): ClaudeCliFeatures => ({
   supportsAuthCommands: /^\s+auth(?:\s{2,}|\s*$)/m.test(helpText),
   supportsStreamJsonVerbose:
@@ -63,6 +91,7 @@ export interface BuildClaudeAuthStatusInput {
   available: boolean;
   binaryPath: string | null;
   version: string | null;
+  cliAuth: ClaudeCliAuthMetadata | null;
   localAuth: ClaudeLocalAuthMetadata | null;
   features: ClaudeCliFeatures | null;
 }
@@ -71,6 +100,7 @@ export const buildClaudeAuthStatus = ({
   available,
   binaryPath,
   version,
+  cliAuth,
   localAuth,
   features,
 }: BuildClaudeAuthStatusInput): ClaudeAuthStatus => {
@@ -91,7 +121,7 @@ export const buildClaudeAuthStatus = ({
     };
   }
 
-  const loggedIn = Boolean(localAuth?.loggedIn);
+  const loggedIn = Boolean(cliAuth?.loggedIn);
   const ready = loggedIn && Boolean(features?.supportsStreamJsonVerbose);
   const canConnect = Boolean(features?.supportsAuthCommands);
   const runtimeErrorMessage =
@@ -106,9 +136,9 @@ export const buildClaudeAuthStatus = ({
     canConnect,
     binaryPath,
     version,
-    email: localAuth?.email ?? null,
-    displayName: localAuth?.displayName ?? null,
-    planType: localAuth?.planType ?? null,
+    email: loggedIn ? localAuth?.email ?? null : null,
+    displayName: loggedIn ? localAuth?.displayName ?? null : null,
+    planType: loggedIn ? localAuth?.planType ?? null : null,
     errorMessage:
       runtimeErrorMessage ??
       connectErrorMessage ??

@@ -152,12 +152,16 @@ code {
 }
 
 .shellContent {
+  --shell-content-inset-top: 24px;
   position: relative;
-  z-index: 1;
   min-height: 100vh;
   margin-left: var(--sidebar-width);
   padding: 24px;
   transition: margin-left 240ms ease;
+}
+
+.shellContent-composerLayout {
+  padding-bottom: 8px;
 }
 
 .shellContent-detailLocked {
@@ -185,13 +189,12 @@ code {
   background: transparent;
   color: var(--text);
   box-shadow: none;
-  transition: transform 160ms ease, background 160ms ease, color 160ms ease, opacity 160ms ease;
+  transition: background 160ms ease, color 160ms ease, opacity 160ms ease;
   opacity: 0.76;
 }
 
 .sidebarToggleButton:hover,
 .sidebarToggleButton.active {
-  transform: translateY(-1px);
   opacity: 1;
 }
 
@@ -214,12 +217,12 @@ code {
   inset: 0 auto 0 0;
   z-index: 25;
   width: var(--sidebar-open-width);
-  padding: 52px 12px 20px;
+  padding: 52px 12px 8px;
   background: color-mix(in srgb, var(--page-solid) 88%, var(--panel) 12%);
   border-right: 1px solid var(--border);
-  display: grid;
-  align-content: start;
-  gap: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
   overflow-y: auto;
   overflow-x: hidden;
   box-shadow: none;
@@ -241,6 +244,76 @@ code {
   min-width: 164px;
 }
 
+.shellSidebarDivider,
+.chatViewportDivider {
+  flex: 0 0 auto;
+  width: 100%;
+  height: 1px;
+  background: color-mix(in srgb, var(--border-strong) 56%, var(--border));
+}
+
+.shellSidebarDivider {
+  margin-top: 8px;
+}
+
+.shellSidebarFooter {
+  margin-top: auto;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
+  gap: 8px;
+  width: 100%;
+  padding-top: 8px;
+}
+
+.sidebarFooterButton {
+  width: 100%;
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text);
+  box-shadow: none;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  opacity: 0.82;
+  transition: background 160ms ease, border-color 160ms ease, opacity 160ms ease;
+}
+
+.sidebarFooterButton:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  border-color: color-mix(in srgb, var(--border-strong) 72%, transparent);
+}
+
+.sidebarFooterButton.active {
+  opacity: 1;
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  border-color: color-mix(in srgb, var(--text) 16%, transparent);
+}
+
+.sidebarFooterButton svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+}
+
+.sidebarFooterButton span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebarFooterButton-usage {
+  margin-left: 0;
+}
+
 .sidebarNavButton {
   display: block;
   text-align: left;
@@ -252,12 +325,11 @@ code {
   color: var(--text);
   font-weight: 700;
   letter-spacing: -0.02em;
-  transition: transform 160ms ease, background 160ms ease, color 160ms ease, opacity 160ms ease;
+  transition: background 160ms ease, color 160ms ease, opacity 160ms ease;
   opacity: 0.82;
 }
 
 .sidebarNavButton:hover {
-  transform: translateY(-1px);
   opacity: 1;
   background: color-mix(in srgb, var(--text) 8%, transparent);
 }
@@ -561,12 +633,11 @@ code {
 
 .projectDetailWorkspace {
   position: relative;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 18px;
   min-height: 0;
   height: 100%;
-  grid-template-rows: auto minmax(0, 1fr);
-  align-content: stretch;
   overflow: hidden;
 }
 
@@ -919,7 +990,7 @@ code {
 .toggleOption,
 .tabOption {
   border-radius: 999px;
-  transition: transform 140ms ease, border-color 140ms ease, background 140ms ease, color 140ms ease;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
 }
 
 .primaryButton,
@@ -956,7 +1027,7 @@ code {
 .secondaryButton:hover,
 .toggleOption:hover,
 .tabOption:hover {
-  transform: translateY(-1px);
+  transform: none;
 }
 
 .primaryButton:disabled,
@@ -1006,7 +1077,7 @@ code {
 .updateSection {
   display: grid;
   min-height: 0;
-  height: 100%;
+  flex: 1 1 0;
   overflow: hidden;
   align-self: stretch;
 }
@@ -1081,11 +1152,11 @@ code {
   letter-spacing: 0.01em;
   text-align: center;
   line-height: 1.15;
-  transition: transform 140ms ease, border-color 140ms ease, background 140ms ease, color 140ms ease;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
 }
 
 .actionButton:not(:disabled):hover {
-  transform: translateY(-1px);
+  transform: none;
 }
 
 .actionButton:disabled {
@@ -1403,10 +1474,10 @@ select {
 }
 
 .composerInput {
-  min-height: 76px;
+  min-height: 64px;
   resize: none;
   border: none;
-  padding: 14px 20px 10px;
+  padding: 12px 20px 6px;
   background: transparent;
   box-shadow: none;
   line-height: 1.5;
@@ -1420,12 +1491,44 @@ select {
   box-shadow: none;
 }
 
+.planErrorBanner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: var(--radius-lg);
+  background: var(--error-bg);
+  color: var(--error);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.planErrorBanner-message {
+  flex: 1;
+}
+
+.planErrorBanner-dismiss {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: var(--radius-md);
+  border: 1px solid color-mix(in srgb, var(--error) 30%, transparent);
+  background: transparent;
+  color: var(--error);
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.planErrorBanner-dismiss:hover {
+  opacity: 1;
+}
+
 .composerShell {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
   width: 100%;
-  padding: 12px 14px 14px;
+  padding: 10px 14px;
   border-radius: 28px;
   border: 1px solid color-mix(in srgb, var(--border-strong) 62%, transparent);
   background: linear-gradient(180deg, rgba(18, 22, 29, 0.94), rgba(18, 23, 30, 0.9));
@@ -1443,7 +1546,7 @@ select {
   align-items: flex-end;
   justify-content: space-between;
   gap: 12px;
-  margin-top: 4px;
+  margin-top: 0;
 }
 
 .composerControlCluster {
@@ -1487,12 +1590,11 @@ select {
   border: none;
   color: #fff;
   cursor: pointer;
-  transition: background 140ms ease, transform 140ms ease;
+  transition: background 140ms ease;
 }
 
 .composerStopButton:hover {
   background: #c53030;
-  transform: translateY(-1px);
 }
 
 .composerStopButton svg {
@@ -1616,11 +1718,11 @@ select {
   border: 1px solid color-mix(in srgb, var(--border-strong) 62%, transparent);
   background: color-mix(in srgb, var(--button-secondary) 72%, transparent);
   color: var(--text);
-  transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+  transition: border-color 140ms ease, background 140ms ease;
 }
 
 .updateStageButton:hover {
-  transform: translateY(-1px);
+  transform: none;
 }
 
 .updateStageButton.active {
@@ -1735,7 +1837,7 @@ select {
   background: color-mix(in srgb, var(--button-secondary) 84%, transparent);
   color: var(--text);
   user-select: none;
-  transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+  transition: border-color 140ms ease, background 140ms ease;
 }
 
 .composerMenuTrigger:hover,
@@ -1879,7 +1981,7 @@ select {
   inset: 0;
   display: grid;
   place-items: center;
-  padding: 24px 24px 24px calc(24px + var(--sidebar-width));
+  padding: 24px;
   background: rgba(5, 8, 12, 0.56);
   z-index: 60;
 }
@@ -1894,6 +1996,25 @@ select {
 
 .modalFrame.wide {
   width: min(1080px, 100%);
+}
+
+.modalFrame.fullscreen {
+  width: min(1200px, calc(100% - 32px));
+  height: calc(100vh - 48px);
+  max-height: none;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.modalFrame.fullscreen .modalHeader {
+  flex-shrink: 0;
+}
+
+.detailsScrollContent {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .bottomSheetOverlay {
@@ -1973,6 +2094,12 @@ select {
   margin-top: 8px;
 }
 
+.settingsActionRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .nestedSettings {
   margin-top: 14px;
 }
@@ -2033,6 +2160,17 @@ select {
   word-break: break-word;
 }
 
+.appUpdateMetaCode {
+  font-size: 0.8rem;
+}
+
+.appUpdateMetaDetail {
+  display: block;
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+}
+
 .projectEditorStack,
 .dangerCard,
 .colorField {
@@ -2051,11 +2189,11 @@ select {
   border-radius: 16px;
   border: 1px solid rgba(255, 255, 255, 0.18);
   box-shadow: inset 0 -18px 28px rgba(0, 0, 0, 0.16);
-  transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
 }
 
 .colorSwatch:hover {
-  transform: translateY(-1px);
+  transform: none;
 }
 
 .colorSwatch.active {
@@ -2541,17 +2679,15 @@ select {
   backdrop-filter: none;
   box-shadow: none;
   opacity: 0.76;
-  transition: transform 160ms ease, background 160ms ease, color 160ms ease, opacity 160ms ease;
+  transition: background 160ms ease, color 160ms ease, opacity 160ms ease;
 }
 
 .iconButton:hover {
-  transform: translateY(-1px);
   opacity: 1;
   background: color-mix(in srgb, var(--text) 10%, transparent);
 }
 
 .iconButton.active {
-  transform: translateY(-1px);
   opacity: 1;
   background: color-mix(in srgb, var(--text) 12%, transparent);
 }
@@ -2931,16 +3067,44 @@ select {
 
 .usageBar {
   height: 10px;
+  display: flex;
   overflow: hidden;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.1);
 }
 
-.usageBarFill {
+.usageBarWhite {
   display: block;
   height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, var(--usage-accent-soft) 0%, var(--usage-accent) 100%);
+  background: rgba(255, 255, 255, 0.75);
+  flex-shrink: 0;
+  border-radius: 999px 0 0 999px;
+  transition: width 300ms ease;
+}
+
+.usageBarWhite:only-child {
+  border-radius: 999px;
+}
+
+.usageBarSchedule {
+  display: block;
+  height: 100%;
+  flex-shrink: 0;
+  border-radius: 0 999px 999px 0;
+  transition: width 300ms ease;
+}
+
+.usageBarSchedule-under {
+  background: #31df86;
+}
+
+.usageBarSchedule-over {
+  background: #ff6565;
+}
+
+.usageMetric-dimmed {
+  opacity: 0.35;
+  filter: grayscale(1);
 }
 
 .usageEmptyState {
@@ -2952,6 +3116,49 @@ select {
   gap: 10px;
 }
 
+.projectOptionsContent {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.projectOptionsSection {
+  padding: 14px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.projectOptionsSection:first-child {
+  padding-top: 0;
+}
+
+.projectOptionsLabel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.projectOptionsNameInput {
+  width: 100%;
+  padding: 8px 10px;
+  background: var(--input-bg, var(--panel));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.95rem;
+}
+
+.projectOptionsActions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 14px;
+}
+
 .projectOptionButton {
   width: 100%;
   padding: 16px 18px;
@@ -2960,11 +3167,10 @@ select {
   background: var(--panel-soft);
   color: var(--text);
   text-align: left;
-  transition: transform 140ms ease, border-color 140ms ease, background 140ms ease, color 140ms ease;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
 }
 
 .projectOptionButton:hover {
-  transform: translateY(-1px);
   border-color: var(--border-strong);
 }
 
@@ -3046,6 +3252,32 @@ select {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--panel-soft);
+}
+
+.claudeAuthCodePrompt {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel-soft);
+  padding: 14px 16px;
+  display: grid;
+  gap: 10px;
+}
+
+.claudeAuthCodePromptText {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+}
+
+.claudeAuthCodePromptRow {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.claudeAuthCodeInput {
+  flex: 1;
+  min-width: 0;
 }
 
 .syncHintCard {
@@ -3164,7 +3396,7 @@ select {
   }
 
   .modalOverlay {
-    padding: 16px 16px 16px calc(16px + var(--sidebar-width));
+    padding: 16px;
   }
 
   .bottomSheetOverlay {
@@ -3187,12 +3419,46 @@ select {
   }
 
   .shellContent {
+    --shell-content-inset-top: 16px;
     padding: 16px;
+  }
+
+  .shellContent-composerLayout {
+    padding-bottom: 8px;
   }
 
   .homeTopBar {
     top: 10px;
     right: 16px;
+  }
+
+  .agentsTopBar {
+    right: 16px;
+  }
+
+  .slackTopBar {
+    gap: 10px;
+  }
+
+  .slackTopBarPrimary {
+    flex-wrap: wrap;
+  }
+
+  .slackTopBarSpacer {
+    display: none;
+  }
+
+  .slackDetailsButton {
+    margin-left: auto;
+  }
+
+  .slackDetailsProgressGrid,
+  .slackDetailsCoreGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .slackDetailsCard {
+    padding: 16px;
   }
 
   .minimalHome,
@@ -3576,11 +3842,10 @@ select {
   color: var(--text);
   text-align: left;
   cursor: pointer;
-  transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+  transition: border-color 140ms ease, background 140ms ease;
 }
 
 .historyDetailItem:hover {
-  transform: translateY(-1px);
   border-color: var(--border-strong);
 }
 
@@ -3700,14 +3965,155 @@ select {
   flex-direction: column;
   height: 100%;
   gap: 0;
+  padding-top: 48px;
+}
+
+.agentsPage-conversation {
+  --conversation-toolbar-top: 8px;
+  --conversation-toolbar-height: 28px;
+  --conversation-divider-gap: 8px;
+  --conversation-viewport-gap: 8px;
+  padding-top: 0;
+}
+
+.conversationViewportShell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-top: calc(
+    var(--conversation-toolbar-top) +
+    var(--conversation-toolbar-height) +
+    var(--conversation-divider-gap) -
+    var(--shell-content-inset-top)
+  );
+  gap: var(--conversation-viewport-gap);
 }
 
 .agentsTopBar {
+  position: fixed;
+  top: 8px;
+  left: max(140px, calc(var(--sidebar-width) + 24px));
+  right: 24px;
+  z-index: 39;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 16px 0;
+  gap: 8px;
+  min-width: 0;
+}
+
+.slackTopBar {
+  align-items: flex-start;
+}
+
+.slackTopBarPrimary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.slackTopBarSpacer {
+  flex: 1 1 auto;
+  min-width: 12px;
+}
+
+.slackDetailsButton {
+  min-height: 30px;
+  padding: 0 12px;
+  white-space: nowrap;
   flex-shrink: 0;
+}
+
+.chatViewportDivider {
+  margin-bottom: 0;
+}
+
+.agentSectionsScroll {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0 20px;
+}
+
+.agentSection {
+  padding: 0 20px 12px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.agentSection:last-child {
+  border-bottom: none;
+}
+
+.agentSectionLabel {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin: 0 0 8px 4px;
+}
+
+.agentTileGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 180px));
+  gap: 18px;
+  align-content: start;
+}
+
+.agentTileDisabled {
+  opacity: 0.35;
+  filter: grayscale(0.7);
+  pointer-events: none;
+}
+
+.agentStatusDot {
+  width: var(--project-tile-status-dot-size);
+  height: var(--project-tile-status-dot-size);
+  flex: 0 0 auto;
+  margin-right: var(--project-tile-status-dot-offset);
+  margin-bottom: var(--project-tile-status-dot-offset);
+  border-radius: 999px;
+  background: #05070a;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.54), 0 10px 20px rgba(0, 0, 0, 0.28);
+  pointer-events: auto;
+}
+
+.agentProfilePhoto {
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  background: var(--panel-soft);
+  border: 2px solid var(--border);
+}
+
+.agentOptionSection {
+  width: 100%;
+  max-width: 600px;
+  padding: 16px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  border: 1px solid var(--border);
+}
+
+.agentOptionSection h4 {
+  margin: 0 0 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.modalFrame.fullscreen .settingsStack {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.modalFrame.fullscreen .usageCardGrid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .agentStageStepper {
@@ -3731,11 +4137,11 @@ select {
   color: var(--muted);
   font-size: 0.8rem;
   cursor: pointer;
-  transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+  transition: border-color 140ms ease, background 140ms ease;
 }
 
 .agentStageButton:hover:not(:disabled) {
-  transform: translateY(-1px);
+  transform: none;
 }
 
 .agentStageButton.active {
@@ -3778,16 +4184,77 @@ select {
 .agentContentLayout {
   flex: 1;
   display: flex;
-  gap: 14px;
+  gap: 0;
   overflow: hidden;
   min-height: 0;
 }
 
 .agentChatPane {
   flex: 1;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  row-gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.agentChatScroll {
+  overflow-y: auto;
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  padding: 0;
+  scroll-padding-top: 8px;
+  scroll-padding-bottom: 8px;
+}
+
+.agentComposerFooter {
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.slackComposerFooter {
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.slackComposerBar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 4px 4px 10px;
+  border-radius: 28px;
+  border: 1px solid color-mix(in srgb, var(--border-strong) 62%, transparent);
+  background: linear-gradient(180deg, rgba(18, 22, 29, 0.94), rgba(18, 23, 30, 0.9));
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.slackComposerInput {
+  flex: 1;
+  border: none !important;
+  background: transparent !important;
+  color: var(--text);
+  font-size: 0.875rem;
+  padding: 7px 4px;
+  outline: none;
+  border-radius: 0;
   min-width: 0;
+}
+
+.slackComposerInput::placeholder {
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+.slackAttachBtn,
+.slackSendBtn {
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+.slackSendBtn:not(:disabled) {
+  opacity: 1;
+  background: color-mix(in srgb, var(--text) 12%, transparent);
 }
 
 
@@ -3934,15 +4401,15 @@ select {
 /* --- Planner Chat (shared) --- */
 
 .plannerSelect {
-  flex: 1;
-  max-width: 280px;
-  padding: 8px 12px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-border, rgba(255, 255, 255, 0.1));
-  background: var(--color-surface, rgba(255, 255, 255, 0.04));
-  color: var(--color-text);
-  font-size: 0.875rem;
-  appearance: none;
+  height: 28px;
+  padding: 0 8px;
+  max-width: 220px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  color: var(--text);
+  font-size: 0.8rem;
+  opacity: 0.82;
   cursor: pointer;
 }
 
@@ -4083,10 +4550,11 @@ select {
 
 /* --- Core Details Panel --- */
 
-.coreDetailsPanel {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+.coreDetailsPanelContent {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 0;
 }
 
 .coreDetailItem {
@@ -4094,13 +4562,6 @@ select {
   border-radius: var(--radius-sm);
   background: var(--panel-soft);
   border: 1px solid var(--border);
-}
-
-.coreDetailItem h4 {
-  margin: 0 0 6px;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--text);
 }
 
 .coreDetailItem p {
@@ -4111,16 +4572,21 @@ select {
   white-space: pre-wrap;
 }
 
-.coreDetailsChatSection {
+.coreDetailsAiSection {
+  flex-shrink: 0;
   border-top: 1px solid var(--border);
-  padding-top: 14px;
+  padding: 12px 0 4px;
+  overflow-y: auto;
+  max-height: 40vh;
 }
 
-.coreDetailsChatSection h4 {
-  margin: 0 0 8px;
-  font-size: 0.8125rem;
-  font-weight: 600;
-  color: var(--text);
+.coreDetailsInputRow {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
 }
 
 /* --- Core Pillar Chips & Expanded Details --- */
@@ -4182,6 +4648,56 @@ select {
 .assumedText {
   color: var(--error);
   font-style: italic;
+}
+
+.coreDetailReviewActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.coreDetailConfirmBtn {
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--success) 12%, var(--panel-soft));
+  border: 1px solid color-mix(in srgb, var(--success) 30%, transparent);
+  color: var(--success);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.coreDetailConfirmBtn:hover {
+  background: color-mix(in srgb, var(--success) 20%, var(--panel-soft));
+}
+
+.coreDetailEditBtn {
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 0.72rem;
+  background: var(--button-secondary);
+  border: 1px solid var(--button-secondary-border);
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.coreDetailEditBtn:hover {
+  color: var(--text);
+}
+
+.tileAssumedBadge {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--error);
+  flex-shrink: 0;
+  display: inline-block;
+  margin-left: 5px;
+  vertical-align: middle;
+  opacity: 0.85;
 }
 
 /* --- Structured Full-Flow Steps --- */
@@ -4277,6 +4793,55 @@ select {
   font-size: 0.8125rem;
   color: var(--text-muted);
   font-style: normal;
+}
+
+/* --- Agent Info Panel (tabbed) --- */
+
+.agentInfoPanel {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin: 12px 16px;
+  overflow: hidden;
+}
+
+.agentInfoTabs {
+  display: flex;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-soft);
+}
+
+.agentInfoTabBtn {
+  flex: 1;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+  border-right: 1px solid var(--border);
+}
+
+.agentInfoTabBtn:last-child {
+  border-right: none;
+}
+
+.agentInfoTabBtn:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--panel-strong) 50%, transparent);
+}
+
+.agentInfoTabBtn.active {
+  color: var(--accent);
+  background: var(--panel);
+  font-weight: 600;
+}
+
+.agentInfoTabContent {
+  padding: 12px 14px;
+  min-height: 56px;
 }
 
 /* --- Update Agent Section --- */
@@ -4549,37 +5114,379 @@ select {
 .agentUnifiedConversation {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 8px 16px;
-  overflow-y: auto;
-  max-height: 400px;
+  gap: 10px;
+  padding: 0 16px;
+  overflow: visible;
+  flex: 0 0 auto;
 }
 
 .agentConvoMessage {
-  padding: 8px 12px;
-  border-radius: 10px;
+  padding: 10px 14px;
+  border-radius: 16px;
   font-size: 0.8125rem;
-  line-height: 1.55;
-  max-width: 85%;
+  line-height: 1.5;
+  max-width: 80%;
 }
 
 .agentConvoMessage-user {
   align-self: flex-end;
-  background: color-mix(in srgb, var(--accent) 12%, transparent);
-  color: var(--text);
-  border: 1px solid color-mix(in srgb, var(--accent) 18%, transparent);
+  background: #007AFF;
+  color: #fff;
+  border-bottom-right-radius: 4px;
 }
 
 .agentConvoMessage-assistant {
   align-self: flex-start;
-  background: var(--panel-soft);
+  background: var(--panel-soft, #2a2a2a);
   color: var(--text);
-  border: 1px solid var(--border);
+  border-bottom-left-radius: 4px;
 }
 
 .agentConvoContent {
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.typingIndicator {
+  opacity: 0.6;
+  font-style: italic;
+}
+
+/* --- Slack Typing Dots Animation --- */
+.slackTypingDots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+}
+.slackDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.7);
+  animation: slackBounce 1.4s ease-in-out infinite;
+}
+.slackDot:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.slackDot:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes slackBounce {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-6px); opacity: 1; }
+}
+
+/* --- Slack Message Timestamps --- */
+.slackMessageTimestamp {
+  font-size: 0.625rem;
+  opacity: 0.45;
+  margin-top: 4px;
+  text-align: right;
+}
+
+/* --- Slack Message Sender Label --- */
+.slackMessageSender {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  opacity: 0.8;
+  margin-bottom: 2px;
+}
+
+.slackMessageLabel {
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  color: var(--text-muted, #888);
+  opacity: 0.55;
+  align-self: flex-start;
+  padding-left: 6px;
+  margin-bottom: -8px;
+  margin-top: 4px;
+}
+
+/* --- Slack Message Click Highlight --- */
+.slackMessageSelected {
+  outline: 2px solid rgba(255, 255, 255, 0.8);
+  outline-offset: 2px;
+}
+
+/* --- Slack Director Presence Chips --- */
+.slackDirectorPresence {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  overflow-x: auto;
+  flex: 1;
+  min-width: 0;
+  padding-bottom: 2px;
+}
+.slackDirectorChip {
+  font-size: 0.7rem;
+  padding: 2px 8px;
+  border-radius: 12px;
+  border: 1px solid;
+  background: none;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.slackDirectorChip:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.slackDirectorChip--alerted {
+  background: rgba(255, 255, 255, 0.12);
+  font-weight: 600;
+}
+
+/* --- Slack Details Modal --- */
+.slackDetailsModalContent {
+  display: grid;
+  gap: 18px;
+  padding: 12px 0 24px;
+}
+
+.slackDetailsSection {
+  display: grid;
+  gap: 10px;
+}
+
+.slackDetailsSectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.slackDetailsSectionHeader h4 {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.slackDetailsCard {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border-radius: 18px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel-soft) 82%, var(--panel));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.slackDetailsDescription {
+  margin: 0;
+  font-size: 0.96rem;
+  line-height: 1.6;
+  color: var(--text);
+}
+
+.slackDetailsToggle {
+  width: fit-content;
+  padding: 0;
+}
+
+.slackDetailsCoreGrid {
+  margin-top: 2px;
+  padding: 0;
+  border-bottom: none;
+}
+
+.slackDetailsPillarList {
+  display: grid;
+  gap: 10px;
+}
+
+.slackDetailsPillarExpanded {
+  margin-top: 0;
+}
+
+.slackDetailsPillarHeading {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.slackDetailsPillarChildren {
+  display: grid;
+  gap: 10px;
+}
+
+.slackDetailsProgressGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.slackDetailsProgressCard {
+  align-content: start;
+  min-height: 220px;
+}
+
+.slackDetailsSubsectionHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.slackDetailsSubsectionHead h5 {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--text);
+}
+
+.slackDetailsSegmentedControl {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 74%, transparent);
+}
+
+.slackDetailsSegment {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 5px 10px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.slackDetailsSegment.active {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  color: var(--text);
+}
+
+.slackDetailsPlaceholder {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.slackDetailsPlaceholderBars {
+  display: grid;
+  gap: 10px;
+}
+
+.slackDetailsPlaceholderBars span {
+  display: block;
+  height: 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
+
+.slackDetailsPlaceholderBars span:nth-child(1) {
+  width: 82%;
+}
+
+.slackDetailsPlaceholderBars span:nth-child(2) {
+  width: 68%;
+}
+
+.slackDetailsPlaceholderBars span:nth-child(3) {
+  width: 54%;
+}
+
+.slackDetailsPlaceholderCopy {
+  margin: 0;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.slackDetailsAgentFlow {
+  justify-items: center;
+}
+
+.slackDetailsAgentNode {
+  --slack-agent-color: var(--accent);
+  width: min(360px, 100%);
+  padding: 14px 18px;
+  border-radius: 16px;
+  border: 1px solid color-mix(in srgb, var(--slack-agent-color) 50%, var(--border));
+  background: color-mix(in srgb, var(--slack-agent-color) 14%, var(--panel));
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+  text-align: center;
+}
+
+.slackDetailsAgentRole {
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.slackDetailsAgentName {
+  font-size: 0.74rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--slack-agent-color) 72%, white 18%);
+}
+
+.slackDetailsAgentArrow {
+  position: relative;
+  width: 18px;
+  height: 28px;
+  color: color-mix(in srgb, var(--text) 42%, transparent);
+}
+
+.slackDetailsAgentArrow::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 8px;
+  width: 2px;
+  transform: translateX(-50%);
+  border-radius: 999px;
+  background: currentColor;
+}
+
+.slackDetailsAgentArrow::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: 1px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: translateX(-50%) rotate(45deg);
+}
+
+/* --- Slack Handoff Banner --- */
+.slackHandoffBanner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  margin: 8px 16px 0;
+  border-radius: var(--radius-sm, 8px);
+  background: color-mix(in srgb, var(--panel-soft, #2a2a2a) 80%, transparent);
+  border: 1px solid var(--border-strong, #444);
+  font-size: 0.8rem;
+}
+.slackHandoffBanner p {
+  flex: 1;
+  margin: 0;
+}
+
+/* --- Slack Inline Code --- */
+.slackInlineCode {
+  background: rgba(255, 255, 255, 0.1);
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: monospace;
+  font-size: 0.85em;
 }
 
 /* --- To-do Floating Button --- */
@@ -4597,12 +5504,11 @@ select {
   font-weight: 500;
   cursor: pointer;
   z-index: 10;
-  transition: transform 140ms ease, background 140ms ease;
+  transition: background 140ms ease;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
 .todoFloatingButton:hover {
-  transform: translateY(-1px);
   background: color-mix(in srgb, var(--panel-strong) 80%, var(--text));
 }
 
@@ -4726,4 +5632,1028 @@ select {
 .todoNotepadInput input:focus {
   outline: none;
   border-color: var(--color-primary, #3B82F6);
+}
+
+/* ───────────────────────────────────────────────────
+   Program Mode Switch Row
+   ─────────────────────────────────────────────────── */
+
+.programModeSwitchRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  margin-bottom: 8px;
+}
+
+.programModeSwitch {
+  display: inline-flex;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.programModeSwitch button {
+  padding: 6px 16px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  font-family: inherit;
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.programModeSwitch button:not(:last-child) {
+  border-right: 1px solid var(--border);
+}
+
+.programModeSwitch button.active {
+  background: var(--button-secondary);
+  color: var(--text);
+}
+
+.programModeSwitch button:hover:not(.active) {
+  background: var(--button-secondary);
+  color: var(--text);
+  opacity: 0.7;
+}
+
+/* ───────────────────────────────────────────────────
+   Skill Attachment (center of mode switch row)
+   ─────────────────────────────────────────────────── */
+
+.skillAttachmentArea {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  position: relative;
+}
+
+.skillAttachButton {
+  padding: 5px 14px;
+  font-size: 0.75rem;
+  font-family: inherit;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--border-strong);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillAttachButton:hover {
+  border-color: var(--text);
+  color: var(--text);
+}
+
+.skillAttachButton.hasSkill {
+  border-style: solid;
+  color: var(--text);
+}
+
+.skillPickerPopover {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-top: 4px;
+  min-width: 200px;
+  max-width: 280px;
+  background: var(--panel-strong);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-sm);
+  z-index: 20;
+  padding: 4px 0;
+}
+
+.skillPickerItem {
+  display: block;
+  width: 100%;
+  padding: 7px 14px;
+  font-size: 0.8125rem;
+  font-family: inherit;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+}
+
+.skillPickerItem:hover {
+  background: var(--button-secondary);
+}
+
+.skillPickerItem:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.skillPickerItem.active {
+  color: var(--success);
+}
+
+.skillBadge {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  border-radius: 6px;
+  background: var(--info-bg);
+  color: var(--info);
+}
+
+/* ───────────────────────────────────────────────────
+   Git Sync Panel (right of mode switch row)
+   ─────────────────────────────────────────────────── */
+
+.gitSyncPanel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.gitSyncStats {
+  display: flex;
+  gap: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.gitSyncAdded {
+  color: var(--success);
+}
+
+.gitSyncRemoved {
+  color: var(--error);
+}
+
+.gitSyncButton {
+  padding: 5px 12px;
+  font-size: 0.75rem;
+  font-family: inherit;
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--button-secondary-border);
+  background: var(--button-secondary);
+  color: var(--button-secondary-text);
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.gitSyncButton:hover {
+  opacity: 0.8;
+}
+
+.gitSyncButton:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.gitSyncEmpty {
+  font-size: 0.75rem;
+  color: var(--muted);
+  opacity: 0.6;
+}
+
+/* ───────────────────────────────────────────────────
+   Program Todo List (inline in Talk/Plan mode)
+   ─────────────────────────────────────────────────── */
+
+.programTodoList {
+  padding: 6px 0 12px;
+}
+
+.programTodoEmpty {
+  font-size: 0.8125rem;
+  color: var(--muted);
+  padding: 8px 0;
+}
+
+.programTodoInputRow {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.programTodoInputRow input {
+  flex: 1;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--button-secondary);
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-family: inherit;
+}
+
+.programTodoInputRow input:focus {
+  outline: none;
+  border-color: var(--color-primary, #3B82F6);
+}
+
+/* ───────────────────────────────────────────────────
+   Unified Todo Items
+   ─────────────────────────────────────────────────── */
+
+.unifiedTodoItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.unifiedTodoBullet {
+  width: 14px;
+  height: 14px;
+  margin-top: 3px;
+  border-radius: 3px;
+  border: 1.5px solid var(--border-strong);
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.unifiedTodoBullet:hover {
+  border-color: var(--success);
+}
+
+.unifiedTodoBullet.completed {
+  background: var(--success);
+  border-color: var(--success);
+}
+
+.unifiedTodoText {
+  font-size: 0.8125rem;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.unifiedTodoText.completed {
+  text-decoration: line-through;
+  opacity: 0.5;
+}
+
+/* ───────────────────────────────────────────────────
+   Skills Section (beneath Agents page)
+   ─────────────────────────────────────────────────── */
+
+.skillsSection {
+  margin-top: 32px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+
+.skillsSectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+
+.skillsSectionHeader h4 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.skillsEmpty {
+  font-size: 0.8125rem;
+  color: var(--muted);
+  padding: 12px 0;
+}
+
+.skillsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.catalogSkillsGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.skillCard {
+  padding: 14px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--panel-soft);
+}
+
+.skillCard-catalog {
+  background: color-mix(in srgb, var(--panel-soft) 82%, rgba(59, 130, 246, 0.08));
+}
+
+.skillCardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.skillCardName {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skillProviderBadge {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 0.625rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+.skillProviderBadge-claude {
+  background: rgba(205, 133, 63, 0.14);
+  color: #d4a056;
+}
+
+.skillProviderBadge-codex {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.skillProviderBadge-universal {
+  background: var(--info-bg);
+  color: var(--info);
+}
+
+.skillBadgeRow,
+.skillMetaRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.skillMetaRow {
+  margin-bottom: 10px;
+}
+
+.skillMetaTag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.625rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.skillCardDescription {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin: 0 0 10px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.skillPathText {
+  margin: 0 0 10px;
+  font-size: 0.6875rem;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.skillCardActions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.skillCardActions .secondaryButton {
+  font-size: 0.6875rem;
+  padding: 4px 10px;
+}
+
+.skillDeleteButton {
+  color: var(--error) !important;
+  border-color: var(--error-bg) !important;
+}
+
+.skillDeleteButton:hover {
+  background: var(--error-bg) !important;
+}
+
+/* ───────────────────────────────────────────────────
+   Multi-Agent System — PM Status Grid
+   ─────────────────────────────────────────────────── */
+
+.pmStatusGrid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.pmStatusCard {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  border: 1px solid var(--border);
+}
+
+.pmStatusLabel {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.pmStatusValue {
+  font-size: 0.8125rem;
+  color: var(--text);
+}
+
+.pmStatusDone {
+  color: var(--success);
+}
+
+/* ───────────────────────────────────────────────────
+   Multi-Agent System — Vibe Attachments
+   ─────────────────────────────────────────────────── */
+
+.pillarVibesSection {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.pillarVibesHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.vibeAttachBtn {
+  padding: 2px 8px;
+  font-size: 0.6875rem;
+  border: 1px solid var(--border);
+  background: var(--button-secondary);
+  color: var(--muted);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+
+.vibeAttachBtn:hover {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.vibeGrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.vibeThumb {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  position: relative;
+  width: 64px;
+}
+
+.vibeThumbImage,
+.vibeThumbFile {
+  width: 56px;
+  height: 56px;
+  border-radius: 8px;
+  background: var(--panel-soft);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.vibeThumbImage img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.vibeThumbIcon {
+  font-size: 1.25rem;
+  opacity: 0.7;
+}
+
+.vibeThumbName {
+  font-size: 0.625rem;
+  color: var(--muted);
+  max-width: 64px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: center;
+}
+
+.vibeRemoveBtn {
+  position: absolute;
+  top: -4px;
+  right: -2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--panel-strong);
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.vibeThumb:hover .vibeRemoveBtn {
+  opacity: 1;
+}
+
+.vibeEmpty {
+  font-size: 0.75rem;
+  color: var(--muted);
+  opacity: 0.6;
+  font-style: italic;
+}
+
+/* Vibe Gallery (Vibe Artist view) */
+
+.vibeGallery {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 8px 0;
+}
+
+.vibeGalleryItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  border: 1px solid var(--border);
+  min-width: 160px;
+}
+
+.vibeGalleryMeta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.vibeGalleryPillar {
+  font-size: 0.6875rem;
+  color: var(--muted);
+  opacity: 0.7;
+}
+
+/* ───────────────────────────────────────────────────
+   Multi-Agent System — Feasibility Assessments
+   ─────────────────────────────────────────────────── */
+
+.feasibilityList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 6px 0;
+}
+
+.feasibilityCard {
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  border: 1px solid var(--border);
+}
+
+.feasibilityHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.feasibilityHeader strong {
+  flex: 1;
+  font-size: 0.8125rem;
+}
+
+.complexityBadge {
+  display: inline-flex;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.625rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.complexityBadge[data-complexity="low"] {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.complexityBadge[data-complexity="medium"] {
+  background: rgba(236, 184, 92, 0.14);
+  color: #ecb85c;
+}
+
+.complexityBadge[data-complexity="high"] {
+  background: var(--error-bg);
+  color: var(--error);
+}
+
+.feasibilityText {
+  font-size: 0.8125rem;
+  color: var(--text);
+  margin: 0 0 4px;
+  line-height: 1.5;
+}
+
+.feasibilityStack,
+.feasibilityCost {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin: 2px 0 0;
+}
+
+/* ───────────────────────────────────────────────────
+   Multi-Agent System — Version Timeline
+   ─────────────────────────────────────────────────── */
+
+.versionTimeline {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 6px 0;
+}
+
+.versionCard {
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  border: 1px solid var(--border);
+}
+
+.versionHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.versionLabel {
+  font-weight: 600;
+  font-size: 0.8125rem;
+  color: var(--text);
+}
+
+.versionGoals {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  font-size: 0.8125rem;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.versionGoals li {
+  margin-bottom: 2px;
+}
+
+/* ───────────────────────────────────────────────────
+   Multi-Agent System — Update Plan List
+   ─────────────────────────────────────────────────── */
+
+.updatePlanList {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 6px 0;
+}
+
+.updatePlanGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.updatePlanGroupLabel {
+  margin: 0;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+/* ───────────────────────────────────────────────────
+   Multi-Agent System — Programming Queue
+   ─────────────────────────────────────────────────── */
+
+.programmingQueue {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 0;
+}
+
+/* ───────────────────────────────────────────────────
+   Multi-Agent System — Validation
+   ─────────────────────────────────────────────────── */
+
+.validationFrequencyRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0;
+  font-size: 0.8125rem;
+  color: var(--text);
+}
+
+.validationFrequencyRow select {
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--button-secondary);
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-family: inherit;
+}
+
+.validationResultsList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 0;
+}
+
+.validationResultCard {
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.validationResultType {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  min-width: 64px;
+}
+
+.validationResultStatus {
+  font-weight: 500;
+  font-size: 0.8125rem;
+}
+
+.validationDetails {
+  font-size: 0.75rem;
+  color: var(--muted);
+  margin: 4px 0 0;
+  line-height: 1.4;
+}
+
+/* ───────────────────────────────────────────────────
+   Multi-Agent System — Agent Route Hint & Active Label
+   ─────────────────────────────────────────────────── */
+
+.agentRouteHint {
+  margin: 8px 0;
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--info) 8%, var(--panel-strong));
+  border: 1px solid color-mix(in srgb, var(--info) 18%, transparent);
+  font-size: 0.8125rem;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.agentRouteHint .secondaryButton {
+  flex-shrink: 0;
+}
+
+.agentActiveLabel {
+  display: inline-flex;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.agentStatusDot--active {
+  background: var(--success) !important;
+  box-shadow: 0 0 0 3px var(--success-bg);
+}
+
+.directorProfileCard {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px 32px;
+}
+
+.directorProfileAvatar {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  border: 2px solid;
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+
+.directorProfileName {
+  font-size: 1.25rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.agentPlaceholderNote {
+  font-size: 0.8125rem;
+  color: var(--muted);
+  font-style: italic;
+  margin: 12px 0;
+  opacity: 0.7;
+}
+
+/* ───────────────────────────────────────────────────
+   Multi-Agent System — Progress Panel
+   ─────────────────────────────────────────────────── */
+
+.progressPanelContent {
+  padding: 8px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.progressSection {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.progressSection h5 {
+  margin: 0;
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.progressItems {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.progressItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 0;
+  font-size: 0.8125rem;
+  color: var(--text);
+}
+
+.progressItem span:first-child {
+  color: var(--muted);
+}
+
+/* ── Project category sections ── */
+.projectCategorySection {
+  padding: 0 20px 16px;
+  margin-bottom: 8px;
+}
+.projectCategorySection:last-of-type {
+  margin-bottom: 0;
+}
+
+/* ── Director tiles (larger format) ── */
+.directorTile {
+  min-width: 200px;
+  aspect-ratio: 1.3;
+}
+.directorSubtitle {
+  font-size: 0.7rem;
+  opacity: 0.7;
+  margin-top: 2px;
+}
+
+/* ── Focus mode bar ── */
+.directorFocusBar {
+  display: flex;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.focusModeBtn {
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.focusModeBtn:hover {
+  background: var(--panel-soft);
+}
+.focusModeBtn.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+/* ── Pillar type badges ── */
+.pillarTypeBadge {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.pillarTypeBadge--core {
+  background: #059669;
+  color: #fff;
+}
+.pillarTypeBadge--side {
+  background: #0284C7;
+  color: #fff;
+}
+.pillarTypeBadge--ghost {
+  background: #64748B;
+  color: #fff;
+}
+.pillarTypeBadge--tbd {
+  background: #EAB308;
+  color: #1a1a1a;
+}
+.pillarTypeBadge--hard-stop {
+  background: #DC2626;
+  color: #fff;
+}
+
+/* ── Dan's internal notes indicator ── */
+.danNotesIndicator {
+  font-size: 0.7rem;
+  opacity: 0.6;
+  font-style: italic;
+  padding: 4px 8px;
+  margin-bottom: 8px;
 }

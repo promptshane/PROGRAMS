@@ -14,8 +14,9 @@ import {
 } from "@main/defaults";
 import { ClaudeService } from "@main/services/claude-service";
 import { CodexService } from "@main/services/codex-service";
-import { GitHubService } from "@main/services/github-service";
+import { GitHubService, type GitHubClientConfig } from "@main/services/github-service";
 import { GitService } from "@main/services/git-service";
+import { PlaywrightService } from "@main/services/playwright-service";
 import { ProjectStore } from "@main/services/project-store";
 import { RunnerService } from "@main/services/runner-service";
 import {
@@ -34,9 +35,10 @@ import { emitSettledAppUpdateStatus } from "@main/utils/app-update";
 import { getProviderPreflightError } from "@main/utils/provider-auth";
 import { parseEnvEntries, parseProjectOutlineReportResponse, serializeEnvEntries } from "@main/utils/project-outline";
 import { detectRuntimeConfig, deriveAttachedProjectName, deriveProjectDescription, slugifyRepositoryName } from "@main/utils/project";
+import { buildCatalogSkill, USER_TESTING_RUNNER_PLACEHOLDER } from "@main/utils/skill-library";
 import { ensureDirectory, pathExists, readTextFile, writeTextFile } from "@main/utils/fs";
 import { execCommand } from "@main/utils/process";
-import { DEFAULT_MODEL_CATALOG, AGENT_STAGES, AGENT_STAGE_LABELS } from "@shared/types";
+import { DEFAULT_MODEL_CATALOG, AGENT_STAGES, AGENT_STAGE_LABELS, DIRECTOR_LABELS, DIRECTOR_NAMES, DIRECTOR_COLORS } from "@shared/types";
 import type {
   AgentAttachMaterialsInput,
   AgentAttachMaterialsResult,
@@ -54,6 +56,8 @@ import type {
   AgentSubmitTodosInput,
   AgentSubmitTodosResponse,
   AgentUpdateScratchpadInput,
+  AttachVibeInput,
+  ConfirmAgentDataInput,
   CoreDetailsChatInput,
   CoreDetailsChatResponse,
   CascadeProposal,
@@ -70,12 +74,24 @@ import type {
   BootstrapPayload,
   ClaudeAuthStatus,
   CodexAuthStatus,
+  CreativeFocusMode,
+  DirectorChatInput,
+  DirectorChatResponse,
+  DirectorConversation,
+  DirectorFocusMode,
+  DirectorId,
+  DirectorStructuredData,
   EnvFileSnapshot,
+  FeasibilityAssessment,
   GenerateFlowchartResult,
   GenerateProjectOutlineReportInput,
   GitHubAuthStatus,
   HomeScratchpadItem,
   ModelCatalog,
+  ProjectCategory,
+  ProjectDirectorProgress,
+  RdFocusMode,
+  ValidationFocusMode,
   PlanDraft,
   Project,
   ProjectAttachInput,
@@ -83,8 +99,12 @@ import type {
   ProjectDetail,
   ProjectEnableSyncInput,
   ProjectOutlineReport,
+  RemoveVibeInput,
   RenameProjectInput,
   RetrySyncInput,
+  RouteUpdateToProgrammingInput,
+  RunValidationInput,
+  SetValidationFrequencyInput,
   Settings,
   SettingsUpdateInput,
   SetupCheck,
@@ -94,6 +114,10 @@ import type {
   UpdateRecord,
   RuntimeState,
   UsageSnapshot,
+  ValidationResult,
+  VersionPlan,
+  VersionUpdate,
+  VibeAttachment,
   GenerateFlowchartInput,
   PlanningChatInput,
   PlanningChatResponse,
@@ -102,6 +126,24 @@ import type {
   SavePlannedUpdateInput,
   PendingPlannedUpdate,
   WriteProjectEnvFileInput,
+  UnifiedTodoItem,
+  ListTodosInput,
+  AddTodoInput,
+  UpdateTodosInput,
+  GitSyncInput,
+  GitSyncResult,
+  Skill,
+  InstallSkillCatalogInput,
+  DownloadSkillInput,
+  ConvertSkillInput,
+  AttachSkillInput,
+  DiffStats,
+  PlaywrightRunInput,
+  PlaywrightRunResult,
+  ClaudeConnectionTestResult,
+  SlackChatInput,
+  SlackChatResponse,
+  SlackChatMessage,
 } from "@shared/types";
 
 type Emit = (event: AppEvent) => void;
@@ -127,6 +169,11 @@ interface AppUpdateWorkspaceInfo {
   sourceUpdatedAt: string | null;
   candidateAppPath: string | null;
   candidateUpdatedAt: string | null;
+}
+
+interface AppRendererAssetInfo {
+  assetName: string | null;
+  assetUpdatedAt: string | null;
 }
 
 interface AppUpdateEvaluation {
@@ -295,6 +342,30 @@ const agentSuggestUpdateSchema = {
   },
 } as const;
 
+const generateCoreDetailsSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["function", "thesis", "corePillars", "fullFlow"],
+  properties: {
+    function: { type: "string" },
+    thesis: { type: "string" },
+    corePillars: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name", "function", "thesis"],
+        properties: {
+          name: { type: "string" },
+          function: { type: "string" },
+          thesis: { type: "string" },
+        },
+      },
+    },
+    fullFlow: { type: "string" },
+  },
+} as const;
+
 const agentGeneralChatSchema = {
   type: "object",
   additionalProperties: false,
@@ -338,6 +409,24 @@ const agentCascadeSchema = {
     },
   },
 } as const;
+
+function formatCoreDetails(session: AgentSession | null): string {
+  if (!session) return "";
+  const fn = session.stages.function.confirmed?.summary;
+  const th = session.stages.thesis.confirmed?.summary;
+  const cp = session.corePillars.map((p) => p.name).join(", ") || null;
+  const ff = session.stages.full_flow.confirmed?.summary;
+  if (!fn && !th && !cp && !ff) return "";
+  return [
+    "Project core details:",
+    fn && `- Function: ${fn}`,
+    th && `- Thesis: ${th}`,
+    cp && `- Core pillars: ${cp}`,
+    ff && `- Full-flow: ${ff}`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
 
 async function readMaterialContents(paths: string[]): Promise<string> {
   const results: string[] = [];
@@ -574,6 +663,559 @@ Instructions:
 - Use empty arrays when nothing is detected.
 `.trim();
 
+// --- Director System Schemas ---
+
+const directorPmSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["response", "routeTo", "routeReason"],
+  properties: {
+    response: { type: "string" },
+    routeTo: { type: ["string", "null"] },
+    routeReason: { type: ["string", "null"] },
+  },
+} as const;
+
+// Dan — Conversation mode
+const directorDanConversationSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["response", "internalNotes", "suggestCreateProject"],
+  properties: {
+    response: { type: "string" },
+    internalNotes: { type: ["array", "null"], items: { type: "string" } },
+    suggestCreateProject: { type: "boolean" },
+  },
+} as const;
+
+// Dan — Core-details mode
+const directorDanCoreDetailsSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["response", "confirmationSuggested", "suggestedSummary"],
+  properties: {
+    response: { type: "string" },
+    confirmationSuggested: { type: "boolean" },
+    suggestedSummary: { type: ["string", "null"] },
+    suggestedPillars: {
+      type: ["array", "null"],
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name", "pillarType"],
+        properties: {
+          name: { type: "string" },
+          pillarType: { type: "string" },
+          description: { type: ["string", "null"] },
+        },
+      },
+    },
+  },
+} as const;
+
+// Dan — Vibes mode
+const directorDanVibesSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["response"],
+  properties: {
+    response: { type: "string" },
+    pillarDescriptions: {
+      type: ["array", "null"],
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["pillarId", "description"],
+        properties: {
+          pillarId: { type: "string" },
+          description: { type: "string" },
+        },
+      },
+    },
+  },
+} as const;
+
+// Todd — Research mode
+const directorToddResearchSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["response", "feasibilityAssessments"],
+  properties: {
+    response: { type: "string" },
+    feasibilityAssessments: {
+      type: ["array", "null"],
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["area", "assessment", "complexity"],
+        properties: {
+          area: { type: "string" },
+          assessment: { type: "string" },
+          stackRecommendation: { type: ["string", "null"] },
+          complexity: { type: "string" },
+          costNotes: { type: ["string", "null"] },
+        },
+      },
+    },
+  },
+} as const;
+
+// Todd — Version Planning mode
+const directorToddVersionSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["response", "confirmationSuggested", "versions"],
+  properties: {
+    response: { type: "string" },
+    confirmationSuggested: { type: "boolean" },
+    versions: {
+      type: ["array", "null"],
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["label", "description", "goals"],
+        properties: {
+          label: { type: "string" },
+          description: { type: "string" },
+          goals: { type: "array", items: { type: "string" } },
+        },
+      },
+    },
+  },
+} as const;
+
+// Todd — Update Planning mode
+const directorToddUpdateSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["response", "confirmationSuggested", "updates"],
+  properties: {
+    response: { type: "string" },
+    confirmationSuggested: { type: "boolean" },
+    updates: {
+      type: ["array", "null"],
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["title", "description", "versionLabel"],
+        properties: {
+          title: { type: "string" },
+          description: { type: "string" },
+          versionLabel: { type: "string" },
+          dependencies: { type: "array", items: { type: "string" } },
+          area: { type: ["string", "null"] },
+        },
+      },
+    },
+  },
+} as const;
+
+// Ping — Programming
+const directorPingSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["response"],
+  properties: {
+    response: { type: "string" },
+    routedUpdates: {
+      type: ["array", "null"],
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["updateId", "assignedTo"],
+        properties: {
+          updateId: { type: "string" },
+          assignedTo: { type: "string" },
+        },
+      },
+    },
+    executionSteps: { type: ["array", "null"], items: { type: "string" } },
+    readyToExecute: { type: "boolean" },
+  },
+} as const;
+
+// Brad — Identify Goal mode
+const directorBradGoalSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["response"],
+  properties: {
+    response: { type: "string" },
+    goalSummary: { type: ["string", "null"] },
+    relevantPillarIds: { type: ["array", "null"], items: { type: "string" } },
+  },
+} as const;
+
+// Brad — Test Current-State mode
+const directorBradTestSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["response"],
+  properties: {
+    response: { type: "string" },
+    validationPassed: { type: ["boolean", "null"] },
+    validationSummary: { type: ["string", "null"] },
+    validationDetails: { type: ["string", "null"] },
+  },
+} as const;
+
+// Brad — Compare mode
+const directorBradCompareSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["response"],
+  properties: {
+    response: { type: "string" },
+    passed: { type: ["boolean", "null"] },
+    improvementAreas: { type: ["array", "null"], items: { type: "string" } },
+    comparisonSummary: { type: ["string", "null"] },
+  },
+} as const;
+
+function getSchemaForDirector(directorId: DirectorId, focusMode: DirectorFocusMode | null) {
+  switch (directorId) {
+    case "project-manager": return directorPmSchema;
+    case "creative-director":
+      if (focusMode === "conversation") return directorDanConversationSchema;
+      if (focusMode === "vibes") return directorDanVibesSchema;
+      return directorDanCoreDetailsSchema;
+    case "rd-director":
+      if (focusMode === "research") return directorToddResearchSchema;
+      if (focusMode === "version-planning") return directorToddVersionSchema;
+      return directorToddUpdateSchema;
+    case "programming-director": return directorPingSchema;
+    case "validation-director":
+      if (focusMode === "identify-goal") return directorBradGoalSchema;
+      if (focusMode === "test-current-state") return directorBradTestSchema;
+      return directorBradCompareSchema;
+  }
+}
+
+function formatDirectorStatus(session: AgentSession): string {
+  const parts: string[] = [];
+  const fc = session.stages.function.confirmed;
+  const tc = session.stages.thesis.confirmed;
+  const cpc = session.stages.core_pillars.confirmed;
+  const ffc = session.stages.full_flow.confirmed;
+  parts.push(`Dan (Creative): Function=${fc ? "confirmed" : "pending"}, Thesis=${tc ? "confirmed" : "pending"}, Pillars=${cpc ? "confirmed" : "pending"}, Flow=${ffc ? "confirmed" : "pending"}`);
+  parts.push(`Todd (R&D): Feasibility=${session.feasibilityAssessments.length > 0 ? session.feasibilityAssessments.length + " assessments" : "pending"}, Versions=${session.versions.length > 0 ? session.versions.map((v) => v.label).join("/") : "pending"}, Updates=${session.versionUpdates.length > 0 ? session.versionUpdates.length + " planned" : "pending"}`);
+  const progUpdates = session.versionUpdates.filter((u) => u.status === "in_progress" || u.status === "completed");
+  parts.push(`Ping (Programming): ${progUpdates.length > 0 ? progUpdates.length + " updates processed" : "waiting for approved updates"}`);
+  parts.push(`Brad (Validation): ${session.validationResults.length > 0 ? session.validationResults.length + " results" : "no validations yet"}, Frequency=${session.validationFrequency}`);
+  return parts.join("\n");
+}
+
+const directorSlackSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["response"],
+  properties: {
+    response: { type: "string" },
+    handoffTo: { type: ["string", "null"] },
+    handoffReason: { type: ["string", "null"] },
+  },
+} as const;
+
+function buildSlackDirectorPrompt(
+  directorId: DirectorId,
+  projectName: string,
+  session: AgentSession,
+): string {
+  const directorName = DIRECTOR_NAMES[directorId];
+  const directorLabel = DIRECTOR_LABELS[directorId];
+  const coreContext = formatCoreDetails(session);
+  const statusContext = formatDirectorStatus(session);
+
+  const slackHistory = (session.slackMessages ?? []).slice(-20).map((m) => {
+    if (m.role === "user") return `User: ${m.content}`;
+    return `${m.directorId ? DIRECTOR_NAMES[m.directorId] : "Agent"}: ${m.content}`;
+  }).join("\n\n");
+  const conversationSection = slackHistory ? `\nSlack channel history:\n${slackHistory}\n` : "";
+
+  if (directorId === "project-manager") {
+    return `You are Jeff, the Project Manager for "${projectName}".
+You are in a team Slack channel with the user and all directors.
+You are the central coordinator. Your role:
+- Handle general user conversation about the project
+- If the user's request requires a specialist, set handoffTo to the appropriate director ID and explain why in handoffReason
+- If you can handle the message yourself, set handoffTo to null
+- Be conversational and collaborative
+
+Valid director IDs for handoff: creative-director (Dan), rd-director (Todd), programming-director (Ping), validation-director (Brad)
+
+Current project status:
+${statusContext}
+
+${coreContext}
+${conversationSection}
+Respond as JSON: {"response": string, "handoffTo": string|null, "handoffReason": string|null}`;
+  }
+
+  return `You are ${directorName}, the ${directorLabel} for "${projectName}".
+You have just joined the team Slack channel. The user or another director invited you.
+Respond to the user's latest message directly and helpfully.
+If you need to hand off to another specialist, set handoffTo to their director ID. Otherwise set handoffTo to null.
+Be conversational and collaborative.
+
+Valid director IDs for handoff: project-manager (Jeff), creative-director (Dan), rd-director (Todd), programming-director (Ping), validation-director (Brad)
+
+Current project status:
+${statusContext}
+
+${coreContext}
+${conversationSection}
+Respond as JSON: {"response": string, "handoffTo": string|null, "handoffReason": string|null}`;
+}
+
+function buildDirectorPrompt(
+  directorId: DirectorId,
+  focusMode: DirectorFocusMode | null,
+  projectName: string,
+  session: AgentSession,
+): string {
+  const directorLabel = DIRECTOR_LABELS[directorId];
+  const directorName = DIRECTOR_NAMES[directorId];
+
+  // Build confirmed context from Creative stages
+  const coreContext = formatCoreDetails(session);
+
+  // Director's own conversation history
+  const conv = session.directorConversations[directorId];
+  const convHistory = conv?.messages.slice(-20).map((m) =>
+    `${m.role === "user" ? "User" : directorName}: ${m.content}`
+  ).join("\n\n") ?? "";
+
+  const conversationSection = convHistory ? `\nConversation so far:\n${convHistory}\n` : "";
+
+  switch (directorId) {
+    case "project-manager":
+      return `You are Jeff, the Project Manager for "${projectName}".
+You are the central coordinator. You have access to all directors' notes. Your role:
+- Handle general user conversation about the project
+- Route requests to the correct director when the user wants to define, refine, or update something
+- Maintain awareness of the overall project state
+- Do NOT do deep specialist work — delegate to the appropriate director
+
+Current project status:
+${formatDirectorStatus(session)}
+
+${coreContext}
+${conversationSection}
+If the user's message should be handled by a specific director, set routeTo to the director ID and explain why in routeReason.
+Valid director IDs: creative-director (Dan), rd-director (Todd), programming-director (Ping), validation-director (Brad)
+If you can handle the message yourself, set routeTo to null.
+
+Respond as JSON: {"response": string, "routeTo": string|null, "routeReason": string|null}`;
+
+    case "creative-director": {
+      if (focusMode === "conversation") {
+        return `You are Dan, the Creative Director for "${projectName}".
+You are in Conversation mode — the user is brainstorming freely about their idea. Your role:
+- Engage with the user's ideas, let them know strengths and weaknesses
+- Ask subtly guiding questions to move their creativity forward
+- Take internal notes about key details (the user does NOT see your notes)
+- If the user discusses something that could be developed into a project, you may suggest creating a project
+- If the user is just chatting casually, be a buddy — no pressure to turn it into a project
+
+${coreContext}
+${conversationSection}
+Include any internal notes in internalNotes array (these are stored privately, not shown to user). Set suggestCreateProject to true if the conversation has enough substance to create a project.
+
+Respond as JSON: {"response": string, "internalNotes": string[]|null, "suggestCreateProject": boolean}`;
+      }
+
+      if (focusMode === "vibes") {
+        const pillarVibes = session.corePillars.length > 0 ? `\nCore Pillars (vibes can be attached to these):\n${session.corePillars.map((p) => {
+          const vibeCount = p.vibes?.length ?? 0;
+          return `- ${p.name} [${p.pillarType}]${vibeCount > 0 ? ` (${vibeCount} vibes attached)` : ""}${p.description ? ` — ${p.description}` : ""}`;
+        }).join("\n")}` : "";
+        return `You are Dan, the Creative Director for "${projectName}".
+You are in Vibes mode — the user is diving deeper into the nested pillars, attaching images/text ("vibes") and descriptions. Your role:
+- Help the user articulate the intended vibe, mood, and direction for specific pillars
+- Generate descriptions for pillars to ensure no details are missed
+- Users can attach image/text files as vibes to any pillar
+
+${coreContext}
+${pillarVibes}
+${conversationSection}
+When generating descriptions for pillars, include them in pillarDescriptions with the pillarId and description.
+
+Respond as JSON: {"response": string, "pillarDescriptions": [{pillarId: string, description: string}]|null}`;
+      }
+
+      // Default: core-details mode
+      const pillarsList = session.corePillars.length > 0
+        ? `\nCurrent Pillars:\n${session.corePillars.map((p) => `- ${p.name} [${p.pillarType}]: ${p.function?.summary ?? "TBD"}`).join("\n")}`
+        : "";
+      return `You are Dan, the Creative Director for "${projectName}".
+You are in Core-details mode — deriving the core-details of the project. Your role:
+- Ask specific questions to derive the Function, Thesis, and Pillars
+- Pillars have types: "core" (in main timeline), "side" (disconnected, hidden by default), "ghost" (hidden, would fundamentally change project), "tbd" (yellow, uncertain), "hard-stop" (red, conclusive end)
+- Once core-details are derived confidently, provide the report to the user to confirm/edit
+- After confirmation, user can "Proceed to R&D" or further specify vibes
+
+${coreContext}
+${pillarsList}
+${conversationSection}
+When you have enough information to suggest a summary, set confirmationSuggested to true and provide it in suggestedSummary. When suggesting pillars, include them in suggestedPillars with name, pillarType, and optional description.
+
+Respond as JSON: {"response": string, "confirmationSuggested": boolean, "suggestedSummary": string|null, "suggestedPillars": [{name: string, pillarType: string, description?: string}]|null}`;
+    }
+
+    case "rd-director": {
+      if (focusMode === "research") {
+        const feasContext = session.feasibilityAssessments.length > 0
+          ? `\nExisting feasibility assessments:\n${session.feasibilityAssessments.map((a) => `- ${a.area} [${a.complexity}]: ${a.assessment}`).join("\n")}`
+          : "";
+        return `You are Todd, the R&D Director for "${projectName}".
+You are in Research mode — researching what is possible given the user's constraints. Your role:
+- Assess feasibility of the concept
+- Ask specific questions about budget (money, hardware, time, etc.)
+- Recommend stack/technology decisions
+- Lock in exactly what technical bridges/APIs are needed for the total function
+
+${coreContext}
+${feasContext}
+${conversationSection}
+When you have feasibility assessments to propose, include them in the feasibilityAssessments array. Each needs area, assessment, complexity (low/medium/high), stackRecommendation, and costNotes. Set to null if just chatting.
+
+Respond as JSON: {"response": string, "feasibilityAssessments": [...]|null}`;
+      }
+
+      if (focusMode === "version-planning") {
+        const versionsContext = session.versions.length > 0
+          ? `\nExisting version plans:\n${session.versions.map((v) => `- ${v.label}: ${v.description} (${v.status})`).join("\n")}`
+          : "";
+        const feasContext = session.feasibilityAssessments.length > 0
+          ? `\nFeasibility assessments:\n${session.feasibilityAssessments.map((a) => `- ${a.area} [${a.complexity}]: ${a.assessment}`).join("\n")}`
+          : "";
+        return `You are Todd, the R&D Director for "${projectName}".
+You are in Version Planning mode — outlining the version roadmap. Your role:
+- V1 features a fully functional process
+- V2 features a functional user experience
+- V3 features a polished releasable state
+
+${coreContext}
+${feasContext}
+${versionsContext}
+${conversationSection}
+When you have version plans to propose, set confirmationSuggested to true and include them in the versions array. Set versions to null if just chatting.
+
+Respond as JSON: {"response": string, "confirmationSuggested": boolean, "versions": [...]|null}`;
+      }
+
+      // Default: update-planning mode
+      const versionsContext = session.versions.length > 0
+        ? `\nVersion plans:\n${session.versions.map((v) => `- ${v.label}: ${v.description}\n  Goals: ${v.goals.join(", ")}`).join("\n")}`
+        : "";
+      const updatesContext = session.versionUpdates.length > 0
+        ? `\nExisting updates:\n${session.versionUpdates.map((u) => `- [${u.status}] ${u.title}: ${u.description}`).join("\n")}`
+        : "";
+      return `You are Todd, the R&D Director for "${projectName}".
+You are in Update Planning mode — specifying core updates from current state through each version. Your role:
+- Group updates by what makes sense (all front-end updates grouped, all back-end updates grouped)
+- Optimize update order based on what sections the programmer focuses on per update
+- For V1: specific update plans. For V2: more general. For V3: end-state direction.
+
+${coreContext}
+${versionsContext}
+${updatesContext}
+${conversationSection}
+When you have updates to propose, set confirmationSuggested to true and include them in the updates array. Each update needs title, description, versionLabel, and optionally area ("front-end"/"back-end"/etc). Set updates to null if just chatting.
+
+Respond as JSON: {"response": string, "confirmationSuggested": boolean, "updates": [...]|null}`;
+    }
+
+    case "programming-director": {
+      const pendingUpdates = session.versionUpdates.filter((u) => u.status === "pending" || u.status === "in_progress");
+      const updatesContext = pendingUpdates.length > 0
+        ? `\nCurrent iteration updates:\n${pendingUpdates.map((u) => `- [${u.id}] [${u.status}] ${u.title}: ${u.description}`).join("\n")}`
+        : "\nNo updates awaiting implementation.";
+      const subAgentInfo = session.dynamicSubAgents.length > 0
+        ? `\nYour programming team:\n${session.dynamicSubAgents.map((a) => `- ${a.name} (${a.role})`).join("\n")}`
+        : "";
+      return `You are Ping, the Programming Director for "${projectName}".
+You are the lead programmer. You receive the full update plan for the current iteration. Your role:
+- Execute updates yourself for general work
+- Assign updates to specific skilled sub-agents when specialized skills are needed
+- You only need to know the current iteration plan
+
+${coreContext}
+${updatesContext}
+${subAgentInfo}
+${conversationSection}
+When routing to sub-agents, include routedUpdates array. When ready to execute, include executionSteps and set readyToExecute. Set to null if just chatting.
+
+Respond as JSON: {"response": string, "routedUpdates": [...]|null, "executionSteps": [...]|null, "readyToExecute": boolean}`;
+    }
+
+    case "validation-director": {
+      if (focusMode === "identify-goal") {
+        return `You are Brad, the Validation Director for "${projectName}".
+You are in Identify Goal mode — reviewing the core-details and any attached vibes for the pillars that were just updated. Your role:
+- Review the core-details of the project, including any attached vibes
+- Identify what the expected state should be after the most recent updates
+- Summarize the goal clearly
+
+${coreContext}
+
+${session.corePillars.length > 0 ? `Pillars with vibes:\n${session.corePillars.map((p) => {
+  const vibeInfo = p.vibes?.length ? ` (${p.vibes.length} vibes)` : "";
+  return `- ${p.name} [${p.pillarType}]${vibeInfo}${p.description ? `: ${p.description}` : ""}`;
+}).join("\n")}` : ""}
+${conversationSection}
+Include goalSummary with a clear summary of the expected state. Include relevantPillarIds with the IDs of pillars relevant to this goal.
+
+Respond as JSON: {"response": string, "goalSummary": string|null, "relevantPillarIds": string[]|null}`;
+      }
+
+      if (focusMode === "test-current-state") {
+        return `You are Brad, the Validation Director for "${projectName}".
+You are in Test Current-State mode — testing the current state of the project. Your role:
+- Test functions and capture screenshots of visuals
+- Report what the current state looks like
+- Document any issues found
+
+Validation results so far: ${session.validationResults.length > 0
+  ? session.validationResults.map((r) => `${r.validationType}: ${r.passed ? "PASS" : "FAIL"} - ${r.summary}`).join("; ")
+  : "None yet"}
+
+${coreContext}
+${conversationSection}
+Include validationPassed, validationSummary, and validationDetails when reporting results. Set to null if just discussing.
+
+Respond as JSON: {"response": string, "validationPassed": boolean|null, "validationSummary": string|null, "validationDetails": string|null}`;
+      }
+
+      // Default: compare mode
+      return `You are Brad, the Validation Director for "${projectName}".
+You are in Compare mode — comparing the current-state to the expected goal. Your role:
+- Compare the current state (screenshots/test results) to the expected goal
+- Return an objective comparison: current state vs intended goal-state
+- Identify specific areas for improvement
+
+${coreContext}
+
+Validation results so far: ${session.validationResults.length > 0
+  ? session.validationResults.map((r) => `${r.validationType}: ${r.passed ? "PASS" : "FAIL"} - ${r.summary}`).join("; ")
+  : "None yet"}
+${conversationSection}
+Include passed (boolean), improvementAreas (specific areas that don't align with the plan), and comparisonSummary. Set to null if just discussing.
+
+Respond as JSON: {"response": string, "passed": boolean|null, "improvementAreas": string[]|null, "comparisonSummary": string|null}`;
+    }
+  }
+}
+
+function findPillarById(pillars: AgentSession["corePillars"], id: string): AgentSession["corePillars"][number] | null {
+  for (const p of pillars) {
+    if (p.id === id) return p;
+    const found = findPillarById(p.corePillars, id);
+    if (found) return found;
+  }
+  return null;
+}
+
 export class ProgramsBackend {
   private readonly launchedAppPath = this.currentAppBundlePath();
   private readonly launchedAppUpdatedAtPromise = this.launchedAppPath
@@ -592,6 +1234,7 @@ export class ProgramsBackend {
     private readonly git: GitService,
     private readonly github: GitHubService,
     private readonly runner: RunnerService,
+    private readonly playwright: PlaywrightService,
     private readonly codex: CodexService,
     private readonly claude: ClaudeService,
     private readonly emit: Emit,
@@ -606,10 +1249,12 @@ export class ProgramsBackend {
     );
     const runtimes = this.runner.getRuntimeMap(projects.map((project) => project.id));
     const modelCatalog = await this.readModelCatalog(settings);
+    const skills = this.store.listSkills();
+    const githubConfig = this.resolveGitHubClientConfig(settings);
     const auth = {
       codex: await this.codex.getAuthStatus(settings),
       claude: await this.claude.getAuthStatus(settings),
-      github: await this.github.getStatus(this.resolveGitHubClientId(settings)),
+      github: await this.github.getStatus(githubConfig),
     };
     const setup = await this.buildSetupSnapshot(settings, auth.codex, auth.claude, auth.github);
     const appUpdate = await this.readAppUpdateStatus();
@@ -622,6 +1267,7 @@ export class ProgramsBackend {
       setup,
       appUpdate,
       modelCatalog,
+      skills,
     };
   }
 
@@ -767,7 +1413,12 @@ export class ProgramsBackend {
       repoHints,
       currentFlowchart: currentFlowchart.flowchart,
     });
-    const rawResult = await this.aiService(provider).runOneShot(project, settings, prompt, model);
+    const rawResult = await this.aiService(provider).runOneShot(
+      project,
+      settings,
+      await this.appendProjectSkillInstructions(prompt, project, provider, settings),
+      model,
+    );
     const report = parseProjectOutlineReportResponse(project.id, rawResult);
 
     await this.store.saveOutlineReport(report);
@@ -832,7 +1483,13 @@ ${FLOWCHART_OUTPUT_CONTRACT}
     const service = this.aiService(input.provider);
     const model = input.provider === "claude" ? input.claudeModel : input.model;
 
-    const rawResult = await service.runOneShot(project, settings, prompt, model, flowchartGenerationSchema);
+    const rawResult = await service.runOneShot(
+      project,
+      settings,
+      await this.appendProjectSkillInstructions(prompt, project, input.provider, settings),
+      model,
+      flowchartGenerationSchema,
+    );
     const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
     const snapshot = materializeFlowchartSnapshot(parsed.flowchartGraph);
 
@@ -914,7 +1571,13 @@ ${FLOWCHART_PROMPT_RULES}
     const service = this.aiService(input.provider);
     const model = input.provider === "claude" ? input.claudeModel : input.model;
 
-    const rawResult = await service.runOneShot(project, settings, prompt, model, planningChatSchema);
+    const rawResult = await service.runOneShot(
+      project,
+      settings,
+      await this.appendProjectSkillInstructions(prompt, project, input.provider, settings),
+      model,
+      planningChatSchema,
+    );
     const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
     const nextSnapshot = parsed.flowchartGraph ? materializeFlowchartSnapshot(parsed.flowchartGraph) : null;
 
@@ -1006,7 +1669,13 @@ Changes described: ${pending.description}`;
 
   async getAgentSession(projectId: string): Promise<AgentSession | null> {
     await this.ensureInitialized();
-    return this.store.getAgentSession(projectId);
+    const session = await this.store.getAgentSession(projectId);
+    if (session) {
+      // Migration safety for older sessions missing slack fields
+      session.slackMessages = session.slackMessages ?? [];
+      session.slackActiveDirectorId = session.slackActiveDirectorId ?? "project-manager";
+    }
+    return session;
   }
 
   private createEmptyAgentSession(projectId: string, provider: AgentSession["provider"]): AgentSession {
@@ -1035,7 +1704,115 @@ Changes described: ${pending.description}`;
       provider,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+      // Director system fields
+      directorConversations: {},
+      versions: [],
+      versionUpdates: [],
+      feasibilityAssessments: [],
+      validationResults: [],
+      validationFrequency: "manual",
+      activeDirectorId: null,
+      directorProgress: {
+        creative: "not-started",
+        rd: "not-started",
+        programming: "not-started",
+        validation: "not-started",
+        currentDirector: null,
+      },
+      creativeFocusMode: null,
+      rdFocusMode: null,
+      validationFocusMode: null,
+      danInternalNotes: [],
+      projectCategory: "general-project",
+      dynamicSubAgents: [],
+      slackMessages: [],
+      slackActiveDirectorId: "project-manager",
+      // Deprecated aliases
+      agentConversations: {},
+      activeAgentId: null,
     };
+  }
+
+  private async generateProjectCoreDetails(project: Project, settings: Settings, provider: AiProvider): Promise<void> {
+    const existing = await this.store.getAgentSession(project.id);
+    if (
+      existing?.stages.function.confirmed &&
+      existing?.stages.thesis.confirmed &&
+      existing?.stages.core_pillars.confirmed &&
+      existing?.stages.full_flow.confirmed
+    ) {
+      return;
+    }
+
+    const service = this.aiService(provider);
+    const model = provider === "claude" ? settings.advancedDefaults.claudeModel : settings.advancedDefaults.model;
+
+    const prompt = `Analyze the project "${project.name}" and generate concise core details.
+
+Project description: ${project.description}
+
+Explore the codebase as needed, then produce:
+- function: One sentence — what the software does for its users.
+- thesis: One sentence — the core value proposition or design philosophy.
+- corePillars: 2–5 named pillars (major features/subsystems), each with a one-sentence function and thesis.
+- fullFlow: 2–3 sentences describing the primary user journey end-to-end.
+
+Your final answer must be ONLY strict JSON (no markdown fences) matching:
+{"function": string, "thesis": string, "corePillars": [{"name": string, "function": string, "thesis": string}], "fullFlow": string}`;
+
+    const rawResult = await service.runOneShot(project, settings, prompt, model, generateCoreDetailsSchema);
+    const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
+
+    const session = existing ?? this.createEmptyAgentSession(project.id, provider);
+    session.stages.function.confirmed = { summary: parsed.function, status: "assumed" };
+    session.stages.thesis.confirmed = { summary: parsed.thesis, status: "assumed" };
+    session.stages.full_flow.confirmed = { summary: parsed.fullFlow, status: "assumed" };
+    session.stages.core_pillars.confirmed = {
+      summary: `${parsed.corePillars.length} pillars`,
+      status: "assumed",
+    };
+    session.corePillars = (parsed.corePillars as { name: string; function: string; thesis: string }[]).map((p) => ({
+      id: randomUUID(),
+      name: p.name,
+      pillarType: "core" as const,
+      function: { summary: p.function, status: "assumed" as const },
+      thesis: { summary: p.thesis, status: "assumed" as const },
+      corePillars: [],
+      fullFlow: null,
+      vibes: [],
+      description: null,
+      connectedPillarIds: [],
+    }));
+    session.updatedAt = new Date().toISOString();
+
+    await this.store.saveAgentSession(session);
+    this.emit({ type: "agent.session", projectId: project.id, session });
+  }
+
+  async confirmCoreDetail(projectId: string, field: "function" | "thesis" | "core_pillars" | "full_flow"): Promise<AgentSession> {
+    await this.ensureInitialized();
+    const session = await this.store.getAgentSession(projectId);
+    if (!session) throw new Error("No agent session found for this project.");
+
+    if (session.stages[field].confirmed) {
+      session.stages[field].confirmed.status = "confirmed";
+    }
+
+    if (field === "core_pillars") {
+      for (const pillar of session.corePillars) {
+        if (pillar.function?.status === "assumed" || pillar.function?.status === "edited") {
+          pillar.function.status = "confirmed";
+        }
+        if (pillar.thesis?.status === "assumed" || pillar.thesis?.status === "edited") {
+          pillar.thesis.status = "confirmed";
+        }
+      }
+    }
+
+    session.updatedAt = new Date().toISOString();
+    await this.store.saveAgentSession(session);
+    this.emit({ type: "agent.session", projectId, session });
+    return session;
   }
 
   async agentChat(input: AgentChatInput): Promise<AgentChatResponse> {
@@ -1065,7 +1842,13 @@ Changes described: ${pending.description}`;
     const service = this.aiService(input.provider);
     const model = input.provider === "claude" ? input.claudeModel : input.model;
 
-    const rawResult = await service.runOneShot(project, settings, prompt, model, agentChatSchema);
+    const rawResult = await service.runOneShot(
+      project,
+      settings,
+      await this.appendProjectSkillInstructions(prompt, project, input.provider, settings),
+      model,
+      agentChatSchema,
+    );
     const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
 
     const assistantMessage = {
@@ -1179,7 +1962,13 @@ Introduce yourself, explain what you found in the codebase, how it compares to t
 Your response must be ONLY strict JSON (no markdown fences):
 {"response": string, "plannedUpdates": [{"title": string, "description": string}, ...], "todoMapping": []}`.trim();
 
-          const rawResult = await service.runOneShot(project, settings, iterationsPrompt, model, agentIterationsSchema);
+          const rawResult = await service.runOneShot(
+            project,
+            settings,
+            await this.appendProjectSkillInstructions(iterationsPrompt, project, session.provider, settings),
+            model,
+            agentIterationsSchema,
+          );
           const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
 
           const autoMessage = {
@@ -1224,7 +2013,13 @@ Also provide a conversational opening message for the Full-Flow stage, asking th
 Your response must be ONLY strict JSON (no markdown fences):
 {"response": string, "corePillars": [{"name": string, "function": string, "thesis": string, "children": [{"name": string, "function": string, "thesis": string}, ...]}, ...]}`.trim();
 
-          const rawResult = await service.runOneShot(project, settings, pillarPrompt, model, agentCorePillarsResultSchema);
+          const rawResult = await service.runOneShot(
+            project,
+            settings,
+            await this.appendProjectSkillInstructions(pillarPrompt, project, session.provider, settings),
+            model,
+            agentCorePillarsResultSchema,
+          );
           const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
 
           if (Array.isArray(parsed.corePillars)) {
@@ -1274,7 +2069,13 @@ Your response must be ONLY strict JSON (no markdown fences): {"response": string
 
           const transitionPrompt = transitionPrompts[nextStage];
           if (transitionPrompt) {
-            const rawResult = await service.runOneShot(project, settings, transitionPrompt, model, agentTransitionSchema);
+            const rawResult = await service.runOneShot(
+              project,
+              settings,
+              await this.appendProjectSkillInstructions(transitionPrompt, project, session.provider, settings),
+              model,
+              agentTransitionSchema,
+            );
             const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
 
             const autoMessage = {
@@ -1367,7 +2168,13 @@ Instructions:
     const service = this.aiService(input.provider);
     const model = input.provider === "claude" ? input.claudeModel : input.model;
 
-    const rawResult = await service.runOneShot(project, settings, prompt, model, agentIterationsSchema);
+    const rawResult = await service.runOneShot(
+      project,
+      settings,
+      await this.appendProjectSkillInstructions(prompt, project, input.provider, settings),
+      model,
+      agentIterationsSchema,
+    );
     const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
 
     // Build todoMapping lookup
@@ -1574,8 +2381,12 @@ Instructions:
     await this.requireProviderReady(input.provider, settings);
     const project = await this.requireProject(input.projectId);
 
-    const session = await this.store.getAgentSession(input.projectId);
-    if (!session) throw new Error("No agent session found. Please define Function/Thesis/Flow in the Agents page first.");
+    let session = await this.store.getAgentSession(input.projectId);
+    if (!session) {
+      session = this.createEmptyAgentSession(input.projectId, input.provider);
+      await this.store.saveAgentSession(session);
+      this.emit({ type: "agent.session", projectId: input.projectId, session });
+    }
 
     const currentFunction = session.stages.function.confirmed?.summary ?? "(not defined)";
     const currentThesis = session.stages.thesis.confirmed?.summary ?? "(not defined)";
@@ -1607,7 +2418,13 @@ Your response must be ONLY strict JSON (no markdown fences):
     const service = this.aiService(input.provider);
     const model = input.provider === "claude" ? input.claudeModel : input.model;
 
-    const rawResult = await service.runOneShot(project, settings, prompt, model, agentCoreDetailsSchema);
+    const rawResult = await service.runOneShot(
+      project,
+      settings,
+      await this.appendProjectSkillInstructions(prompt, project, input.provider, settings),
+      model,
+      agentCoreDetailsSchema,
+    );
     const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
 
     const assistantMessage = {
@@ -1646,10 +2463,14 @@ Your response must be ONLY strict JSON (no markdown fences):
             session.corePillars.push({
               id: randomUUID(),
               name: updatedPillar.name,
+              pillarType: "core",
               function: updatedPillar.function ? { summary: updatedPillar.function, status: "edited" } : null,
               thesis: updatedPillar.thesis ? { summary: updatedPillar.thesis, status: "edited" } : null,
               corePillars: [],
               fullFlow: null,
+              vibes: [],
+              description: null,
+              connectedPillarIds: [],
             });
           }
         }
@@ -1676,8 +2497,12 @@ Your response must be ONLY strict JSON (no markdown fences):
     await this.requireProviderReady(input.provider, settings);
     const project = await this.requireProject(input.projectId);
 
-    const session = await this.store.getAgentSession(input.projectId);
-    if (!session) throw new Error("No agent session found. Please define core details first.");
+    let session = await this.store.getAgentSession(input.projectId);
+    if (!session) {
+      session = this.createEmptyAgentSession(input.projectId, input.provider);
+      await this.store.saveAgentSession(session);
+      this.emit({ type: "agent.session", projectId: input.projectId, session });
+    }
 
     // Build context from ONLY confirmed summaries — never raw messages
     const currentFunction = session.stages.function.confirmed?.summary ?? "(not defined)";
@@ -1710,7 +2535,13 @@ Response must be strict JSON only (no markdown fences).`;
 
     const service = this.aiService(input.provider);
     const model = input.provider === "claude" ? input.claudeModel : input.model;
-    const rawResult = await service.runOneShot(project, settings, prompt, model, agentSuggestUpdateSchema);
+    const rawResult = await service.runOneShot(
+      project,
+      settings,
+      await this.appendProjectSkillInstructions(prompt, project, input.provider, settings),
+      model,
+      agentSuggestUpdateSchema,
+    );
     const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
 
     // Store user message in audit trail — never used as AI context
@@ -1722,6 +2553,7 @@ Response must be strict JSON only (no markdown fences).`;
     });
     session.updatedAt = new Date().toISOString();
     await this.store.saveAgentSession(session);
+    this.emit({ type: "agent.session", projectId: input.projectId, session });
 
     const hasProposal = parsed.hasProposal &&
       (parsed.updatedFunction || parsed.updatedThesis || parsed.updatedFullFlow || (Array.isArray(parsed.updatedCorePillars) && parsed.updatedCorePillars.length > 0));
@@ -1749,22 +2581,25 @@ Response must be strict JSON only (no markdown fences).`;
     if (proposal.updatedFunction) {
       if (session.stages.function.confirmed) {
         session.stages.function.confirmed.summary = proposal.updatedFunction;
+        session.stages.function.confirmed.status = "edited";
       } else {
-        session.stages.function.confirmed = { summary: proposal.updatedFunction };
+        session.stages.function.confirmed = { summary: proposal.updatedFunction, status: "edited" };
       }
     }
     if (proposal.updatedThesis) {
       if (session.stages.thesis.confirmed) {
         session.stages.thesis.confirmed.summary = proposal.updatedThesis;
+        session.stages.thesis.confirmed.status = "edited";
       } else {
-        session.stages.thesis.confirmed = { summary: proposal.updatedThesis };
+        session.stages.thesis.confirmed = { summary: proposal.updatedThesis, status: "edited" };
       }
     }
     if (proposal.updatedFullFlow) {
       if (session.stages.full_flow.confirmed) {
         session.stages.full_flow.confirmed.summary = proposal.updatedFullFlow;
+        session.stages.full_flow.confirmed.status = "edited";
       } else {
-        session.stages.full_flow.confirmed = { summary: proposal.updatedFullFlow };
+        session.stages.full_flow.confirmed = { summary: proposal.updatedFullFlow, status: "edited" };
       }
     }
     if (Array.isArray(proposal.updatedCorePillars)) {
@@ -1791,10 +2626,14 @@ Response must be strict JSON only (no markdown fences).`;
           session.corePillars.push({
             id: randomUUID(),
             name: up.name,
+            pillarType: "core",
             function: up.functionSummary ? { summary: up.functionSummary, status: "edited" } : null,
             thesis: up.thesisSummary ? { summary: up.thesisSummary, status: "edited" } : null,
             corePillars: [],
             fullFlow: null,
+            vibes: [],
+            description: null,
+            connectedPillarIds: [],
           });
         }
       }
@@ -1850,7 +2689,13 @@ For each downstream section, provide the full updated summary text that incorpor
 Your response must be ONLY strict JSON (no markdown fences).`;
 
     const service = this.aiService(provider as AiProvider);
-    const rawResult = await service.runOneShot(project, settings, prompt, model, agentCascadeSchema);
+    const rawResult = await service.runOneShot(
+      project,
+      settings,
+      await this.appendProjectSkillInstructions(prompt, project, provider, settings),
+      model,
+      agentCascadeSchema,
+    );
     const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
 
     if (!Array.isArray(parsed.cascadeUpdates) || parsed.cascadeUpdates.length === 0) return null;
@@ -1935,6 +2780,507 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     });
   }
 
+  // --- Director System Methods ---
+
+  async directorChat(input: DirectorChatInput): Promise<DirectorChatResponse> {
+    await this.ensureInitialized();
+    const settings = await this.store.readSettings();
+    await this.requireProviderReady(input.provider, settings);
+    const project = await this.requireProject(input.projectId);
+
+    let session = await this.store.getAgentSession(input.projectId);
+    if (!session) {
+      session = this.createEmptyAgentSession(input.projectId, input.provider);
+    }
+    session.provider = input.provider;
+    session.activeDirectorId = input.directorId;
+    session.activeAgentId = input.directorId;
+
+    // Update focus mode on session
+    if (input.directorId === "creative-director" && input.focusMode) {
+      session.creativeFocusMode = input.focusMode as CreativeFocusMode;
+    } else if (input.directorId === "rd-director" && input.focusMode) {
+      session.rdFocusMode = input.focusMode as RdFocusMode;
+    } else if (input.directorId === "validation-director" && input.focusMode) {
+      session.validationFocusMode = input.focusMode as ValidationFocusMode;
+    }
+
+    // Ensure this director has a conversation record
+    if (!session.directorConversations[input.directorId]) {
+      session.directorConversations[input.directorId] = {
+        directorId: input.directorId,
+        focusMode: input.focusMode,
+        messages: [],
+        lastActiveAt: null,
+      };
+    }
+    // Keep agentConversations in sync
+    session.agentConversations = session.directorConversations;
+
+    const conv = session.directorConversations[input.directorId];
+    conv.focusMode = input.focusMode;
+    const userMessage = {
+      id: randomUUID(),
+      role: "user" as const,
+      content: input.message,
+      createdAt: new Date().toISOString(),
+    };
+    conv.messages.push(userMessage);
+    conv.lastActiveAt = new Date().toISOString();
+    session.unifiedMessages.push(userMessage);
+
+    // Update director progress tracking
+    if (input.directorId === "creative-director" && session.directorProgress.creative === "not-started") {
+      session.directorProgress.creative = "in-progress";
+      session.directorProgress.currentDirector = input.directorId;
+    } else if (input.directorId === "rd-director" && session.directorProgress.rd === "not-started") {
+      session.directorProgress.rd = "in-progress";
+      session.directorProgress.currentDirector = input.directorId;
+    } else if (input.directorId === "programming-director" && session.directorProgress.programming === "not-started") {
+      session.directorProgress.programming = "in-progress";
+      session.directorProgress.currentDirector = input.directorId;
+    } else if (input.directorId === "validation-director" && session.directorProgress.validation === "not-started") {
+      session.directorProgress.validation = "in-progress";
+      session.directorProgress.currentDirector = input.directorId;
+    }
+
+    const prompt = buildDirectorPrompt(input.directorId, input.focusMode, project.name, session);
+    const service = this.aiService(input.provider);
+    const model = input.provider === "claude" ? input.claudeModel : input.model;
+    const schema = getSchemaForDirector(input.directorId, input.focusMode);
+
+    const rawResult = await service.runOneShot(project, settings, prompt, model, schema);
+    const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
+
+    const assistantMessage = {
+      id: randomUUID(),
+      role: "assistant" as const,
+      content: parsed.response,
+      createdAt: new Date().toISOString(),
+    };
+    conv.messages.push(assistantMessage);
+    session.unifiedMessages.push(assistantMessage);
+
+    // Process structured data from director response
+    let routeSuggestion: DirectorChatResponse["routeSuggestion"] = null;
+    let structuredData: DirectorStructuredData | null = null;
+    let internalNotes: string[] | null = null;
+    let suggestCreateProject = false;
+
+    // Jeff — routing
+    if (input.directorId === "project-manager" && parsed.routeTo) {
+      routeSuggestion = { directorId: parsed.routeTo as DirectorId, reason: parsed.routeReason ?? "" };
+    }
+
+    // Dan — Conversation mode: internal notes
+    if (input.directorId === "creative-director" && input.focusMode === "conversation") {
+      if (parsed.internalNotes?.length) {
+        internalNotes = parsed.internalNotes;
+        session.danInternalNotes.push(...parsed.internalNotes);
+      }
+      suggestCreateProject = parsed.suggestCreateProject ?? false;
+    }
+
+    // Dan — Vibes mode: pillar descriptions
+    if (input.directorId === "creative-director" && input.focusMode === "vibes" && parsed.pillarDescriptions) {
+      for (const pd of parsed.pillarDescriptions) {
+        const pillar = findPillarById(session.corePillars, pd.pillarId);
+        if (pillar) {
+          pillar.description = pd.description;
+        }
+      }
+    }
+
+    // Todd — Research mode: feasibility assessments
+    if (input.directorId === "rd-director" && input.focusMode === "research" && parsed.feasibilityAssessments) {
+      const assessments: FeasibilityAssessment[] = parsed.feasibilityAssessments.map((a: { area: string; assessment: string; stackRecommendation?: string | null; complexity: string; costNotes?: string | null }) => ({
+        id: randomUUID(),
+        area: a.area,
+        assessment: a.assessment,
+        stackRecommendation: a.stackRecommendation ?? null,
+        complexity: a.complexity as FeasibilityAssessment["complexity"],
+        costNotes: a.costNotes ?? null,
+        status: "assumed" as const,
+      }));
+      session.feasibilityAssessments = [...session.feasibilityAssessments, ...assessments];
+      structuredData = { type: "feasibility", assessments };
+    }
+
+    // Todd — Version Planning mode: versions
+    if (input.directorId === "rd-director" && input.focusMode === "version-planning" && parsed.versions) {
+      const versions: VersionPlan[] = parsed.versions.map((v: { label: string; description: string; goals: string[] }, idx: number) => ({
+        id: randomUUID(),
+        label: v.label,
+        description: v.description,
+        goals: v.goals,
+        status: "assumed" as const,
+        order: idx,
+      }));
+      session.versions = versions;
+      structuredData = { type: "versions", versions };
+    }
+
+    // Todd — Update Planning mode: updates
+    if (input.directorId === "rd-director" && input.focusMode === "update-planning" && parsed.updates) {
+      const updates: VersionUpdate[] = parsed.updates.map((u: { title: string; description: string; versionLabel: string; dependencies?: string[] }, idx: number) => {
+        const version = session!.versions.find((v) => v.label === u.versionLabel);
+        return {
+          id: randomUUID(),
+          versionId: version?.id ?? "",
+          title: u.title,
+          description: u.description,
+          order: idx,
+          status: "pending" as const,
+          dependencies: u.dependencies ?? [],
+        };
+      });
+      session.versionUpdates = updates;
+      structuredData = { type: "versionUpdates", updates };
+    }
+
+    // Ping — routed updates & execution
+    if (input.directorId === "programming-director" && parsed.routedUpdates) {
+      structuredData = { type: "routedUpdates", routed: parsed.routedUpdates };
+    }
+    if (input.directorId === "programming-director" && parsed.executionSteps) {
+      structuredData = {
+        type: "executionPlan",
+        updateId: "",
+        steps: parsed.executionSteps,
+        readyToExecute: parsed.readyToExecute ?? false,
+      };
+    }
+
+    // Brad — Test mode: validation results
+    if (input.directorId === "validation-director" && input.focusMode === "test-current-state" && parsed.validationPassed != null) {
+      const result: ValidationResult = {
+        id: randomUUID(),
+        updateId: "",
+        validationType: "functional",
+        passed: parsed.validationPassed,
+        summary: parsed.validationSummary ?? "",
+        details: parsed.validationDetails ?? "",
+        screenshotPaths: [],
+        createdAt: new Date().toISOString(),
+      };
+      session.validationResults.push(result);
+      structuredData = { type: "validationResult", result };
+    }
+
+    // Brad — Compare mode: comparison
+    if (input.directorId === "validation-director" && input.focusMode === "compare" && parsed.passed != null) {
+      structuredData = {
+        type: "comparison",
+        passed: parsed.passed,
+        improvementAreas: parsed.improvementAreas ?? [],
+        summary: parsed.comparisonSummary ?? "",
+      };
+    }
+
+    // Brad — Identify Goal mode: goal summary
+    if (input.directorId === "validation-director" && input.focusMode === "identify-goal" && parsed.goalSummary) {
+      structuredData = {
+        type: "goalSummary",
+        summary: parsed.goalSummary,
+        pillarIds: parsed.relevantPillarIds ?? [],
+      };
+    }
+
+    // Derive project category
+    session.projectCategory = this.deriveProjectCategoryFromSession(session);
+
+    session.updatedAt = new Date().toISOString();
+    await this.store.saveAgentSession(session);
+    this.emit({ type: "agent.session", projectId: input.projectId, session });
+
+    return {
+      sessionId: session.id,
+      directorId: input.directorId,
+      message: assistantMessage,
+      routeSuggestion,
+      structuredData,
+      internalNotes,
+      suggestCreateProject,
+    };
+  }
+
+  /** @deprecated Use directorChat */
+  async multiAgentChat(input: DirectorChatInput): Promise<DirectorChatResponse> {
+    return this.directorChat(input);
+  }
+
+  async slackChat(input: SlackChatInput): Promise<SlackChatResponse> {
+    await this.ensureInitialized();
+    const settings = await this.store.readSettings();
+    await this.requireProviderReady(input.provider, settings);
+    const project = await this.requireProject(input.projectId);
+
+    let session = await this.store.getAgentSession(input.projectId);
+    if (!session) {
+      session = this.createEmptyAgentSession(input.projectId, input.provider);
+    }
+    // Migration safety
+    session.slackMessages = session.slackMessages ?? [];
+    session.slackActiveDirectorId = session.slackActiveDirectorId ?? "project-manager";
+    session.provider = input.provider;
+
+    // Create user message and push immediately
+    const userMessage: SlackChatMessage = {
+      id: randomUUID(),
+      role: "user",
+      directorId: null,
+      content: input.message,
+      createdAt: new Date().toISOString(),
+    };
+    session.slackMessages.push(userMessage);
+
+    // Determine which director responds
+    const respondingDirectorId: DirectorId =
+      input.targetDirectorId && input.targetDirectorId !== "project-manager"
+        ? input.targetDirectorId
+        : "project-manager";
+    session.slackActiveDirectorId = respondingDirectorId;
+
+    // Build prompt and call AI
+    const prompt = buildSlackDirectorPrompt(respondingDirectorId, project.name, session);
+    const service = this.aiService(input.provider);
+    const model = input.provider === "claude" ? input.claudeModel : input.model;
+
+    const rawResult = await service.runOneShot(project, settings, prompt, model, directorSlackSchema);
+    const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
+
+    const assistantMessage: SlackChatMessage = {
+      id: randomUUID(),
+      role: "assistant",
+      directorId: respondingDirectorId,
+      content: parsed.response,
+      createdAt: new Date().toISOString(),
+    };
+    session.slackMessages.push(assistantMessage);
+
+    const handoffTo: DirectorId | null = parsed.handoffTo ?? null;
+    const handoffReason: string | null = parsed.handoffReason ?? null;
+
+    session.updatedAt = new Date().toISOString();
+    await this.store.saveAgentSession(session);
+    this.emit({ type: "agent.session", projectId: input.projectId, session });
+
+    return {
+      sessionId: session.id,
+      directorId: respondingDirectorId,
+      message: assistantMessage,
+      handoffTo,
+      handoffReason,
+    };
+  }
+
+  private deriveProjectCategoryFromSession(session: AgentSession): ProjectCategory {
+    const fc = session.stages.function.confirmed;
+    const tc = session.stages.thesis.confirmed;
+    const cpc = session.stages.core_pillars.confirmed;
+    const ffc = session.stages.full_flow.confirmed;
+    const hasConfirmedCoreDetails = fc && tc && cpc && ffc;
+    const hasCompletedV1 = session.versions.some((v) =>
+      v.label.toLowerCase().includes("v1") && session.versionUpdates
+        .filter((u) => u.versionId === v.id)
+        .every((u) => u.status === "completed")
+    );
+
+    if (hasCompletedV1) return "program";
+    if (hasConfirmedCoreDetails) return "general-project";
+    return "idea-in-progress";
+  }
+
+  async deriveProjectCategory(projectId: string): Promise<ProjectCategory> {
+    const session = await this.store.getAgentSession(projectId);
+    if (!session) return "idea-in-progress";
+    return this.deriveProjectCategoryFromSession(session);
+  }
+
+  async setDirectorFocusMode(projectId: string, directorId: DirectorId, focusMode: DirectorFocusMode): Promise<AgentSession> {
+    await this.ensureInitialized();
+    let session = await this.store.getAgentSession(projectId);
+    if (!session) throw new Error("No agent session found for this project.");
+
+    if (directorId === "creative-director") session.creativeFocusMode = focusMode as CreativeFocusMode;
+    else if (directorId === "rd-director") session.rdFocusMode = focusMode as RdFocusMode;
+    else if (directorId === "validation-director") session.validationFocusMode = focusMode as ValidationFocusMode;
+
+    session.updatedAt = new Date().toISOString();
+    await this.store.saveAgentSession(session);
+    this.emit({ type: "agent.session", projectId, session });
+    return session;
+  }
+
+  async attachVibeToCorePillar(input: AttachVibeInput): Promise<AgentSession> {
+    await this.ensureInitialized();
+    let session = await this.store.getAgentSession(input.projectId);
+    if (!session) throw new Error("No agent session found for this program.");
+
+    const pillar = findPillarById(session.corePillars, input.pillarId);
+    if (!pillar) throw new Error("Core pillar not found.");
+
+    if (!pillar.vibes) pillar.vibes = [];
+
+    for (let i = 0; i < input.filePaths.length; i++) {
+      const filePath = input.filePaths[i];
+      const fileName = filePath.split("/").pop() ?? filePath;
+      const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
+      let fileType: VibeAttachment["fileType"] = "other";
+      if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"].includes(ext)) fileType = "image";
+      else if (["txt", "md"].includes(ext)) fileType = "text";
+      else if (ext === "note") fileType = "note";
+
+      pillar.vibes.push({
+        id: randomUUID(),
+        filePath,
+        fileName,
+        description: input.descriptions?.[i] ?? null,
+        fileType,
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    session.updatedAt = new Date().toISOString();
+    await this.store.saveAgentSession(session);
+    this.emit({ type: "agent.session", projectId: input.projectId, session });
+    return session;
+  }
+
+  async removeVibeFromCorePillar(input: RemoveVibeInput): Promise<AgentSession> {
+    await this.ensureInitialized();
+    const session = await this.store.getAgentSession(input.projectId);
+    if (!session) throw new Error("No agent session found for this program.");
+
+    const pillar = findPillarById(session.corePillars, input.pillarId);
+    if (!pillar) throw new Error("Core pillar not found.");
+
+    pillar.vibes = (pillar.vibes ?? []).filter((v) => v.id !== input.vibeId);
+
+    session.updatedAt = new Date().toISOString();
+    await this.store.saveAgentSession(session);
+    this.emit({ type: "agent.session", projectId: input.projectId, session });
+    return session;
+  }
+
+  async confirmAgentData(input: ConfirmAgentDataInput): Promise<AgentSession> {
+    await this.ensureInitialized();
+    const session = await this.store.getAgentSession(input.projectId);
+    if (!session) throw new Error("No agent session found for this program.");
+
+    if (input.dataType === "feasibility") {
+      if (input.itemId) {
+        const item = session.feasibilityAssessments.find((a) => a.id === input.itemId);
+        if (item) item.status = "confirmed";
+      } else {
+        for (const a of session.feasibilityAssessments) a.status = "confirmed";
+      }
+    } else if (input.dataType === "versions") {
+      if (input.itemId) {
+        const item = session.versions.find((v) => v.id === input.itemId);
+        if (item) item.status = "confirmed";
+      } else {
+        for (const v of session.versions) v.status = "confirmed";
+      }
+    } else if (input.dataType === "versionUpdates") {
+      // Version updates use their own status field, no DetailStatus
+    }
+
+    session.updatedAt = new Date().toISOString();
+    await this.store.saveAgentSession(session);
+    this.emit({ type: "agent.session", projectId: input.projectId, session });
+    return session;
+  }
+
+  async routeUpdateToProgramming(input: RouteUpdateToProgrammingInput): Promise<{ started: true }> {
+    await this.ensureInitialized();
+    const session = await this.store.getAgentSession(input.projectId);
+    if (!session) throw new Error("No agent session found for this program.");
+
+    const update = session.versionUpdates.find((u) => u.id === input.updateId);
+    if (!update) throw new Error("Update not found.");
+
+    update.status = "in_progress";
+    session.updatedAt = new Date().toISOString();
+    await this.store.saveAgentSession(session);
+    this.emit({ type: "agent.session", projectId: input.projectId, session });
+
+    // Bridge to existing execution pipeline
+    return this.agentExecuteUpdate({
+      projectId: input.projectId,
+      updateId: input.updateId,
+      provider: input.provider,
+      model: input.model,
+      claudeModel: input.claudeModel,
+    });
+  }
+
+  async runValidation(input: RunValidationInput): Promise<ValidationResult> {
+    await this.ensureInitialized();
+    const settings = await this.store.readSettings();
+    const project = await this.requireProject(input.projectId);
+
+    let session = await this.store.getAgentSession(input.projectId);
+    if (!session) throw new Error("No agent session found for this program.");
+
+    // Try to use Playwright for screenshots if the project is running
+    let screenshotPaths: string[] = [];
+    const runtime = this.runner.getRuntime(input.projectId);
+    if (runtime?.running && runtime.url) {
+      try {
+        const playwrightResult = await this.playwright.run({
+          projectId: input.projectId,
+          cwd: project.localPath ?? ".",
+          url: runtime.url,
+          actions: [],
+          headless: true,
+          settleMs: 2000,
+        });
+        screenshotPaths = playwrightResult.screenshots;
+      } catch { /* Playwright not available, continue without screenshots */ }
+    }
+
+    // Ask AI to validate
+    const coreContext = formatCoreDetails(session);
+    const validationPrompt = input.validationType === "visual"
+      ? `You are validating the visual output of "${project.name}". Compare the current state against the intended visual direction and core pillars.\n${coreContext}\n${screenshotPaths.length > 0 ? `Screenshots taken: ${screenshotPaths.length}` : "No screenshots available."}\nDoes the current output match the intended visual direction? Report any mismatches.`
+      : `You are validating the functional output of "${project.name}". Test whether the latest update works correctly.\n${coreContext}\nDoes the feature work as intended? Report any issues.`;
+
+    const service = this.aiService(input.provider);
+    const model = input.provider === "claude" ? input.claudeModel : input.model;
+    const rawResult = await service.runOneShot(project, settings, validationPrompt, model, directorBradTestSchema);
+    const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
+
+    const result: ValidationResult = {
+      id: randomUUID(),
+      updateId: input.updateId,
+      validationType: input.validationType,
+      passed: parsed.validationPassed ?? true,
+      summary: parsed.validationSummary ?? parsed.response,
+      details: parsed.validationDetails ?? "",
+      screenshotPaths,
+      createdAt: new Date().toISOString(),
+    };
+
+    session.validationResults.push(result);
+    session.updatedAt = new Date().toISOString();
+    await this.store.saveAgentSession(session);
+    this.emit({ type: "agent.session", projectId: input.projectId, session });
+    return result;
+  }
+
+  async setValidationFrequency(input: SetValidationFrequencyInput): Promise<AgentSession> {
+    await this.ensureInitialized();
+    const session = await this.store.getAgentSession(input.projectId);
+    if (!session) throw new Error("No agent session found for this program.");
+
+    session.validationFrequency = input.frequency;
+    session.updatedAt = new Date().toISOString();
+    await this.store.saveAgentSession(session);
+    this.emit({ type: "agent.session", projectId: input.projectId, session });
+    return session;
+  }
+
   async createProject(input: ProjectCreateInput): Promise<Project> {
     await this.ensureInitialized();
     if (!input.name.trim()) {
@@ -1968,8 +3314,8 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     let remoteUrl: string | null = null;
     let defaultBranch = "main";
     if (input.createRemote) {
-      const clientId = this.resolveGitHubClientId(settings);
-      const githubStatus = await this.github.getStatus(clientId);
+      const githubConfig = this.resolveGitHubClientConfig(settings);
+      const githubStatus = await this.github.getStatus(githubConfig);
       if (!githubStatus.configured) {
         throw new Error(this.githubConfigurationMessage());
       }
@@ -1978,7 +3324,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       }
 
       const repo = await this.github.createRepository({
-        clientId,
+        client: githubConfig,
         name: slugifyRepositoryName(input.name),
         description,
         visibility: input.visibility,
@@ -2012,7 +3358,10 @@ Your response must be ONLY strict JSON (no markdown fences).`;
 
     const commitSha = await this.git.commitAll(localPath, `Initialize ${input.name}`);
     if (remoteUrl && commitSha) {
-      await this.git.push(localPath, defaultBranch);
+      await this.git.push(localPath, defaultBranch, {
+        remoteUrl,
+        token: await this.github.getStoredToken(),
+      });
     }
 
     await this.store.createProject(project);
@@ -2045,8 +3394,8 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     const name = deriveAttachedProjectName(input.localPath);
 
     if (!remoteUrl && input.createRemote) {
-      const clientId = this.resolveGitHubClientId(settings);
-      const githubStatus = await this.github.getStatus(clientId);
+      const githubConfig = this.resolveGitHubClientConfig(settings);
+      const githubStatus = await this.github.getStatus(githubConfig);
       if (!githubStatus.configured) {
         throw new Error(this.githubConfigurationMessage());
       }
@@ -2055,7 +3404,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       }
 
       const repo = await this.github.createRepository({
-        clientId,
+        client: githubConfig,
         name: slugifyRepositoryName(name),
         description: deriveProjectDescription(name),
         visibility: input.visibility,
@@ -2155,19 +3504,19 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     project = await this.updateProjectStatus(project, "syncing", null);
 
     try {
-      const clientId = this.resolveGitHubClientId(settings);
-      if (!clientId) {
+      const githubConfig = this.resolveGitHubClientConfig(settings);
+      if (!githubConfig) {
         throw new Error(this.githubConfigurationMessage());
       }
 
-      const githubStatus = await this.github.getStatus(clientId);
+      const githubStatus = await this.github.getStatus(githubConfig);
       if (!githubStatus.loggedIn) {
         throw new Error("Connect GitHub in Settings before enabling GitHub sync.");
       }
 
       const branch = (await this.git.getCurrentBranch(project.localPath)) || project.defaultBranch || "main";
       const repo = await this.github.createRepository({
-        clientId,
+        client: githubConfig,
         name: project.runtimeConfig.githubRepoName || slugifyRepositoryName(project.name),
         description: project.description,
         visibility: input.visibility,
@@ -2182,7 +3531,10 @@ Your response must be ONLY strict JSON (no markdown fences).`;
         }
       }
 
-      await this.git.push(project.localPath, branch);
+      await this.git.push(project.localPath, branch, {
+        remoteUrl: repo.remoteUrl,
+        token: await this.github.getStoredToken(),
+      });
 
       project.remoteUrl = repo.remoteUrl;
       project.defaultBranch = branch;
@@ -2373,6 +3725,15 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     return status;
   }
 
+  async testClaudeConnection(): Promise<ClaudeConnectionTestResult> {
+    const settings = await this.store.readSettings();
+    return this.claude.testConnection(settings, settings.advancedDefaults.claudeModel);
+  }
+
+  submitClaudeLoginCode(code: string): void {
+    this.claude.submitLoginCode(code);
+  }
+
   private async readModelCatalog(settings: Settings): Promise<ModelCatalog> {
     const codex = await this.codex.getModelCatalog(settings);
     const matchesFallback =
@@ -2396,7 +3757,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
 
   async getGitHubStatus(): Promise<GitHubAuthStatus> {
     const settings = await this.store.readSettings();
-    return this.github.getStatus(this.resolveGitHubClientId(settings));
+    return this.github.getStatus(this.resolveGitHubClientConfig(settings));
   }
 
   async inspectAttachPath(localPath: string): Promise<AttachPathInspection> {
@@ -2437,17 +3798,18 @@ Your response must be ONLY strict JSON (no markdown fences).`;
 
   async loginGitHub() {
     const settings = await this.store.readSettings();
-    const clientId = this.resolveGitHubClientId(settings);
-    if (!clientId) {
+    const client = this.resolveGitHubClientConfig(settings);
+    if (!client) {
       throw new Error(this.githubConfigurationMessage());
     }
 
-    return this.github.login(clientId);
+    return this.github.login(client);
   }
 
   async logoutGitHub(): Promise<GitHubAuthStatus> {
-    const status = await this.github.logout();
-    await this.emitSetupUpdated();
+    const settings = await this.store.readSettings();
+    const status = await this.github.logout(this.resolveGitHubClientConfig(settings));
+    await this.emitSetupUpdated(settings, undefined, undefined, status);
     return status;
   }
 
@@ -2652,16 +4014,105 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     }
   }
 
+  private resolveGitHubClientConfig(settings: Settings): GitHubClientConfig | null {
+    const overrideId = settings.githubClientIdOverride?.trim();
+    if (overrideId) {
+      return {
+        clientId: overrideId,
+        source: "override",
+      };
+    }
+
+    const bundledId = process.env.GITHUB_CLIENT_ID?.trim();
+    if (bundledId) {
+      return {
+        clientId: bundledId,
+        source: "bundled",
+      };
+    }
+
+    return null;
+  }
+
+  private getProgramsPlaywrightRunnerPath(settings: Settings): string {
+    const preferredRoot = settings.appSourcePath?.trim();
+    if (preferredRoot) {
+      return join(preferredRoot, "scripts", "programs-playwright-runner.mjs");
+    }
+
+    return this.playwright.getRunnerScriptPath();
+  }
+
+  private async getAttachedSkill(project: Project): Promise<Skill | null> {
+    const skillId = project.runtimeConfig.attachedSkillId ?? null;
+    if (!skillId) {
+      return null;
+    }
+
+    return this.store.readSkill(skillId);
+  }
+
+  private async buildProjectSkillInstructions(
+    project: Project,
+    provider: AiProvider,
+    settings: Settings,
+  ): Promise<string | null> {
+    const skill = await this.getAttachedSkill(project);
+    if (!skill) {
+      return null;
+    }
+
+    if (skill.sourceProvider === "claude" && provider !== "claude") {
+      return null;
+    }
+    if (skill.sourceProvider === "codex" && provider !== "codex") {
+      return null;
+    }
+
+    if (skill.sourceType === "plugin") {
+      if (provider !== "claude" || skill.installStatus !== "ready") {
+        return null;
+      }
+
+      return `Claude plugin "${skill.installSlug ?? skill.name}" is installed for this program. Use it when it is relevant to the task.`;
+    }
+
+    const runnerPath = this.getProgramsPlaywrightRunnerPath(settings);
+    return skill.instructions.replaceAll(USER_TESTING_RUNNER_PLACEHOLDER, runnerPath);
+  }
+
+  private async appendProjectSkillInstructions(
+    prompt: string,
+    project: Project,
+    provider: AiProvider,
+    settings: Settings,
+  ): Promise<string> {
+    const skillInstructions = await this.buildProjectSkillInstructions(project, provider, settings);
+    if (!skillInstructions) {
+      return prompt;
+    }
+
+    return `${prompt}\n\nAttached skill instructions:\n${skillInstructions}`;
+  }
+
   async startPlan(input: StartPlanInput): Promise<{ started: true }> {
     const settings = await this.store.readSettings();
     await this.requireProviderReady(input.provider, settings);
     const project = await this.requireProject(input.projectId);
+    const skillInstructions = await this.buildProjectSkillInstructions(project, input.provider, settings);
+    const agentSession = await this.store.getAgentSession(input.projectId);
+    const coreDetailsContext = formatCoreDetails(agentSession);
+    const enrichedInput: StartPlanInput = {
+      ...input,
+      skillInstructions,
+      coreDetailsContext: coreDetailsContext || null,
+    };
     const service = this.aiService(input.provider);
     const providerLabel = input.provider === "claude" ? "Claude" : "Codex";
 
     if (input.planningMode === "none") {
       const executingProject = await this.updateProjectStatus(project, "executing", null);
-      const draft = service.createDirectExecutionDraft(executingProject, input);
+      const draft = service.createDirectExecutionDraft(executingProject, enrichedInput);
       void this.executePlan(executingProject, settings, draft).catch(() => undefined);
       return { started: true };
     }
@@ -2669,7 +4120,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     await this.updateProjectStatus(project, "planning", null);
 
     void service
-      .startPlanningTurn(project, settings, input)
+      .startPlanningTurn(project, settings, enrichedInput)
       .then(async (draft) => {
         const latest = await this.requireProject(project.id);
         latest.threadId = draft.threadId;
@@ -2857,6 +4308,9 @@ Your response must be ONLY strict JSON (no markdown fences).`;
           errorMessage: null,
         };
         await this.store.addUpdateRecord(historyRecord);
+        void this.generateProjectCoreDetails(latest, settings, draft.provider).catch((err) => {
+          console.warn("[core-details] Auto-generation failed:", err);
+        });
         latest.lastUpdatedAt = historyRecord.createdAt;
         latest.status = "idle";
         latest.updatedAt = new Date().toISOString();
@@ -3042,6 +4496,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       lastRunUrl: project.runtimeConfig.lastRunUrl,
       initialIdea: project.runtimeConfig.initialIdea,
       githubRepoName: project.runtimeConfig.githubRepoName ?? detected.githubRepoName,
+      attachedSkillId: project.runtimeConfig.attachedSkillId ?? null,
     };
 
     if (JSON.stringify(nextRuntimeConfig) === JSON.stringify(project.runtimeConfig)) {
@@ -3083,18 +4538,20 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     settingsArg?: Settings,
     codexArg?: CodexAuthStatus,
     claudeArg?: ClaudeAuthStatus,
-    _githubArg?: GitHubAuthStatus,
+    githubArg?: GitHubAuthStatus,
   ): Promise<SetupSnapshot> {
     const settings = settingsArg ?? (await this.store.readSettings());
-    const [setupState, gitVersion, codex, claudeStatus] = await Promise.all([
+    const githubConfig = this.resolveGitHubClientConfig(settings);
+    const [setupState, gitVersion, codex, claudeStatus, githubStatus] = await Promise.all([
       this.store.readSetupState(),
       this.git.getVersion(),
       codexArg ? Promise.resolve(codexArg) : this.codex.getAuthStatus(settings),
       claudeArg ? Promise.resolve(claudeArg) : this.claude.getAuthStatus(settings),
+      githubArg ? Promise.resolve(githubArg) : this.github.getStatus(githubConfig),
     ]);
 
     const isPackagedBuild = app.isPackaged;
-    const githubConfigured = Boolean(this.resolveGitHubClientId(settings));
+    const githubConfigured = Boolean(githubConfig);
     const codexInstalled = codex.available && Boolean(codex.binaryPath);
     const claudeInstalled = claudeStatus.available && Boolean(claudeStatus.binaryPath);
     const gitInstalled = Boolean(gitVersion);
@@ -3235,6 +4692,35 @@ Your response must be ONLY strict JSON (no markdown fences).`;
         secondaryActionTarget: null,
         required: true,
       },
+      {
+        id: "githubConnect",
+        section: "assistant",
+        label: "Connect GitHub",
+        status: !githubConfigured
+          ? "info"
+          : githubStatus.loggedIn
+            ? "confirmed"
+            : githubStatus.hasStoredToken
+              ? "action_required"
+              : "info",
+        version: null,
+        detail: !githubConfigured
+          ? "Add a GitHub OAuth client ID in Settings first."
+          : githubStatus.loggedIn
+            ? githubStatus.login
+              ? `Confirmed as ${githubStatus.login}. Sync uses HTTPS with the stored app token.`
+              : "Confirmed and ready for HTTPS sync."
+            : githubStatus.hasStoredToken
+              ? githubStatus.errorMessage ?? "Reconnect GitHub to refresh the stored permissions."
+              : "Connect GitHub so PROGRAMS can create and sync private repositories.",
+        actionLabel: !githubConfigured ? "Open Settings" : githubStatus.loggedIn ? null : "Connect",
+        actionKind: !githubConfigured ? "openSettings" : githubStatus.loggedIn ? "none" : "githubLogin",
+        actionTarget: null,
+        secondaryActionLabel: githubConfigured && !githubStatus.loggedIn ? "Configure App" : null,
+        secondaryActionKind: githubConfigured && !githubStatus.loggedIn ? "openExternal" : "none",
+        secondaryActionTarget: githubConfigured && !githubStatus.loggedIn ? "https://github.com/settings/developers" : null,
+        required: false,
+      },
     ];
 
     const isSetupComplete = checks.every((check) => !check.required || check.status === "confirmed");
@@ -3249,12 +4735,6 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       isPackagedBuild,
       githubConfigured,
     };
-  }
-
-  private resolveGitHubClientId(settings: Settings): string | null {
-    const overrideId = settings.githubClientIdOverride?.trim();
-    const bundledId = process.env.GITHUB_CLIENT_ID?.trim();
-    return overrideId || bundledId || null;
   }
 
   private emitAppUpdateStatus(status: AppUpdateStatus): void {
@@ -3292,6 +4772,11 @@ Your response must be ONLY strict JSON (no markdown fences).`;
           launchedAppUpdatedAt: null,
           currentUpdatedAt: null,
           candidateUpdatedAt: null,
+          currentRendererAssetName: null,
+          currentRendererAssetUpdatedAt: null,
+          candidateRendererAssetName: null,
+          candidateRendererAssetUpdatedAt: null,
+          rendererAssetMatch: null,
           buildState: "idle",
           buildError: null,
           requiresAdminPrompt: false,
@@ -3309,6 +4794,8 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     const launchedAppUpdatedAt = await this.launchedAppUpdatedAtPromise;
     const currentUpdatedAt = currentAppPath ? await this.readModifiedAt(currentAppPath) : null;
     const workspace = await this.readAppUpdateWorkspace(settings);
+    const currentRendererAsset = await this.readRendererAssetInfo(currentAppPath);
+    const candidateRendererAsset = await this.readRendererAssetInfo(workspace.candidateAppPath);
     const packageKey =
       workspace.workspaceValid && workspace.workspacePath && workspace.sourceUpdatedAt
         ? this.buildAppUpdatePackageKey(workspace.workspacePath, workspace.sourceUpdatedAt)
@@ -3380,6 +4867,11 @@ Your response must be ONLY strict JSON (no markdown fences).`;
         launchedAppUpdatedAt,
         currentUpdatedAt,
         candidateUpdatedAt: workspace.candidateUpdatedAt,
+        currentRendererAssetName: currentRendererAsset.assetName,
+        currentRendererAssetUpdatedAt: currentRendererAsset.assetUpdatedAt,
+        candidateRendererAssetName: candidateRendererAsset.assetName,
+        candidateRendererAssetUpdatedAt: candidateRendererAsset.assetUpdatedAt,
+        rendererAssetMatch: this.rendererAssetsMatch(currentRendererAsset, candidateRendererAsset),
         buildState,
         buildError: buildState === "failed" ? this.appUpdateBuildError : null,
         requiresAdminPrompt,
@@ -3587,6 +5079,57 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     }
 
     return latest;
+  }
+
+  private async readRendererAssetInfo(appBundlePath: string | null): Promise<AppRendererAssetInfo> {
+    if (!appBundlePath) {
+      return {
+        assetName: null,
+        assetUpdatedAt: null,
+      };
+    }
+
+    const assetsDir = join(appBundlePath, "Contents", "Resources", "app", "out", "renderer", "assets");
+    if (!(await pathExists(assetsDir))) {
+      return {
+        assetName: null,
+        assetUpdatedAt: null,
+      };
+    }
+
+    const entries = await readdir(assetsDir, { withFileTypes: true });
+    const assetName =
+      entries.find((entry) => entry.isFile() && /^index-[^.]+\.js$/.test(entry.name))?.name ??
+      entries.find((entry) => entry.isFile() && /^index-[^.]+\.css$/.test(entry.name))?.name ??
+      null;
+
+    if (!assetName) {
+      return {
+        assetName: null,
+        assetUpdatedAt: null,
+      };
+    }
+
+    return {
+      assetName,
+      assetUpdatedAt: await this.readModifiedAt(join(assetsDir, assetName)),
+    };
+  }
+
+  private rendererAssetsMatch(current: AppRendererAssetInfo, candidate: AppRendererAssetInfo): boolean | null {
+    if (!current.assetName || !candidate.assetName) {
+      return null;
+    }
+
+    if (current.assetName !== candidate.assetName) {
+      return false;
+    }
+
+    if (current.assetUpdatedAt && candidate.assetUpdatedAt) {
+      return current.assetUpdatedAt === candidate.assetUpdatedAt;
+    }
+
+    return true;
   }
 
   private describeAppUpdateStatus({
@@ -3875,4 +5418,258 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     await this.store.saveHomeScratchpad(input.items);
     return input.items;
   }
+
+  // --- Unified To-dos ---
+
+  async listTodos(input: ListTodosInput): Promise<UnifiedTodoItem[]> {
+    await this.ensureInitialized();
+    return this.store.listTodos(input.projectId ?? undefined, input.includeProcessed ?? false);
+  }
+
+  async addTodo(input: AddTodoInput): Promise<UnifiedTodoItem> {
+    await this.ensureInitialized();
+    const item: UnifiedTodoItem = {
+      id: randomUUID(),
+      text: input.text,
+      projectId: input.projectId,
+      completed: false,
+      processedIntoPillar: false,
+      source: input.source ?? "user",
+      createdAt: new Date().toISOString(),
+    };
+    this.store.addTodo(item);
+    this.emit({ type: "app.event", event: "todos.updated" } as AppEvent);
+    return item;
+  }
+
+  async removeTodo(id: string): Promise<void> {
+    await this.ensureInitialized();
+    this.store.removeTodo(id);
+    this.emit({ type: "app.event", event: "todos.updated" } as AppEvent);
+  }
+
+  async updateTodos(input: UpdateTodosInput): Promise<UnifiedTodoItem[]> {
+    await this.ensureInitialized();
+    this.store.saveTodos(input.items);
+    this.emit({ type: "app.event", event: "todos.updated" } as AppEvent);
+    return input.items;
+  }
+
+  async markTodoProcessed(id: string): Promise<void> {
+    await this.ensureInitialized();
+    this.store.markTodoProcessed(id);
+    this.emit({ type: "app.event", event: "todos.updated" } as AppEvent);
+  }
+
+  // --- Git Sync ---
+
+  async syncProjectToGitHub(input: GitSyncInput): Promise<GitSyncResult> {
+    await this.ensureInitialized();
+    const project = await this.requireProject(input.projectId);
+
+    if (!project.remoteUrl) {
+      return { committed: false, pushed: false, commitSha: null, error: "No remote URL configured. Connect this project to GitHub first." };
+    }
+
+    const settings = await this.store.readSettings();
+    const githubStatus = await this.github.getStatus(this.resolveGitHubClientConfig(settings));
+    if (!githubStatus.loggedIn) {
+      return { committed: false, pushed: false, commitSha: null, error: "Sign in to GitHub before syncing." };
+    }
+
+    try {
+      const auth = {
+        remoteUrl: project.remoteUrl,
+        token: await this.github.getStoredToken(),
+      };
+      const message = input.commitMessage || `Sync: ${new Date().toISOString()}`;
+      const commitSha = await this.git.commitAll(project.localPath, message);
+
+      if (!commitSha) {
+        // No changes to commit — check if there are unpushed commits
+        try {
+          await this.git.push(project.localPath, project.defaultBranch, auth);
+          return { committed: false, pushed: true, commitSha: null, error: null };
+        } catch {
+          return { committed: false, pushed: false, commitSha: null, error: null };
+        }
+      }
+
+      await this.git.push(project.localPath, project.defaultBranch, auth);
+      return { committed: true, pushed: true, commitSha, error: null };
+    } catch (error) {
+      return {
+        committed: false,
+        pushed: false,
+        commitSha: null,
+        error: error instanceof Error ? error.message : "Sync failed.",
+      };
+    }
+  }
+
+  async readProjectDiffStats(projectId: string): Promise<DiffStats | null> {
+    await this.ensureInitialized();
+    const project = await this.requireProject(projectId);
+    return this.git.readWorkingTreeDiffStats(project.localPath);
+  }
+
+  // --- Skills ---
+
+  async listSkills(): Promise<Skill[]> {
+    await this.ensureInitialized();
+    return this.store.listSkills();
+  }
+
+  async readSkill(id: string): Promise<Skill | null> {
+    await this.ensureInitialized();
+    return this.store.readSkill(id);
+  }
+
+  async downloadSkill(input: DownloadSkillInput): Promise<Skill> {
+    await this.ensureInitialized();
+    const { readFile } = await import("node:fs/promises");
+    const content = await readFile(input.filePath, "utf8");
+
+    // Parse markdown skill file
+    const lines = content.split(/\r?\n/);
+    let name = input.name || "";
+    let description = "";
+    let instructions = "";
+    let currentSection = "";
+
+    for (const line of lines) {
+      const headingMatch = line.match(/^#+\s+(.+)/);
+      if (headingMatch) {
+        const heading = headingMatch[1].trim().toLowerCase();
+        if (!name && heading) {
+          name = headingMatch[1].trim();
+        }
+        if (heading.includes("description") || heading.includes("about")) {
+          currentSection = "description";
+        } else if (heading.includes("instruction") || heading.includes("prompt") || heading.includes("rules") || heading.includes("system")) {
+          currentSection = "instructions";
+        } else {
+          currentSection = "instructions"; // default to instructions for unknown sections
+        }
+        continue;
+      }
+
+      if (currentSection === "description") {
+        description += `${line}\n`;
+      } else if (currentSection === "instructions") {
+        instructions += `${line}\n`;
+      } else {
+        // Before any section heading, treat as instructions
+        instructions += `${line}\n`;
+      }
+    }
+
+    if (!name) {
+      const { basename } = await import("node:path");
+      name = basename(input.filePath, ".md");
+    }
+
+    const skill: Skill = {
+      id: randomUUID(),
+      name: name.trim(),
+      description: description.trim(),
+      sourceProvider: "claude",
+      sourceType: "skill",
+      instructions: instructions.trim() || content.trim(),
+      originalFilePath: input.filePath,
+      isUniversal: false,
+      installStatus: "ready",
+      installSlug: null,
+      installPath: input.filePath,
+      lastError: null,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    this.store.saveSkill(skill);
+    return skill;
+  }
+
+  async installSkillCatalogItem(input: InstallSkillCatalogInput): Promise<Skill> {
+    await this.ensureInitialized();
+    const now = new Date().toISOString();
+    const existing = this.store.listSkills().find((skill) => skill.installSlug === input.catalogId);
+    const baseId = existing?.id ?? randomUUID();
+    const createdAt = existing?.createdAt ?? now;
+
+    const skill = buildCatalogSkill(input.catalogId, {
+      id: baseId,
+      createdAt,
+      updatedAt: now,
+      installStatus: "ready",
+      installPath:
+        input.catalogId === "user-testing-universal"
+          ? this.getProgramsPlaywrightRunnerPath(await this.store.readSettings())
+          : null,
+    });
+    this.store.saveSkill(skill);
+    return skill;
+  }
+
+  async convertSkillToUniversal(input: ConvertSkillInput): Promise<Skill> {
+    await this.ensureInitialized();
+    const skill = this.store.readSkill(input.skillId);
+    if (!skill) throw new Error("Skill not found.");
+
+    // Strip Claude-specific references
+    let instructions = skill.instructions;
+    instructions = instructions.replace(/\b(Claude|Anthropic|Claude Code)\b/gi, "AI assistant");
+    instructions = instructions.replace(/\b(claude-sonnet|claude-opus|claude-haiku)\b/gi, "model");
+
+    const updated: Skill = {
+      ...skill,
+      sourceProvider: "universal",
+      sourceType: "skill",
+      isUniversal: true,
+      instructions,
+      installStatus: "ready",
+      updatedAt: new Date().toISOString(),
+    };
+
+    this.store.saveSkill(updated);
+    return updated;
+  }
+
+  async deleteSkill(id: string): Promise<void> {
+    await this.ensureInitialized();
+    this.store.deleteSkill(id);
+  }
+
+  async attachSkillToProject(input: AttachSkillInput): Promise<Project> {
+    await this.ensureInitialized();
+    const project = await this.requireProject(input.projectId);
+    project.runtimeConfig = {
+      ...project.runtimeConfig,
+      attachedSkillId: input.skillId,
+    };
+    project.updatedAt = new Date().toISOString();
+    await this.store.updateProject(project);
+    this.emit({ type: "project.updated", project });
+    return project;
+  }
+
+  async runPlaywrightTest(input: PlaywrightRunInput): Promise<PlaywrightRunResult> {
+    await this.ensureInitialized();
+    const project = await this.requireProject(input.projectId);
+    const runtime = await this.runner.validateRuntime(project.id);
+    const url = input.url?.trim() || runtime.url || project.runtimeConfig.lastRunUrl || project.runtimeConfig.openUrl;
+    if (!url) {
+      throw new Error("Run the project first or provide a URL before using the user-testing runner.");
+    }
+
+    return this.playwright.run({
+      projectId: project.id,
+      cwd: project.localPath,
+      url,
+      actions: input.actions ?? [],
+      headless: input.headless ?? true,
+      settleMs: input.settleMs ?? 1200,
+    });
+  }
+
 }

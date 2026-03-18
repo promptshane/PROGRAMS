@@ -5,6 +5,7 @@ directories:
 electronDist: node_modules/electron/dist
 files:
   - out/**/*
+  - scripts/**/*
   - package.json
 asar: false
 mac:

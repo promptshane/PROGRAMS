@@ -1,5 +1,10 @@
 import { shell } from "electron";
-import type { GitHubAuthStatus, GitHubLoginPrompt, RepoVisibility } from "@shared/types";
+import type {
+  GitHubAuthStatus,
+  GitHubClientIdSource,
+  GitHubLoginPrompt,
+  RepoVisibility,
+} from "@shared/types";
 import { SecureStore } from "@main/services/secure-store";
 
 interface DeviceCodeResponse {
@@ -21,39 +26,49 @@ interface GitHubUser {
   avatar_url: string;
 }
 
-type Emit = (event: { type: "auth.github"; status: GitHubAuthStatus } | { type: "toast"; level: "success" | "error" | "info"; message: string }) => void;
+export interface GitHubClientConfig {
+  clientId: string;
+  source: GitHubClientIdSource;
+}
+
+type Emit = (
+  event:
+    | { type: "auth.github"; status: GitHubAuthStatus }
+    | { type: "toast"; level: "success" | "error" | "info"; message: string },
+) => void;
 
 export class GitHubService {
   private pollingLoginId: string | null = null;
+  private currentPrompt: GitHubLoginPrompt | null = null;
 
   constructor(
     private readonly secureStore: SecureStore,
     private readonly emit: Emit,
   ) {}
 
-  async getStatus(clientId: string | null): Promise<GitHubAuthStatus> {
-    const configured = Boolean(clientId?.trim());
-    if (!configured) {
-      return {
-        configured: false,
-        loggedIn: false,
-        login: null,
-        avatarUrl: null,
-        expiresAt: null,
-        errorMessage: null,
-      };
-    }
+  async getStoredToken(): Promise<string | null> {
+    return this.secureStore.getGitHubToken();
+  }
 
-    const token = await this.secureStore.getGitHubToken();
-    if (!token) {
-      return {
-        configured: true,
-        loggedIn: false,
-        login: null,
-        avatarUrl: null,
-        expiresAt: null,
-        errorMessage: null,
-      };
+  async getStatus(config: GitHubClientConfig | null): Promise<GitHubAuthStatus> {
+    const configured = Boolean(config?.clientId.trim());
+    const token = configured ? await this.secureStore.getGitHubToken() : null;
+    const baseStatus: GitHubAuthStatus = {
+      configured,
+      canConnect: configured,
+      clientIdSource: config?.source ?? null,
+      hasStoredToken: Boolean(token),
+      loggedIn: false,
+      verified: false,
+      login: null,
+      avatarUrl: null,
+      expiresAt: this.currentPrompt?.expiresAt ?? null,
+      errorMessage: null,
+      loginPrompt: this.currentPrompt,
+    };
+
+    if (!configured || !token) {
+      return baseStatus;
     }
 
     try {
@@ -64,27 +79,25 @@ export class GitHubService {
       });
 
       return {
-        configured: true,
+        ...baseStatus,
         loggedIn: true,
+        verified: true,
         login: user.login,
         avatarUrl: user.avatar_url,
-        expiresAt: null,
-        errorMessage: null,
       };
     } catch (error) {
       return {
-        configured: true,
-        loggedIn: true,
-        login: null,
-        avatarUrl: null,
-        expiresAt: null,
-        errorMessage: error instanceof Error ? error.message : "GitHub could not confirm the current permissions.",
+        ...baseStatus,
+        errorMessage:
+          error instanceof Error
+            ? error.message
+            : "GitHub could not confirm the current permissions.",
       };
     }
   }
 
-  async login(clientId: string | null): Promise<GitHubLoginPrompt> {
-    if (!clientId?.trim()) {
+  async login(config: GitHubClientConfig | null): Promise<GitHubLoginPrompt> {
+    if (!config?.clientId.trim()) {
       throw new Error("Add a GitHub client ID in Settings before signing in to GitHub.");
     }
 
@@ -95,7 +108,7 @@ export class GitHubService {
         "Content-Type": "application/x-www-form-urlencoded",
       },
       body: new URLSearchParams({
-        client_id: clientId,
+        client_id: config.clientId,
         scope: "repo read:user",
       }),
     });
@@ -105,35 +118,33 @@ export class GitHubService {
     }
 
     const payload = (await response.json()) as DeviceCodeResponse;
-    const expiresAt = new Date(Date.now() + payload.expires_in * 1000).toISOString();
-    this.pollingLoginId = payload.device_code;
-    void this.pollForToken(clientId, payload);
-    await shell.openExternal(payload.verification_uri);
-
-    return {
+    const prompt: GitHubLoginPrompt = {
       userCode: payload.user_code,
       verificationUri: payload.verification_uri,
-      expiresAt,
+      expiresAt: new Date(Date.now() + payload.expires_in * 1000).toISOString(),
       interval: payload.interval,
     };
+
+    this.pollingLoginId = payload.device_code;
+    this.currentPrompt = prompt;
+    this.emit({ type: "auth.github", status: await this.getStatus(config) });
+    void this.pollForToken(config, payload);
+    await shell.openExternal(payload.verification_uri);
+
+    return prompt;
   }
 
-  async logout(): Promise<GitHubAuthStatus> {
+  async logout(config: GitHubClientConfig | null = null): Promise<GitHubAuthStatus> {
     await this.secureStore.clearGitHubToken();
-    const status: GitHubAuthStatus = {
-      configured: true,
-      loggedIn: false,
-      login: null,
-      avatarUrl: null,
-      expiresAt: null,
-      errorMessage: null,
-    };
+    this.pollingLoginId = null;
+    this.currentPrompt = null;
+    const status = await this.getStatus(config);
     this.emit({ type: "auth.github", status });
     return status;
   }
 
   async createRepository(input: {
-    clientId: string | null;
+    client: GitHubClientConfig | null;
     name: string;
     description: string;
     visibility: RepoVisibility;
@@ -166,18 +177,17 @@ export class GitHubService {
     const payload = (await response.json()) as {
       html_url: string;
       clone_url: string;
-      ssh_url: string;
       default_branch: string;
     };
 
     return {
       htmlUrl: payload.html_url,
-      remoteUrl: payload.ssh_url || payload.clone_url,
+      remoteUrl: payload.clone_url,
       defaultBranch: payload.default_branch || "main",
     };
   }
 
-  private async pollForToken(clientId: string, payload: DeviceCodeResponse): Promise<void> {
+  private async pollForToken(config: GitHubClientConfig, payload: DeviceCodeResponse): Promise<void> {
     const expiresAt = Date.now() + payload.expires_in * 1000;
     let interval = payload.interval * 1000;
 
@@ -191,7 +201,7 @@ export class GitHubService {
           "Content-Type": "application/x-www-form-urlencoded",
         },
         body: new URLSearchParams({
-          client_id: clientId,
+          client_id: config.clientId,
           device_code: payload.device_code,
           grant_type: "urn:ietf:params:oauth:grant-type:device_code",
         }),
@@ -200,14 +210,15 @@ export class GitHubService {
       const tokenPayload = (await response.json()) as AccessTokenResponse;
       if (tokenPayload.access_token) {
         await this.secureStore.setGitHubToken(tokenPayload.access_token);
-        const status = await this.getStatus(clientId);
+        this.pollingLoginId = null;
+        this.currentPrompt = null;
+        const status = await this.getStatus(config);
         this.emit({
           type: "toast",
           level: "success",
           message: "GitHub is connected.",
         });
         this.emit({ type: "auth.github", status });
-        this.pollingLoginId = null;
         return;
       }
 
@@ -220,21 +231,25 @@ export class GitHubService {
         continue;
       }
 
+      this.pollingLoginId = null;
+      this.currentPrompt = null;
       this.emit({
         type: "toast",
         level: "error",
         message: tokenPayload.error_description || "GitHub sign-in was cancelled.",
       });
-      this.pollingLoginId = null;
+      this.emit({ type: "auth.github", status: await this.getStatus(config) });
       return;
     }
 
+    this.pollingLoginId = null;
+    this.currentPrompt = null;
     this.emit({
       type: "toast",
       level: "error",
       message: "GitHub sign-in timed out. Start it again when you are ready.",
     });
-    this.pollingLoginId = null;
+    this.emit({ type: "auth.github", status: await this.getStatus(config) });
   }
 
   private async requestGitHub<T>(url: string, init: RequestInit): Promise<T> {

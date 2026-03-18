@@ -232,13 +232,18 @@ const formatContextPaths = (contextPaths: string[]): string =>
     ? `Priority files and folders for this turn:\n${contextPaths.map((path) => `- ${path}`).join("\n")}`
     : "No extra files were selected for this turn.";
 
-const buildPlanningPrompt = (project: Project, prompt: string, contextPaths: string[]): string => `
+const formatSkillInstructions = (value: string | null | undefined): string =>
+  value?.trim() ? `Attached skill:\n${value.trim()}\n` : "";
+
+const buildPlanningPrompt = (project: Project, prompt: string, contextPaths: string[], skillInstructions: string | null, coreDetailsContext?: string | null): string => `
 Plan a change for the project "${project.name}".
+
+${formatSkillInstructions(skillInstructions)}
 
 Current project description:
 ${project.description}
 
-Requested change:
+${coreDetailsContext ? `${coreDetailsContext}\n\n` : ""}Requested change:
 ${prompt}
 
 ${formatContextPaths(contextPaths)}
@@ -257,6 +262,8 @@ const buildExecutionPrompt = async (project: Project, draft: PlanDraft): Promise
   return `
 Implement the approved update for "${project.name}".
 
+${formatSkillInstructions(draft.skillInstructions)}
+
 Original request:
 ${draft.prompt}
 
@@ -270,7 +277,7 @@ ${formatContextPaths(draft.contextPaths)}
 
 ${formatFlowchartRepoHints(repoHints)}
 
-Requirements:
+${draft.coreDetailsContext ? `${draft.coreDetailsContext}\n\n` : ""}Requirements:
 - Make the code changes now.
 - Return an updated structured system flowchart that matches the final user-visible flow after your code changes.
 - Keep the project description current and user-facing.
@@ -407,6 +414,8 @@ export class CodexService {
       planningMode: input.planningMode,
       autoApprove: input.autoApprove,
       contextPaths: [...input.contextPaths],
+      skillInstructions: input.skillInstructions ?? null,
+      coreDetailsContext: input.coreDetailsContext ?? null,
       status: "executing",
       thinkingStatus: "in_progress",
       planningStatus: "skipped",
@@ -733,11 +742,13 @@ export class CodexService {
         speed: input.speed,
         model: input.model,
         claudeModel: input.claudeModel,
-        reasoningEffort: input.reasoningEffort,
-        planningMode: input.planningMode,
-        autoApprove: input.autoApprove,
-        contextPaths: [...input.contextPaths],
-        status: "planning",
+      reasoningEffort: input.reasoningEffort,
+      planningMode: input.planningMode,
+      autoApprove: input.autoApprove,
+      contextPaths: [...input.contextPaths],
+      skillInstructions: input.skillInstructions ?? null,
+      coreDetailsContext: input.coreDetailsContext ?? null,
+      status: "planning",
         thinkingStatus: "in_progress",
         planningStatus: "in_progress",
         buildingStatus: "pending",
@@ -761,7 +772,7 @@ export class CodexService {
         const result = (await this.sendRequest("turn/start", {
           threadId,
           cwd: project.localPath,
-          input: [{ type: "text", text: buildPlanningPrompt(project, input.prompt, input.contextPaths) }],
+          input: [{ type: "text", text: buildPlanningPrompt(project, input.prompt, input.contextPaths, input.skillInstructions ?? null, input.coreDetailsContext ?? null) }],
           effort: input.reasoningEffort,
           model: input.model,
           outputSchema: planOutputSchema,

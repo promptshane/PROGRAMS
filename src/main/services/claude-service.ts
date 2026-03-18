@@ -15,13 +15,16 @@ import {
 import {
   buildClaudeAuthStatus,
   buildClaudePrintArgs,
+  type ClaudeCliAuthMetadata,
   type ClaudeCliFeatures,
   type ClaudeLocalAuthMetadata,
+  parseClaudeCliAuthMetadata,
   parseClaudeCliFeatures,
   parseClaudeLocalAuthMetadata,
 } from "@main/utils/claude-cli";
 import { execCommand, getCommandEnv } from "@main/utils/process";
 import type {
+  ClaudeConnectionTestResult,
   ClaudeAuthStatus,
   FlowchartGraph,
   PlanDraft,
@@ -35,6 +38,7 @@ type Emit = (
   event:
     | { type: "project.plan"; projectId: string; plan: PlanDraft | null }
     | { type: "auth.claude"; status: ClaudeAuthStatus }
+    | { type: "auth.claude.codePrompt"; prompt: string }
     | { type: "toast"; level: "info" | "success" | "error"; message: string },
 ) => void;
 
@@ -160,6 +164,86 @@ const parseClaudeDay = (value: string): number | null => {
   return parseClaudeDate(value)?.getTime() ?? null;
 };
 
+interface ClaudeUsageWindowData {
+  label: string;
+  usedPercent: number;
+  resetsAt: string | null;
+  windowDurationMins: number | null;
+}
+
+const parseResetExpression = (expr: string): string | null => {
+  const cleaned = expr.replace(/\bat\b/gi, "").replace(/\bon\b/gi, "").trim();
+  const d = new Date(cleaned);
+  if (!Number.isNaN(d.getTime())) return d.toISOString();
+  const timeOnly = new Date(`${new Date().toDateString()} ${cleaned}`);
+  if (!Number.isNaN(timeOnly.getTime())) {
+    if (timeOnly.getTime() < Date.now()) timeOnly.setDate(timeOnly.getDate() + 1);
+    return timeOnly.toISOString();
+  }
+  // Try injecting current year for formats like "Mar 20 2:30 PM"
+  const withYear = cleaned.replace(/^([A-Za-z]+\s+\d{1,2})\s+/, `$1, ${new Date().getFullYear()} `);
+  if (withYear !== cleaned) {
+    const dy = new Date(withYear);
+    if (!Number.isNaN(dy.getTime())) return dy.toISOString();
+  }
+  return null;
+};
+
+const parseClaudeUsageWindows = (text: string): ClaudeUsageWindowData[] | null => {
+  const windows: ClaudeUsageWindowData[] = [];
+  const percentRe = /(\d+(?:\.\d+)?)\s*%/gi;
+  const ratioRe = /(\d+)\s*\/\s*(\d+)\s*message/i;
+  const resetRe = /reset[s]?\s+(?:at\s+)?([A-Za-z0-9 :,]+?)(?:\.|,|\n|$)/i;
+  const weeklyRe = /week(?:ly)?|7.?day/i;
+  const hourlyRe = /(\d+)\s*.?hour/i;
+
+  // Scan both paragraph-level segments and individual lines so we catch info
+  // regardless of how Claude CLI formats its output across lines.
+  const segments = text.split(/(?:\r?\n){2,}/);
+  const lines = text.split(/\r?\n/);
+  const chunks = [...segments, ...lines];
+
+  for (const chunk of chunks) {
+    const pctMatch = percentRe.exec(chunk);
+    percentRe.lastIndex = 0;
+    if (!pctMatch) continue;
+
+    const usedPct = parseFloat(pctMatch[1]!);
+    if (!Number.isFinite(usedPct)) continue;
+
+    const ratioMatch = ratioRe.exec(chunk);
+    const usedPercent = ratioMatch
+      ? Math.round((parseInt(ratioMatch[1]!, 10) / Math.max(1, parseInt(ratioMatch[2]!, 10))) * 100)
+      : Math.round(usedPct);
+
+    const resetMatch = resetRe.exec(chunk);
+    const resetsAt = resetMatch ? parseResetExpression(resetMatch[1]!.trim()) : null;
+
+    let windowDurationMins: number | null = null;
+    let label: string;
+    if (weeklyRe.test(chunk)) {
+      windowDurationMins = 10080;
+      label = "This Week";
+    } else {
+      const hourMatch = hourlyRe.exec(chunk);
+      windowDurationMins = hourMatch ? parseInt(hourMatch[1]!, 10) * 60 : 300;
+      label = hourMatch ? `${hourMatch[1]}h Window` : "Recent (5h)";
+    }
+
+    windows.push({ label, usedPercent: Math.min(100, Math.max(0, usedPercent)), resetsAt, windowDurationMins });
+  }
+
+  if (windows.length === 0) return null;
+  windows.sort((a, b) => (a.windowDurationMins ?? 0) - (b.windowDurationMins ?? 0));
+  const seen = new Map<number | null, ClaudeUsageWindowData>();
+  for (const w of windows) {
+    if (!seen.has(w.windowDurationMins) || (w.resetsAt && !seen.get(w.windowDurationMins)?.resetsAt)) {
+      seen.set(w.windowDurationMins, w);
+    }
+  }
+  return seen.size > 0 ? Array.from(seen.values()) : null;
+};
+
 const sumClaudeTokens = (entry: ClaudeDailyModelTokenEntry | undefined): number =>
   Object.values(entry?.tokensByModel ?? {}).reduce((total, value) => total + value, 0);
 
@@ -190,15 +274,20 @@ const formatContextPaths = (contextPaths: string[]): string =>
     ? `Priority files and folders for this turn:\n${contextPaths.map((path) => `- ${path}`).join("\n")}`
     : "No extra files were selected for this turn.";
 
-const buildPlanningPrompt = (project: Project, prompt: string, contextPaths: string[]): string => `
+const formatSkillInstructions = (value: string | null | undefined): string =>
+  value?.trim() ? `Attached skill:\n${value.trim()}\n` : "";
+
+const buildPlanningPrompt = (project: Project, prompt: string, contextPaths: string[], skillInstructions: string | null, coreDetailsContext?: string | null): string => `
 ${baseDeveloperInstructions}
+
+${formatSkillInstructions(skillInstructions)}
 
 Plan a change for the project "${project.name}".
 
 Current project description:
 ${project.description}
 
-Requested change:
+${coreDetailsContext ? `${coreDetailsContext}\n\n` : ""}Requested change:
 ${prompt}
 
 ${formatContextPaths(contextPaths)}
@@ -218,6 +307,8 @@ const buildExecutionPrompt = async (project: Project, draft: PlanDraft): Promise
   return `
 ${baseDeveloperInstructions}
 
+${formatSkillInstructions(draft.skillInstructions)}
+
 Implement the approved update for "${project.name}".
 
 Original request:
@@ -233,7 +324,7 @@ ${formatContextPaths(draft.contextPaths)}
 
 ${formatFlowchartRepoHints(repoHints)}
 
-Requirements:
+${draft.coreDetailsContext ? `${draft.coreDetailsContext}\n\n` : ""}Requirements:
 - Make the code changes now.
 - Return an updated structured system flowchart that matches the final user-visible flow after your code changes.
 - Keep the project description current and user-facing.
@@ -247,7 +338,7 @@ ${FLOWCHART_PROMPT_RULES}
 `.trim();
 };
 
-const mapClaudeEffortLevel = (reasoningEffort: PlanDraft["reasoningEffort"]): "low" | "medium" | "high" | "max" => {
+const mapClaudeEffortLevel = (reasoningEffort: PlanDraft["reasoningEffort"]): "low" | "medium" | "high" => {
   switch (reasoningEffort) {
     case "low":
       return "low";
@@ -256,7 +347,7 @@ const mapClaudeEffortLevel = (reasoningEffort: PlanDraft["reasoningEffort"]): "l
     case "high":
       return "high";
     case "xhigh":
-      return "max";
+      return "high";
   }
 };
 
@@ -418,12 +509,17 @@ const extractClaudeResultEventError = (event: {
   return text.trim() || null;
 };
 
+
 export class ClaudeService {
   private readonly planDrafts = new Map<string, PlanDraft>();
   private readonly activeProcesses = new Map<string, ChildProcess>();
   private readonly pendingDiffRefresh = new Set<string>();
+  private pendingLoginStdin: import("stream").Writable | null = null;
 
-  constructor(private readonly emit: Emit) {}
+  constructor(
+    private readonly emit: Emit,
+    private readonly openExternal?: (url: string) => Promise<void>,
+  ) {}
 
   getActivePlan(projectId: string): PlanDraft | null {
     return this.planDrafts.get(projectId) ?? null;
@@ -454,6 +550,8 @@ export class ClaudeService {
       planningMode: input.planningMode,
       autoApprove: input.autoApprove,
       contextPaths: [...input.contextPaths],
+      skillInstructions: input.skillInstructions ?? null,
+      coreDetailsContext: input.coreDetailsContext ?? null,
       status: "executing",
       thinkingStatus: "in_progress",
       planningStatus: "skipped",
@@ -478,61 +576,74 @@ export class ClaudeService {
 
   async getUsage(settings: Settings): Promise<ProviderUsage> {
     const auth = await this.getAuthStatus(settings);
+
+    // Try live rate limit data via CLI first
+    if (auth.available && auth.loggedIn && auth.binaryPath) {
+      const liveWindows = await this.readUsageWindows(auth.binaryPath);
+      if (liveWindows && liveWindows.length > 0) {
+        return {
+          status: "ready",
+          windows: liveWindows.map((w) => ({
+            label: w.label,
+            usedPercent: w.usedPercent,
+            valueLabel: null,
+            detail: null,
+            resetsAt: w.resetsAt,
+            windowDurationMins: w.windowDurationMins,
+          })),
+          note: null,
+        };
+      }
+    }
+
     const statsCache = await this.readStatsCache();
     if (statsCache) {
+      const latestDayTimestamp = parseClaudeDay(statsCache.lastComputedDate);
+
+      // Recent (5h) — today's activity as a rolling-window analogue
       const latestActivity = statsCache.dailyActivity.at(-1);
       const latestTokenEntry = statsCache.dailyModelTokens.at(-1);
       const latestTokens = sumClaudeTokens(latestTokenEntry);
+      const latestActivitySummary = latestActivity ? sumClaudeActivity([latestActivity]) : sumClaudeActivity([]);
 
-      const latestDayTimestamp = parseClaudeDay(statsCache.lastComputedDate);
-      const recentActivity =
+      // This Week — last 7 days
+      const weekActivity =
         latestDayTimestamp === null
           ? statsCache.dailyActivity
           : statsCache.dailyActivity.filter((entry) => {
               const entryDay = parseClaudeDay(entry.date);
               return entryDay !== null && latestDayTimestamp - entryDay <= 6 * DAY_IN_MS;
             });
-      const recentTokenEntries =
+      const weekTokenEntries =
         latestDayTimestamp === null
           ? statsCache.dailyModelTokens
           : statsCache.dailyModelTokens.filter((entry) => {
               const entryDay = parseClaudeDay(entry.date);
               return entryDay !== null && latestDayTimestamp - entryDay <= 6 * DAY_IN_MS;
             });
-      const recentTokens = recentTokenEntries.reduce((total, entry) => total + sumClaudeTokens(entry), 0);
-      const recentActivitySummary = sumClaudeActivity(recentActivity);
-      const latestActivitySummary = latestActivity ? sumClaudeActivity([latestActivity]) : sumClaudeActivity([]);
-
-      const allTimeTokens = statsCache.dailyModelTokens.reduce((total, entry) => total + sumClaudeTokens(entry), 0);
+      const weekTokens = weekTokenEntries.reduce((total, entry) => total + sumClaudeTokens(entry), 0);
+      const weekActivitySummary = sumClaudeActivity(weekActivity);
 
       const windows = [
         {
-          label: "Today",
+          label: "Recent (5h)",
           usedPercent: null,
           valueLabel: `${formatClaudeNumber(latestTokens)} tokens`,
-          detail: buildClaudeDetailLabel(latestActivitySummary, formatClaudeDateLabel(statsCache.lastComputedDate)),
+          detail: null,
           resetsAt: null,
-          windowDurationMins: null,
+          windowDurationMins: 300,
         },
         {
-          label: "Last 7 Days",
+          label: "This Week",
           usedPercent: null,
-          valueLabel: `${formatClaudeNumber(recentTokens)} tokens`,
-          detail: buildClaudeDetailLabel(recentActivitySummary, "Recent activity"),
+          valueLabel: `${formatClaudeNumber(weekTokens)} tokens`,
+          detail: null,
           resetsAt: null,
-          windowDurationMins: null,
-        },
-        {
-          label: "All Time",
-          usedPercent: null,
-          valueLabel: `${formatClaudeNumber(allTimeTokens)} tokens`,
-          detail: `${formatClaudeNumber(statsCache.totalSessions)} sessions · ${formatClaudeNumber(statsCache.totalMessages)} messages since ${formatClaudeDateLabel(statsCache.firstSessionDate)}`,
-          resetsAt: null,
-          windowDurationMins: null,
+          windowDurationMins: 10080,
         },
       ];
 
-      let note = `Claude Code activity through ${formatClaudeDateLabel(statsCache.lastComputedDate)}.`;
+      let note = `Activity through ${formatClaudeDateLabel(statsCache.lastComputedDate)}. Claude does not expose rate limits — these are activity metrics.`;
       if (!auth.available) {
         note = `${note} Install Claude Code to keep this up to date.`;
       } else if (!auth.loggedIn) {
@@ -588,13 +699,15 @@ export class ClaudeService {
         available: false,
         binaryPath: null,
         version: null,
+        cliAuth: null,
         localAuth: null,
         features: null,
       });
     }
 
-    const [versionResult, localAuth, features] = await Promise.all([
+    const [versionResult, cliAuth, localAuth, features] = await Promise.all([
       execCommand(`"${binaryPath}" --version`, process.cwd()),
+      this.readCliAuthMetadata(binaryPath),
       this.readLocalAuthMetadata(),
       this.readCliFeatures(binaryPath),
     ]);
@@ -606,9 +719,133 @@ export class ClaudeService {
         versionResult.code === 0
           ? versionResult.stdout.trim() || versionResult.stderr.trim() || null
           : null,
+      cliAuth,
       localAuth,
       features,
     });
+  }
+
+  async testConnection(settings: Settings, model: string): Promise<ClaudeConnectionTestResult> {
+    await this.requireReadyStatus(settings);
+    const project: Project = {
+      id: "__claude-test__",
+      name: "PROGRAMS",
+      iconColor: "#64748B",
+      description: "PROGRAMS self-test",
+      localPath: process.cwd(),
+      remoteUrl: null,
+      defaultBranch: "main",
+      threadId: null,
+      flowchartPath: "",
+      lastUpdatedAt: null,
+      status: "idle",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      runtimeConfig: {
+        packageManager: "unknown",
+        installCommand: null,
+        runCommand: null,
+        openUrl: null,
+        lastRunUrl: null,
+        initialIdea: null,
+        githubRepoName: null,
+      },
+      lastError: null,
+    };
+
+    try {
+      const raw = await this.runOneShot(project, settings, "Reply with exactly: OK", model);
+      const normalized = raw.trim();
+      if (normalized === "OK") {
+        return {
+          ok: true,
+          model,
+          message: `Claude responded correctly with ${model}.`,
+          raw: normalized,
+        };
+      }
+
+      return {
+        ok: false,
+        model,
+        message: `Claude responded, but the test output was unexpected for ${model}.`,
+        raw: normalized,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Claude test failed.";
+      return {
+        ok: false,
+        model,
+        message,
+        raw: null,
+      };
+    }
+  }
+
+  async installPlugin(settings: Settings, pluginSlug: string): Promise<string | null> {
+    const status = await this.getAuthStatus(settings);
+    if (!status.available || !status.binaryPath) {
+      throw new Error("Install Claude Code before installing Claude plugins in PROGRAMS.");
+    }
+    if (!status.loggedIn) {
+      throw new Error("Connect Claude before installing Claude plugins in PROGRAMS.");
+    }
+
+    const installResult = await execCommand(`"${status.binaryPath}" plugins install ${pluginSlug}`, process.cwd());
+    const combinedOutput = `${installResult.stdout}\n${installResult.stderr}`.trim().toLowerCase();
+    if (installResult.code !== 0 && !combinedOutput.includes("already installed")) {
+      throw new Error(installResult.stderr.trim() || installResult.stdout.trim() || `Claude could not install the ${pluginSlug} plugin.`);
+    }
+
+    const plugins = await this.listPlugins(settings);
+    const installed = plugins.find((plugin) => plugin.slug === pluginSlug);
+    return installed?.path ?? null;
+  }
+
+  async listPlugins(settings: Settings): Promise<Array<{ slug: string; path: string | null }>> {
+    const status = await this.getAuthStatus(settings);
+    if (!status.available || !status.binaryPath) {
+      return [];
+    }
+
+    const listResult = await execCommand(`"${status.binaryPath}" plugins list --json`, process.cwd());
+    const output = `${listResult.stdout}\n${listResult.stderr}`.trim();
+    if (!output) {
+      return [];
+    }
+
+    try {
+      const parsed = JSON.parse(output) as unknown;
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
+
+      return parsed.flatMap((entry) => {
+        if (!entry || typeof entry !== "object") {
+          return [];
+        }
+
+        const record = entry as Record<string, unknown>;
+        const slugCandidate = record.slug ?? record.name ?? record.id;
+        if (typeof slugCandidate !== "string" || !slugCandidate.trim()) {
+          return [];
+        }
+
+        const pathCandidate =
+          typeof record.path === "string"
+            ? record.path
+            : typeof record.installPath === "string"
+              ? record.installPath
+              : null;
+
+        return [{
+          slug: slugCandidate.trim(),
+          path: pathCandidate,
+        }];
+      });
+    } catch {
+      return [];
+    }
   }
 
   async login(settings: Settings): Promise<ClaudeAuthStatus> {
@@ -633,21 +870,47 @@ export class ClaudeService {
       stdio: ["pipe", "pipe", "pipe"],
     });
 
-    readline.createInterface({ input: child.stdout }).on("line", () => {
-      // Drain stdout while the CLI manages the auth flow.
-    });
-    readline.createInterface({ input: child.stderr }).on("line", () => {
-      // Drain stderr while the CLI manages the auth flow.
-    });
+    // Auto-confirm any re-authentication prompt from the CLI, then keep stdin
+    // open so we can forward an auth code if the CLI falls back to device auth.
+    child.stdin.write("y\n");
+    this.pendingLoginStdin = child.stdin;
+
+    // Capture stdout/stderr and intercept the OAuth URL so we can open it
+    // reliably via Electron's shell (the CLI's own `open` call may fail
+    // silently inside a subprocess spawned by an Electron app).
+    // Also detect device-auth code prompts so the user can enter the code in
+    // the PROGRAMS Settings UI.
+    const urlPattern = /https?:\/\/[^\s"'<>]+/;
+    const codePromptPattern = /enter.*code|authorization.*code|paste.*code|auth.*code/i;
+    let urlOpened = false;
+
+    const processLine = (line: string): void => {
+      if (!urlOpened && this.openExternal) {
+        const match = line.match(urlPattern);
+        if (match) {
+          urlOpened = true;
+          this.emit({ type: "toast", level: "info", message: "Opening Claude sign-in in your browser." });
+          void this.openExternal(match[0]);
+        }
+      }
+      if (codePromptPattern.test(line)) {
+        this.emit({ type: "auth.claude.codePrompt", prompt: line.trim() });
+      }
+    };
+
+    readline.createInterface({ input: child.stdout }).on("line", processLine);
+    readline.createInterface({ input: child.stderr }).on("line", processLine);
 
     await new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
         child.kill();
+        this.pendingLoginStdin = null;
         reject(new Error("Claude sign-in timed out. Try again."));
       }, 120000);
 
       child.on("exit", (code) => {
         clearTimeout(timeout);
+        this.pendingLoginStdin = null;
         if (code === 0) {
           resolve();
         } else {
@@ -657,6 +920,7 @@ export class ClaudeService {
 
       child.on("error", (err) => {
         clearTimeout(timeout);
+        this.pendingLoginStdin = null;
         reject(err);
       });
     });
@@ -670,6 +934,14 @@ export class ClaudeService {
     }
     this.emit({ type: "auth.claude", status });
     return status;
+  }
+
+  submitLoginCode(code: string): void {
+    if (this.pendingLoginStdin) {
+      this.pendingLoginStdin.write(code.trim() + "\n");
+      this.pendingLoginStdin.end();
+      this.pendingLoginStdin = null;
+    }
   }
 
   async logout(settings: Settings): Promise<ClaudeAuthStatus> {
@@ -702,6 +974,7 @@ export class ClaudeService {
       const args = buildClaudePrintArgs({
         prompt,
         model,
+        settingsArg: buildClaudeSettingsArg(settings.advancedDefaults.reasoningEffort ?? "high"),
         maxTurns: 5,
       });
 
@@ -710,6 +983,9 @@ export class ClaudeService {
         env: commandEnv,
         stdio: ["pipe", "pipe", "pipe"],
       });
+
+      // Close stdin immediately — runOneShot never writes to it.
+      child.stdin.end();
 
       const chunks: string[] = [];
       let stderr = "";
@@ -725,7 +1001,9 @@ export class ClaudeService {
       child.on("exit", (code) => {
         try {
           if (code !== 0) {
-            throw new Error(this.extractErrorMessage(chunks, stderr) ?? "Claude could not complete the request.");
+            const msg = this.extractErrorMessage(chunks, stderr) ?? "Claude could not complete the request.";
+            console.error("[claude] runOneShot failed (exit code %d): %s", code, msg);
+            throw new Error(msg);
           }
 
           const finalText = this.extractFinalResult(chunks);
@@ -736,6 +1014,7 @@ export class ClaudeService {
       });
 
       child.on("error", (err) => {
+        console.error("[claude] runOneShot spawn error:", err.message);
         reject(err);
       });
     });
@@ -759,6 +1038,8 @@ export class ClaudeService {
       planningMode: input.planningMode,
       autoApprove: input.autoApprove,
       contextPaths: [...input.contextPaths],
+      skillInstructions: input.skillInstructions ?? null,
+      coreDetailsContext: input.coreDetailsContext ?? null,
       status: "planning",
       thinkingStatus: "in_progress",
       planningStatus: "in_progress",
@@ -780,7 +1061,7 @@ export class ClaudeService {
     this.syncDraft(draft);
 
     return new Promise<PlanDraft>((resolve, reject) => {
-      const prompt = buildPlanningPrompt(project, input.prompt, input.contextPaths);
+      const prompt = buildPlanningPrompt(project, input.prompt, input.contextPaths, input.skillInstructions ?? null, input.coreDetailsContext ?? null);
       const args = buildClaudePrintArgs({
         prompt,
         model: input.claudeModel,
@@ -981,6 +1262,22 @@ export class ClaudeService {
         message?: { content?: unknown } | null;
       };
       const text = extractClaudeEventText(event);
+
+      // Skip non-content events (init, rate limits, etc.)
+      if (event.type === "system" || event.type === "rate_limit_event") {
+        return;
+      }
+
+      // Log errors surfaced in the stream
+      if (event.type === "error") {
+        const errorText = text || (typeof event.content === "string" ? event.content : "");
+        if (errorText) {
+          draft.explanation = mergeStreamingExplanation(draft.explanation, `[Claude: ${errorText}]`);
+          this.syncDraft(draft);
+        }
+        return;
+      }
+
       if (event.type === "assistant" && text) {
         draft.explanation = mergeStreamingExplanation(draft.explanation, text);
         if (draft.status === "planning") {
@@ -1007,7 +1304,12 @@ export class ClaudeService {
         }
       }
     } catch {
-      // Not JSON or unexpected format — ignore
+      // Non-JSON line — check for plain-text error messages from the CLI
+      const trimmed = line.trim();
+      if (trimmed && /^(error:|Error:|FATAL|claude:)/i.test(trimmed)) {
+        draft.explanation = mergeStreamingExplanation(draft.explanation, `[Claude CLI: ${trimmed}]`);
+        this.syncDraft(draft);
+      }
     }
   }
 
@@ -1078,11 +1380,13 @@ export class ClaudeService {
       return pathBinary;
     }
 
-    // Check common npm global locations
+    // Check common install locations
     const candidates = [
       "/usr/local/bin/claude",
       `${process.env.HOME}/.local/bin/claude`,
       `${process.env.HOME}/.npm-global/bin/claude`,
+      `${process.env.HOME}/.claude/local/bin/claude`,
+      `${process.env.HOME}/.claude/bin/claude`,
     ];
     for (const candidate of candidates) {
       if (await this.isExecutable(candidate)) {
@@ -1151,6 +1455,20 @@ export class ClaudeService {
     }
   }
 
+  private async readCliAuthMetadata(binaryPath: string): Promise<ClaudeCliAuthMetadata | null> {
+    const result = await execCommand(`"${binaryPath}" auth status`, process.cwd());
+    const output = `${result.stdout}\n${result.stderr}`.trim();
+    if (!output) {
+      return null;
+    }
+
+    try {
+      return parseClaudeCliAuthMetadata(output);
+    } catch {
+      return null;
+    }
+  }
+
   private async readCliFeatures(binaryPath: string): Promise<ClaudeCliFeatures | null> {
     const helpResult = await execCommand(`"${binaryPath}" --help`, process.cwd());
     const helpText = `${helpResult.stdout}\n${helpResult.stderr}`.trim();
@@ -1159,6 +1477,22 @@ export class ClaudeService {
     }
 
     return parseClaudeCliFeatures(helpText);
+  }
+
+  private async readUsageWindows(binaryPath: string): Promise<ClaudeUsageWindowData[] | null> {
+    try {
+      const withTimeout = <T>(p: Promise<T>, ms: number) =>
+        Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))]);
+      const result = await withTimeout(
+        execCommand(`"${binaryPath}" -p "/status" --print --max-turns 1`, process.cwd()),
+        10_000,
+      );
+      const text = `${result.stdout}\n${result.stderr}`.trim();
+      if (!text) return null;
+      return parseClaudeUsageWindows(text);
+    } catch {
+      return null;
+    }
   }
 
   private async readStatsCache(): Promise<ClaudeStatsCache | null> {

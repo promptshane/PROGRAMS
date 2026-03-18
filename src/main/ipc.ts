@@ -3,6 +3,7 @@ import { dialog, ipcMain, shell } from "electron";
 import { isSubPath } from "@main/utils/fs";
 import type { ProgramsBackend } from "@main/backend";
 import type {
+  AddTodoInput,
   AgentAttachMaterialsInput,
   AgentChatInput,
   AgentConfirmStageInput,
@@ -13,23 +14,41 @@ import type {
   AgentSubmitTodosInput,
   AgentUpdateScratchpadInput,
   ApprovePlanInput,
+  AttachSkillInput,
+  AttachVibeInput,
+  ConfirmAgentDataInput,
+  ConvertSkillInput,
   CoreDetailsChatInput,
   AgentSuggestUpdateInput,
   AgentApplyCoreDetailsInput,
+  DirectorChatInput,
+  DirectorFocusMode,
+  DirectorId,
+  SlackChatInput,
   DirectoryPickMode,
+  DownloadSkillInput,
+  InstallSkillCatalogInput,
   GenerateFlowchartInput,
   GenerateProjectOutlineReportInput,
+  GitSyncInput,
+  ListTodosInput,
   PlanningChatInput,
   ProjectAttachInput,
   ProjectCreateInput,
   ProjectEnableSyncInput,
+  RemoveVibeInput,
   RenameProjectInput,
   ResolveDroppedContextPathsInput,
   RetrySyncInput,
+  RouteUpdateToProgrammingInput,
+  RunValidationInput,
   SavePlannedUpdateInput,
+  SetValidationFrequencyInput,
   SettingsUpdateInput,
   StartPlanInput,
+  PlaywrightRunInput,
   UpdateProjectInput,
+  UpdateTodosInput,
   WriteProjectEnvFileInput,
 } from "@shared/types";
 
@@ -53,6 +72,8 @@ export const registerIpc = (backend: ProgramsBackend): void => {
   ipcMain.handle("auth.claude.status", () => backend.getClaudeStatus());
   ipcMain.handle("auth.claude.login", () => backend.loginClaude());
   ipcMain.handle("auth.claude.logout", () => backend.logoutClaude());
+  ipcMain.handle("auth.claude.test", () => backend.testClaudeConnection());
+  ipcMain.handle("auth.claude.submitLoginCode", (_event, code: string) => backend.submitClaudeLoginCode(code));
 
   ipcMain.handle("auth.github.status", () => backend.getGitHubStatus());
   ipcMain.handle("auth.github.inspectAttachPath", (_event, localPath: string) => backend.inspectAttachPath(localPath));
@@ -127,6 +148,8 @@ export const registerIpc = (backend: ProgramsBackend): void => {
     backend.agentSuggestUpdate(input));
   ipcMain.handle("agents.applyCoreDetails", (_event, input: AgentApplyCoreDetailsInput) =>
     backend.agentApplyCoreDetails(input));
+  ipcMain.handle("agents.confirmCoreDetail", (_event, projectId: string, field: "function" | "thesis" | "core_pillars" | "full_flow") =>
+    backend.confirmCoreDetail(projectId, field));
   ipcMain.handle("agents.processTodosFromProgram", (_event, input: AgentProcessTodosInput) =>
     backend.agentProcessTodosFromProgram(input));
 
@@ -136,10 +159,61 @@ export const registerIpc = (backend: ProgramsBackend): void => {
   ipcMain.handle("agents.acceptCascade", (_event, input: import("@shared/types").AgentAcceptCascadeInput) =>
     backend.agentAcceptCascade(input));
 
-  // Home scratchpad
+  // Director system
+  ipcMain.handle("directors.chat", (_event, input: DirectorChatInput) =>
+    backend.directorChat(input));
+  ipcMain.handle("slack.chat", (_event, input: SlackChatInput) =>
+    backend.slackChat(input));
+  ipcMain.handle("directors.setFocusMode", (_event, projectId: string, directorId: DirectorId, focusMode: DirectorFocusMode) =>
+    backend.setDirectorFocusMode(projectId, directorId, focusMode));
+  ipcMain.handle("directors.getProgress", (_event, projectId: string) =>
+    backend.deriveProjectCategory(projectId));
+  ipcMain.handle("projects.deriveCategory", (_event, projectId: string) =>
+    backend.deriveProjectCategory(projectId));
+
+  // Legacy multi-agent alias
+  ipcMain.handle("agents.multiChat", (_event, input: DirectorChatInput) =>
+    backend.directorChat(input));
+  ipcMain.handle("agents.attachVibe", (_event, input: AttachVibeInput) =>
+    backend.attachVibeToCorePillar(input));
+  ipcMain.handle("agents.removeVibe", (_event, input: RemoveVibeInput) =>
+    backend.removeVibeFromCorePillar(input));
+  ipcMain.handle("agents.confirmData", (_event, input: ConfirmAgentDataInput) =>
+    backend.confirmAgentData(input));
+  ipcMain.handle("agents.routeUpdate", (_event, input: RouteUpdateToProgrammingInput) =>
+    backend.routeUpdateToProgramming(input));
+  ipcMain.handle("agents.runValidation", (_event, input: RunValidationInput) =>
+    backend.runValidation(input));
+  ipcMain.handle("agents.setValidationFrequency", (_event, input: SetValidationFrequencyInput) =>
+    backend.setValidationFrequency(input));
+
+  // Home scratchpad (legacy — delegates to unified todos)
   ipcMain.handle("home.readScratchpad", () => backend.readHomeScratchpad());
   ipcMain.handle("home.updateScratchpad", (_event, input: { items: import("@shared/types").HomeScratchpadItem[] }) =>
     backend.updateHomeScratchpad(input));
+
+  // Unified To-dos
+  ipcMain.handle("todos.list", (_event, input: ListTodosInput) => backend.listTodos(input));
+  ipcMain.handle("todos.add", (_event, input: AddTodoInput) => backend.addTodo(input));
+  ipcMain.handle("todos.remove", (_event, id: string) => backend.removeTodo(id));
+  ipcMain.handle("todos.update", (_event, input: UpdateTodosInput) => backend.updateTodos(input));
+  ipcMain.handle("todos.markProcessed", (_event, id: string) => backend.markTodoProcessed(id));
+
+  // Git sync
+  ipcMain.handle("projects.syncGitHub", (_event, input: GitSyncInput) => backend.syncProjectToGitHub(input));
+  ipcMain.handle("projects.diffStats", (_event, projectId: string) => backend.readProjectDiffStats(projectId));
+
+  // Skills
+  ipcMain.handle("skills.list", () => backend.listSkills());
+  ipcMain.handle("skills.download", (_event, input: DownloadSkillInput) => backend.downloadSkill(input));
+  ipcMain.handle("skills.installCatalog", (_event, input: InstallSkillCatalogInput) => backend.installSkillCatalogItem(input));
+  ipcMain.handle("skills.convert", (_event, input: ConvertSkillInput) => backend.convertSkillToUniversal(input));
+  ipcMain.handle("skills.delete", (_event, id: string) => backend.deleteSkill(id));
+  ipcMain.handle("skills.read", (_event, id: string) => backend.readSkill(id));
+  ipcMain.handle("skills.runPlaywright", (_event, input: PlaywrightRunInput) => backend.runPlaywrightTest(input));
+
+  // Skill attachment
+  ipcMain.handle("projects.attachSkill", (_event, input: AttachSkillInput) => backend.attachSkillToProject(input));
 
   ipcMain.handle("system.pickMaterialFiles", async () => {
     const result = await dialog.showOpenDialog({

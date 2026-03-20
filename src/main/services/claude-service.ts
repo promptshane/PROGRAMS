@@ -23,6 +23,10 @@ import {
   parseClaudeLocalAuthMetadata,
 } from "@main/utils/claude-cli";
 import { execCommand, getCommandEnv } from "@main/utils/process";
+import {
+  buildClaudeOneShotSettingsArg,
+  resolveOneShotReasoningEffort,
+} from "@main/utils/one-shot-runtime";
 import type {
   ClaudeConnectionTestResult,
   ClaudeAuthStatus,
@@ -30,6 +34,7 @@ import type {
   PlanDraft,
   ProviderUsage,
   Project,
+  ReasoningEffort,
   Settings,
   StartPlanInput,
 } from "@shared/types";
@@ -337,24 +342,6 @@ ${FLOWCHART_PROMPT_RULES}
 - The commitMessage must be short and action-oriented.
 `.trim();
 };
-
-const mapClaudeEffortLevel = (reasoningEffort: PlanDraft["reasoningEffort"]): "low" | "medium" | "high" => {
-  switch (reasoningEffort) {
-    case "low":
-      return "low";
-    case "medium":
-      return "medium";
-    case "high":
-      return "high";
-    case "xhigh":
-      return "high";
-  }
-};
-
-const buildClaudeSettingsArg = (reasoningEffort: PlanDraft["reasoningEffort"]): string =>
-  JSON.stringify({
-    effortLevel: mapClaudeEffortLevel(reasoningEffort),
-  });
 
 const parseNumstatDiffStats = (stdout: string): PlanDraft["diffStats"] => {
   let added = 0;
@@ -964,18 +951,32 @@ export class ClaudeService {
     settings: Settings,
     prompt: string,
     model: string,
-    _outputSchema?: Record<string, unknown>,
+    outputSchema?: Record<string, unknown>,
+    reasoningEffortOverride?: ReasoningEffort,
+    options?: { allowedTools?: string; maxTurns?: number },
   ): Promise<string> {
     const status = await this.requireReadyStatus(settings);
     const commandEnv = await getCommandEnv();
     const binaryPath = status.binaryPath!;
+    const reasoningEffort = resolveOneShotReasoningEffort(
+      settings.advancedDefaults.reasoningEffort,
+      reasoningEffortOverride,
+    );
+
+    // If an output schema is provided, inject it into the prompt so Claude
+    // returns structured JSON (the CLI has no --output-schema flag).
+    let finalPrompt = prompt;
+    if (outputSchema) {
+      finalPrompt += `\n\nIMPORTANT: You MUST respond with ONLY a valid JSON object matching this exact schema. No markdown, no explanation, no code fences — just the raw JSON object.\n\nRequired JSON schema:\n${JSON.stringify(outputSchema, null, 2)}`;
+    }
 
     return new Promise<string>((resolve, reject) => {
       const args = buildClaudePrintArgs({
-        prompt,
+        prompt: finalPrompt,
         model,
-        settingsArg: buildClaudeSettingsArg(settings.advancedDefaults.reasoningEffort ?? "high"),
-        maxTurns: 5,
+        settingsArg: buildClaudeOneShotSettingsArg(reasoningEffort),
+        maxTurns: options?.maxTurns ?? 5,
+        allowedTools: options?.allowedTools ?? null,
       });
 
       const child = spawn(binaryPath, args, {
@@ -1065,7 +1066,7 @@ export class ClaudeService {
       const args = buildClaudePrintArgs({
         prompt,
         model: input.claudeModel,
-        settingsArg: buildClaudeSettingsArg(input.reasoningEffort),
+        settingsArg: buildClaudeOneShotSettingsArg(input.reasoningEffort),
         maxTurns: 5,
       });
 
@@ -1141,7 +1142,7 @@ export class ClaudeService {
       const args = buildClaudePrintArgs({
         prompt,
         model: draft.claudeModel,
-        settingsArg: buildClaudeSettingsArg(draft.reasoningEffort),
+        settingsArg: buildClaudeOneShotSettingsArg(draft.reasoningEffort),
         maxTurns: 20,
         allowedTools: "Edit,Write,Bash(npm install:*),Bash(npx:*),Read,Glob,Grep",
       });
@@ -1361,6 +1362,21 @@ export class ClaudeService {
         const raw = chunks[i].trim();
         if (raw && isLikelyJsonResponse(raw)) {
           return raw;
+        }
+      }
+    }
+
+    // Last resort: forward-scan for any raw JSON object in the chunks
+    for (const chunk of chunks) {
+      const trimmed = chunk.trim();
+      const jsonStart = trimmed.indexOf("{");
+      if (jsonStart >= 0) {
+        const candidate = trimmed.slice(jsonStart);
+        try {
+          JSON.parse(candidate);
+          return candidate;
+        } catch {
+          // not valid JSON, continue
         }
       }
     }

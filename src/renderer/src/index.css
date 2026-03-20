@@ -259,11 +259,23 @@ code {
 .shellSidebarFooter {
   margin-top: auto;
   display: grid;
+  gap: 8px;
+  width: 100%;
+  padding-top: 8px;
+}
+
+.shellSidebarFooterUpdateRow {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+}
+
+.shellSidebarFooterActions {
+  display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: stretch;
   gap: 8px;
   width: 100%;
-  padding-top: 8px;
 }
 
 .sidebarFooterButton {
@@ -312,6 +324,10 @@ code {
 
 .sidebarFooterButton-usage {
   margin-left: 0;
+}
+
+.sidebarFooterButton-update {
+  width: min(132px, 100%);
 }
 
 .sidebarNavButton {
@@ -1298,6 +1314,130 @@ code {
   margin-top: auto;
 }
 
+.pendingApprovalsPanel {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--panel-soft) 88%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-strong) 72%, transparent);
+  box-shadow: var(--shadow-sm);
+}
+
+.pendingApprovalsHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pendingApprovalsHeader h4 {
+  margin: 0;
+  font-size: 0.9rem;
+  letter-spacing: -0.02em;
+}
+
+.pendingApprovalsHeader p {
+  margin: 4px 0 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.pendingApprovalsCount {
+  min-width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel-strong));
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border-strong));
+  color: var(--text);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.pendingApprovalsList {
+  display: grid;
+  gap: 10px;
+  max-height: min(340px, 42vh);
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.pendingApprovalCard {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--panel-strong) 92%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 84%, transparent);
+}
+
+.pendingApprovalCardHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pendingApprovalTitle {
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.pendingApprovalMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-top: 4px;
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.pendingApprovalCopy {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+.pendingApprovalEditor {
+  display: grid;
+  gap: 10px;
+}
+
+.pendingApprovalEditor label {
+  display: grid;
+  gap: 6px;
+  font-size: 0.76rem;
+  color: var(--muted);
+}
+
+.pendingApprovalPayload {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  color: var(--muted);
+  font-size: 0.73rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+}
+
+.pendingApprovalActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .updateStatusShelf {
   display: grid;
   gap: 12px;
@@ -2064,6 +2204,19 @@ select {
   margin-bottom: 18px;
 }
 
+.modalHeaderLead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.modalHeaderLeading {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
 .modalTabs,
 .formGrid {
   display: grid;
@@ -2635,28 +2788,6 @@ select {
   padding-top: 72px;
 }
 
-.homeTopBar {
-  position: fixed;
-  top: 10px;
-  right: 18px;
-  z-index: 42;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.homeUpdateButton {
-  min-height: 30px;
-  padding: 0 12px;
-  border: none;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--text) 8%, transparent);
-  box-shadow: none;
-  font-size: 0.83rem;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-}
-
 .projectTopBar {
   display: flex;
   justify-content: flex-start;
@@ -2753,14 +2884,31 @@ select {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.26), 0 16px 36px rgba(0, 0, 0, 0.24);
 }
 
+.agentLandingCard:hover .projectTileGradient,
+.agentLandingCard:focus-visible .projectTileGradient {
+  border-color: transparent;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.26), 0 16px 36px rgba(0, 0, 0, 0.24);
+}
+
 .projectTile:hover::before,
 .projectTile:focus-within::before {
   opacity: 1;
   box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.82), inset 0 0 28px rgba(255, 255, 255, 0.08);
 }
 
+.agentLandingCard:hover .projectTileGradient::before,
+.agentLandingCard:focus-visible .projectTileGradient::before {
+  opacity: 1;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.82), inset 0 0 28px rgba(255, 255, 255, 0.08);
+}
+
 .projectTile:hover::after,
 .projectTile:focus-within::after {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.agentLandingCard:hover .projectTileGradient::after,
+.agentLandingCard:focus-visible .projectTileGradient::after {
   background: rgba(255, 255, 255, 0.08);
 }
 
@@ -2976,6 +3124,67 @@ select {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   gap: 16px;
+}
+
+.usageProviderSection {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 18px;
+  padding: 20px;
+  border-radius: 22px;
+  background: var(--panel-soft);
+  border: 1px solid var(--border);
+}
+
+.usageProviderHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.usageProviderHeader h4 {
+  margin: 0;
+  font-size: 1.08rem;
+  letter-spacing: -0.03em;
+}
+
+.usageProviderHeader p {
+  margin: 6px 0 0;
+  color: var(--muted);
+}
+
+.usageProviderToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  width: fit-content;
+}
+
+.usageProviderOption {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+}
+
+.usageProviderOption.active {
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+  color: var(--text);
+}
+
+.usageProviderOption:disabled {
+  cursor: default;
+  opacity: 0.6;
 }
 
 .usageCard,
@@ -3427,11 +3636,6 @@ select {
     padding-bottom: 8px;
   }
 
-  .homeTopBar {
-    top: 10px;
-    right: 16px;
-  }
-
   .agentsTopBar {
     right: 16px;
   }
@@ -3507,6 +3711,8 @@ select {
   .formRow,
   .historyActions,
   .approvalActions,
+  .pendingApprovalCardHead,
+  .pendingApprovalActions,
   .setupCardFoot,
   .connectionRow,
   .detailsHeading,
@@ -3991,6 +4197,16 @@ select {
   gap: var(--conversation-viewport-gap);
 }
 
+.slackConversationViewportShell {
+  --conversation-viewport-gap: 0;
+}
+
+.conversationApprovalShelf {
+  flex-shrink: 0;
+  padding-top: calc(var(--conversation-toolbar-top) + var(--conversation-toolbar-height) + 10px);
+  padding-bottom: 8px;
+}
+
 .agentsTopBar {
   position: fixed;
   top: 8px;
@@ -4004,7 +4220,8 @@ select {
 }
 
 .slackTopBar {
-  align-items: flex-start;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .slackTopBarPrimary {
@@ -4020,11 +4237,40 @@ select {
   min-width: 12px;
 }
 
-.slackDetailsButton {
-  min-height: 30px;
+.slackTopBarButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  min-height: 28px;
   padding: 0 12px;
-  white-space: nowrap;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  color: var(--text);
+  box-sizing: border-box;
+  cursor: pointer;
   flex-shrink: 0;
+  font-size: 0.8rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: none;
+  transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
+}
+
+.slackTopBarButton:hover {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.slackTopBarButton:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--text) 30%, transparent);
+  outline-offset: 2px;
+}
+
+.slackDetailsButton {
+  padding: 0 14px;
 }
 
 .chatViewportDivider {
@@ -4034,33 +4280,165 @@ select {
 .agentSectionsScroll {
   flex: 1;
   overflow-y: auto;
-  padding: 4px 0 20px;
+  padding: 8px 0 24px;
+  display: grid;
+  gap: 6px;
 }
 
-.agentSection {
-  padding: 0 20px 12px;
-  margin-bottom: 12px;
-  border-bottom: 1px solid var(--border);
+.agentDepartmentSection {
+  padding: 0 20px 18px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+  display: grid;
+  gap: 14px;
 }
 
-.agentSection:last-child {
+.agentDepartmentSection:last-child {
   border-bottom: none;
 }
 
-.agentSectionLabel {
-  font-size: 0.7rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--text-muted);
-  margin: 0 0 8px 4px;
+.agentDepartmentHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
-.agentTileGrid {
+.agentDepartmentTitle {
+  margin: 0;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+
+.agentDepartmentContent {
+  width: min(100%, 340px);
+}
+
+.agentLandingCard {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 180px));
-  gap: 18px;
+  gap: 10px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  border-radius: 30px;
+  background: none;
+  text-align: left;
+  color: inherit;
+}
+
+.agentLandingCard--interactive {
+  cursor: pointer;
+}
+
+.agentLandingCard--static {
+  pointer-events: none;
+}
+
+.agentLandingCard--interactive:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--text) 28%, transparent);
+  outline-offset: 4px;
+  border-radius: 30px;
+}
+
+.agentLandingCard--disabled {
+  opacity: 0.42;
+  filter: grayscale(0.55);
+  pointer-events: none;
+}
+
+.agentLandingTile {
+  aspect-ratio: 1;
+  min-width: 0;
+  width: 100%;
+}
+
+.agentLandingTileChrome {
+  justify-content: flex-start;
+  padding: 16px;
+}
+
+.agentLandingTileTopRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.agentLandingAvatar {
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.26);
+  background: rgba(255, 255, 255, 0.16);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 8px 18px rgba(0, 0, 0, 0.16);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: #f8fbfd;
+  text-transform: uppercase;
+}
+
+.agentLandingName {
+  min-width: 0;
+  font-size: 0.98rem;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.03em;
+  color: #f8fbfd;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+  overflow-wrap: anywhere;
+}
+
+.agentLandingCaption {
+  display: grid;
+  gap: 2px;
+  padding-left: 4px;
+}
+
+.agentLandingRole {
+  font-size: 0.76rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+
+.agentLandingReminder {
+  font-size: 0.81rem;
+  line-height: 1.35;
+  color: var(--muted);
+}
+
+.agentProgrammingLane {
+  display: grid;
+  grid-template-columns: minmax(0, 1.08fr) minmax(0, 0.92fr);
+  gap: 16px;
+  width: min(100%, 724px);
+}
+
+.agentProgrammingSubAgentStack {
+  display: grid;
+  gap: 12px;
   align-content: start;
+}
+
+.agentLandingCard--muted .agentLandingAvatar {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.agentLandingCard--muted .agentLandingName {
+  opacity: 0.95;
+}
+
+.agentLandingCard--muted .agentLandingRole {
+  opacity: 0.92;
+}
+
+.agentLandingCard--muted .agentLandingReminder {
+  color: color-mix(in srgb, var(--muted) 90%, var(--text) 10%);
 }
 
 .agentTileDisabled {
@@ -4208,6 +4586,10 @@ select {
   scroll-padding-bottom: 8px;
 }
 
+.slackChatScroll {
+  scroll-padding-top: 0;
+}
+
 .agentComposerFooter {
   padding: 0;
   flex-shrink: 0;
@@ -4216,6 +4598,40 @@ select {
 .slackComposerFooter {
   padding: 0;
   flex-shrink: 0;
+}
+
+.slackComposerShellCompact {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 24px;
+}
+
+.slackComposerInputCompact {
+  min-height: 34px;
+  padding: 9px 14px 5px;
+  line-height: 1.3;
+}
+
+.slackComposerShellCompact .composerControlRow {
+  flex: 0 0 auto;
+  width: auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0;
+}
+
+.slackComposerShellCompact .composerControlCluster {
+  display: none;
+}
+
+.slackComposerShellCompact .composerSubmitButton {
+  flex: 0 0 44px;
+  width: 44px;
+  min-width: 44px;
+  height: 44px;
+  margin-top: 0;
 }
 
 .slackComposerBar {
@@ -4804,6 +5220,221 @@ select {
   overflow: hidden;
 }
 
+.agentSummaryPanel {
+  margin: 8px 12px;
+  overflow: visible;
+}
+
+.agentSummaryGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 12px;
+}
+
+.agentSummaryCard {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel-soft) 84%, var(--panel));
+}
+
+.agentSummaryHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.agentSummaryEyebrow {
+  display: inline-flex;
+  font-size: 0.67rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.agentSummaryDescription {
+  margin: 0;
+  font-size: 0.86rem;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.agentRuntimeMeta {
+  display: grid;
+  gap: 6px;
+}
+
+.agentRuntimeMetaRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 0.8rem;
+  color: var(--text);
+}
+
+.agentRuntimeField {
+  display: grid;
+  gap: 6px;
+}
+
+.agentRuntimeField select {
+  width: 100%;
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--button-secondary);
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-family: inherit;
+}
+
+.agentRuntimeBadgeRow {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.agentRuntimeBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.agentSummaryDetails {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.02);
+  overflow: hidden;
+}
+
+.agentSummaryDetails summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+  list-style: none;
+}
+
+.agentSummaryDetails summary::-webkit-details-marker {
+  display: none;
+}
+
+.agentSummaryDetails summary::after {
+  content: "+";
+  color: var(--text-muted);
+  font-size: 0.95rem;
+}
+
+.agentSummaryDetails[open] summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.agentSummaryDetails[open] summary::after {
+  content: "\2212";
+}
+
+.agentSummaryDetailsBody {
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px 12px;
+}
+
+.agentSummaryFlowSection {
+  display: grid;
+  gap: 6px;
+}
+
+.agentFlowPills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.agentFlowPill {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 0.72rem;
+  line-height: 1.3;
+}
+
+.agentFlowPill-button {
+  cursor: pointer;
+  font: inherit;
+  transition: transform 140ms ease, background 140ms ease;
+}
+
+.agentFlowPill-button:hover {
+  transform: translateY(-1px);
+  background: color-mix(in srgb, var(--accent) 14%, var(--panel));
+}
+
+.agentSummaryLists {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.agentSummaryList {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.agentSummaryPanel .helperText {
+  margin: 0;
+}
+
+@media (max-width: 960px) {
+  .agentDepartmentSection {
+    padding-inline: 16px;
+  }
+
+  .agentDepartmentContent,
+  .agentProgrammingLane {
+    width: 100%;
+  }
+
+  .agentProgrammingLane {
+    grid-template-columns: 1fr;
+  }
+
+  .agentSummaryGrid,
+  .agentSummaryLists {
+    grid-template-columns: 1fr;
+  }
+
+  .usageProviderHeader {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
 .agentInfoTabs {
   display: flex;
   flex-shrink: 0;
@@ -5177,6 +5808,42 @@ select {
   30% { transform: translateY(-6px); opacity: 1; }
 }
 
+.agentConvoMessage--working {
+  animation: workingPulse 2s ease-in-out infinite;
+}
+.agentConvoMessage--working .agentConvoContent {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+}
+@keyframes workingPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.8; }
+}
+
+/* --- Slack Dev Mode --- */
+.slackDevButton--active {
+  background: color-mix(in srgb, #ef4444 12%, transparent);
+  border-color: #ef4444;
+  color: #ef4444;
+}
+.slackMessageDeleteSelected {
+  outline: 2px solid #ef4444;
+  outline-offset: -2px;
+  opacity: 0.7;
+}
+.slackDeleteSelectedButton {
+  background: #ef4444;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 6px 14px;
+  font-size: 0.78rem;
+  cursor: pointer;
+  margin: 8px auto;
+  display: block;
+}
+
 /* --- Slack Message Timestamps --- */
 .slackMessageTimestamp {
   font-size: 0.625rem;
@@ -5205,6 +5872,32 @@ select {
   margin-top: 4px;
 }
 
+.slackDaySeparator {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin: 8px 0 2px;
+  color: color-mix(in srgb, var(--text-muted, #888) 88%, transparent);
+  opacity: 0.9;
+}
+
+.slackDaySeparator::before,
+.slackDaySeparator::after {
+  content: "";
+  flex: 1 1 auto;
+  height: 1px;
+  background: color-mix(in srgb, var(--border-strong) 34%, transparent);
+}
+
+.slackDaySeparatorLabel {
+  flex: 0 0 auto;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
 /* --- Slack Message Click Highlight --- */
 .slackMessageSelected {
   outline: 2px solid rgba(255, 255, 255, 0.8);
@@ -5219,24 +5912,36 @@ select {
   overflow-x: auto;
   flex: 1;
   min-width: 0;
-  padding-bottom: 2px;
+  padding-bottom: 0;
 }
 .slackDirectorChip {
-  font-size: 0.7rem;
-  padding: 2px 8px;
-  border-radius: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+  min-height: 28px;
+  font-size: 0.8rem;
+  padding: 0 8px;
+  border-radius: 9px;
   border: 1px solid;
   background: none;
   cursor: pointer;
   white-space: nowrap;
-  transition: background 0.15s;
+  line-height: 1;
+  box-sizing: border-box;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
 .slackDirectorChip:hover {
   background: rgba(255, 255, 255, 0.06);
 }
+.slackDirectorChip--current {
+  background: color-mix(in srgb, currentColor 14%, transparent);
+}
+.slackDirectorChip--current:hover {
+  background: color-mix(in srgb, currentColor 18%, transparent);
+}
 .slackDirectorChip--alerted {
   background: rgba(255, 255, 255, 0.12);
-  font-weight: 600;
 }
 
 /* --- Slack Details Modal --- */
@@ -5244,6 +5949,10 @@ select {
   display: grid;
   gap: 18px;
   padding: 12px 0 24px;
+}
+
+.slackDetailsModalContent-static {
+  overflow-y: hidden;
 }
 
 .slackDetailsSection {
@@ -5264,6 +5973,33 @@ select {
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.slackDetailsSectionToggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: pointer;
+  text-align: left;
+}
+
+.slackDetailsSectionToggleLabel {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.slackDetailsSectionToggleHint {
+  font-size: 0.78rem;
+  font-weight: 600;
   color: var(--text-muted);
 }
 
@@ -5315,6 +6051,98 @@ select {
   display: grid;
   gap: 10px;
 }
+
+/* --- Pillar Status Dots & Assumptions --- */
+.pillarStatusDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+.pillarStatusDot--tbd { background: #EAB308; }
+.pillarStatusDot--hard-stop { background: #DC2626; }
+.pillarAssumptionText {
+  font-size: 12px;
+  margin-top: 2px;
+  color: var(--muted);
+  font-style: italic;
+}
+.pillarAssumptionText--dan { color: #DC2626; }
+.pillarStatusBadge { font-size: 10px; padding: 1px 6px; border-radius: 4px; margin-left: 8px; }
+.pillarStatusBadge--assumed { background: #FEF3C7; color: #92400E; }
+
+/* --- Director State Sections --- */
+.directorStateSection {
+  padding: 8px 12px;
+  background: var(--panel);
+  border-radius: 8px;
+  margin-bottom: 8px;
+}
+.directorStateLabel {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+.directorStateContent {
+  font-size: 13px;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+
+/* --- Sub-Agent Cards --- */
+.subAgentCard {
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin-bottom: 4px;
+}
+.subAgentModelBadge {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+.subAgentModelBadge--mini { background: #E0F2FE; color: #0369A1; }
+.subAgentModelBadge--large { background: #FEF3C7; color: #92400E; }
+
+/* --- Refresh Project Modal --- */
+.refreshModal { padding: 24px; max-width: 400px; }
+.refreshToggleGroup { display: flex; gap: 8px; margin-bottom: 16px; }
+.refreshToggleBtn {
+  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.refreshToggleBtn:hover { border-color: var(--accent); }
+.refreshToggleBtn--active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.refreshButton {
+  width: 100%;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--button-primary);
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+  transition: opacity 140ms ease;
+}
+.refreshButton:hover { opacity: 0.9; }
+.refreshButton:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .slackDetailsProgressGrid {
   display: grid;
@@ -5403,11 +6231,15 @@ select {
 }
 
 .slackDetailsAgentFlow {
+  display: grid;
+  gap: 14px;
+  align-content: start;
   justify-items: center;
 }
 
 .slackDetailsAgentNode {
   --slack-agent-color: var(--accent);
+  appearance: none;
   width: min(360px, 100%);
   padding: 14px 18px;
   border-radius: 16px;
@@ -5417,6 +6249,19 @@ select {
   gap: 4px;
   justify-items: center;
   text-align: center;
+  cursor: pointer;
+  font: inherit;
+  transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+
+.slackDetailsAgentNode:hover {
+  transform: translateY(-1px);
+  background: color-mix(in srgb, var(--slack-agent-color) 18%, var(--panel));
+}
+
+.slackDetailsAgentNode:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--slack-agent-color) 82%, white 18%);
+  outline-offset: 2px;
 }
 
 .slackDetailsAgentRole {
@@ -5464,20 +6309,90 @@ select {
 }
 
 /* --- Slack Handoff Banner --- */
-.slackHandoffBanner {
+/* --- Slack System Messages (handoff transitions) --- */
+.slackSystemMessage {
+  font-size: 0.75rem;
+  color: var(--muted, #888);
+  text-align: center;
+  padding: 6px 16px;
+  margin: 8px 0;
+  font-style: italic;
+  opacity: 0.7;
+}
+
+/* --- Slack View Research Button --- */
+.slackViewMoreButton {
+  display: inline-block;
+  font-size: 0.65rem;
+  padding: 2px 8px;
+  margin-top: 6px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.1);
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.slackViewMoreButton:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* --- Slack Research Panel --- */
+.slackResearchPanel {
+  width: 380px;
+  min-width: 380px;
+  height: 100%;
+  background: var(--panel, #1e1e1e);
+  border-left: 1px solid var(--border, #333);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+.slackResearchPanelHeader {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 16px;
-  margin: 8px 16px 0;
-  border-radius: var(--radius-sm, 8px);
-  background: color-mix(in srgb, var(--panel-soft, #2a2a2a) 80%, transparent);
-  border: 1px solid var(--border-strong, #444);
-  font-size: 0.8rem;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border, #333);
 }
-.slackHandoffBanner p {
-  flex: 1;
+.slackResearchPanelHeader h3 {
   margin: 0;
+  font-size: 0.9rem;
+  color: #0E7490;
+}
+.slackResearchPanelBody {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+.slackResearchPanelBody h4 {
+  margin: 0 0 4px;
+  font-size: 0.7rem;
+  color: var(--muted, #888);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.slackResearchPanelBody section {
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border, #333);
+}
+.slackResearchPanelBody section:last-child {
+  border-bottom: none;
+}
+.slackResearchPanelBody p {
+  margin: 0;
+}
+
+.slackUpdateList {
+  margin: 0;
+  padding-left: 18px;
+  list-style: disc;
+}
+.slackUpdateList li {
+  margin-bottom: 4px;
 }
 
 /* --- Slack Inline Code --- */
@@ -6498,25 +7413,68 @@ select {
 }
 
 .directorProfileCard {
+  --director-profile-color: var(--accent);
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  padding: 24px 32px;
+  width: min(440px, 100%);
+  margin: 0 auto;
+  padding: 24px 28px;
+  border-radius: 28px;
+  border: 1px solid color-mix(in srgb, var(--director-profile-color) 34%, var(--border));
+  background: color-mix(in srgb, var(--director-profile-color) 10%, var(--panel));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  text-align: center;
+}
+
+.directorProfilePanel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  justify-content: center;
+  overflow: hidden;
+  padding: 8px 0 20px;
+}
+
+.directorProfilePanel--scrollable {
+  overflow: auto;
+}
+
+.directorProfilePanel--static {
+  overflow: hidden;
+}
+
+.directorProfilePanelContent {
+  width: min(1080px, 100%);
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+
+.directorProfilePanelContent .agentInfoPanel {
+  margin: 0;
 }
 
 .directorProfileAvatar {
-  width: 80px;
-  height: 80px;
+  width: 96px;
+  height: 96px;
   border-radius: 50%;
-  border: 2px solid;
-  background: color-mix(in srgb, currentColor 10%, transparent);
+  border: 3px solid var(--director-profile-color);
+  background: color-mix(in srgb, var(--director-profile-color) 16%, transparent);
 }
 
 .directorProfileName {
-  font-size: 1.25rem;
-  font-weight: 600;
+  font-size: 1.35rem;
+  font-weight: 700;
   letter-spacing: 0.01em;
+}
+
+.directorProfileFunction {
+  padding: 6px 14px;
+  border-radius: 12px;
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
 }
 
 .agentPlaceholderNote {

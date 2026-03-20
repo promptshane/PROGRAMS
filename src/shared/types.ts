@@ -21,7 +21,7 @@ export interface ModelCatalog {
   updatedAt: string | null;
 }
 
-export const CODEX_MODEL_OPTIONS = ["gpt-5.4", "gpt-5.3-codex"] as const;
+export const CODEX_MODEL_OPTIONS = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"] as const;
 export const CLAUDE_MODEL_OPTIONS = ["sonnet", "opus"] as const;
 export const DEFAULT_MODEL_CATALOG: ModelCatalog = {
   codex: [
@@ -29,6 +29,11 @@ export const DEFAULT_MODEL_CATALOG: ModelCatalog = {
       id: "gpt-5.4",
       label: "GPT-5.4",
       detail: "Latest frontier agentic coding model.",
+    },
+    {
+      id: "gpt-5.4-mini",
+      label: "GPT-5.4 Mini",
+      detail: "Smaller frontier agentic coding model.",
     },
     {
       id: "gpt-5.3-codex",
@@ -84,6 +89,13 @@ export type SetupActionKind =
   | "none";
 
 export type DirectoryPickMode = "parent" | "attach";
+
+export interface DirectorSettingsOverride {
+  model?: CodexModel;
+  claudeModel?: ClaudeModel;
+  reasoningEffort?: ReasoningEffort;
+  planningMode?: PlanningMode;
+}
 
 export interface AdvancedDefaults {
   provider: AiProvider;
@@ -656,14 +668,32 @@ export interface AgentChatMessage {
   role: "user" | "assistant";
   content: string;
   createdAt: string;
+  status?: "working" | "complete";
 }
+
+export type SlackMessageMetadata =
+  | {
+      type: "research-result";
+      researchPrompt: string;
+      generalSummary: string;
+      projectSummary: string;
+    }
+  | {
+      type: "refresh-update";
+      directorId: DirectorId;
+      same: string[];
+      updated: string[];
+      summary: string;
+    };
 
 export interface SlackChatMessage {
   id: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   directorId: DirectorId | null;
   content: string;
   createdAt: string;
+  status?: "working" | "complete";
+  metadata?: SlackMessageMetadata | null;
 }
 
 export interface ScratchpadItem {
@@ -730,6 +760,19 @@ export const DIRECTOR_COLORS: Record<DirectorId, string> = {
   "programming-director": "#A16207",
   "validation-director": "#5B21B6",
 };
+
+export function normalizeDirectorId(raw: string | null | undefined): DirectorId | null {
+  if (!raw) return null;
+  const trimmed = raw.trim();
+  if (trimmed in DIRECTOR_NAMES) return trimmed as DirectorId;
+  const lower = trimmed.toLowerCase();
+  for (const [id, name] of Object.entries(DIRECTOR_NAMES)) {
+    if (name.toLowerCase() === lower) return id as DirectorId;
+  }
+  const normalized = lower.replace(/_/g, "-");
+  if (normalized in DIRECTOR_NAMES) return normalized as DirectorId;
+  return null;
+}
 
 /** @deprecated Use DIRECTOR_LABELS */
 export const AGENT_LABELS: Record<DirectorId, string> = DIRECTOR_LABELS;
@@ -808,6 +851,7 @@ export interface VersionUpdate {
   order: number;
   status: "pending" | "in_progress" | "completed" | "failed";
   dependencies: string[];
+  pillarIds: string[];
 }
 
 export interface ValidationResult {
@@ -839,6 +883,9 @@ export interface CorePillar {
   vibes: VibeAttachment[];
   description: string | null;
   connectedPillarIds: string[];
+  assumptionText: string | null;
+  assumptionSource: "user" | "dan" | null;
+  order: number;
 }
 
 export interface FlowStep {
@@ -850,6 +897,20 @@ export interface FlowStep {
 export interface AgentStageData {
   messages: AgentChatMessage[];
   confirmed: AgentStageConfirmation | null;
+}
+
+export interface DirectorStateSnapshot {
+  currentState: string | null;
+  idealState: string | null;
+  assumptions: string[];
+}
+
+export interface ShortHorizonContext {
+  currentTask: string | null;
+  lastResult: string | null;
+  lastFailureReason: string | null;
+  toddUpdateExplanation: string | null;
+  relevantPillarIds: string[];
 }
 
 export interface CascadeProposal {
@@ -866,6 +927,34 @@ export interface DynamicSubAgent {
   role: string;
   assignedUpdates: string[];
   conversation: AgentChatMessage[];
+  sourcePillarId: string | null;
+  departmentDirectorId: DirectorId | null;
+  modelTier: "mini" | "large";
+}
+
+export type PendingApprovalKind =
+  | "handoff"
+  | "internet-research"
+  | "codebase-scan"
+  | "store-data"
+  | "plan"
+  | "apply-pending-update"
+  | "agent-update"
+  | "validation";
+
+export type PendingApprovalStatus = "pending" | "later";
+
+export interface PendingApproval {
+  id: string;
+  kind: PendingApprovalKind;
+  status: PendingApprovalStatus;
+  requestedByDirectorId: DirectorId | null;
+  targetDirectorId: DirectorId | null;
+  summary: string;
+  draftMessage: string | null;
+  draftPayload: Record<string, unknown> | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface AgentSession {
@@ -878,6 +967,7 @@ export interface AgentSession {
   scratchpad: ScratchpadItem[];
   plannedUpdates: AgentPlannedUpdate[];
   corePillars: CorePillar[];
+  currentCorePillars: CorePillar[];
   coreDetailsChatHistory: AgentChatMessage[];
   attachedMaterials: string[];
   miscMaterials: string[];
@@ -898,10 +988,18 @@ export interface AgentSession {
   rdFocusMode: RdFocusMode | null;
   validationFocusMode: ValidationFocusMode | null;
   danInternalNotes: string[];
+  danArchivedNotes: string[];
+  deletedNotes: string[];
+  pingTaskContext: ShortHorizonContext | null;
+  bradTaskContext: ShortHorizonContext | null;
   projectCategory: ProjectCategory;
   dynamicSubAgents: DynamicSubAgent[];
   slackMessages: SlackChatMessage[];
   slackActiveDirectorId: DirectorId;
+  slackPresenceGuestId: DirectorId | null;
+  pendingApprovals: PendingApproval[];
+  directorSettingsOverrides: Partial<Record<DirectorId, DirectorSettingsOverride>>;
+  directorStateMap: Partial<Record<DirectorId, DirectorStateSnapshot>>;
   /** @deprecated Use directorConversations */
   agentConversations: Record<string, DirectorConversation>;
   /** @deprecated Use activeDirectorId */
@@ -1239,12 +1337,53 @@ export interface SlackChatInput {
   targetDirectorId?: DirectorId | null;
 }
 
+export type SlackDirectorMode = "codebase-analysis" | "internet-research";
+
+export interface SlackDirectorApprovalPayload {
+  action: "runSlackDirector";
+  provider: AiProvider;
+  model: CodexModel;
+  claudeModel: ClaudeModel;
+  directorId: DirectorId;
+  message: string;
+  mode: SlackDirectorMode;
+}
+
 export interface SlackChatResponse {
   sessionId: string;
   directorId: DirectorId;
   message: SlackChatMessage;
   handoffTo: DirectorId | null;
   handoffReason: string | null;
+  chainedMessages?: SlackChatMessage[];
+}
+
+export interface ListPendingApprovalsInput {
+  projectId: string;
+}
+
+export interface ApprovePendingApprovalInput {
+  projectId: string;
+  approvalId: string;
+}
+
+export interface RevisePendingApprovalInput {
+  projectId: string;
+  approvalId: string;
+  summary?: string;
+  draftMessage?: string | null;
+  draftPayloadText?: string | null;
+  targetDirectorId?: DirectorId | null;
+}
+
+export interface UpdatePendingApprovalStatusInput {
+  projectId: string;
+  approvalId: string;
+}
+
+export interface DeleteSlackMessagesInput {
+  projectId: string;
+  messageIds: string[];
 }
 
 export interface AttachVibeInput {
@@ -1286,4 +1425,19 @@ export interface RunValidationInput {
 export interface SetValidationFrequencyInput {
   projectId: string;
   frequency: ValidationFrequency;
+}
+
+// --- Refresh Project ---
+
+export interface RefreshProjectInput {
+  projectId: string;
+  provider: AiProvider;
+  model: CodexModel;
+  claudeModel: ClaudeModel;
+}
+
+// --- Pillar Sub-Agents ---
+
+export interface CreatePillarSubAgentsInput {
+  projectId: string;
 }

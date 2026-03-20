@@ -32,17 +32,42 @@ import {
   writeFlowchartSnapshot,
 } from "@main/utils/flowchart";
 import { emitSettledAppUpdateStatus } from "@main/utils/app-update";
+import {
+  createPendingApproval,
+  getPendingApproval,
+  removePendingApproval,
+  updatePendingApproval,
+} from "@main/utils/approval-queue";
 import { getProviderPreflightError } from "@main/utils/provider-auth";
 import { parseEnvEntries, parseProjectOutlineReportResponse, serializeEnvEntries } from "@main/utils/project-outline";
 import { detectRuntimeConfig, deriveAttachedProjectName, deriveProjectDescription, slugifyRepositoryName } from "@main/utils/project";
 import { buildCatalogSkill, USER_TESTING_RUNNER_PLACEHOLDER } from "@main/utils/skill-library";
+import {
+  buildSlackApprovalDescriptor,
+  buildSlackProviderAttemptPlan,
+  canAutoRouteSlackDirector,
+  buildSlackResponseContract,
+  normalizeSlackDirectorMode,
+  resolveSlackDirectorMode,
+  validateSlackTurnParsedResponse,
+} from "@main/utils/slack-flow";
+import { danSlackSchema, directorSlackSchema, researchSlackSchema, refreshScanSchema, refreshMappingSchema } from "@main/utils/slack-schema";
 import { ensureDirectory, pathExists, readTextFile, writeTextFile } from "@main/utils/fs";
 import { execCommand } from "@main/utils/process";
-import { DEFAULT_MODEL_CATALOG, AGENT_STAGES, AGENT_STAGE_LABELS, DIRECTOR_LABELS, DIRECTOR_NAMES, DIRECTOR_COLORS } from "@shared/types";
+import {
+  sanitizeDanArchivedNotes,
+  sanitizeDirectorStateMap,
+  sanitizePendingApprovals,
+  sanitizeSlackPresenceGuestId,
+  sanitizeSlackResponseContent,
+} from "@shared/agent-session";
+import { getDirectorRuntimeDefaults, getDirectorMetadata, type DirectorRuntimeDefaults } from "@shared/director-metadata";
+import { DEFAULT_MODEL_CATALOG, AGENT_STAGES, AGENT_STAGE_LABELS, DIRECTOR_LABELS, DIRECTOR_NAMES, DIRECTOR_COLORS, normalizeDirectorId } from "@shared/types";
 import type {
   AgentAttachMaterialsInput,
   AgentAttachMaterialsResult,
   AgentChatInput,
+  AgentChatMessage,
   AgentChatResponse,
   AgentConfirmStageInput,
   AgentCoreDetails,
@@ -134,9 +159,12 @@ import type {
   GitSyncResult,
   Skill,
   InstallSkillCatalogInput,
+  ListPendingApprovalsInput,
   DownloadSkillInput,
   ConvertSkillInput,
   AttachSkillInput,
+  PendingApproval,
+  PendingApprovalKind,
   DiffStats,
   PlaywrightRunInput,
   PlaywrightRunResult,
@@ -144,9 +172,33 @@ import type {
   SlackChatInput,
   SlackChatResponse,
   SlackChatMessage,
+  SlackDirectorApprovalPayload,
+  SlackDirectorMode,
+  DeleteSlackMessagesInput,
+  ApprovePendingApprovalInput,
+  RevisePendingApprovalInput,
+  DirectorSettingsOverride,
+  DirectorStateSnapshot,
+  RefreshProjectInput,
+  CreatePillarSubAgentsInput,
+  CorePillar,
+  UpdatePendingApprovalStatusInput,
 } from "@shared/types";
 
 type Emit = (event: AppEvent) => void;
+
+function resolveDirectorRuntime(
+  session: AgentSession | null,
+  directorId: DirectorId,
+): DirectorRuntimeDefaults {
+  const base = getDirectorRuntimeDefaults(directorId);
+  const overrides = session?.directorSettingsOverrides?.[directorId];
+  if (!overrides) return base;
+  return {
+    reasoningEffort: overrides.reasoningEffort ?? base.reasoningEffort,
+    planningMode: overrides.planningMode ?? base.planningMode,
+  };
+}
 
 const APP_UPDATE_FRESHNESS_WINDOW_MS = 1000;
 const APP_UPDATE_SOURCE_ROOTS = ["src", "scripts"] as const;
@@ -160,6 +212,11 @@ const APP_UPDATE_SOURCE_FILES = [
   "electron.vite.config.ts",
   "tsconfig.json",
 ] as const;
+
+const SLACK_DIRECTOR_INTRO_DELAY_MS = 2_000;
+const SLACK_DIRECTOR_POST_INTRO_DELAY_MS = 500;
+
+const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 interface AppUpdateWorkspaceInfo {
   workspacePath: string | null;
@@ -410,11 +467,307 @@ const agentCascadeSchema = {
   },
 } as const;
 
+type DanConversationStatus = "gathering" | "ready-to-draft";
+
+interface DanSlackDraftPillar {
+  name: string;
+  pillarType: string;
+  parentName: string | null;
+  function: string | null;
+  thesis: string | null;
+  fullFlow: string | null;
+  description: string | null;
+  assumptionText: string | null;
+  assumptionSource: "user" | "dan" | null;
+  order: number;
+  connectedPillarNames: string[];
+}
+
+interface DanSlackDraftCoreDetails {
+  function: string | null;
+  thesis: string | null;
+  fullFlow: string | null;
+  pillars: DanSlackDraftPillar[];
+}
+
+const SLACK_HISTORY_LIMIT = 12;
+const AUTO_SLACK_HANDOFF_LIMIT = 4;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const normalizeNonEmptyString = (value: unknown): string | null =>
+  typeof value === "string" && value.trim() ? value.trim() : null;
+
+const mergeTrimmedNotes = (...noteGroups: Array<string[] | null | undefined>): string[] => {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+
+  for (const group of noteGroups) {
+    for (const rawNote of group ?? []) {
+      const note = rawNote.trim();
+      if (!note || seen.has(note)) {
+        continue;
+      }
+      seen.add(note);
+      merged.push(note);
+    }
+  }
+
+  return merged;
+};
+
+const buildRecentSlackHistory = (session: AgentSession, limit = SLACK_HISTORY_LIMIT): string => {
+  const history = (session.slackMessages ?? []).slice(-limit).map((message) => {
+    if (message.role === "system") {
+      return `[System: ${message.content}]`;
+    }
+    if (message.role === "user") {
+      return `User: ${message.content}`;
+    }
+    return `${message.directorId ? DIRECTOR_NAMES[message.directorId] : "Agent"}: ${message.content}`;
+  }).join("\n\n");
+
+  return history ? `\nSlack channel history:\n${history}\n` : "";
+};
+
+const buildCurrentStatePillarSummary = (pillars: CorePillar[]): string =>
+  pillars.map((pillar) => `${pillar.name} (${pillar.function?.summary ?? "TBD"})`).join(", ");
+
+const buildToddCodebaseSummary = (session: AgentSession): string => {
+  const parts: string[] = [];
+  const rdState = session.directorStateMap?.["rd-director"];
+
+  if (rdState?.currentState) {
+    parts.push(`- Latest repo scan summary: ${rdState.currentState}`);
+  }
+
+  if (session.currentCorePillars.length > 0) {
+    parts.push(`- Current-state pillars: ${buildCurrentStatePillarSummary(session.currentCorePillars)}`);
+  }
+
+  return parts.length > 0
+    ? `Current codebase map:\n${parts.join("\n")}`
+    : "Current codebase map:\n- No repo scan summary has been saved yet.";
+};
+
+const collectExistingPillarsByName = (
+  pillars: CorePillar[],
+  index = new Map<string, CorePillar>(),
+): Map<string, CorePillar> => {
+  for (const pillar of pillars) {
+    const key = pillar.name.trim().toLowerCase();
+    if (key && !index.has(key)) {
+      index.set(key, pillar);
+    }
+    collectExistingPillarsByName(pillar.corePillars, index);
+  }
+  return index;
+};
+
+const normalizeDanConversationStatus = (value: unknown): DanConversationStatus =>
+  value === "ready-to-draft" ? "ready-to-draft" : "gathering";
+
+const normalizeDanPillarType = (value: unknown): CorePillar["pillarType"] => {
+  switch (value) {
+    case "core":
+    case "side":
+    case "ghost":
+    case "tbd":
+    case "hard-stop":
+      return value;
+    default:
+      return "core";
+  }
+};
+
+const createAssumedDetail = (value: string | null): CorePillar["function"] =>
+  value ? { summary: value, status: "assumed" } : null;
+
+const normalizeDanDraftCoreDetails = (value: unknown): DanSlackDraftCoreDetails | null => {
+  if (!isRecord(value)) {
+    return null;
+  }
+
+  const rawPillars = Array.isArray(value.pillars) ? value.pillars : [];
+  const pillars: DanSlackDraftPillar[] = rawPillars
+    .filter((item): item is Record<string, unknown> => isRecord(item))
+    .map((item, index) => ({
+      name: normalizeNonEmptyString(item.name) ?? `Pillar ${index + 1}`,
+      pillarType: typeof item.pillarType === "string" ? item.pillarType : "core",
+      parentName: normalizeNonEmptyString(item.parentName),
+      function: normalizeNonEmptyString(item.function),
+      thesis: normalizeNonEmptyString(item.thesis),
+      fullFlow: normalizeNonEmptyString(item.fullFlow),
+      description: normalizeNonEmptyString(item.description),
+      assumptionText: normalizeNonEmptyString(item.assumptionText),
+      assumptionSource: item.assumptionSource === "user" || item.assumptionSource === "dan"
+        ? item.assumptionSource
+        : null,
+      order: typeof item.order === "number" && Number.isFinite(item.order) ? item.order : index,
+      connectedPillarNames: Array.isArray(item.connectedPillarNames)
+        ? item.connectedPillarNames
+          .map((entry) => normalizeNonEmptyString(entry))
+          .filter((entry): entry is string => Boolean(entry))
+        : [],
+    }));
+
+  return {
+    function: normalizeNonEmptyString(value.function),
+    thesis: normalizeNonEmptyString(value.thesis),
+    fullFlow: normalizeNonEmptyString(value.fullFlow),
+    pillars,
+  };
+};
+
+const sortNestedPillarsByOrder = (pillars: CorePillar[]): CorePillar[] =>
+  [...pillars]
+    .sort((left, right) => (left.order ?? 0) - (right.order ?? 0))
+    .map((pillar) => ({
+      ...pillar,
+      corePillars: sortNestedPillarsByOrder(pillar.corePillars),
+    }));
+
+const archiveDanNotes = (
+  session: AgentSession,
+  reason: string,
+  notes: string[],
+): void => {
+  const archivedNotes = mergeTrimmedNotes(notes);
+  if (archivedNotes.length === 0) {
+    session.danInternalNotes = [];
+    return;
+  }
+
+  session.danArchivedNotes = session.danArchivedNotes ?? [];
+  const timestamp = new Date().toISOString();
+  session.danArchivedNotes.push(
+    ...archivedNotes.map((note) => `[${timestamp} | ${reason}] ${note}`),
+  );
+  session.danInternalNotes = [];
+};
+
+const persistDirectorStateSnapshot = (
+  session: AgentSession,
+  directorId: DirectorId,
+  nextState: {
+    currentState?: string | null;
+    idealState?: string | null;
+    assumptions?: string[];
+  },
+): void => {
+  session.directorStateMap = session.directorStateMap ?? {};
+  const existing = session.directorStateMap[directorId] ?? {
+    currentState: null,
+    idealState: null,
+    assumptions: [],
+  };
+  session.directorStateMap[directorId] = {
+    currentState: nextState.currentState !== undefined ? nextState.currentState : existing.currentState,
+    idealState: nextState.idealState !== undefined ? nextState.idealState : existing.idealState,
+    assumptions: nextState.assumptions ?? existing.assumptions,
+  };
+};
+
+const applyDanDraftToSession = (
+  session: AgentSession,
+  draft: DanSlackDraftCoreDetails,
+  stateSnapshot: {
+    currentState: string | null;
+    idealState: string | null;
+  },
+): void => {
+  const existingPillarsByName = collectExistingPillarsByName(session.corePillars);
+  const pillarsByName = new Map<string, CorePillar>();
+  const parentByName = new Map<string, string | null>();
+  const connectionsByName = new Map<string, string[]>();
+
+  for (const draftPillar of [...draft.pillars].sort((left, right) => left.order - right.order)) {
+    const key = draftPillar.name.trim().toLowerCase();
+    if (!key || pillarsByName.has(key)) {
+      continue;
+    }
+
+    const existing = existingPillarsByName.get(key);
+    pillarsByName.set(key, {
+      id: existing?.id ?? randomUUID(),
+      name: draftPillar.name.trim(),
+      pillarType: normalizeDanPillarType(draftPillar.pillarType),
+      function: createAssumedDetail(draftPillar.function),
+      thesis: createAssumedDetail(draftPillar.thesis),
+      corePillars: [],
+      fullFlow: createAssumedDetail(draftPillar.fullFlow),
+      vibes: existing?.vibes ?? [],
+      description: draftPillar.description ?? existing?.description ?? null,
+      connectedPillarIds: [],
+      assumptionText: draftPillar.assumptionText,
+      assumptionSource: draftPillar.assumptionSource,
+      order: draftPillar.order,
+    });
+    parentByName.set(
+      key,
+      draftPillar.parentName ? draftPillar.parentName.trim().toLowerCase() : null,
+    );
+    connectionsByName.set(
+      key,
+      draftPillar.connectedPillarNames.map((name) => name.trim().toLowerCase()).filter(Boolean),
+    );
+  }
+
+  const roots: CorePillar[] = [];
+  for (const [key, pillar] of pillarsByName.entries()) {
+    const parentKey = parentByName.get(key);
+    const parent = parentKey ? pillarsByName.get(parentKey) : null;
+    if (parent && parent.id !== pillar.id) {
+      parent.corePillars.push(pillar);
+      continue;
+    }
+    roots.push(pillar);
+  }
+
+  for (const [key, pillar] of pillarsByName.entries()) {
+    const connectedIds = (connectionsByName.get(key) ?? [])
+      .map((name) => pillarsByName.get(name)?.id ?? null)
+      .filter((id): id is string => Boolean(id));
+    pillar.connectedPillarIds = Array.from(new Set(connectedIds));
+  }
+
+  if (draft.function) {
+    session.stages.function.confirmed = { summary: draft.function, status: "assumed" };
+  }
+  if (draft.thesis) {
+    session.stages.thesis.confirmed = { summary: draft.thesis, status: "assumed" };
+  }
+  if (draft.fullFlow) {
+    session.stages.full_flow.confirmed = { summary: draft.fullFlow, status: "assumed" };
+  }
+  if (roots.length > 0) {
+    session.corePillars = sortNestedPillarsByOrder(roots);
+    session.stages.core_pillars.confirmed = {
+      summary: `${roots.length} top-level pillar(s): ${roots.map((pillar) => pillar.name).join(", ")}`,
+      status: "assumed",
+    };
+  }
+
+  const idealStateSummary = stateSnapshot.idealState ?? [
+    draft.function ? `Function: ${draft.function}` : null,
+    draft.thesis ? `Thesis: ${draft.thesis}` : null,
+    roots.length > 0 ? `Pillars: ${roots.map((pillar) => pillar.name).join(", ")}` : null,
+    draft.fullFlow ? `Full-flow: ${draft.fullFlow}` : null,
+  ].filter(Boolean).join(" | ");
+
+  persistDirectorStateSnapshot(session, "creative-director", {
+    currentState: stateSnapshot.currentState ?? session.directorStateMap?.["creative-director"]?.currentState ?? null,
+    idealState: idealStateSummary || null,
+    assumptions: ["Dan drafted ideal core-details from discussion. Review and confirm before planning downstream work."],
+  });
+};
+
 function formatCoreDetails(session: AgentSession | null): string {
   if (!session) return "";
   const fn = session.stages.function.confirmed?.summary;
   const th = session.stages.thesis.confirmed?.summary;
-  const cp = session.corePillars.map((p) => p.name).join(", ") || null;
+  const cp = [...session.corePillars].sort((a, b) => (a.order ?? 0) - (b.order ?? 0)).map((p) => p.name).join(", ") || null;
   const ff = session.stages.full_flow.confirmed?.summary;
   if (!fn && !th && !cp && !ff) return "";
   return [
@@ -426,6 +779,89 @@ function formatCoreDetails(session: AgentSession | null): string {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function formatScopedCoreDetails(
+  session: AgentSession,
+  opts: {
+    confirmedOnly?: boolean;
+    relevantPillarIds?: string[];
+    includeCurrent?: boolean;
+    includeIdeal?: boolean;
+  } = {},
+): string {
+  const { confirmedOnly = true, relevantPillarIds, includeCurrent = false, includeIdeal = true } = opts;
+  const parts: string[] = [];
+
+  const fn = session.stages.function.confirmed;
+  const th = session.stages.thesis.confirmed;
+  const ff = session.stages.full_flow.confirmed;
+
+  if (fn && (!confirmedOnly || fn.status !== "assumed")) parts.push(`- Function: ${fn.summary}`);
+  if (th && (!confirmedOnly || th.status !== "assumed")) parts.push(`- Thesis: ${th.summary}`);
+  if (ff && (!confirmedOnly || ff.status !== "assumed")) parts.push(`- Full-flow: ${ff.summary}`);
+
+  if (includeIdeal && session.corePillars.length > 0) {
+    let pillars = [...session.corePillars].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    if (relevantPillarIds?.length) pillars = pillars.filter((p) => relevantPillarIds.includes(p.id));
+    if (confirmedOnly) {
+      pillars = pillars.filter((pillar) => {
+        const statuses = [pillar.function?.status, pillar.thesis?.status, pillar.fullFlow?.status].filter(Boolean);
+        return statuses.length === 0 || statuses.every((status) => status !== "assumed");
+      });
+    }
+    if (pillars.length > 0) {
+      parts.push(`Ideal core pillars: ${pillars.map((p) => `${p.name} (${p.function?.summary ?? "TBD"})`).join(", ")}`);
+    }
+  }
+
+  if (includeCurrent && session.currentCorePillars?.length > 0) {
+    const cur = [...session.currentCorePillars].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    parts.push(`Current-state pillars: ${cur.map((p) => `${p.name} (${p.function?.summary ?? "TBD"})`).join(", ")}`);
+  }
+
+  return parts.length > 0 ? `Project core details:\n${parts.join("\n")}` : "";
+}
+
+function buildAssumedStateSummary(session: AgentSession): string {
+  const items: string[] = [];
+
+  // Assumed pillars
+  for (const p of session.corePillars) {
+    if (p.function?.status === "assumed") items.push(`Pillar "${p.name}" function is assumed`);
+    if (p.thesis?.status === "assumed") items.push(`Pillar "${p.name}" thesis is assumed`);
+    if (p.assumptionText && p.assumptionSource === "dan") items.push(`Pillar "${p.name}" has Dan's assumption: "${p.assumptionText}"`);
+  }
+
+  // Assumed stage confirmations
+  for (const stage of ["function", "thesis", "core_pillars", "full_flow"] as const) {
+    const conf = session.stages[stage].confirmed;
+    if (conf?.status === "assumed") items.push(`${stage} confirmation is assumed`);
+  }
+
+  // Director assumptions from state map
+  for (const [dId, ds] of Object.entries(session.directorStateMap ?? {})) {
+    if (ds && ds.assumptions.length > 0) {
+      items.push(`${DIRECTOR_NAMES[dId as DirectorId]} has ${ds.assumptions.length} assumption(s): ${ds.assumptions.join("; ")}`);
+    }
+  }
+
+  // Assumed feasibility assessments
+  for (const a of session.feasibilityAssessments) {
+    if (a.status === "assumed") items.push(`Feasibility "${a.area}" is assumed`);
+  }
+
+  // Assumed version plans
+  for (const v of session.versions) {
+    if (v.status === "assumed") items.push(`Version "${v.label}" is assumed`);
+  }
+
+  for (const approval of session.pendingApprovals ?? []) {
+    items.push(`Pending confirmation: ${approval.summary}`);
+  }
+
+  if (items.length === 0) return "";
+  return `\nAssumed items across the project (not yet confirmed):\n${items.map((i) => `- ${i}`).join("\n")}\n`;
 }
 
 async function readMaterialContents(paths: string[]): Promise<string> {
@@ -902,53 +1338,502 @@ function formatDirectorStatus(session: AgentSession): string {
   const progUpdates = session.versionUpdates.filter((u) => u.status === "in_progress" || u.status === "completed");
   parts.push(`Ping (Programming): ${progUpdates.length > 0 ? progUpdates.length + " updates processed" : "waiting for approved updates"}`);
   parts.push(`Brad (Validation): ${session.validationResults.length > 0 ? session.validationResults.length + " results" : "no validations yet"}, Frequency=${session.validationFrequency}`);
+  // Director state map summary
+  const stateMap = session.directorStateMap ?? {};
+  for (const [dId, ds] of Object.entries(stateMap)) {
+    if (!ds) continue;
+    const name = DIRECTOR_NAMES[dId as DirectorId] ?? dId;
+    const cur = ds.currentState ? `Current: ${ds.currentState.slice(0, 100)}` : "";
+    const goal = ds.idealState ? `Ideal: ${ds.idealState.slice(0, 100)}` : "";
+    const assumCount = ds.assumptions.length > 0 ? `${ds.assumptions.length} assumption(s)` : "";
+    const stateParts = [cur, goal, assumCount].filter(Boolean);
+    if (stateParts.length > 0) parts.push(`${name} state: ${stateParts.join(", ")}`);
+  }
   return parts.join("\n");
 }
-
-const directorSlackSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["response"],
-  properties: {
-    response: { type: "string" },
-    handoffTo: { type: ["string", "null"] },
-    handoffReason: { type: ["string", "null"] },
-  },
-} as const;
 
 function buildSlackDirectorPrompt(
   directorId: DirectorId,
   projectName: string,
   session: AgentSession,
+  opts: {
+    mode?: SlackDirectorMode;
+  } = {},
 ): string {
   const directorName = DIRECTOR_NAMES[directorId];
   const directorLabel = DIRECTOR_LABELS[directorId];
   const coreContext = formatCoreDetails(session);
   const statusContext = formatDirectorStatus(session);
+  const mode = opts.mode ?? "codebase-analysis";
+  const allowInternetResearch = directorId === "rd-director" && mode === "internet-research";
+  const conversationSection = buildRecentSlackHistory(session);
 
-  const slackHistory = (session.slackMessages ?? []).slice(-20).map((m) => {
-    if (m.role === "user") return `User: ${m.content}`;
-    return `${m.directorId ? DIRECTOR_NAMES[m.directorId] : "Agent"}: ${m.content}`;
-  }).join("\n\n");
-  const conversationSection = slackHistory ? `\nSlack channel history:\n${slackHistory}\n` : "";
+  // Build director state context if available
+  const directorState = session.directorStateMap?.[directorId];
+  const stateContext = directorState
+    ? `\nYour tracked state:\n- Current State: ${directorState.currentState ?? "(not yet mapped)"}\n- Ideal State: ${directorState.idealState ?? "(not yet defined)"}\n${directorState.assumptions.length > 0 ? `- Assumptions: ${directorState.assumptions.join("; ")}` : ""}\n`
+    : "";
 
   if (directorId === "project-manager") {
+    // Gather unconfirmed items for Jeff to surface
+    const unconfirmedItems: string[] = [];
+    for (const p of session.corePillars) {
+      if (p.function?.status === "assumed") unconfirmedItems.push(`Pillar "${p.name}" function`);
+      if (p.thesis?.status === "assumed") unconfirmedItems.push(`Pillar "${p.name}" thesis`);
+      if (p.assumptionText && p.assumptionSource === "dan") unconfirmedItems.push(`Pillar "${p.name}" assumption: "${p.assumptionText}"`);
+    }
+    for (const [dId, ds] of Object.entries(session.directorStateMap ?? {})) {
+      if (ds && ds.assumptions.length > 0) unconfirmedItems.push(`${DIRECTOR_NAMES[dId as DirectorId]} has ${ds.assumptions.length} unconfirmed assumption(s)`);
+    }
+    const unconfirmedSection = unconfirmedItems.length > 0
+      ? `\nUnconfirmed items awaiting user review:\n${unconfirmedItems.map((i) => `- ${i}`).join("\n")}\nIf the user asks what needs confirmation, present these items clearly.\n`
+      : "";
+
+    const assumedSummary = buildAssumedStateSummary(session);
+
     return `You are Jeff, the Project Manager for "${projectName}".
 You are in a team Slack channel with the user and all directors.
 You are the central coordinator. Your role:
 - Handle general user conversation about the project
 - If the user's request requires a specialist, set handoffTo to the appropriate director ID and explain why in handoffReason
+- Route codebase scans, architecture assessment, backend review, and update-planning work to rd-director (Todd) as codebase analysis
+- Route explicit external research, current web information, competitor checks, market checks, or latest-documentation checks to rd-director (Todd) as internet research
 - If you can handle the message yourself, set handoffTo to null
+- If the user asks "anything for me to confirm?" or similar, present unconfirmed items and guide them through confirmation
+- Only confirmed information should move downstream for actual planning/building/testing
 - Be conversational and collaborative
+- When handing work to Todd, make the handoffReason explicit enough that PROGRAMS can tell whether this is codebase analysis or internet research
 
-Valid director IDs for handoff: creative-director (Dan), rd-director (Todd), programming-director (Ping), validation-director (Brad)
+Valid director IDs for handoff (use the exact ID string, not the name):
+- "creative-director" (Dan)
+- "rd-director" (Todd) — also handles internet research
+- "programming-director" (Ping)
+- "validation-director" (Brad)
+
+Current project status:
+${statusContext}
+${unconfirmedSection}${assumedSummary}
+${coreContext}
+${stateContext}
+${conversationSection}
+${buildSlackResponseContract(directorId, mode)}`;
+  }
+
+  if (directorId === "rd-director") {
+    const toddCoreContext = formatScopedCoreDetails(session, { confirmedOnly: true, includeCurrent: true, includeIdeal: true });
+    return `You are Todd, the R&D Director for "${projectName}".
+You are in a team Slack channel. Your role:
+- Analyze technical questions, repo architecture, update planning, best practices, and product direction
+- ${allowInternetResearch
+    ? "You have access to web search and web fetch tools for this turn — use them to find real, up-to-date information from the internet when needed"
+    : "You do not have internet access for this turn. Focus on the repo, confirmed project context, and your codebase understanding. If live external research is needed, say so plainly and explain what should be researched next"}.
+- Assess feasibility and make recommendations
+- You plan from CURRENT confirmed state toward IDEAL confirmed state
+- Provide a short conversational response in "response" (what appears in chat)
+- ${allowInternetResearch
+    ? 'Provide "generalSummary" and "projectSummary" only as external-research summaries for this turn.'
+    : 'Do not use external web research summaries in this mode; keep the answer grounded in repo analysis and confirmed project context.'}
+- Set handoffTo to null unless another director needs to act on your findings
+- Be conversational and direct
+
+Valid director IDs for handoff (use the exact ID string, not the name):
+- "project-manager" (Jeff)
+- "creative-director" (Dan)
+- "programming-director" (Ping)
+- "validation-director" (Brad)
+
+Current project status:
+${statusContext}
+
+${toddCoreContext}
+${stateContext}
+${conversationSection}
+${buildSlackResponseContract(directorId, mode)}`;
+  }
+
+  if (directorId === "creative-director") {
+    const danCoreContext = formatScopedCoreDetails(session, { includeCurrent: true, includeIdeal: true, confirmedOnly: false });
+    const pillarContext = session.corePillars.length > 0
+      ? `\nIdeal Core Pillars:\n${session.corePillars.map((p) => {
+          let line = `- ${p.name} [${p.pillarType}]: ${p.function?.summary ?? "TBD"} (${p.function?.status ?? "unset"})`;
+          if (p.assumptionText) line += `\n  Assumption (${p.assumptionSource ?? "unknown"}): "${p.assumptionText}"`;
+          return line;
+        }).join("\n")}\n`
+      : "";
+    const currentPillarContext = session.currentCorePillars?.length > 0
+      ? `\nCurrent-State Core Pillars:\n${session.currentCorePillars.map((p) => {
+          return `- ${p.name} [${p.pillarType}]: ${p.function?.summary ?? "TBD"} (${p.function?.status ?? "unset"})`;
+        }).join("\n")}\n`
+      : "";
+    return `You are Dan, the Creative Director for "${projectName}".
+You are in a team Slack channel. Your role:
+- Shape the product concept, clarify core details, and manage the pillar structure
+- You track both CURRENT confirmed core-details and IDEAL confirmed core-details
+- When the user indicates uncertainty about what comes next (e.g. "that's as far as I've thought", "I'm not sure what's next"), you should:
+  - Acknowledge the uncertainty
+  - Write a thoughtful assumption about what might come next, considering the full project scope including side-pillars and ghost-pillars
+  - This assumption will be stored with pillarType "tbd" (yellow uncertainty dot)
+  - If the user provided their own possible direction, store that as the uncertain content (normal text display)
+  - If the user leaves it blank, you write the assumption (mark assumptionSource as "dan" — displayed in red text)
+- When the user indicates a hard definitive end point, note it as pillarType "hard-stop" (red end dot) — no assumptions beyond
+
+Dot color mapping:
+- GREEN = confirmed core pillar connected to the main flow
+- RED = hard-stop; certain definitive end, nothing exists beyond
+- YELLOW = uncertain continuation (tbd); always means uncertain
+- BLUE = side pillar; belongs somewhere, placement unknown
+- PURPLE = ghost pillar; may fundamentally change the project, may never be used
+
+- Be conversational and collaborative
+- Set handoffTo if another director needs to act
+
+Valid director IDs for handoff (use the exact ID string, not the name):
+- "project-manager" (Jeff)
+- "rd-director" (Todd) — also handles internet research
+- "programming-director" (Ping)
+- "validation-director" (Brad)
+
+Current project status:
+${statusContext}
+${pillarContext}${currentPillarContext}
+${danCoreContext}
+${stateContext}
+${conversationSection}
+${buildSlackResponseContract(directorId, mode)}`;
+  }
+
+  if (directorId === "programming-director") {
+    const pingCoreContext = formatScopedCoreDetails(session, {
+      confirmedOnly: true,
+      relevantPillarIds: session.pingTaskContext?.relevantPillarIds,
+    });
+    const pingContext = session.pingTaskContext;
+    const taskSection = pingContext
+      ? `\nYour current task context:\n- Task: ${pingContext.currentTask ?? "none"}\n- Todd's explanation: ${pingContext.toddUpdateExplanation ?? "none"}\n${pingContext.lastResult ? `- Last result: ${pingContext.lastResult}` : ""}${pingContext.lastFailureReason ? `\n- Last failure: ${pingContext.lastFailureReason}` : ""}\n`
+      : "";
+    const pendingUpdates = session.versionUpdates.filter((u) => u.status === "pending" || u.status === "in_progress");
+    const updatesSection = pendingUpdates.length > 0
+      ? `\nCurrent update queue:\n${pendingUpdates.map((u) => `- [${u.status}] ${u.title}: ${u.description}`).join("\n")}\n`
+      : "";
+
+    return `You are Ping, the Programming Director for "${projectName}".
+You are in a team Slack channel. Your role:
+- Implement updates from the confirmed plan
+- You only receive confirmed core details relevant to your current task
+- If something feels missing, ask Todd or Jeff
+- Be conversational and collaborative
+- Set handoffTo if another director needs to act
+
+Valid director IDs for handoff (use the exact ID string, not the name):
+- "project-manager" (Jeff)
+- "creative-director" (Dan)
+- "rd-director" (Todd)
+- "validation-director" (Brad)
+
+${pingCoreContext}
+${taskSection}${updatesSection}
+${stateContext}
+${conversationSection}
+${buildSlackResponseContract(directorId, mode)}`;
+  }
+
+  if (directorId === "validation-director") {
+    const bradCoreContext = formatScopedCoreDetails(session, {
+      confirmedOnly: true,
+      relevantPillarIds: session.bradTaskContext?.relevantPillarIds,
+    });
+    const bradContext = session.bradTaskContext;
+    const taskSection = bradContext
+      ? `\nYour current task context:\n- Task: ${bradContext.currentTask ?? "none"}\n- Todd's explanation of what this update should achieve: ${bradContext.toddUpdateExplanation ?? "none"}\n${bradContext.lastResult ? `- Last result: ${bradContext.lastResult}` : ""}${bradContext.lastFailureReason ? `\n- Last failure: ${bradContext.lastFailureReason}` : ""}\n`
+      : "";
+    const validationSection = session.validationResults.length > 0
+      ? `\nPrior validation results:\n${session.validationResults.slice(-5).map((r) => `- ${r.validationType}: ${r.passed ? "PASS" : "FAIL"} — ${r.summary}`).join("\n")}\n`
+      : "";
+
+    return `You are Brad, the Validation Director for "${projectName}".
+You are in a team Slack channel. Your role:
+- Validate current behavior against confirmed intended results
+- You only receive confirmed core details relevant to your current validation
+- Compare implementation output against the intended goal
+- Be conversational and collaborative
+- Set handoffTo if another director needs to act
+
+Valid director IDs for handoff (use the exact ID string, not the name):
+- "project-manager" (Jeff)
+- "creative-director" (Dan)
+- "rd-director" (Todd)
+- "programming-director" (Ping)
+
+${bradCoreContext}
+${taskSection}${validationSection}
+${stateContext}
+${conversationSection}
+${buildSlackResponseContract(directorId, mode)}`;
+  }
+
+  // Generic fallback for any future directors
+  return `You are ${directorName}, the ${directorLabel} for "${projectName}".
+You have just joined the team Slack channel. The user or another director invited you.
+Respond to the user's latest message directly and helpfully.
+If you need to hand off to another specialist, set handoffTo to their director ID. Otherwise set handoffTo to null.
+Be conversational and collaborative.
+
+Valid director IDs for handoff (use the exact ID string, not the name):
+- "project-manager" (Jeff)
+- "creative-director" (Dan)
+- "rd-director" (Todd)
+- "programming-director" (Ping)
+- "validation-director" (Brad)
 
 Current project status:
 ${statusContext}
 
 ${coreContext}
+${stateContext}
 ${conversationSection}
-Respond as JSON: {"response": string, "handoffTo": string|null, "handoffReason": string|null}`;
+${buildSlackResponseContract(directorId, mode)}`;
+}
+
+function buildReworkedSlackDirectorPrompt(
+  directorId: DirectorId,
+  projectName: string,
+  session: AgentSession,
+  opts: {
+    mode?: SlackDirectorMode;
+  } = {},
+): string {
+  const directorName = DIRECTOR_NAMES[directorId];
+  const directorLabel = DIRECTOR_LABELS[directorId];
+  const coreContext = formatCoreDetails(session);
+  const statusContext = formatDirectorStatus(session);
+  const mode = opts.mode ?? "codebase-analysis";
+  const allowInternetResearch = directorId === "rd-director" && mode === "internet-research";
+  const conversationSection = buildRecentSlackHistory(session);
+
+  const directorState = session.directorStateMap?.[directorId];
+  const stateContext = directorState
+    ? `\nYour tracked state:\n- Current State: ${directorState.currentState ?? "(not yet mapped)"}\n- Ideal State: ${directorState.idealState ?? "(not yet defined)"}\n${directorState.assumptions.length > 0 ? `- Assumptions: ${directorState.assumptions.join("; ")}` : ""}\n`
+    : "";
+
+  if (directorId === "project-manager") {
+    const unconfirmedItems: string[] = [];
+    for (const pillar of session.corePillars) {
+      if (pillar.function?.status === "assumed") unconfirmedItems.push(`Pillar "${pillar.name}" function`);
+      if (pillar.thesis?.status === "assumed") unconfirmedItems.push(`Pillar "${pillar.name}" thesis`);
+      if (pillar.assumptionText && pillar.assumptionSource === "dan") {
+        unconfirmedItems.push(`Pillar "${pillar.name}" assumption: "${pillar.assumptionText}"`);
+      }
+    }
+    for (const [dId, snapshot] of Object.entries(session.directorStateMap ?? {})) {
+      if (snapshot && snapshot.assumptions.length > 0) {
+        unconfirmedItems.push(`${DIRECTOR_NAMES[dId as DirectorId]} has ${snapshot.assumptions.length} unconfirmed assumption(s)`);
+      }
+    }
+    for (const approval of session.pendingApprovals ?? []) {
+      unconfirmedItems.push(`Pending confirmation: ${approval.summary}`);
+    }
+    const unconfirmedSection = unconfirmedItems.length > 0
+      ? `\nUnconfirmed items awaiting user review:\n${unconfirmedItems.map((item) => `- ${item}`).join("\n")}\nIf the user asks what needs confirmation, present these items clearly.\n`
+      : "";
+    const assumedSummary = buildAssumedStateSummary(session);
+
+    return `You are Jeff, the Project Manager for "${projectName}".
+You are in a team Slack channel with the user and all directors.
+You are the central coordinator. Your role:
+- Handle general user conversation about the project
+- Route specialist work only to Dan, Todd, or Ping in this Slack flow
+- Route creative concept shaping and core-detail clarification to "creative-director" (Dan)
+- Route codebase scans, architecture assessment, repo review, and update-planning work to "rd-director" (Todd) as codebase analysis
+- Route explicit external research, current web information, competitor checks, market checks, or latest-documentation checks to "rd-director" (Todd) as internet research
+- Route implementation-focused conversation to "programming-director" (Ping) only when the user explicitly wants Ping involved or confirmed planning context already exists
+- If you can handle the message yourself, set handoffTo to null
+- If the user asks "anything for me to confirm?" or similar, present unresolved assumptions, assumed state, and pending confirmations clearly
+- Only confirmed information should move downstream for actual planning/building/testing
+- Brad stays manual for now; do not hand off automatically to the validation director in this pass
+- Be conversational and direct
+- When handing work to Todd, make the handoffReason explicit enough that PROGRAMS can tell whether this is codebase analysis or internet research
+
+Valid director IDs for handoff (use the exact ID string, not the name):
+- "creative-director" (Dan)
+- "rd-director" (Todd) — also handles internet research
+- "programming-director" (Ping)
+
+Current project status:
+${statusContext}
+${unconfirmedSection}${assumedSummary}
+${coreContext}
+${conversationSection}
+${buildSlackResponseContract(directorId, mode)}`;
+  }
+
+  if (directorId === "rd-director") {
+    const toddCoreContext = formatScopedCoreDetails(session, {
+      confirmedOnly: true,
+      includeCurrent: true,
+      includeIdeal: true,
+    });
+    const codebaseSummary = buildToddCodebaseSummary(session);
+    return `You are Todd, the R&D Director for "${projectName}".
+You are in a team Slack channel. Your role:
+- Analyze technical questions, repo architecture, update planning, best practices, and product direction
+- ${allowInternetResearch
+    ? "You have access to web search and web fetch tools for this turn — use them to find real, up-to-date information from the internet when needed"
+    : "You do not have internet access for this turn. Focus on the repo, confirmed project context, and your codebase understanding. If live external research is needed, say so plainly and explain what should be researched next"}.
+- Assess feasibility and make recommendations
+- You plan from CURRENT confirmed state toward IDEAL confirmed state
+- Provide a short conversational response in "response" (what appears in chat)
+- ${allowInternetResearch
+    ? 'Provide "generalSummary" and "projectSummary" only as external-research summaries for this turn.'
+    : 'Do not use external web research summaries in this mode; keep the answer grounded in repo analysis and confirmed project context.'}
+- Set handoffTo to null unless another director needs to act on your findings
+- Be conversational and direct
+
+Valid director IDs for handoff (use the exact ID string, not the name):
+- "project-manager" (Jeff)
+- "creative-director" (Dan)
+- "programming-director" (Ping)
+
+Current project status:
+${statusContext}
+
+${codebaseSummary}
+${toddCoreContext}
+${stateContext}
+${conversationSection}
+${buildSlackResponseContract(directorId, mode)}`;
+  }
+
+  if (directorId === "creative-director") {
+    const danCoreContext = formatScopedCoreDetails(session, {
+      includeCurrent: true,
+      includeIdeal: true,
+      confirmedOnly: false,
+    });
+    const danConversationSection = buildRecentSlackHistory(session, 10);
+    const activeNotesSection = session.danInternalNotes.length > 0
+      ? `\nYour active working notes:\n${session.danInternalNotes.map((note) => `- ${note}`).join("\n")}\n`
+      : "\nYour active working notes:\n- None yet for this Slack thread.\n";
+    const pillarContext = session.corePillars.length > 0
+      ? `\nIdeal Core Pillars:\n${session.corePillars.map((pillar) => {
+          let line = `- ${pillar.name} [${pillar.pillarType}]: ${pillar.function?.summary ?? "TBD"} (${pillar.function?.status ?? "unset"})`;
+          if (pillar.assumptionText) {
+            line += `\n  Assumption (${pillar.assumptionSource ?? "unknown"}): "${pillar.assumptionText}"`;
+          }
+          return line;
+        }).join("\n")}\n`
+      : "";
+    const currentPillarContext = session.currentCorePillars.length > 0
+      ? `\nCurrent-State Core Pillars:\n${session.currentCorePillars.map((pillar) => `- ${pillar.name} [${pillar.pillarType}]: ${pillar.function?.summary ?? "TBD"} (${pillar.function?.status ?? "unset"})`).join("\n")}\n`
+      : "";
+    return `You are Dan, the Creative Director for "${projectName}".
+You are in a team Slack channel. Your role:
+- Shape the product concept, clarify the ideal core-details, and manage the pillar structure
+- You can reference the current-state snapshot when the repo already exists, but your primary job is defining the ideal direction
+- Keep concise working notes in "notesToAppend" whenever new durable details emerge
+- Stay in "gathering" mode while you still need more discussion or guiding questions
+- Switch to "ready-to-draft" only when you have no more questions and the user has nothing else to add
+- When you switch to "ready-to-draft", fill "draftCoreDetails" with the full ideal core-details draft and do not hand off to Todd yet
+- Use unique pillar names across the whole draft so they can be reconnected safely
+- When the user indicates uncertainty about what comes next (e.g. "that's as far as I've thought", "I'm not sure what's next"), you should:
+  - Acknowledge the uncertainty
+  - Write a thoughtful assumption about what might come next, considering the full project scope including side-pillars and ghost-pillars
+  - This assumption will be stored with pillarType "tbd" (yellow uncertainty dot)
+  - If the user provided their own possible direction, store that as the uncertain content (normal text display)
+  - If the user leaves it blank, you write the assumption (mark assumptionSource as "dan" — displayed in red text)
+- When the user indicates a hard definitive end point, note it as pillarType "hard-stop" (red end dot) — no assumptions beyond
+
+Dot color mapping:
+- GREEN = confirmed core pillar connected to the main flow
+- RED = hard-stop; certain definitive end, nothing exists beyond
+- YELLOW = uncertain continuation (tbd); always means uncertain
+- BLUE = side pillar; belongs somewhere, placement unknown
+- PURPLE = ghost pillar; may fundamentally change the project, may never be used
+
+- Be conversational and collaborative
+- Set handoffTo if another director truly needs to act next
+
+Valid director IDs for handoff (use the exact ID string, not the name):
+- "project-manager" (Jeff)
+- "rd-director" (Todd) — also handles internet research
+- "programming-director" (Ping)
+
+Current project status:
+${statusContext}
+${pillarContext}${currentPillarContext}
+${danCoreContext}
+${activeNotesSection}
+${stateContext}
+${danConversationSection}
+${buildSlackResponseContract(directorId, mode)}`;
+  }
+
+  if (directorId === "programming-director") {
+    const pingCoreContext = formatScopedCoreDetails(session, {
+      confirmedOnly: true,
+      relevantPillarIds: session.pingTaskContext?.relevantPillarIds,
+    });
+    const pingContext = session.pingTaskContext;
+    const taskSection = pingContext
+      ? `\nYour current task context:\n- Task: ${pingContext.currentTask ?? "none"}\n- Todd's explanation: ${pingContext.toddUpdateExplanation ?? "none"}\n${pingContext.lastResult ? `- Last result: ${pingContext.lastResult}` : ""}${pingContext.lastFailureReason ? `\n- Last failure: ${pingContext.lastFailureReason}` : ""}\n`
+      : "";
+    const pendingUpdates = session.versionUpdates.filter((update) => update.status === "pending" || update.status === "in_progress");
+    const updatesSection = pendingUpdates.length > 0
+      ? `\nCurrent update queue:\n${pendingUpdates.map((update) => `- [${update.status}] ${update.title}: ${update.description}`).join("\n")}\n`
+      : "";
+
+    return `You are Ping, the Programming Director for "${projectName}".
+You are in a team Slack channel. Your role:
+- Implement updates from the confirmed plan
+- You only receive confirmed core details relevant to your current task
+- You can inspect the repo as needed, but stay focused on the active update and Todd's explanation
+- If something feels missing, ask Todd or Jeff
+- Be conversational and collaborative
+- Set handoffTo if another director needs to act
+
+Valid director IDs for handoff (use the exact ID string, not the name):
+- "project-manager" (Jeff)
+- "creative-director" (Dan)
+- "rd-director" (Todd)
+
+${pingCoreContext}
+${taskSection}${updatesSection}
+${stateContext}
+${conversationSection}
+${buildSlackResponseContract(directorId, mode)}`;
+  }
+
+  if (directorId === "validation-director") {
+    const bradCoreContext = formatScopedCoreDetails(session, {
+      confirmedOnly: true,
+      relevantPillarIds: session.bradTaskContext?.relevantPillarIds,
+    });
+    const bradContext = session.bradTaskContext;
+    const taskSection = bradContext
+      ? `\nYour current task context:\n- Task: ${bradContext.currentTask ?? "none"}\n- Todd's explanation of what this update should achieve: ${bradContext.toddUpdateExplanation ?? "none"}\n${bradContext.lastResult ? `- Last result: ${bradContext.lastResult}` : ""}${bradContext.lastFailureReason ? `\n- Last failure: ${bradContext.lastFailureReason}` : ""}\n`
+      : "";
+    const validationSection = session.validationResults.length > 0
+      ? `\nPrior validation results:\n${session.validationResults.slice(-5).map((result) => `- ${result.validationType}: ${result.passed ? "PASS" : "FAIL"} — ${result.summary}`).join("\n")}\n`
+      : "";
+
+    return `You are Brad, the Validation Director for "${projectName}".
+You are in a team Slack channel. Your role:
+- Validate current behavior against confirmed intended results
+- You only receive confirmed core details relevant to your current validation
+- Compare implementation output against the intended goal
+- Be conversational and collaborative
+- Set handoffTo if another director needs to act
+
+Valid director IDs for handoff (use the exact ID string, not the name):
+- "project-manager" (Jeff)
+- "creative-director" (Dan)
+- "rd-director" (Todd)
+- "programming-director" (Ping)
+
+${bradCoreContext}
+${taskSection}${validationSection}
+${stateContext}
+${conversationSection}
+${buildSlackResponseContract(directorId, mode)}`;
   }
 
   return `You are ${directorName}, the ${directorLabel} for "${projectName}".
@@ -957,14 +1842,20 @@ Respond to the user's latest message directly and helpfully.
 If you need to hand off to another specialist, set handoffTo to their director ID. Otherwise set handoffTo to null.
 Be conversational and collaborative.
 
-Valid director IDs for handoff: project-manager (Jeff), creative-director (Dan), rd-director (Todd), programming-director (Ping), validation-director (Brad)
+Valid director IDs for handoff (use the exact ID string, not the name):
+- "project-manager" (Jeff)
+- "creative-director" (Dan)
+- "rd-director" (Todd)
+- "programming-director" (Ping)
+- "validation-director" (Brad)
 
 Current project status:
 ${statusContext}
 
 ${coreContext}
+${stateContext}
 ${conversationSection}
-Respond as JSON: {"response": string, "handoffTo": string|null, "handoffReason": string|null}`;
+${buildSlackResponseContract(directorId, mode)}`;
 }
 
 function buildDirectorPrompt(
@@ -1127,38 +2018,51 @@ Respond as JSON: {"response": string, "confirmationSuggested": boolean, "updates
     }
 
     case "programming-director": {
+      const pingScopedContext = formatScopedCoreDetails(session, {
+        confirmedOnly: true,
+        relevantPillarIds: session.pingTaskContext?.relevantPillarIds,
+      });
       const pendingUpdates = session.versionUpdates.filter((u) => u.status === "pending" || u.status === "in_progress");
       const updatesContext = pendingUpdates.length > 0
         ? `\nCurrent iteration updates:\n${pendingUpdates.map((u) => `- [${u.id}] [${u.status}] ${u.title}: ${u.description}`).join("\n")}`
         : "\nNo updates awaiting implementation.";
-      const subAgentInfo = session.dynamicSubAgents.length > 0
-        ? `\nYour programming team:\n${session.dynamicSubAgents.map((a) => `- ${a.name} (${a.role})`).join("\n")}`
+      const pingCtx = session.pingTaskContext;
+      const pingTaskSection = pingCtx
+        ? `\nYour current task context:\n- Task: ${pingCtx.currentTask ?? "none"}\n- Todd's explanation: ${pingCtx.toddUpdateExplanation ?? "none"}\n${pingCtx.lastResult ? `- Last result: ${pingCtx.lastResult}` : ""}${pingCtx.lastFailureReason ? `\n- Last failure: ${pingCtx.lastFailureReason}` : ""}\n`
         : "";
       return `You are Ping, the Programming Director for "${projectName}".
-You are the lead programmer. You receive the full update plan for the current iteration. Your role:
-- Execute updates yourself for general work
-- Assign updates to specific skilled sub-agents when specialized skills are needed
-- You only need to know the current iteration plan
+You are the lead programmer. Your role:
+- Execute updates yourself for the active iteration
+- You only receive confirmed core details relevant to your current task
+- If something feels missing, ask Todd or Jeff
 
-${coreContext}
-${updatesContext}
-${subAgentInfo}
+${pingScopedContext}
+${pingTaskSection}${updatesContext}
 ${conversationSection}
-When routing to sub-agents, include routedUpdates array. When ready to execute, include executionSteps and set readyToExecute. Set to null if just chatting.
+When ready to execute, include executionSteps and set readyToExecute. Set to null if just chatting.
 
-Respond as JSON: {"response": string, "routedUpdates": [...]|null, "executionSteps": [...]|null, "readyToExecute": boolean}`;
+Respond as JSON: {"response": string, "routedUpdates": null, "executionSteps": [...]|null, "readyToExecute": boolean}`;
     }
 
     case "validation-director": {
+      const bradScopedContext = formatScopedCoreDetails(session, {
+        confirmedOnly: true,
+        relevantPillarIds: session.bradTaskContext?.relevantPillarIds,
+      });
+      const bradCtx = session.bradTaskContext;
+      const bradTaskSection = bradCtx
+        ? `\nYour current task context:\n- Task: ${bradCtx.currentTask ?? "none"}\n- Todd's explanation of what this update should achieve: ${bradCtx.toddUpdateExplanation ?? "none"}\n${bradCtx.lastResult ? `- Last result: ${bradCtx.lastResult}` : ""}${bradCtx.lastFailureReason ? `\n- Last failure: ${bradCtx.lastFailureReason}` : ""}\n`
+        : "";
+
       if (focusMode === "identify-goal") {
         return `You are Brad, the Validation Director for "${projectName}".
-You are in Identify Goal mode — reviewing the core-details and any attached vibes for the pillars that were just updated. Your role:
-- Review the core-details of the project, including any attached vibes
+You are in Identify Goal mode — reviewing confirmed core-details and vibes for the pillars being validated. Your role:
+- Review the confirmed core-details of the project, including any attached vibes
 - Identify what the expected state should be after the most recent updates
 - Summarize the goal clearly
 
-${coreContext}
-
+${bradScopedContext}
+${bradTaskSection}
 ${session.corePillars.length > 0 ? `Pillars with vibes:\n${session.corePillars.map((p) => {
   const vibeInfo = p.vibes?.length ? ` (${p.vibes.length} vibes)` : "";
   return `- ${p.name} [${p.pillarType}]${vibeInfo}${p.description ? `: ${p.description}` : ""}`;
@@ -1171,7 +2075,7 @@ Respond as JSON: {"response": string, "goalSummary": string|null, "relevantPilla
 
       if (focusMode === "test-current-state") {
         return `You are Brad, the Validation Director for "${projectName}".
-You are in Test Current-State mode — testing the current state of the project. Your role:
+You are in Test Current-State mode — testing the current state against confirmed intended results. Your role:
 - Test functions and capture screenshots of visuals
 - Report what the current state looks like
 - Document any issues found
@@ -1180,7 +2084,8 @@ Validation results so far: ${session.validationResults.length > 0
   ? session.validationResults.map((r) => `${r.validationType}: ${r.passed ? "PASS" : "FAIL"} - ${r.summary}`).join("; ")
   : "None yet"}
 
-${coreContext}
+${bradScopedContext}
+${bradTaskSection}
 ${conversationSection}
 Include validationPassed, validationSummary, and validationDetails when reporting results. Set to null if just discussing.
 
@@ -1189,13 +2094,13 @@ Respond as JSON: {"response": string, "validationPassed": boolean|null, "validat
 
       // Default: compare mode
       return `You are Brad, the Validation Director for "${projectName}".
-You are in Compare mode — comparing the current-state to the expected goal. Your role:
-- Compare the current state (screenshots/test results) to the expected goal
+You are in Compare mode — comparing the current-state to the confirmed expected goal. Your role:
+- Compare the current state (screenshots/test results) to the confirmed expected goal
 - Return an objective comparison: current state vs intended goal-state
 - Identify specific areas for improvement
 
-${coreContext}
-
+${bradScopedContext}
+${bradTaskSection}
 Validation results so far: ${session.validationResults.length > 0
   ? session.validationResults.map((r) => `${r.validationType}: ${r.passed ? "PASS" : "FAIL"} - ${r.summary}`).join("; ")
   : "None yet"}
@@ -1397,7 +2302,7 @@ export class ProgramsBackend {
     return this.store.readOutlineReport(projectId);
   }
 
-  async generateOutlineReport(input: GenerateProjectOutlineReportInput): Promise<ProjectOutlineReport> {
+  private async generateOutlineReportNow(input: GenerateProjectOutlineReportInput): Promise<ProjectOutlineReport> {
     await this.ensureInitialized();
     const settings = await this.store.readSettings();
     await this.requireProviderReady(input.provider ?? settings.advancedDefaults.provider, settings);
@@ -1424,6 +2329,31 @@ export class ProgramsBackend {
     await this.store.saveOutlineReport(report);
     this.emit({ type: "project.outlineReport", projectId: project.id, report });
     return report;
+  }
+
+  async generateOutlineReport(input: GenerateProjectOutlineReportInput): Promise<ProjectOutlineReport | null> {
+    await this.ensureInitialized();
+    const settings = await this.store.readSettings();
+    const provider = input.provider ?? settings.advancedDefaults.provider;
+    const session = await this.getOrCreateAgentSession(input.projectId, provider);
+    const approval = this.queueApproval(session, {
+      kind: "codebase-scan",
+      requestedByDirectorId: null,
+      targetDirectorId: "rd-director",
+      summary: this.buildApprovalSummary("Confirm codebase scan", "Generate a stored-data outline report for this project"),
+      draftMessage: "Scan the project and generate the latest stored-data outline report.",
+      draftPayload: {
+        action: "generateOutlineReport",
+        input,
+      },
+    });
+    await this.saveAgentSession(input.projectId, session);
+    this.emit({
+      type: "toast",
+      level: "info",
+      message: `Queued approval: ${approval.summary}`,
+    });
+    return await this.store.readOutlineReport(input.projectId);
   }
 
   async readEnvFile(projectId: string): Promise<EnvFileSnapshot> {
@@ -1630,7 +2560,7 @@ ${FLOWCHART_PROMPT_RULES}
     return this.store.getPendingUpdate(projectId);
   }
 
-  async applyPlannedUpdate(projectId: string): Promise<{ started: true }> {
+  private async applyPlannedUpdateNow(projectId: string): Promise<{ started: true }> {
     await this.ensureInitialized();
     const pending = await this.store.getPendingUpdate(projectId);
     if (!pending) throw new Error("No pending planned update found.");
@@ -1662,7 +2592,34 @@ Changes described: ${pending.description}`;
     await this.store.deletePendingUpdate(projectId);
     this.emit({ type: "project.pendingUpdate", projectId, pending: null });
 
-    return this.startPlan(input);
+    return this.startPlanNow(input);
+  }
+
+  async applyPlannedUpdate(projectId: string): Promise<{ started: true }> {
+    await this.ensureInitialized();
+    const pending = await this.store.getPendingUpdate(projectId);
+    if (!pending) throw new Error("No pending planned update found.");
+
+    const settings = await this.store.readSettings();
+    const session = await this.getOrCreateAgentSession(projectId, settings.advancedDefaults.provider);
+    const approval = this.queueApproval(session, {
+      kind: "apply-pending-update",
+      requestedByDirectorId: null,
+      targetDirectorId: "programming-director",
+      summary: this.buildApprovalSummary("Confirm planned update", pending.description),
+      draftMessage: pending.description,
+      draftPayload: {
+        action: "applyPendingUpdate",
+        projectId,
+      },
+    });
+    await this.saveAgentSession(projectId, session);
+    this.emit({
+      type: "toast",
+      level: "info",
+      message: `Queued approval: ${approval.summary}`,
+    });
+    return { started: true };
   }
 
   // --- Agent System ---
@@ -1674,6 +2631,11 @@ Changes described: ${pending.description}`;
       // Migration safety for older sessions missing slack fields
       session.slackMessages = session.slackMessages ?? [];
       session.slackActiveDirectorId = session.slackActiveDirectorId ?? "project-manager";
+      session.slackPresenceGuestId = sanitizeSlackPresenceGuestId(session.slackPresenceGuestId).directorId;
+      session.pendingApprovals = sanitizePendingApprovals(session.pendingApprovals).pendingApprovals;
+      session.directorStateMap = sanitizeDirectorStateMap(session.directorStateMap).directorStateMap;
+      session.danArchivedNotes = sanitizeDanArchivedNotes(session.danArchivedNotes).notes;
+      session.danInternalNotes = sanitizeDanArchivedNotes(session.danInternalNotes).notes;
     }
     return session;
   }
@@ -1697,6 +2659,7 @@ Changes described: ${pending.description}`;
       scratchpad: [],
       plannedUpdates: [],
       corePillars: [],
+      currentCorePillars: [],
       coreDetailsChatHistory: [],
       attachedMaterials: [],
       miscMaterials: [],
@@ -1723,13 +2686,433 @@ Changes described: ${pending.description}`;
       rdFocusMode: null,
       validationFocusMode: null,
       danInternalNotes: [],
+      danArchivedNotes: [],
+      deletedNotes: [],
+      pingTaskContext: null,
+      bradTaskContext: null,
       projectCategory: "general-project",
       dynamicSubAgents: [],
       slackMessages: [],
       slackActiveDirectorId: "project-manager",
+      slackPresenceGuestId: null,
+      pendingApprovals: [],
+      directorSettingsOverrides: {},
+      directorStateMap: {},
       // Deprecated aliases
       agentConversations: {},
       activeAgentId: null,
+    };
+  }
+
+  private async getOrCreateAgentSession(projectId: string, provider: AiProvider): Promise<AgentSession> {
+    const existing = await this.store.getAgentSession(projectId);
+    return existing ?? this.createEmptyAgentSession(projectId, provider);
+  }
+
+  private async saveAgentSession(projectId: string, session: AgentSession): Promise<void> {
+    session.updatedAt = new Date().toISOString();
+    await this.store.saveAgentSession(session);
+    this.emit({ type: "agent.session", projectId, session });
+  }
+
+  private buildApprovalSummary(prefix: string, detail: string): string {
+    const normalizedDetail = detail.trim().replace(/\s+/g, " ");
+    if (!normalizedDetail) {
+      return prefix;
+    }
+    const clipped = normalizedDetail.length > 160 ? `${normalizedDetail.slice(0, 157).trimEnd()}...` : normalizedDetail;
+    return `${prefix}: ${clipped}`;
+  }
+
+  private queueApproval(
+    session: AgentSession,
+    input: {
+      kind: PendingApprovalKind;
+      requestedByDirectorId: DirectorId | null;
+      targetDirectorId: DirectorId | null;
+      summary: string;
+      draftMessage?: string | null;
+      draftPayload?: Record<string, unknown> | null;
+    },
+  ): PendingApproval {
+    return createPendingApproval(session, input);
+  }
+
+  private parseDraftPayloadText(text: string | null | undefined): Record<string, unknown> | null {
+    if (text == null) {
+      return null;
+    }
+    const trimmed = text.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    const parsed = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error("Approval payload must be a JSON object.");
+    }
+    return parsed as Record<string, unknown>;
+  }
+
+  private appendSlackSystemMessage(session: AgentSession, content: string): SlackChatMessage {
+    const message: SlackChatMessage = {
+      id: randomUUID(),
+      role: "system",
+      directorId: null,
+      content,
+      createdAt: new Date().toISOString(),
+    };
+    session.slackMessages.push(message);
+    return message;
+  }
+
+  private queueSlackDirectorApproval(
+    session: AgentSession,
+    input: {
+      requestedByDirectorId: DirectorId;
+      targetDirectorId: DirectorId;
+      provider: AiProvider;
+      model: SlackDirectorApprovalPayload["model"];
+      claudeModel: SlackDirectorApprovalPayload["claudeModel"];
+      message: string;
+      mode?: SlackDirectorMode;
+    },
+  ): PendingApproval {
+    const descriptor = buildSlackApprovalDescriptor({
+      targetDirectorId: input.targetDirectorId,
+      provider: input.provider,
+      model: input.model,
+      claudeModel: input.claudeModel,
+      message: input.message,
+      mode: input.mode,
+    });
+
+    return this.queueApproval(session, {
+      kind: descriptor.kind,
+      requestedByDirectorId: input.requestedByDirectorId,
+      targetDirectorId: input.targetDirectorId,
+      summary: this.buildApprovalSummary(descriptor.summaryPrefix, input.message),
+      draftMessage: input.message,
+      draftPayload: descriptor.payload as unknown as Record<string, unknown>,
+    });
+  }
+
+  private async getSlackProviderPreflightErrors(settings: Settings): Promise<Record<AiProvider, string | null>> {
+    const [codexStatus, claudeStatus] = await Promise.all([
+      this.codex.getAuthStatus(settings),
+      this.claude.getAuthStatus(settings),
+    ]);
+
+    return {
+      codex: getProviderPreflightError("codex", codexStatus),
+      claude: getProviderPreflightError("claude", claudeStatus),
+    };
+  }
+
+  private appendSlackAssistantMessage(
+    session: AgentSession,
+    directorId: DirectorId,
+    content: string,
+    extra: {
+      status?: SlackChatMessage["status"];
+      metadata?: SlackChatMessage["metadata"];
+    } = {},
+  ): SlackChatMessage {
+    const message: SlackChatMessage = {
+      id: randomUUID(),
+      role: "assistant",
+      directorId,
+      content,
+      createdAt: new Date().toISOString(),
+      status: extra.status,
+      metadata: extra.metadata ?? null,
+    };
+    session.slackMessages.push(message);
+    return message;
+  }
+
+  private async stageSlackDirectorIntroSequence(
+    session: AgentSession,
+    projectId: string,
+    directorId: DirectorId,
+  ): Promise<SlackChatMessage> {
+    const introPlaceholder = this.appendSlackAssistantMessage(session, directorId, "", { status: "working" });
+    await this.saveAgentSession(projectId, session);
+    await delay(SLACK_DIRECTOR_INTRO_DELAY_MS);
+
+    introPlaceholder.content = getDirectorMetadata(directorId).introMessage;
+    introPlaceholder.status = "complete";
+    await this.saveAgentSession(projectId, session);
+    await delay(SLACK_DIRECTOR_POST_INTRO_DELAY_MS);
+
+    const responsePlaceholder = this.appendSlackAssistantMessage(session, directorId, "", { status: "working" });
+    await this.saveAgentSession(projectId, session);
+    return responsePlaceholder;
+  }
+
+  private applySlackDirectorStateSnapshot(
+    session: AgentSession,
+    directorId: DirectorId,
+    parsed: Record<string, unknown>,
+  ): void {
+    const currentState = normalizeNonEmptyString(parsed.currentState);
+    const idealState = normalizeNonEmptyString(parsed.idealState);
+    if (currentState == null && idealState == null) {
+      return;
+    }
+
+    const existing = session.directorStateMap?.[directorId];
+    persistDirectorStateSnapshot(session, directorId, {
+      currentState: currentState ?? existing?.currentState ?? null,
+      idealState: idealState ?? existing?.idealState ?? null,
+      assumptions: existing?.assumptions ?? [],
+    });
+  }
+
+  private applyDanSlackTurnState(
+    session: AgentSession,
+    parsed: Record<string, unknown>,
+  ): void {
+    const notesToAppend = Array.isArray(parsed.notesToAppend)
+      ? parsed.notesToAppend.filter((note): note is string => typeof note === "string" && note.trim().length > 0)
+      : [];
+    const activeNotes = mergeTrimmedNotes(session.danInternalNotes, notesToAppend);
+    const conversationStatus = normalizeDanConversationStatus(parsed.conversationStatus);
+
+    if (conversationStatus === "ready-to-draft") {
+      const draftCoreDetails = normalizeDanDraftCoreDetails(parsed.draftCoreDetails);
+      if (draftCoreDetails) {
+        applyDanDraftToSession(session, draftCoreDetails, {
+          currentState: normalizeNonEmptyString(parsed.currentState),
+          idealState: normalizeNonEmptyString(parsed.idealState),
+        });
+      }
+      archiveDanNotes(session, "slack draft processed", activeNotes);
+      return;
+    }
+
+    session.danInternalNotes = activeNotes;
+    this.applySlackDirectorStateSnapshot(session, "creative-director", parsed);
+  }
+
+  private async runSlackDirectorTurn(args: {
+    session: AgentSession;
+    project: Project;
+    settings: Settings;
+    provider: AiProvider;
+    model: string;
+    claudeModel: string;
+    directorId: DirectorId;
+    userMessage: string;
+    mode?: SlackDirectorMode;
+  }): Promise<{
+    assistantMessage: SlackChatMessage;
+    parsed: Record<string, unknown>;
+  }> {
+    const {
+      session,
+      project,
+      settings,
+      provider,
+      model,
+      claudeModel,
+      directorId,
+      userMessage,
+      mode = "codebase-analysis",
+    } = args;
+
+    session.slackMessages = session.slackMessages ?? [];
+    session.slackActiveDirectorId = directorId;
+    session.slackPresenceGuestId = directorId === "project-manager" ? null : directorId;
+    session.directorSettingsOverrides = session.directorSettingsOverrides ?? {};
+    session.directorStateMap = session.directorStateMap ?? {};
+    session.danInternalNotes = session.danInternalNotes ?? [];
+    session.danArchivedNotes = session.danArchivedNotes ?? [];
+
+    const overrides = session.directorSettingsOverrides[directorId];
+    const isTodd = directorId === "rd-director";
+    const researchMode = isTodd && mode === "internet-research";
+    const schema = directorId === "creative-director"
+      ? danSlackSchema
+      : researchMode
+        ? researchSlackSchema
+        : directorSlackSchema;
+    const prompt = buildReworkedSlackDirectorPrompt(directorId, project.name, session, { mode });
+    const directorMeta = getDirectorMetadata(directorId);
+    const invitedDirector = directorId !== "project-manager";
+
+    let responsePlaceholder: SlackChatMessage;
+    if (invitedDirector) {
+      responsePlaceholder = await this.stageSlackDirectorIntroSequence(session, project.id, directorId);
+    } else {
+      responsePlaceholder = this.appendSlackAssistantMessage(session, directorId, "", { status: "working" });
+      await this.saveAgentSession(project.id, session);
+    }
+
+    const cleanJson = (raw: string) => {
+      let cleaned = raw.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "");
+      const jsonStart = cleaned.indexOf("{");
+      const jsonEnd = cleaned.lastIndexOf("}");
+      if (jsonStart >= 0 && jsonEnd > jsonStart) cleaned = cleaned.slice(jsonStart, jsonEnd + 1);
+      return JSON.parse(cleaned) as Record<string, unknown>;
+    };
+
+    const providerLabels: Record<AiProvider, string> = {
+      codex: "Codex",
+      claude: "Claude",
+    };
+    const preflightErrors = await this.getSlackProviderPreflightErrors(settings);
+    const attemptPlan = buildSlackProviderAttemptPlan(provider, preflightErrors);
+    const failures: Array<{ provider: AiProvider; reason: string }> = [];
+    const reasoningEffort = resolveDirectorRuntime(session, directorId).reasoningEffort;
+
+    for (const attemptProvider of attemptPlan.attemptedProviders) {
+      try {
+        const service = this.aiService(attemptProvider);
+        const resolvedModel = attemptProvider === "claude"
+          ? overrides?.claudeModel ?? claudeModel
+          : overrides?.model ?? model;
+        const toddCodexOpts = researchMode ? { networkAccess: true } : undefined;
+        const toddClaudeOpts = researchMode ? { allowedTools: "WebSearch,WebFetch", maxTurns: 10 } : undefined;
+        const rawResult = await service.runOneShot(
+          project,
+          settings,
+          prompt,
+          resolvedModel,
+          schema,
+          reasoningEffort,
+          attemptProvider === "claude" ? toddClaudeOpts : toddCodexOpts,
+        );
+        const parsed = validateSlackTurnParsedResponse(cleanJson(rawResult), directorId, mode);
+        const response = sanitizeSlackResponseContent(parsed.response, directorId);
+
+        if (directorId === "creative-director") {
+          this.applyDanSlackTurnState(session, parsed);
+        } else {
+          this.applySlackDirectorStateSnapshot(session, directorId, parsed);
+        }
+
+        responsePlaceholder.content = response;
+        responsePlaceholder.status = "complete";
+        responsePlaceholder.metadata = researchMode
+          ? {
+              type: "research-result",
+              researchPrompt: userMessage,
+              generalSummary: typeof parsed.generalSummary === "string" ? parsed.generalSummary : "",
+              projectSummary: typeof parsed.projectSummary === "string" ? parsed.projectSummary : "",
+            }
+          : null;
+        if (invitedDirector) {
+          this.appendSlackAssistantMessage(session, directorId, directorMeta.outroMessage, { status: "complete" });
+        }
+        session.slackPresenceGuestId = null;
+        session.slackActiveDirectorId = "project-manager";
+        await this.saveAgentSession(project.id, session);
+        return {
+          assistantMessage: responsePlaceholder,
+          parsed,
+        };
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : "Something went wrong.";
+        failures.push({ provider: attemptProvider, reason });
+      }
+    }
+
+    const details: string[] = [];
+    if (attemptPlan.requestedProviderError) {
+      details.push(`${providerLabels[provider]} unavailable: ${attemptPlan.requestedProviderError}`);
+    }
+    for (const failure of failures) {
+      details.push(`${providerLabels[failure.provider]} failed: ${failure.reason}`);
+    }
+    if (
+      attemptPlan.fallbackProvider
+      && attemptPlan.fallbackProvider !== provider
+      && attemptPlan.fallbackProviderError
+      && !failures.some((failure) => failure.provider === attemptPlan.fallbackProvider)
+    ) {
+      details.push(`${providerLabels[attemptPlan.fallbackProvider]} unavailable: ${attemptPlan.fallbackProviderError}`);
+    }
+
+    const finalError = details.length > 0
+      ? `${DIRECTOR_NAMES[directorId]} could not reply. ${details.join(" ")}`
+      : `${DIRECTOR_NAMES[directorId]} could not reply because no provider was ready.`;
+    responsePlaceholder.content = finalError;
+    responsePlaceholder.status = "complete";
+    responsePlaceholder.metadata = null;
+    if (invitedDirector) {
+      this.appendSlackAssistantMessage(session, directorId, directorMeta.outroMessage, { status: "complete" });
+    }
+    session.slackPresenceGuestId = null;
+    session.slackActiveDirectorId = "project-manager";
+    await this.saveAgentSession(project.id, session);
+    throw new Error(finalError);
+  }
+
+  private async runSlackDirectorChain(args: {
+    session: AgentSession;
+    project: Project;
+    settings: Settings;
+    provider: AiProvider;
+    model: string;
+    claudeModel: string;
+    directorId: DirectorId;
+    userMessage: string;
+    mode?: SlackDirectorMode;
+  }): Promise<{
+    message: SlackChatMessage;
+    handoffTo: DirectorId | null;
+    handoffReason: string | null;
+    chainedMessages: SlackChatMessage[];
+  }> {
+    let currentDirectorId = args.directorId;
+    let currentMessage = args.userMessage;
+    let currentMode = args.mode ?? resolveSlackDirectorMode(currentDirectorId, currentMessage);
+    let primaryMessage: SlackChatMessage | null = null;
+    const chainedMessages: SlackChatMessage[] = [];
+    let lastHandoffTo: DirectorId | null = null;
+    let lastHandoffReason: string | null = null;
+
+    for (let hop = 0; hop < AUTO_SLACK_HANDOFF_LIMIT; hop += 1) {
+      const { assistantMessage, parsed } = await this.runSlackDirectorTurn({
+        session: args.session,
+        project: args.project,
+        settings: args.settings,
+        provider: args.provider,
+        model: args.model,
+        claudeModel: args.claudeModel,
+        directorId: currentDirectorId,
+        userMessage: currentMessage,
+        mode: currentMode,
+      });
+
+      if (!primaryMessage) {
+        primaryMessage = assistantMessage;
+      } else {
+        chainedMessages.push(assistantMessage);
+      }
+
+      lastHandoffTo = normalizeDirectorId(typeof parsed.handoffTo === "string" ? parsed.handoffTo : null);
+      lastHandoffReason = typeof parsed.handoffReason === "string" ? parsed.handoffReason : null;
+
+      if (!lastHandoffTo || !canAutoRouteSlackDirector(lastHandoffTo) || lastHandoffTo === currentDirectorId) {
+        break;
+      }
+
+      currentDirectorId = lastHandoffTo;
+      currentMessage = lastHandoffReason ?? assistantMessage.content;
+      currentMode = resolveSlackDirectorMode(currentDirectorId, currentMessage);
+    }
+
+    if (!primaryMessage) {
+      throw new Error("Slack director chain did not produce a response.");
+    }
+
+    return {
+      message: primaryMessage,
+      handoffTo: lastHandoffTo,
+      handoffReason: lastHandoffReason,
+      chainedMessages,
     };
   }
 
@@ -1760,7 +3143,14 @@ Explore the codebase as needed, then produce:
 Your final answer must be ONLY strict JSON (no markdown fences) matching:
 {"function": string, "thesis": string, "corePillars": [{"name": string, "function": string, "thesis": string}], "fullFlow": string}`;
 
-    const rawResult = await service.runOneShot(project, settings, prompt, model, generateCoreDetailsSchema);
+    const rawResult = await service.runOneShot(
+      project,
+      settings,
+      prompt,
+      model,
+      generateCoreDetailsSchema,
+      resolveDirectorRuntime(existing, "creative-director").reasoningEffort,
+    );
     const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
 
     const session = existing ?? this.createEmptyAgentSession(project.id, provider);
@@ -1771,7 +3161,7 @@ Your final answer must be ONLY strict JSON (no markdown fences) matching:
       summary: `${parsed.corePillars.length} pillars`,
       status: "assumed",
     };
-    session.corePillars = (parsed.corePillars as { name: string; function: string; thesis: string }[]).map((p) => ({
+    session.corePillars = (parsed.corePillars as { name: string; function: string; thesis: string }[]).map((p, idx) => ({
       id: randomUUID(),
       name: p.name,
       pillarType: "core" as const,
@@ -1782,6 +3172,9 @@ Your final answer must be ONLY strict JSON (no markdown fences) matching:
       vibes: [],
       description: null,
       connectedPillarIds: [],
+      assumptionText: null,
+      assumptionSource: null,
+      order: idx,
     }));
     session.updatedAt = new Date().toISOString();
 
@@ -1879,6 +3272,14 @@ Your final answer must be ONLY strict JSON (no markdown fences) matching:
     if (!session) throw new Error("No agent session found for this program.");
 
     session.stages[input.stage].confirmed = input.confirmation;
+
+    // Archive Dan's notes on core-detail confirmation (notes → deletedNotes lifecycle)
+    if (session.danInternalNotes.length > 0 && ["function", "thesis", "core_pillars", "full_flow"].includes(input.stage)) {
+      session.danArchivedNotes = session.danArchivedNotes ?? [];
+      const timestamp = new Date().toISOString();
+      session.danArchivedNotes.push(...session.danInternalNotes.map((n) => `[${timestamp} | ${input.stage} confirmed] ${n}`));
+      session.danInternalNotes = [];
+    }
 
     // Add confirmation marker to unified conversation
     session.unifiedMessages.push({
@@ -2035,8 +3436,18 @@ Your response must be ONLY strict JSON (no markdown fences):
                 thesis: { summary: c.thesis, status: "assumed" as const },
                 corePillars: [],
                 fullFlow: null,
+                vibes: [],
+                description: null,
+                connectedPillarIds: [],
+                assumptionText: null,
+                assumptionSource: null,
               })),
               fullFlow: null,
+              vibes: [],
+              description: null,
+              connectedPillarIds: [],
+              assumptionText: null,
+              assumptionSource: null,
             }));
           }
 
@@ -2174,6 +3585,7 @@ Instructions:
       await this.appendProjectSkillInstructions(prompt, project, input.provider, settings),
       model,
       agentIterationsSchema,
+      resolveDirectorRuntime(session, "rd-director").reasoningEffort,
     );
     const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
 
@@ -2259,7 +3671,7 @@ Instructions:
     return session;
   }
 
-  async agentExecuteUpdate(input: AgentExecuteUpdateInput): Promise<{ started: true }> {
+  private async agentExecuteUpdateNow(input: AgentExecuteUpdateInput): Promise<{ started: true }> {
     await this.ensureInitialized();
     const session = await this.store.getAgentSession(input.projectId);
     if (!session) throw new Error("No agent session found for this program.");
@@ -2287,6 +3699,7 @@ Instructions:
 
     const prompt = `${confirmedContext.length > 0 ? `Project context:\n${confirmedContext.join("\n")}\n\n` : ""}Update: ${update.title}\n\nDescription: ${update.description}`;
 
+    const programmingDefaults = resolveDirectorRuntime(session, "programming-director");
     const planInput: StartPlanInput = {
       projectId: input.projectId,
       provider: input.provider,
@@ -2294,13 +3707,41 @@ Instructions:
       speed: "normal",
       model: input.model,
       claudeModel: input.claudeModel,
-      reasoningEffort: "high",
-      planningMode: "review",
+      reasoningEffort: programmingDefaults.reasoningEffort,
+      planningMode: programmingDefaults.planningMode,
       autoApprove: false,
       contextPaths: [],
     };
 
-    return this.startPlan(planInput);
+    return this.startPlanNow(planInput);
+  }
+
+  async agentExecuteUpdate(input: AgentExecuteUpdateInput): Promise<{ started: true }> {
+    await this.ensureInitialized();
+    const session = await this.store.getAgentSession(input.projectId);
+    if (!session) throw new Error("No agent session found for this program.");
+
+    const update = session.plannedUpdates.find((item) => item.id === input.updateId);
+    if (!update) throw new Error("Planned update not found.");
+
+    const approval = this.queueApproval(session, {
+      kind: "agent-update",
+      requestedByDirectorId: "programming-director",
+      targetDirectorId: "programming-director",
+      summary: this.buildApprovalSummary("Confirm agent update", update.title),
+      draftMessage: update.description,
+      draftPayload: {
+        action: "agentExecuteUpdate",
+        input,
+      },
+    });
+    await this.saveAgentSession(input.projectId, session);
+    this.emit({
+      type: "toast",
+      level: "info",
+      message: `Queued approval: ${approval.summary}`,
+    });
+    return { started: true };
   }
 
   async agentResetStage(projectId: string, stage: AgentStage): Promise<AgentSession> {
@@ -2424,6 +3865,7 @@ Your response must be ONLY strict JSON (no markdown fences):
       await this.appendProjectSkillInstructions(prompt, project, input.provider, settings),
       model,
       agentCoreDetailsSchema,
+      resolveDirectorRuntime(session, "creative-director").reasoningEffort,
     );
     const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
 
@@ -2471,6 +3913,9 @@ Your response must be ONLY strict JSON (no markdown fences):
               vibes: [],
               description: null,
               connectedPillarIds: [],
+              assumptionText: null,
+              assumptionSource: null,
+              order: session.corePillars.length,
             });
           }
         }
@@ -2541,6 +3986,7 @@ Response must be strict JSON only (no markdown fences).`;
       await this.appendProjectSkillInstructions(prompt, project, input.provider, settings),
       model,
       agentSuggestUpdateSchema,
+      resolveDirectorRuntime(session, "creative-director").reasoningEffort,
     );
     const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
 
@@ -2634,6 +4080,9 @@ Response must be strict JSON only (no markdown fences).`;
             vibes: [],
             description: null,
             connectedPillarIds: [],
+            assumptionText: null,
+            assumptionSource: null,
+            order: session.corePillars.length,
           });
         }
       }
@@ -2846,20 +4295,40 @@ Your response must be ONLY strict JSON (no markdown fences).`;
 
     const prompt = buildDirectorPrompt(input.directorId, input.focusMode, project.name, session);
     const service = this.aiService(input.provider);
-    const model = input.provider === "claude" ? input.claudeModel : input.model;
+    const dirOverrides = session.directorSettingsOverrides?.[input.directorId];
+    const model = input.provider === "claude"
+      ? (dirOverrides?.claudeModel ?? input.claudeModel)
+      : (dirOverrides?.model ?? input.model);
     const schema = getSchemaForDirector(input.directorId, input.focusMode);
 
-    const rawResult = await service.runOneShot(project, settings, prompt, model, schema);
-    const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
-
-    const assistantMessage = {
+    // Emit intro message before AI call
+    const introMsg: AgentChatMessage = {
       id: randomUUID(),
       role: "assistant" as const,
-      content: parsed.response,
+      content: getDirectorMetadata(input.directorId).introMessage,
       createdAt: new Date().toISOString(),
+      status: "working",
     };
-    conv.messages.push(assistantMessage);
-    session.unifiedMessages.push(assistantMessage);
+    conv.messages.push(introMsg);
+    session.unifiedMessages.push(introMsg);
+    session.updatedAt = new Date().toISOString();
+    await this.store.saveAgentSession(session);
+    this.emit({ type: "agent.session", projectId: input.projectId, session });
+
+    const rawResult = await service.runOneShot(
+      project,
+      settings,
+      prompt,
+      model,
+      schema,
+      resolveDirectorRuntime(session, input.directorId).reasoningEffort,
+    );
+    const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
+
+    // Update intro message with final response
+    introMsg.content = sanitizeSlackResponseContent(parsed.response, input.directorId);
+    introMsg.status = "complete";
+    const assistantMessage = introMsg;
 
     // Process structured data from director response
     let routeSuggestion: DirectorChatResponse["routeSuggestion"] = null;
@@ -2883,12 +4352,19 @@ Your response must be ONLY strict JSON (no markdown fences).`;
 
     // Dan — Vibes mode: pillar descriptions
     if (input.directorId === "creative-director" && input.focusMode === "vibes" && parsed.pillarDescriptions) {
-      for (const pd of parsed.pillarDescriptions) {
-        const pillar = findPillarById(session.corePillars, pd.pillarId);
-        if (pillar) {
-          pillar.description = pd.description;
-        }
-      }
+      const descriptions = parsed.pillarDescriptions as Array<{ pillarId: string; description: string }>;
+      this.queueApproval(session, {
+        kind: "store-data",
+        requestedByDirectorId: input.directorId,
+        targetDirectorId: input.directorId,
+        summary: this.buildApprovalSummary("Confirm pillar description edits", parsed.response),
+        draftMessage: parsed.response,
+        draftPayload: {
+          action: "applyStoredData",
+          dataType: "pillarDescriptions",
+          descriptions,
+        },
+      });
     }
 
     // Todd — Research mode: feasibility assessments
@@ -2902,8 +4378,19 @@ Your response must be ONLY strict JSON (no markdown fences).`;
         costNotes: a.costNotes ?? null,
         status: "assumed" as const,
       }));
-      session.feasibilityAssessments = [...session.feasibilityAssessments, ...assessments];
       structuredData = { type: "feasibility", assessments };
+      this.queueApproval(session, {
+        kind: "store-data",
+        requestedByDirectorId: input.directorId,
+        targetDirectorId: input.directorId,
+        summary: this.buildApprovalSummary("Confirm feasibility notes", parsed.response),
+        draftMessage: parsed.response,
+        draftPayload: {
+          action: "applyStoredData",
+          dataType: "feasibilityAssessments",
+          assessments: [...session.feasibilityAssessments, ...assessments],
+        },
+      });
     }
 
     // Todd — Version Planning mode: versions
@@ -2916,13 +4403,24 @@ Your response must be ONLY strict JSON (no markdown fences).`;
         status: "assumed" as const,
         order: idx,
       }));
-      session.versions = versions;
       structuredData = { type: "versions", versions };
+      this.queueApproval(session, {
+        kind: "store-data",
+        requestedByDirectorId: input.directorId,
+        targetDirectorId: input.directorId,
+        summary: this.buildApprovalSummary("Confirm version plan", parsed.response),
+        draftMessage: parsed.response,
+        draftPayload: {
+          action: "applyStoredData",
+          dataType: "versions",
+          versions,
+        },
+      });
     }
 
     // Todd — Update Planning mode: updates
     if (input.directorId === "rd-director" && input.focusMode === "update-planning" && parsed.updates) {
-      const updates: VersionUpdate[] = parsed.updates.map((u: { title: string; description: string; versionLabel: string; dependencies?: string[] }, idx: number) => {
+      const updates: VersionUpdate[] = parsed.updates.map((u: { title: string; description: string; versionLabel: string; dependencies?: string[]; pillarIds?: string[] }, idx: number) => {
         const version = session!.versions.find((v) => v.label === u.versionLabel);
         return {
           id: randomUUID(),
@@ -2932,10 +4430,22 @@ Your response must be ONLY strict JSON (no markdown fences).`;
           order: idx,
           status: "pending" as const,
           dependencies: u.dependencies ?? [],
+          pillarIds: u.pillarIds ?? [],
         };
       });
-      session.versionUpdates = updates;
       structuredData = { type: "versionUpdates", updates };
+      this.queueApproval(session, {
+        kind: "store-data",
+        requestedByDirectorId: input.directorId,
+        targetDirectorId: input.directorId,
+        summary: this.buildApprovalSummary("Confirm update plan", parsed.response),
+        draftMessage: parsed.response,
+        draftPayload: {
+          action: "applyStoredData",
+          dataType: "versionUpdates",
+          updates,
+        },
+      });
     }
 
     // Ping — routed updates & execution
@@ -2963,8 +4473,19 @@ Your response must be ONLY strict JSON (no markdown fences).`;
         screenshotPaths: [],
         createdAt: new Date().toISOString(),
       };
-      session.validationResults.push(result);
       structuredData = { type: "validationResult", result };
+      this.queueApproval(session, {
+        kind: "store-data",
+        requestedByDirectorId: input.directorId,
+        targetDirectorId: input.directorId,
+        summary: this.buildApprovalSummary("Confirm validation result", result.summary || parsed.response),
+        draftMessage: parsed.response,
+        draftPayload: {
+          action: "applyStoredData",
+          dataType: "validationResults",
+          results: [...session.validationResults, result],
+        },
+      });
     }
 
     // Brad — Compare mode: comparison
@@ -3012,19 +4533,17 @@ Your response must be ONLY strict JSON (no markdown fences).`;
   async slackChat(input: SlackChatInput): Promise<SlackChatResponse> {
     await this.ensureInitialized();
     const settings = await this.store.readSettings();
-    await this.requireProviderReady(input.provider, settings);
     const project = await this.requireProject(input.projectId);
 
-    let session = await this.store.getAgentSession(input.projectId);
-    if (!session) {
-      session = this.createEmptyAgentSession(input.projectId, input.provider);
-    }
-    // Migration safety
+    const session = await this.getOrCreateAgentSession(input.projectId, input.provider);
     session.slackMessages = session.slackMessages ?? [];
     session.slackActiveDirectorId = session.slackActiveDirectorId ?? "project-manager";
+    session.slackPresenceGuestId = session.slackPresenceGuestId ?? null;
+    session.pendingApprovals = session.pendingApprovals ?? [];
+    session.directorSettingsOverrides = session.directorSettingsOverrides ?? {};
+    session.directorStateMap = session.directorStateMap ?? {};
     session.provider = input.provider;
 
-    // Create user message and push immediately
     const userMessage: SlackChatMessage = {
       id: randomUUID(),
       role: "user",
@@ -3034,44 +4553,697 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     };
     session.slackMessages.push(userMessage);
 
-    // Determine which director responds
-    const respondingDirectorId: DirectorId =
+    const currentDirectorId: DirectorId =
       input.targetDirectorId && input.targetDirectorId !== "project-manager"
         ? input.targetDirectorId
         : "project-manager";
-    session.slackActiveDirectorId = respondingDirectorId;
-
-    // Build prompt and call AI
-    const prompt = buildSlackDirectorPrompt(respondingDirectorId, project.name, session);
-    const service = this.aiService(input.provider);
-    const model = input.provider === "claude" ? input.claudeModel : input.model;
-
-    const rawResult = await service.runOneShot(project, settings, prompt, model, directorSlackSchema);
-    const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
-
-    const assistantMessage: SlackChatMessage = {
-      id: randomUUID(),
-      role: "assistant",
-      directorId: respondingDirectorId,
-      content: parsed.response,
-      createdAt: new Date().toISOString(),
-    };
-    session.slackMessages.push(assistantMessage);
-
-    const handoffTo: DirectorId | null = parsed.handoffTo ?? null;
-    const handoffReason: string | null = parsed.handoffReason ?? null;
-
-    session.updatedAt = new Date().toISOString();
-    await this.store.saveAgentSession(session);
-    this.emit({ type: "agent.session", projectId: input.projectId, session });
+    const initialMode = currentDirectorId === "project-manager"
+      ? "codebase-analysis"
+      : resolveSlackDirectorMode(currentDirectorId, input.message);
+    const { message, handoffTo, handoffReason, chainedMessages } = await this.runSlackDirectorChain({
+      session,
+      project,
+      settings,
+      provider: input.provider,
+      model: input.model,
+      claudeModel: input.claudeModel,
+      directorId: currentDirectorId,
+      userMessage: input.message,
+      mode: initialMode,
+    });
 
     return {
       sessionId: session.id,
-      directorId: respondingDirectorId,
-      message: assistantMessage,
+      directorId: currentDirectorId,
+      message,
       handoffTo,
       handoffReason,
+      chainedMessages,
     };
+  }
+
+  async deleteSlackMessages(input: DeleteSlackMessagesInput): Promise<void> {
+    await this.ensureInitialized();
+    const session = await this.store.getAgentSession(input.projectId);
+    if (!session) throw new Error("No agent session found");
+    const idsToDelete = new Set(input.messageIds);
+    session.slackMessages = session.slackMessages.filter((m) => !idsToDelete.has(m.id));
+    session.updatedAt = new Date().toISOString();
+    await this.store.saveAgentSession(session);
+    this.emit({ type: "agent.session", projectId: input.projectId, session });
+  }
+
+  async clearSlackMessages(projectId: string): Promise<void> {
+    await this.ensureInitialized();
+    const session = await this.store.getAgentSession(projectId);
+    if (!session) throw new Error("No agent session found");
+    session.slackMessages = [];
+    session.slackActiveDirectorId = "project-manager";
+    session.slackPresenceGuestId = null;
+    session.updatedAt = new Date().toISOString();
+    await this.store.saveAgentSession(session);
+    this.emit({ type: "agent.session", projectId, session });
+  }
+
+  private async refreshProjectNow(input: RefreshProjectInput): Promise<void> {
+    await this.ensureInitialized();
+    const settings = await this.store.readSettings();
+    await this.requireProviderReady(input.provider, settings);
+    const project = await this.requireProject(input.projectId);
+
+    let session = await this.store.getAgentSession(input.projectId);
+    if (!session) {
+      session = this.createEmptyAgentSession(input.projectId, input.provider);
+    }
+    session.slackMessages = session.slackMessages ?? [];
+    session.directorStateMap = session.directorStateMap ?? {};
+    session.currentCorePillars = session.currentCorePillars ?? [];
+    session.danArchivedNotes = session.danArchivedNotes ?? [];
+    session.slackPresenceGuestId = null;
+    session.provider = input.provider;
+
+    const service = this.aiService(input.provider);
+    const model = input.provider === "claude" ? input.claudeModel : input.model;
+    const cleanJson = (raw: string) => {
+      let cleaned = raw.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "");
+      const jsonStart = cleaned.indexOf("{");
+      const jsonEnd = cleaned.lastIndexOf("}");
+      if (jsonStart >= 0 && jsonEnd > jsonStart) cleaned = cleaned.slice(jsonStart, jsonEnd + 1);
+      return JSON.parse(cleaned);
+    };
+    const sortPillarsByOrder = (pillars: CorePillar[]): CorePillar[] =>
+      [...pillars].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+    const persistSession = async () => {
+      session.updatedAt = new Date().toISOString();
+      await this.store.saveAgentSession(session);
+      this.emit({ type: "agent.session", projectId: input.projectId, session });
+    };
+
+    // System message: refresh started
+    session.slackMessages.push({
+      id: randomUUID(),
+      role: "system",
+      directorId: null,
+      content: "Project refresh started...",
+      createdAt: new Date().toISOString(),
+    });
+    await persistSession();
+
+    // --- STEP 1: Todd scans the codebase ---
+    session.slackPresenceGuestId = "rd-director";
+    session.slackActiveDirectorId = "rd-director";
+    let toddResponsePlaceholder: SlackChatMessage | null = null;
+    toddResponsePlaceholder = await this.stageSlackDirectorIntroSequence(session, input.projectId, "rd-director");
+
+    let scanSummary = "";
+    let detectedFeatures: string[] = [];
+    let toddSame: string[] = [];
+    let toddUpdated: string[] = [];
+    let passToCreativeDirector: string | null = null;
+    let refreshedToddCurrentState: string | null = null;
+    let proposedCurrentCorePillars: CorePillar[] = [];
+    let proposedIdealCorePillars: CorePillar[] | null = null;
+    let proposedCorePillarsSummary: string | null = null;
+
+    try {
+      // Generate outline report for file tree
+      const outlineReport = await this.generateOutlineReportNow({
+        projectId: input.projectId,
+        provider: input.provider,
+        model: input.model,
+        claudeModel: input.claudeModel,
+      });
+      const fileTree = outlineReport.storedData.map((n) => n.label).join(", ");
+
+      const previousState = session.directorStateMap["rd-director"]?.currentState ?? null;
+
+      const toddPrompt = `You are Todd, the R&D Director for "${project.name}".
+You are performing a project refresh — scanning the actual codebase to map its current state.
+
+Project path: ${project.localPath}
+File structure: ${fileTree}
+${outlineReport.connections.length > 0 ? `Connections: ${outlineReport.connections.map((c) => `${c.name} (${c.kind})`).join(", ")}` : ""}
+
+${formatCoreDetails(session) || "No existing core details mapped yet."}
+${previousState ? `\nYour previous understanding of the codebase:\n${previousState}` : "\nThis is your first scan of this codebase."}
+
+Your task:
+1. Summarize the current state of the codebase
+2. Identify the major features/systems you can detect from the file structure
+3. Compare against your previous understanding (if any). Report what is the SAME and what has been UPDATED (additions, changes, or removals).
+4. If there are meaningful updates that would affect the creative understanding of the project, provide a concise note for the Creative Director (Dan) in "passToCreativeDirector".
+
+Return your response as a conversational summary of what you found.`;
+
+      const toddRaw = await service.runOneShot(
+        project,
+        settings,
+        toddPrompt,
+        model,
+        refreshScanSchema,
+        "high",
+      );
+      const toddParsed = cleanJson(toddRaw);
+      scanSummary = toddParsed.scanSummary ?? "";
+      detectedFeatures = Array.isArray(toddParsed.detectedFeatures) ? toddParsed.detectedFeatures : [];
+      toddSame = Array.isArray(toddParsed.same) ? toddParsed.same : [];
+      toddUpdated = Array.isArray(toddParsed.updated) ? toddParsed.updated : [];
+      passToCreativeDirector = toddParsed.passToCreativeDirector ?? null;
+      refreshedToddCurrentState = typeof toddParsed.currentState === "string" ? toddParsed.currentState : scanSummary;
+      if (toddResponsePlaceholder) {
+        toddResponsePlaceholder.content = sanitizeSlackResponseContent(toddParsed.response, "rd-director");
+        toddResponsePlaceholder.status = "complete";
+        toddResponsePlaceholder.metadata = {
+          type: "refresh-update",
+          directorId: "rd-director",
+          same: toddSame,
+          updated: toddUpdated,
+          summary: scanSummary,
+        };
+      }
+      this.appendSlackAssistantMessage(
+        session,
+        "rd-director",
+        getDirectorMetadata("rd-director").outroMessage,
+        { status: "complete" },
+      );
+      session.slackPresenceGuestId = null;
+      await persistSession();
+
+      // If Todd has updates for Dan, post a handoff message
+      if (toddUpdated.length > 0 && passToCreativeDirector) {
+        session.slackMessages.push({
+          id: randomUUID(),
+          role: "assistant",
+          directorId: "rd-director",
+          content: `Dan, heads up — ${passToCreativeDirector}`,
+          createdAt: new Date().toISOString(),
+          status: "complete",
+        });
+        await persistSession();
+      }
+    } catch (error) {
+      const errorMessage = `Scan encountered an error: ${error instanceof Error ? error.message : "Unknown error"}`;
+      if (toddResponsePlaceholder) {
+        toddResponsePlaceholder.content = errorMessage;
+        toddResponsePlaceholder.status = "complete";
+        toddResponsePlaceholder.metadata = null;
+      } else {
+        this.appendSlackAssistantMessage(session, "rd-director", errorMessage, { status: "complete" });
+      }
+      this.appendSlackAssistantMessage(
+        session,
+        "rd-director",
+        getDirectorMetadata("rd-director").outroMessage,
+        { status: "complete" },
+      );
+      session.slackPresenceGuestId = null;
+      await persistSession();
+      return;
+    }
+
+    // --- STEP 2: Dan maps current core-details from Todd's scan ---
+    session.slackPresenceGuestId = "creative-director";
+    session.slackActiveDirectorId = "creative-director";
+    let danResponsePlaceholder: SlackChatMessage | null = null;
+    danResponsePlaceholder = await this.stageSlackDirectorIntroSequence(session, input.projectId, "creative-director");
+
+    try {
+      const idealPillarsContext = session.corePillars.length > 0
+        ? `\nIdeal (Goal) Core Pillars (what the user wants the project to become):\n${session.corePillars.map((p, i) => `${i + 1}. ${p.name}: ${p.function?.summary ?? "TBD"}`).join("\n")}`
+        : "\nNo ideal core pillars have been discussed with the user yet.";
+
+      const currentPillarsContext = session.currentCorePillars.length > 0
+        ? `\nPrevious Current-State Core Pillars (from last scan):\n${session.currentCorePillars.map((p, i) => `${i + 1}. ${p.name}: ${p.function?.summary ?? "TBD"}`).join("\n")}`
+        : "\nNo previous current-state pillars mapped yet.";
+
+      const danPrompt = `You are Dan, the Creative Director for "${project.name}".
+Todd just scanned the codebase and found the following:
+
+Scan Summary: ${scanSummary}
+Detected Features: ${detectedFeatures.join(", ")}
+${toddUpdated.length > 0 ? `\nChanges Todd found: ${toddUpdated.join(", ")}` : "\nTodd found no changes from his previous understanding."}
+${idealPillarsContext}
+${currentPillarsContext}
+
+Your task:
+You need to understand the project from a CREATIVE CONCEPTUAL standpoint — you don't need the code map, just the project's creative structure.
+
+1. Map the detected features into a core-detail pillar structure representing WHERE THE PROJECT IS RIGHT NOW (current state).
+2. For each pillar, provide a name, function summary, and thesis.
+3. Include nested children where obvious sub-systems exist.
+4. Order pillars by their position in the user flow (assign an "order" number starting from 1).
+5. Compare against your previous current-state understanding. Report what is the SAME and what has been UPDATED.
+6. All of this is ASSUMED until the user confirms.
+7. Provide a conversational response. If the user has discussed ideal/goal core-details, mention how the current state relates to where the project is going.
+
+IMPORTANT: These are CURRENT-STATE pillars only — where the project IS right now. The ideal/goal pillars (where the project is GOING) are separate and come from user discussions.
+These mappings are REFRESH-ASSUMED. They can flow downstream for current-state recovery only — not for build execution until the user confirms.`;
+
+      const danRaw = await service.runOneShot(
+        project,
+        settings,
+        danPrompt,
+        model,
+        refreshMappingSchema,
+        "xhigh",
+      );
+      const danParsed = cleanJson(danRaw);
+      const danSame: string[] = Array.isArray(danParsed.same) ? danParsed.same : [];
+      const danUpdated: string[] = Array.isArray(danParsed.updated) ? danParsed.updated : [];
+      if (danResponsePlaceholder) {
+        danResponsePlaceholder.content = sanitizeSlackResponseContent(danParsed.response, "creative-director");
+        danResponsePlaceholder.status = "complete";
+        danResponsePlaceholder.metadata = {
+          type: "refresh-update",
+          directorId: "creative-director",
+          same: danSame,
+          updated: danUpdated,
+          summary: "Mapped current-state core pillars from scan",
+        };
+      }
+
+      // Map Dan's output into currentCorePillars (NOT corePillars — those are the ideal set)
+      if (Array.isArray(danParsed.currentCorePillars)) {
+        proposedCurrentCorePillars = sortPillarsByOrder(
+          danParsed.currentCorePillars.map((p: { name: string; function?: string | null; thesis?: string | null; order?: number; children?: { name: string; function?: string | null; order?: number }[] }) => ({
+            id: randomUUID(),
+            name: p.name,
+            pillarType: "core" as const,
+            function: p.function ? { summary: p.function, status: "assumed" as const } : null,
+            thesis: p.thesis ? { summary: p.thesis, status: "assumed" as const } : null,
+            corePillars: sortPillarsByOrder(
+              (p.children ?? []).map((c: { name: string; function?: string | null; order?: number }) => ({
+                id: randomUUID(),
+                name: c.name,
+                pillarType: "core" as const,
+                function: c.function ? { summary: c.function, status: "assumed" as const } : null,
+                thesis: null,
+                corePillars: [],
+                fullFlow: null,
+                vibes: [],
+                description: null,
+                connectedPillarIds: [],
+                assumptionText: null,
+                assumptionSource: "dan" as const,
+                order: c.order ?? 0,
+              })),
+            ),
+            fullFlow: null,
+            vibes: [],
+            description: null,
+            connectedPillarIds: [],
+            assumptionText: `Auto-mapped from codebase scan`,
+            assumptionSource: "dan" as const,
+            order: p.order ?? 0,
+          })),
+        );
+
+        // If no ideal pillars exist yet, also populate corePillars as a starting point
+        if (session.corePillars.length === 0) {
+          proposedIdealCorePillars = proposedCurrentCorePillars.map((p) => ({
+            ...p,
+            id: randomUUID(),
+            corePillars: p.corePillars.map((c) => ({ ...c, id: randomUUID() })),
+          }));
+
+          const pillarNames = proposedIdealCorePillars.map((p) => p.name).join(", ");
+          proposedCorePillarsSummary = `${proposedIdealCorePillars.length} pillars (assumed from refresh): ${pillarNames}`;
+        }
+        session.currentCorePillars = proposedCurrentCorePillars;
+        if (Array.isArray(proposedIdealCorePillars) && session.corePillars.length === 0) {
+          session.corePillars = proposedIdealCorePillars;
+        }
+        if (proposedCorePillarsSummary) {
+          session.stages.core_pillars.confirmed = {
+            summary: proposedCorePillarsSummary,
+            status: "assumed",
+          };
+        }
+        persistDirectorStateSnapshot(session, "rd-director", {
+          currentState: refreshedToddCurrentState,
+          idealState: session.directorStateMap["rd-director"]?.idealState ?? null,
+          assumptions: [`Scan performed ${new Date().toISOString()}`],
+        });
+        persistDirectorStateSnapshot(session, "creative-director", {
+          currentState: typeof danParsed.currentState === "string"
+            ? danParsed.currentState
+            : `Mapped ${proposedCurrentCorePillars.length} current-state core pillars from scan`,
+          idealState: typeof danParsed.idealState === "string"
+            ? danParsed.idealState
+            : session.directorStateMap["creative-director"]?.idealState ?? null,
+          assumptions: ["Current-state pillar data is assumed from refresh and still needs user confirmation."],
+        });
+      }
+      session.projectCategory = this.deriveProjectCategoryFromSession(session);
+      this.appendSlackAssistantMessage(
+        session,
+        "creative-director",
+        getDirectorMetadata("creative-director").outroMessage,
+        { status: "complete" },
+      );
+      session.slackPresenceGuestId = null;
+      await persistSession();
+    } catch (error) {
+      const errorMessage = `Mapping encountered an error: ${error instanceof Error ? error.message : "Unknown error"}`;
+      if (danResponsePlaceholder) {
+        danResponsePlaceholder.content = errorMessage;
+        danResponsePlaceholder.status = "complete";
+        danResponsePlaceholder.metadata = null;
+      } else {
+        this.appendSlackAssistantMessage(session, "creative-director", errorMessage, { status: "complete" });
+      }
+      this.appendSlackAssistantMessage(
+        session,
+        "creative-director",
+        getDirectorMetadata("creative-director").outroMessage,
+        { status: "complete" },
+      );
+      session.slackPresenceGuestId = null;
+      await persistSession();
+      return;
+    }
+
+    // --- STEP 3: Jeff summarizes and asks user to confirm ---
+    const jeffWorkingMsg = this.appendSlackAssistantMessage(session, "project-manager", "", { status: "working" });
+    session.slackActiveDirectorId = "project-manager";
+    session.slackPresenceGuestId = null;
+    await persistSession();
+
+    try {
+      const currentPillarsList = proposedCurrentCorePillars
+        .map((p) => `- ${p.name}: ${p.function?.summary ?? "TBD"}`)
+        .join("\n");
+      const idealPillarsSource = proposedIdealCorePillars ?? session.corePillars;
+      const idealPillarsList = idealPillarsSource.length > 0
+        ? idealPillarsSource.map((p) => `- ${p.name}: ${p.function?.summary ?? "TBD"}`).join("\n")
+        : "(none yet)";
+
+      const jeffPrompt = `You are Jeff, the Project Manager for "${project.name}".
+A project refresh was just completed. Here's what happened:
+
+Todd's Scan Summary: ${scanSummary}
+${toddUpdated.length > 0 ? `Todd found updates: ${toddUpdated.join(", ")}` : "Todd found no changes from his previous understanding."}
+
+Dan mapped the following CURRENT-STATE core pillars (where the project is right now):
+${currentPillarsList}
+
+Ideal core pillars (where the project is going):
+${idealPillarsList}
+
+Your task:
+1. Present a clear, friendly summary to the user of what the refresh found
+2. Briefly mention what Todd and Dan discovered
+3. Explain that all refresh findings are ASSUMED until they confirm them — no downstream build work can proceed from assumed data
+4. Ask the user if it's good to confirm (lock in these assumptions)
+5. Let them know they can click "View Update" on Todd's or Dan's messages to see the details
+
+Be concise and conversational.`;
+
+      const jeffRaw = await service.runOneShot(
+        project,
+        settings,
+        jeffPrompt,
+        model,
+        directorSlackSchema,
+        "high",
+      );
+      const jeffParsed = cleanJson(jeffRaw);
+      jeffWorkingMsg.content = sanitizeSlackResponseContent(jeffParsed.response, "project-manager");
+      jeffWorkingMsg.status = "complete";
+      jeffWorkingMsg.metadata = null;
+      await persistSession();
+    } catch (error) {
+      jeffWorkingMsg.content = `Summary encountered an error: ${error instanceof Error ? error.message : "Unknown error"}`;
+      jeffWorkingMsg.status = "complete";
+      jeffWorkingMsg.metadata = null;
+      await persistSession();
+    }
+  }
+
+  async refreshProject(input: RefreshProjectInput): Promise<void> {
+    await this.ensureInitialized();
+    await this.refreshProjectNow(input);
+  }
+
+  async listPendingApprovals(input: ListPendingApprovalsInput): Promise<PendingApproval[]> {
+    const session = await this.getAgentSession(input.projectId);
+    return session?.pendingApprovals ?? [];
+  }
+
+  async revisePendingApproval(input: RevisePendingApprovalInput): Promise<AgentSession> {
+    await this.ensureInitialized();
+    const session = await this.store.getAgentSession(input.projectId);
+    if (!session) throw new Error("No agent session found for this project.");
+
+    const patch: {
+      summary?: string;
+      draftMessage?: string | null;
+      draftPayload?: Record<string, unknown> | null;
+      targetDirectorId?: DirectorId | null;
+    } = {};
+    if (input.summary !== undefined) patch.summary = input.summary;
+    if (input.draftMessage !== undefined) patch.draftMessage = input.draftMessage;
+    if (input.draftPayloadText !== undefined) patch.draftPayload = this.parseDraftPayloadText(input.draftPayloadText);
+    if (input.targetDirectorId !== undefined) patch.targetDirectorId = input.targetDirectorId;
+
+    const approval = updatePendingApproval(session, input.approvalId, patch);
+    if (!approval) throw new Error("Pending approval not found.");
+
+    await this.saveAgentSession(input.projectId, session);
+    return session;
+  }
+
+  async deferPendingApproval(input: UpdatePendingApprovalStatusInput): Promise<AgentSession> {
+    await this.ensureInitialized();
+    const session = await this.store.getAgentSession(input.projectId);
+    if (!session) throw new Error("No agent session found for this project.");
+    const approval = updatePendingApproval(session, input.approvalId, { status: "later" });
+    if (!approval) throw new Error("Pending approval not found.");
+    await this.saveAgentSession(input.projectId, session);
+    return session;
+  }
+
+  async dismissPendingApproval(input: UpdatePendingApprovalStatusInput): Promise<AgentSession> {
+    await this.ensureInitialized();
+    const session = await this.store.getAgentSession(input.projectId);
+    if (!session) throw new Error("No agent session found for this project.");
+    const removed = removePendingApproval(session, input.approvalId);
+    if (!removed) throw new Error("Pending approval not found.");
+    await this.saveAgentSession(input.projectId, session);
+    return session;
+  }
+
+  async approvePendingApproval(input: ApprovePendingApprovalInput): Promise<AgentSession> {
+    await this.ensureInitialized();
+    const session = await this.store.getAgentSession(input.projectId);
+    if (!session) throw new Error("No agent session found for this project.");
+    const approval = getPendingApproval(session, input.approvalId);
+    if (!approval) throw new Error("Pending approval not found.");
+    return this.executePendingApproval(session, approval);
+  }
+
+  private async executePendingApproval(session: AgentSession, approval: PendingApproval): Promise<AgentSession> {
+    const projectId = session.projectId;
+    const removed = removePendingApproval(session, approval.id);
+    if (!removed) {
+      throw new Error("Pending approval not found.");
+    }
+
+    const payload = removed.draftPayload ?? {};
+    const action = payload.action;
+
+    if (action === "startPlan") {
+      await this.saveAgentSession(projectId, session);
+      await this.startPlanNow(payload.input as StartPlanInput);
+      return session;
+    }
+    if (action === "applyPendingUpdate") {
+      await this.saveAgentSession(projectId, session);
+      await this.applyPlannedUpdateNow(projectId);
+      return session;
+    }
+    if (action === "generateOutlineReport") {
+      await this.saveAgentSession(projectId, session);
+      await this.generateOutlineReportNow(payload.input as GenerateProjectOutlineReportInput);
+      return session;
+    }
+    if (action === "agentExecuteUpdate") {
+      await this.saveAgentSession(projectId, session);
+      await this.agentExecuteUpdateNow(payload.input as AgentExecuteUpdateInput);
+      return session;
+    }
+    if (action === "routeUpdateToProgramming") {
+      await this.saveAgentSession(projectId, session);
+      await this.routeUpdateToProgrammingNow(payload.input as RouteUpdateToProgrammingInput);
+      return session;
+    }
+    if (action === "runValidation") {
+      await this.saveAgentSession(projectId, session);
+      await this.runValidationNow(payload.input as RunValidationInput);
+      return (await this.getAgentSession(projectId)) ?? session;
+    }
+    if (action === "refreshProject") {
+      await this.saveAgentSession(projectId, session);
+      await this.refreshProjectNow(payload.input as RefreshProjectInput);
+      return (await this.getAgentSession(projectId)) ?? session;
+    }
+    if (action === "applyStoredData") {
+      await this.applyStoredDataApproval(session, removed);
+      return session;
+    }
+    if (action === "runSlackDirector") {
+      await this.runSlackDirectorApproval(session, removed);
+      return (await this.getAgentSession(projectId)) ?? session;
+    }
+
+    await this.saveAgentSession(projectId, session);
+    throw new Error("Unsupported approval action.");
+  }
+
+  private async applyStoredDataApproval(session: AgentSession, approval: PendingApproval): Promise<void> {
+    const payload = approval.draftPayload ?? {};
+    const dataType = payload.dataType;
+    session.directorStateMap = session.directorStateMap ?? {};
+
+    if (dataType === "feasibilityAssessments" && Array.isArray(payload.assessments)) {
+      session.feasibilityAssessments = payload.assessments as FeasibilityAssessment[];
+      session.projectCategory = this.deriveProjectCategoryFromSession(session);
+      await this.saveAgentSession(session.projectId, session);
+      return;
+    }
+    if (dataType === "versions" && Array.isArray(payload.versions)) {
+      session.versions = payload.versions as VersionPlan[];
+      session.projectCategory = this.deriveProjectCategoryFromSession(session);
+      await this.saveAgentSession(session.projectId, session);
+      return;
+    }
+    if (dataType === "versionUpdates" && Array.isArray(payload.updates)) {
+      session.versionUpdates = payload.updates as VersionUpdate[];
+      session.projectCategory = this.deriveProjectCategoryFromSession(session);
+      await this.saveAgentSession(session.projectId, session);
+      return;
+    }
+    if (dataType === "validationResults" && Array.isArray(payload.results)) {
+      session.validationResults = payload.results as ValidationResult[];
+      session.projectCategory = this.deriveProjectCategoryFromSession(session);
+      await this.saveAgentSession(session.projectId, session);
+      return;
+    }
+    if (dataType === "pillarDescriptions" && Array.isArray(payload.descriptions)) {
+      for (const item of payload.descriptions as Array<{ pillarId: string; description: string }>) {
+        const pillar = findPillarById(session.corePillars, item.pillarId);
+        if (pillar) pillar.description = item.description;
+      }
+      await this.saveAgentSession(session.projectId, session);
+      return;
+    }
+    if (dataType === "directorStateSnapshot") {
+      const directorId = normalizeDirectorId(typeof payload.directorId === "string" ? payload.directorId : null);
+      if (!directorId) {
+        throw new Error("Stored director state is missing a valid director.");
+      }
+
+      const existing = session.directorStateMap[directorId] ?? {
+        currentState: null,
+        idealState: null,
+        assumptions: [],
+      };
+      session.directorStateMap[directorId] = {
+        currentState: typeof payload.currentState === "string" ? payload.currentState : existing.currentState,
+        idealState: typeof payload.idealState === "string" ? payload.idealState : existing.idealState,
+        assumptions: Array.isArray(payload.assumptions)
+          ? payload.assumptions.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+          : existing.assumptions,
+      };
+      await this.saveAgentSession(session.projectId, session);
+      return;
+    }
+    if (dataType === "refreshCurrentState") {
+      if (Array.isArray(payload.currentCorePillars)) {
+        session.currentCorePillars = payload.currentCorePillars as CorePillar[];
+      }
+      if (Array.isArray(payload.corePillars) && session.corePillars.length === 0) {
+        session.corePillars = payload.corePillars as CorePillar[];
+      }
+      if (payload.corePillarsSummary && typeof payload.corePillarsSummary === "string") {
+        session.stages.core_pillars.confirmed = {
+          summary: payload.corePillarsSummary,
+          status: "assumed",
+        };
+      }
+      if (Array.isArray(payload.directorStateUpdates)) {
+        for (const rawUpdate of payload.directorStateUpdates as Array<Record<string, unknown>>) {
+          const directorId = normalizeDirectorId(typeof rawUpdate.directorId === "string" ? rawUpdate.directorId : null);
+          if (!directorId) {
+            continue;
+          }
+
+          const existing = session.directorStateMap[directorId] ?? {
+            currentState: null,
+            idealState: null,
+            assumptions: [],
+          };
+          session.directorStateMap[directorId] = {
+            currentState: typeof rawUpdate.currentState === "string" ? rawUpdate.currentState : existing.currentState,
+            idealState: typeof rawUpdate.idealState === "string" ? rawUpdate.idealState : existing.idealState,
+            assumptions: Array.isArray(rawUpdate.assumptions)
+              ? rawUpdate.assumptions.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+              : existing.assumptions,
+          };
+        }
+      }
+      session.projectCategory = this.deriveProjectCategoryFromSession(session);
+      await this.saveAgentSession(session.projectId, session);
+      return;
+    }
+
+    throw new Error("Unsupported stored-data approval.");
+  }
+
+  private async runSlackDirectorApproval(session: AgentSession, approval: PendingApproval): Promise<void> {
+    const payload = approval.draftPayload ?? {};
+    const directorId = normalizeDirectorId(typeof payload.directorId === "string" ? payload.directorId : null);
+    if (!directorId) {
+      throw new Error("Slack approval is missing a target director.");
+    }
+
+    const project = await this.requireProject(session.projectId);
+    const settings = await this.store.readSettings();
+    const provider = payload.provider === "claude" ? "claude" : "codex";
+    const model = typeof payload.model === "string" ? payload.model : settings.advancedDefaults.model;
+    const claudeModel = typeof payload.claudeModel === "string" ? payload.claudeModel : settings.advancedDefaults.claudeModel;
+    const userMessage = typeof payload.message === "string" ? payload.message : approval.draftMessage ?? "";
+    const mode = normalizeSlackDirectorMode(
+      directorId,
+      payload.mode,
+      payload.allowInternetResearch,
+    );
+
+    this.appendSlackSystemMessage(
+      session,
+      `Approval confirmed. Handing this to ${DIRECTOR_NAMES[directorId]}.`,
+    );
+    await this.saveAgentSession(project.id, session);
+
+    const { handoffTo, handoffReason } = await this.runSlackDirectorChain({
+      session,
+      project,
+      settings,
+      provider,
+      model,
+      claudeModel,
+      directorId,
+      userMessage,
+      mode,
+    });
+    if (handoffTo && !canAutoRouteSlackDirector(handoffTo)) {
+      this.appendSlackSystemMessage(
+        session,
+        `${DIRECTOR_NAMES[directorId]} suggested a manual handoff to ${DIRECTOR_NAMES[handoffTo]}${handoffReason ? `: ${handoffReason}` : ""}`,
+      );
+      await this.saveAgentSession(project.id, session);
+    }
   }
 
   private deriveProjectCategoryFromSession(session: AgentSession): ProjectCategory {
@@ -3106,6 +5278,46 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     else if (directorId === "rd-director") session.rdFocusMode = focusMode as RdFocusMode;
     else if (directorId === "validation-director") session.validationFocusMode = focusMode as ValidationFocusMode;
 
+    session.updatedAt = new Date().toISOString();
+    await this.store.saveAgentSession(session);
+    this.emit({ type: "agent.session", projectId, session });
+    return session;
+  }
+
+  async updateDirectorSettings(
+    projectId: string,
+    directorId: DirectorId,
+    overrides: DirectorSettingsOverride,
+  ): Promise<AgentSession> {
+    await this.ensureInitialized();
+    let session = await this.store.getAgentSession(projectId);
+    if (!session) throw new Error("No agent session found for this project.");
+    session.directorSettingsOverrides = session.directorSettingsOverrides ?? {};
+    session.directorSettingsOverrides[directorId] = {
+      ...session.directorSettingsOverrides[directorId],
+      ...overrides,
+    };
+    session.updatedAt = new Date().toISOString();
+    await this.store.saveAgentSession(session);
+    this.emit({ type: "agent.session", projectId, session });
+    return session;
+  }
+
+  async updateDirectorState(
+    projectId: string,
+    directorId: DirectorId,
+    state: Partial<DirectorStateSnapshot>,
+  ): Promise<AgentSession> {
+    await this.ensureInitialized();
+    const session = await this.store.getAgentSession(projectId);
+    if (!session) throw new Error("No agent session found for this project.");
+    session.directorStateMap = session.directorStateMap ?? {};
+    const existing = session.directorStateMap[directorId] ?? { currentState: null, idealState: null, assumptions: [] };
+    session.directorStateMap[directorId] = {
+      currentState: state.currentState !== undefined ? state.currentState : existing.currentState,
+      idealState: state.idealState !== undefined ? state.idealState : existing.idealState,
+      assumptions: state.assumptions !== undefined ? state.assumptions : existing.assumptions,
+    };
     session.updatedAt = new Date().toISOString();
     await this.store.saveAgentSession(session);
     this.emit({ type: "agent.session", projectId, session });
@@ -3163,6 +5375,50 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     return session;
   }
 
+  async createPillarSubAgents(input: CreatePillarSubAgentsInput): Promise<AgentSession> {
+    await this.ensureInitialized();
+    const session = await this.store.getAgentSession(input.projectId);
+    if (!session) throw new Error("No agent session found for this project.");
+
+    const corePillars = session.corePillars.filter((p) => p.pillarType === "core");
+    if (corePillars.length === 0) throw new Error("No core pillars found. Define core pillars first.");
+
+    const departments: DirectorId[] = ["creative-director", "rd-director", "programming-director", "validation-director"];
+
+    for (const pillar of corePillars) {
+      for (const deptId of departments) {
+        // Skip if a sub-agent for this pillar+department already exists
+        const exists = session.dynamicSubAgents.some(
+          (sa) => sa.sourcePillarId === pillar.id && sa.departmentDirectorId === deptId,
+        );
+        if (exists) continue;
+
+        session.dynamicSubAgents.push({
+          id: randomUUID(),
+          skillId: "",
+          name: `${pillar.name} — ${DIRECTOR_LABELS[deptId]}`,
+          role: pillar.function?.summary ?? `Sub-agent for ${pillar.name}`,
+          assignedUpdates: [],
+          conversation: [],
+          sourcePillarId: pillar.id,
+          departmentDirectorId: deptId,
+          modelTier: "mini",
+        });
+      }
+    }
+
+    // Clean up orphaned sub-agents (source pillar no longer exists)
+    const pillarIds = new Set(session.corePillars.map((p) => p.id));
+    session.dynamicSubAgents = session.dynamicSubAgents.filter(
+      (sa) => !sa.sourcePillarId || pillarIds.has(sa.sourcePillarId),
+    );
+
+    session.updatedAt = new Date().toISOString();
+    await this.store.saveAgentSession(session);
+    this.emit({ type: "agent.session", projectId: input.projectId, session });
+    return session;
+  }
+
   async confirmAgentData(input: ConfirmAgentDataInput): Promise<AgentSession> {
     await this.ensureInitialized();
     const session = await this.store.getAgentSession(input.projectId);
@@ -3192,21 +5448,39 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     return session;
   }
 
-  async routeUpdateToProgramming(input: RouteUpdateToProgrammingInput): Promise<{ started: true }> {
+  private async routeUpdateToProgrammingNow(input: RouteUpdateToProgrammingInput): Promise<{ started: true }> {
     await this.ensureInitialized();
     const session = await this.store.getAgentSession(input.projectId);
     if (!session) throw new Error("No agent session found for this program.");
+
+    // Confirmation flow enforcement: block build if core pillars are still assumed
+    const hasUnconfirmedPillars = session.corePillars.some((p) =>
+      (p.function?.status === "assumed") || (p.thesis?.status === "assumed")
+    );
+    if (hasUnconfirmedPillars) {
+      throw new Error("Some core pillars are still marked as assumed. Please confirm them with Dan before building. Ask Jeff \"anything for me to confirm?\" to see what needs attention.");
+    }
 
     const update = session.versionUpdates.find((u) => u.id === input.updateId);
     if (!update) throw new Error("Update not found.");
 
     update.status = "in_progress";
+
+    // Populate Ping's short-horizon task context
+    session.pingTaskContext = {
+      currentTask: `${update.title}: ${update.description}`,
+      lastResult: session.pingTaskContext?.lastResult ?? null,
+      lastFailureReason: session.pingTaskContext?.lastFailureReason ?? null,
+      toddUpdateExplanation: update.description,
+      relevantPillarIds: update.pillarIds ?? [],
+    };
+
     session.updatedAt = new Date().toISOString();
     await this.store.saveAgentSession(session);
     this.emit({ type: "agent.session", projectId: input.projectId, session });
 
     // Bridge to existing execution pipeline
-    return this.agentExecuteUpdate({
+    return this.agentExecuteUpdateNow({
       projectId: input.projectId,
       updateId: input.updateId,
       provider: input.provider,
@@ -3215,7 +5489,35 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     });
   }
 
-  async runValidation(input: RunValidationInput): Promise<ValidationResult> {
+  async routeUpdateToProgramming(input: RouteUpdateToProgrammingInput): Promise<{ started: true }> {
+    await this.ensureInitialized();
+    const session = await this.store.getAgentSession(input.projectId);
+    if (!session) throw new Error("No agent session found for this program.");
+
+    const update = session.versionUpdates.find((item) => item.id === input.updateId);
+    if (!update) throw new Error("Version update not found.");
+
+    const approval = this.queueApproval(session, {
+      kind: "agent-update",
+      requestedByDirectorId: "rd-director",
+      targetDirectorId: "programming-director",
+      summary: this.buildApprovalSummary("Confirm programming handoff", update.title),
+      draftMessage: update.description,
+      draftPayload: {
+        action: "routeUpdateToProgramming",
+        input,
+      },
+    });
+    await this.saveAgentSession(input.projectId, session);
+    this.emit({
+      type: "toast",
+      level: "info",
+      message: `Queued approval: ${approval.summary}`,
+    });
+    return { started: true };
+  }
+
+  private async runValidationNow(input: RunValidationInput): Promise<ValidationResult> {
     await this.ensureInitialized();
     const settings = await this.store.readSettings();
     const project = await this.requireProject(input.projectId);
@@ -3240,15 +5542,38 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       } catch { /* Playwright not available, continue without screenshots */ }
     }
 
-    // Ask AI to validate
-    const coreContext = formatCoreDetails(session);
+    // Populate Brad's short-horizon task context
+    const relatedUpdate = session.versionUpdates.find((u) => u.id === input.updateId);
+    session.bradTaskContext = {
+      currentTask: `Validating: ${relatedUpdate?.title ?? "project state"}`,
+      lastResult: session.bradTaskContext?.lastResult ?? null,
+      lastFailureReason: session.bradTaskContext?.lastFailureReason ?? null,
+      toddUpdateExplanation: relatedUpdate?.description ?? null,
+      relevantPillarIds: relatedUpdate?.pillarIds ?? [],
+    };
+
+    // Ask AI to validate — scoped to confirmed details for relevant pillars
+    const coreContext = formatScopedCoreDetails(session, {
+      confirmedOnly: true,
+      relevantPillarIds: session.bradTaskContext?.relevantPillarIds,
+    });
+    const updateExplanation = session.bradTaskContext?.toddUpdateExplanation
+      ? `\nTodd's explanation of what this update should achieve: ${session.bradTaskContext.toddUpdateExplanation}`
+      : "";
     const validationPrompt = input.validationType === "visual"
-      ? `You are validating the visual output of "${project.name}". Compare the current state against the intended visual direction and core pillars.\n${coreContext}\n${screenshotPaths.length > 0 ? `Screenshots taken: ${screenshotPaths.length}` : "No screenshots available."}\nDoes the current output match the intended visual direction? Report any mismatches.`
-      : `You are validating the functional output of "${project.name}". Test whether the latest update works correctly.\n${coreContext}\nDoes the feature work as intended? Report any issues.`;
+      ? `You are validating the visual output of "${project.name}". Compare the current state against the confirmed intended visual direction.\n${coreContext}${updateExplanation}\n${screenshotPaths.length > 0 ? `Screenshots taken: ${screenshotPaths.length}` : "No screenshots available."}\nDoes the current output match the intended visual direction? Report any mismatches.`
+      : `You are validating the functional output of "${project.name}". Test whether the latest update works correctly.\n${coreContext}${updateExplanation}\nDoes the feature work as intended? Report any issues.`;
 
     const service = this.aiService(input.provider);
     const model = input.provider === "claude" ? input.claudeModel : input.model;
-    const rawResult = await service.runOneShot(project, settings, validationPrompt, model, directorBradTestSchema);
+    const rawResult = await service.runOneShot(
+      project,
+      settings,
+      validationPrompt,
+      model,
+      directorBradTestSchema,
+      resolveDirectorRuntime(session, "validation-director").reasoningEffort,
+    );
     const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
 
     const result: ValidationResult = {
@@ -3262,11 +5587,46 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       createdAt: new Date().toISOString(),
     };
 
+    // Update Brad's short-horizon context with result
+    if (session.bradTaskContext) {
+      session.bradTaskContext.lastResult = result.summary;
+      session.bradTaskContext.lastFailureReason = result.passed ? null : result.details;
+    }
+
     session.validationResults.push(result);
     session.updatedAt = new Date().toISOString();
     await this.store.saveAgentSession(session);
     this.emit({ type: "agent.session", projectId: input.projectId, session });
     return result;
+  }
+
+  async runValidation(input: RunValidationInput): Promise<ValidationResult | null> {
+    await this.ensureInitialized();
+    const session = await this.store.getAgentSession(input.projectId);
+    if (!session) throw new Error("No agent session found for this program.");
+
+    const relatedUpdate = session.versionUpdates.find((item) => item.id === input.updateId);
+    const approval = this.queueApproval(session, {
+      kind: "validation",
+      requestedByDirectorId: "validation-director",
+      targetDirectorId: "validation-director",
+      summary: this.buildApprovalSummary(
+        `Confirm ${input.validationType} validation`,
+        relatedUpdate?.title ?? "Validate the latest project state",
+      ),
+      draftMessage: relatedUpdate?.description ?? null,
+      draftPayload: {
+        action: "runValidation",
+        input,
+      },
+    });
+    await this.saveAgentSession(input.projectId, session);
+    this.emit({
+      type: "toast",
+      level: "info",
+      message: `Queued approval: ${approval.summary}`,
+    });
+    return null;
   }
 
   async setValidationFrequency(input: SetValidationFrequencyInput): Promise<AgentSession> {
@@ -4095,7 +6455,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     return `${prompt}\n\nAttached skill instructions:\n${skillInstructions}`;
   }
 
-  async startPlan(input: StartPlanInput): Promise<{ started: true }> {
+  private async startPlanNow(input: StartPlanInput): Promise<{ started: true }> {
     const settings = await this.store.readSettings();
     await this.requireProviderReady(input.provider, settings);
     const project = await this.requireProject(input.projectId);
@@ -4151,6 +6511,29 @@ Your response must be ONLY strict JSON (no markdown fences).`;
         );
       });
 
+    return { started: true };
+  }
+
+  async startPlan(input: StartPlanInput): Promise<{ started: true }> {
+    await this.ensureInitialized();
+    const session = await this.getOrCreateAgentSession(input.projectId, input.provider);
+    const approval = this.queueApproval(session, {
+      kind: "plan",
+      requestedByDirectorId: null,
+      targetDirectorId: null,
+      summary: this.buildApprovalSummary("Confirm planning run", input.prompt),
+      draftMessage: input.prompt,
+      draftPayload: {
+        action: "startPlan",
+        input,
+      },
+    });
+    await this.saveAgentSession(input.projectId, session);
+    this.emit({
+      type: "toast",
+      level: "info",
+      message: `Queued approval: ${approval.summary}`,
+    });
     return { started: true };
   }
 

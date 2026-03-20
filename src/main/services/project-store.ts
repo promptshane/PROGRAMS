@@ -18,6 +18,7 @@ import type {
   FlowchartGraph,
   HomeScratchpadItem,
   PendingPlannedUpdate,
+  PendingApproval,
   PlanningSession,
   ProjectCategory,
   ProjectDirectorProgress,
@@ -33,6 +34,11 @@ import type {
   UpdateRecord,
   ValidationFocusMode,
 } from "@shared/types";
+import {
+  sanitizeDirectorStateMap,
+  sanitizePendingApprovals,
+  sanitizeSlackMessages,
+} from "@shared/agent-session";
 import { DEFAULT_SETTINGS, DEFAULT_SETUP_STATE } from "@main/defaults";
 import { ensureDirectory, pathExists } from "@main/utils/fs";
 
@@ -186,6 +192,7 @@ export class ProjectStore {
     await this.ensureSettings();
     await this.ensureSetupState();
     await this.normalizeTransientStatuses();
+    this.repairLegacyAgentSessions();
   }
 
   private migrate(): void {
@@ -308,6 +315,16 @@ export class ProjectStore {
     // Slack chat columns
     this.ensureColumn("agent_sessions", "slack_messages_json", "TEXT DEFAULT '[]'");
     this.ensureColumn("agent_sessions", "slack_active_director_id", "TEXT DEFAULT 'project-manager'");
+    this.ensureColumn("agent_sessions", "pending_approvals_json", "TEXT DEFAULT '[]'");
+    this.ensureColumn("agent_sessions", "director_settings_overrides_json", "TEXT DEFAULT '{}'");
+    this.ensureColumn("agent_sessions", "current_core_pillars_json", "TEXT DEFAULT '[]'");
+    // Refinement pass: persist directorStateMap + new fields
+    this.ensureColumn("agent_sessions", "director_state_map_json", "TEXT DEFAULT '{}'");
+    this.ensureColumn("agent_sessions", "deleted_notes_json", "TEXT DEFAULT '[]'");
+    this.ensureColumn("agent_sessions", "dan_archived_notes_json", "TEXT DEFAULT '[]'");
+    this.ensureColumn("agent_sessions", "ping_task_context_json", "TEXT");
+    this.ensureColumn("agent_sessions", "brad_task_context_json", "TEXT");
+    this.ensureColumn("agent_sessions", "slack_presence_guest_id", "TEXT");
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS home_scratchpad (
@@ -398,6 +415,47 @@ export class ProjectStore {
     }
 
     this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+
+  private repairLegacyAgentSessions(): void {
+    const rows = this.getRows<{
+      id: string;
+      slack_messages_json?: string;
+      director_state_map_json?: string;
+      pending_approvals_json?: string;
+    }>("SELECT id, slack_messages_json, director_state_map_json, pending_approvals_json FROM agent_sessions");
+
+    for (const row of rows) {
+      let changed = false;
+
+      const rawSlackMessages = row.slack_messages_json ? JSON.parse(row.slack_messages_json) : [];
+      const { messages: slackMessages, changed: slackChanged } = sanitizeSlackMessages(rawSlackMessages);
+      changed ||= slackChanged;
+
+      const rawDirectorStateMap = row.director_state_map_json ? JSON.parse(row.director_state_map_json) : {};
+      const { directorStateMap, changed: directorStateChanged } = sanitizeDirectorStateMap(rawDirectorStateMap);
+      changed ||= directorStateChanged;
+
+      const rawPendingApprovals = row.pending_approvals_json ? JSON.parse(row.pending_approvals_json) : [];
+      const { pendingApprovals, changed: approvalsChanged } = sanitizePendingApprovals(rawPendingApprovals);
+      changed ||= approvalsChanged;
+
+      if (!changed) {
+        continue;
+      }
+
+      this.run(
+        `UPDATE agent_sessions
+         SET slack_messages_json = ?, director_state_map_json = ?, pending_approvals_json = ?
+         WHERE id = ?`,
+        [
+          JSON.stringify(slackMessages),
+          JSON.stringify(directorStateMap),
+          JSON.stringify(pendingApprovals),
+          row.id,
+        ],
+      );
+    }
   }
 
   private persist(): void {
@@ -959,12 +1017,16 @@ export class ProjectStore {
 
     // Backward-compat: add pillarType to pillars that lack it
     const rawPillars: CorePillar[] = JSON.parse(row.core_pillars_json || "[]");
+    const { messages: slackMessages } = sanitizeSlackMessages(JSON.parse((r.slack_messages_json as string) || "[]"));
+    const { directorStateMap } = sanitizeDirectorStateMap(JSON.parse((r.director_state_map_json as string) || "{}"));
+    const { pendingApprovals } = sanitizePendingApprovals(JSON.parse((r.pending_approvals_json as string) || "[]"));
     const migratePillars = (pillars: CorePillar[]): CorePillar[] =>
-      pillars.map((p) => ({
+      pillars.map((p, idx) => ({
         ...p,
         pillarType: p.pillarType ?? "core",
         description: p.description ?? null,
         connectedPillarIds: p.connectedPillarIds ?? [],
+        order: p.order ?? idx,
         corePillars: migratePillars(p.corePillars ?? []),
       }));
 
@@ -978,6 +1040,7 @@ export class ProjectStore {
       scratchpad,
       plannedUpdates,
       corePillars: migratePillars(rawPillars),
+      currentCorePillars: migratePillars(JSON.parse((r.current_core_pillars_json as string) || "[]")),
       coreDetailsChatHistory: JSON.parse(row.core_details_chat_json || "[]"),
       attachedMaterials: JSON.parse(row.attached_materials_json || "[]"),
       miscMaterials: JSON.parse((r.misc_materials_json as string) || "[]"),
@@ -998,10 +1061,18 @@ export class ProjectStore {
       rdFocusMode: ((r.rd_focus_mode as string) || null) as RdFocusMode | null,
       validationFocusMode: ((r.validation_focus_mode as string) || null) as ValidationFocusMode | null,
       danInternalNotes: JSON.parse((r.dan_internal_notes_json as string) || "[]"),
+      danArchivedNotes: JSON.parse((r.dan_archived_notes_json as string) || "[]"),
+      deletedNotes: JSON.parse((r.deleted_notes_json as string) || "[]"),
+      pingTaskContext: JSON.parse((r.ping_task_context_json as string) || "null"),
+      bradTaskContext: JSON.parse((r.brad_task_context_json as string) || "null"),
       projectCategory: ((r.project_category as string) || "general-project") as ProjectCategory,
       dynamicSubAgents: JSON.parse((r.dynamic_sub_agents_json as string) || "[]") as DynamicSubAgent[],
-      slackMessages: JSON.parse((r.slack_messages_json as string) || "[]"),
+      slackMessages,
       slackActiveDirectorId: ((r.slack_active_director_id as string) || "project-manager") as DirectorId,
+      slackPresenceGuestId: ((r.slack_presence_guest_id as string | null) ?? null) as DirectorId | null,
+      pendingApprovals,
+      directorSettingsOverrides: JSON.parse((r.director_settings_overrides_json as string) || "{}"),
+      directorStateMap,
       // Deprecated aliases (kept for backward compat)
       agentConversations: directorConvos,
       activeAgentId: ((r.active_director_id as string | null) ?? (r.active_agent_id as string | null) ?? null) as DirectorId | null,
@@ -1040,8 +1111,11 @@ export class ProjectStore {
          director_conversations_json, director_progress_json,
          creative_focus_mode, rd_focus_mode, validation_focus_mode,
          dan_internal_notes_json, project_category, dynamic_sub_agents_json, active_director_id,
-         slack_messages_json, slack_active_director_id
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         slack_messages_json, slack_active_director_id, pending_approvals_json,
+         director_settings_overrides_json, current_core_pillars_json,
+         director_state_map_json, deleted_notes_json, dan_archived_notes_json,
+         ping_task_context_json, brad_task_context_json, slack_presence_guest_id
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         session.id,
         session.projectId,
@@ -1077,6 +1151,15 @@ export class ProjectStore {
         session.activeDirectorId,
         JSON.stringify(session.slackMessages ?? []),
         session.slackActiveDirectorId ?? "project-manager",
+        JSON.stringify(session.pendingApprovals ?? []),
+        JSON.stringify(session.directorSettingsOverrides ?? {}),
+        JSON.stringify(session.currentCorePillars ?? []),
+        JSON.stringify(session.directorStateMap ?? {}),
+        JSON.stringify(session.deletedNotes ?? []),
+        JSON.stringify(session.danArchivedNotes ?? []),
+        JSON.stringify(session.pingTaskContext),
+        JSON.stringify(session.bradTaskContext),
+        session.slackPresenceGuestId,
       ],
     );
   }

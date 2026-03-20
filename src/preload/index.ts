@@ -31,6 +31,12 @@ import type {
   DirectorId,
   SlackChatInput,
   SlackChatResponse,
+  PendingApproval,
+  ApprovePendingApprovalInput,
+  RevisePendingApprovalInput,
+  UpdatePendingApprovalStatusInput,
+  DeleteSlackMessagesInput,
+  DirectorSettingsOverride,
   ProjectCategory,
   RemoveVibeInput,
   RouteUpdateToProgrammingInput,
@@ -47,6 +53,7 @@ import type {
   DownloadSkillInput,
   GitHubLoginPrompt,
   InstallSkillCatalogInput,
+  ListPendingApprovalsInput,
   DroppedContextPathResult,
   DirectoryPickMode,
   DirectoryPickResult,
@@ -131,7 +138,7 @@ const api = {
   readHistory: (projectId: string) => ipcRenderer.invoke("projects.readHistory", projectId),
   readOutlineReport: (projectId: string): Promise<ProjectOutlineReport | null> =>
     ipcRenderer.invoke("projects.readOutlineReport", projectId),
-  generateOutlineReport: (input: GenerateProjectOutlineReportInput): Promise<ProjectOutlineReport> =>
+  generateOutlineReport: (input: GenerateProjectOutlineReportInput): Promise<ProjectOutlineReport | null> =>
     ipcRenderer.invoke("projects.generateOutlineReport", input),
   readEnvFile: (projectId: string): Promise<EnvFileSnapshot> => ipcRenderer.invoke("projects.readEnvFile", projectId),
   writeEnvFile: (input: WriteProjectEnvFileInput): Promise<EnvFileSnapshot> =>
@@ -203,8 +210,28 @@ const api = {
     ipcRenderer.invoke("directors.chat", input),
   slackChat: (input: SlackChatInput): Promise<SlackChatResponse> =>
     ipcRenderer.invoke("slack.chat", input),
+  listPendingApprovals: (input: ListPendingApprovalsInput): Promise<PendingApproval[]> =>
+    ipcRenderer.invoke("approvals.list", input),
+  approvePendingApproval: (input: ApprovePendingApprovalInput): Promise<AgentSession> =>
+    ipcRenderer.invoke("approvals.approve", input),
+  revisePendingApproval: (input: RevisePendingApprovalInput): Promise<AgentSession> =>
+    ipcRenderer.invoke("approvals.revise", input),
+  deferPendingApproval: (input: UpdatePendingApprovalStatusInput): Promise<AgentSession> =>
+    ipcRenderer.invoke("approvals.defer", input),
+  dismissPendingApproval: (input: UpdatePendingApprovalStatusInput): Promise<AgentSession> =>
+    ipcRenderer.invoke("approvals.dismiss", input),
+  deleteSlackMessages: (input: DeleteSlackMessagesInput): Promise<void> =>
+    ipcRenderer.invoke("slack.deleteMessages", input),
+  clearSlackMessages: (projectId: string): Promise<void> =>
+    ipcRenderer.invoke("slack.clearAll", projectId),
+  refreshProject: (input: import("@shared/types").RefreshProjectInput): Promise<void> =>
+    ipcRenderer.invoke("slack.refreshProject", input),
   setDirectorFocusMode: (projectId: string, directorId: DirectorId, focusMode: DirectorFocusMode): Promise<AgentSession> =>
     ipcRenderer.invoke("directors.setFocusMode", projectId, directorId, focusMode),
+  updateDirectorSettings: (projectId: string, directorId: DirectorId, overrides: DirectorSettingsOverride): Promise<AgentSession> =>
+    ipcRenderer.invoke("directors.updateSettings", projectId, directorId, overrides),
+  updateDirectorState: (projectId: string, directorId: DirectorId, state: Partial<import("@shared/types").DirectorStateSnapshot>): Promise<AgentSession> =>
+    ipcRenderer.invoke("directors.updateState", projectId, directorId, state),
   deriveProjectCategory: (projectId: string): Promise<ProjectCategory> =>
     ipcRenderer.invoke("projects.deriveCategory", projectId),
 
@@ -215,11 +242,13 @@ const api = {
     ipcRenderer.invoke("agents.attachVibe", input),
   removeVibe: (input: RemoveVibeInput): Promise<AgentSession> =>
     ipcRenderer.invoke("agents.removeVibe", input),
+  createPillarSubAgents: (input: import("@shared/types").CreatePillarSubAgentsInput): Promise<AgentSession> =>
+    ipcRenderer.invoke("agents.createPillarSubAgents", input),
   confirmAgentData: (input: ConfirmAgentDataInput): Promise<AgentSession> =>
     ipcRenderer.invoke("agents.confirmData", input),
   routeUpdateToProgramming: (input: RouteUpdateToProgrammingInput): Promise<{ started: true }> =>
     ipcRenderer.invoke("agents.routeUpdate", input),
-  runValidation: (input: RunValidationInput): Promise<ValidationResult> =>
+  runValidation: (input: RunValidationInput): Promise<ValidationResult | null> =>
     ipcRenderer.invoke("agents.runValidation", input),
   setValidationFrequency: (input: SetValidationFrequencyInput): Promise<AgentSession> =>
     ipcRenderer.invoke("agents.setValidationFrequency", input),

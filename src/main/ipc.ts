@@ -16,6 +16,7 @@ import type {
   ApprovePlanInput,
   AttachSkillInput,
   AttachVibeInput,
+  ApprovePendingApprovalInput,
   ConfirmAgentDataInput,
   ConvertSkillInput,
   CoreDetailsChatInput,
@@ -25,12 +26,15 @@ import type {
   DirectorFocusMode,
   DirectorId,
   SlackChatInput,
+  DeleteSlackMessagesInput,
+  DirectorSettingsOverride,
   DirectoryPickMode,
   DownloadSkillInput,
   InstallSkillCatalogInput,
   GenerateFlowchartInput,
   GenerateProjectOutlineReportInput,
   GitSyncInput,
+  ListPendingApprovalsInput,
   ListTodosInput,
   PlanningChatInput,
   ProjectAttachInput,
@@ -38,6 +42,7 @@ import type {
   ProjectEnableSyncInput,
   RemoveVibeInput,
   RenameProjectInput,
+  RevisePendingApprovalInput,
   ResolveDroppedContextPathsInput,
   RetrySyncInput,
   RouteUpdateToProgrammingInput,
@@ -46,6 +51,7 @@ import type {
   SetValidationFrequencyInput,
   SettingsUpdateInput,
   StartPlanInput,
+  UpdatePendingApprovalStatusInput,
   PlaywrightRunInput,
   UpdateProjectInput,
   UpdateTodosInput,
@@ -164,8 +170,28 @@ export const registerIpc = (backend: ProgramsBackend): void => {
     backend.directorChat(input));
   ipcMain.handle("slack.chat", (_event, input: SlackChatInput) =>
     backend.slackChat(input));
+  ipcMain.handle("approvals.list", (_event, input: ListPendingApprovalsInput) =>
+    backend.listPendingApprovals(input));
+  ipcMain.handle("approvals.approve", (_event, input: ApprovePendingApprovalInput) =>
+    backend.approvePendingApproval(input));
+  ipcMain.handle("approvals.revise", (_event, input: RevisePendingApprovalInput) =>
+    backend.revisePendingApproval(input));
+  ipcMain.handle("approvals.defer", (_event, input: UpdatePendingApprovalStatusInput) =>
+    backend.deferPendingApproval(input));
+  ipcMain.handle("approvals.dismiss", (_event, input: UpdatePendingApprovalStatusInput) =>
+    backend.dismissPendingApproval(input));
+  ipcMain.handle("slack.deleteMessages", (_event, input: DeleteSlackMessagesInput) =>
+    backend.deleteSlackMessages(input));
+  ipcMain.handle("slack.clearAll", (_event, projectId: string) =>
+    backend.clearSlackMessages(projectId));
+  ipcMain.handle("slack.refreshProject", (_event, input: import("@shared/types").RefreshProjectInput) =>
+    backend.refreshProject(input));
   ipcMain.handle("directors.setFocusMode", (_event, projectId: string, directorId: DirectorId, focusMode: DirectorFocusMode) =>
     backend.setDirectorFocusMode(projectId, directorId, focusMode));
+  ipcMain.handle("directors.updateSettings", (_event, projectId: string, directorId: DirectorId, overrides: DirectorSettingsOverride) =>
+    backend.updateDirectorSettings(projectId, directorId, overrides));
+  ipcMain.handle("directors.updateState", (_event, projectId: string, directorId: DirectorId, state: Partial<import("@shared/types").DirectorStateSnapshot>) =>
+    backend.updateDirectorState(projectId, directorId, state));
   ipcMain.handle("directors.getProgress", (_event, projectId: string) =>
     backend.deriveProjectCategory(projectId));
   ipcMain.handle("projects.deriveCategory", (_event, projectId: string) =>
@@ -178,6 +204,8 @@ export const registerIpc = (backend: ProgramsBackend): void => {
     backend.attachVibeToCorePillar(input));
   ipcMain.handle("agents.removeVibe", (_event, input: RemoveVibeInput) =>
     backend.removeVibeFromCorePillar(input));
+  ipcMain.handle("agents.createPillarSubAgents", (_event, input: import("@shared/types").CreatePillarSubAgentsInput) =>
+    backend.createPillarSubAgents(input));
   ipcMain.handle("agents.confirmData", (_event, input: ConfirmAgentDataInput) =>
     backend.confirmAgentData(input));
   ipcMain.handle("agents.routeUpdate", (_event, input: RouteUpdateToProgrammingInput) =>

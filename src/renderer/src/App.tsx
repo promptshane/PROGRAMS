@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 import mermaid from "mermaid";
+import { getDirectorMetadata, type DirectorFlowLink } from "@shared/director-metadata";
 import { normalizeFlowchartGraph } from "@shared/flowchart";
 import { InteractiveFlowchart } from "./components/InteractiveFlowchart";
 import { FlowchartDiff } from "./components/FlowchartDiff";
@@ -29,6 +30,7 @@ import {
   type DirectorChatResponse,
   type DirectorFocusMode,
   type DirectorId,
+  type ReasoningEffort,
   type AgentSession,
   type AgentStage,
   type AgentStageConfirmation,
@@ -50,6 +52,7 @@ import {
   type CascadeProposal,
   type ModelCatalog,
   type ModelOption,
+  type PendingApproval,
   type PillarType,
   type PlanDraft,
   type ProjectCategory,
@@ -91,7 +94,9 @@ import {
   type SlackChatMessage,
   type SlackChatInput,
   type SlackChatResponse,
+  type DirectorSettingsOverride,
 } from "@shared/types";
+import { buildSlackConversationRenderItems } from "./lib/slack-message-grouping";
 
 interface ToastItem {
   id: string;
@@ -137,7 +142,7 @@ const emptySettings: Settings = {
   theme: "dark",
   uiMode: "simple",
   defaultSpeed: "normal",
-  autoApprovePlans: true,
+  autoApprovePlans: false,
   advancedDefaults: {
     provider: "codex",
     model: "gpt-5.4",
@@ -306,6 +311,76 @@ const buildSlackProjectDescription = (session: AgentSession | null): string => {
 
   return sentences.slice(0, 2).join(" ") || "Core details are still taking shape for this project.";
 };
+
+const getDirectorProfileMeta = (directorId: DirectorId) => ({
+  name: DIRECTOR_NAMES[directorId],
+  functionLabel: DIRECTOR_LABELS[directorId],
+  color: DIRECTOR_COLORS[directorId],
+});
+
+const countPillarVibes = (pillars: CorePillar[]): number =>
+  pillars.reduce(
+    (total, pillar) => total + (pillar.vibes?.length ?? 0) + countPillarVibes(pillar.corePillars),
+    0,
+  );
+
+const labelForDirectorStageStatus = (status: AgentSession["directorProgress"]["creative"]): string =>
+  status
+    .split("-")
+    .map((part) => titleCaseWord(part))
+    .join(" ");
+
+const buildDirectorLiveContextItems = (directorId: DirectorId, session: AgentSession | null): string[] => {
+  if (!session) {
+    return ["Open a project with agent data to view this agent's live context for the selected project."];
+  }
+
+  switch (directorId) {
+    case "project-manager": {
+      const activeDirector = session.directorProgress.currentDirector
+        ? `${DIRECTOR_NAMES[session.directorProgress.currentDirector]} is currently active.`
+        : "No active director has been set yet.";
+      return [
+        `Creative ${labelForDirectorStageStatus(session.directorProgress.creative)}, R&D ${labelForDirectorStageStatus(session.directorProgress.rd)}, Programming ${labelForDirectorStageStatus(session.directorProgress.programming)}, Validation ${labelForDirectorStageStatus(session.directorProgress.validation)}.`,
+        `${session.versions.length} version plan(s), ${session.versionUpdates.length} mapped update(s), and ${session.validationResults.length} validation result(s) are currently tracked.`,
+        `${(session.pendingApprovals ?? []).length} pending confirmation(s) and ${Object.values(session.directorStateMap ?? {}).reduce((total, snapshot) => total + (snapshot?.assumptions.length ?? 0), 0)} unresolved assumption(s) are currently visible to Jeff.`,
+        activeDirector,
+      ];
+    }
+    case "creative-director":
+      return [
+        `${session.corePillars.length} core pillar(s) and ${countPillarVibes(session.corePillars)} vibe attachment(s) are currently attached to the project.`,
+        `${session.danInternalNotes.length} active note(s) are stored for Dan on this project.`,
+        `Function ${session.stages.function.confirmed ? "confirmed" : "pending"}, Thesis ${session.stages.thesis.confirmed ? "confirmed" : "pending"}, Full Flow ${session.stages.full_flow.confirmed ? "confirmed" : "pending"}.`,
+      ];
+    case "rd-director":
+      return [
+        `${session.feasibilityAssessments.length} feasibility assessment(s) are on record.`,
+        `${session.versions.length} version plan(s) and ${session.versionUpdates.length} mapped update(s) are available for R&D planning.`,
+        `Creative details are ${session.stages.function.confirmed && session.stages.thesis.confirmed ? "ready to reference." : "still being defined."}`,
+      ];
+    case "programming-director": {
+      const pending = session.versionUpdates.filter((update) => update.status === "pending").length;
+      const inProgress = session.versionUpdates.filter((update) => update.status === "in_progress").length;
+      const completed = session.versionUpdates.filter((update) => update.status === "completed").length;
+      return [
+        `${pending} pending, ${inProgress} in-progress, and ${completed} completed implementation update(s) are in the queue.`,
+        `${session.corePillars.length} pillar(s) and ${session.versions.length} version plan(s) are available as implementation context.`,
+        `${session.pingTaskContext?.currentTask ? `Active task: ${session.pingTaskContext.currentTask}` : "No short-horizon programming task is active yet."}`,
+      ];
+    }
+    case "validation-director":
+      return [
+        `${session.validationResults.length} validation result(s) have been recorded so far.`,
+        `Validation frequency is currently ${session.validationFrequency.split("-").join(" ")}.`,
+        `${session.versionUpdates.filter((update) => update.status === "in_progress" || update.status === "completed").length} implementation update(s) are available to validate or compare.`,
+      ];
+  }
+};
+
+const getDirectorProjectNotes = (directorId: DirectorId, session: AgentSession | null): string[] =>
+  directorId === "creative-director" ? session?.danInternalNotes ?? [] : [];
+
 const APP_PAGE_OPTIONS: Array<{
   id: AppPage;
   label: string;
@@ -365,12 +440,16 @@ const labelForRuntimeSource = (source: RuntimeState["source"]): string => {
   return "No runtime";
 };
 
-const initialsFromName = (name: string): string =>
-  name
-    .split(/\s+/)
+const initialsFromName = (name: string): string => {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+
+  return parts
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase() ?? "")
     .join("");
+};
 
 const createEmptyForm = (): AddProjectFormState => ({
   mode: "create",
@@ -446,6 +525,28 @@ const fallbackClaudeModelLabel = (model: string): string => {
 const labelForModel = (model: string, options: ModelOption[], fallback: (model: string) => string): string =>
   options.find((option) => option.id === model)?.label ?? fallback(model);
 
+const labelForAgentProvider = (provider: AiProvider): string =>
+  provider === "claude" ? "Claude" : "GPT";
+
+const resolveModelOptions = (
+  currentModel: string,
+  options: ModelOption[],
+  fallback: (model: string) => string,
+): ModelOption[] => {
+  if (options.some((option) => option.id === currentModel)) {
+    return options;
+  }
+
+  return [
+    {
+      id: currentModel,
+      label: labelForModel(currentModel, options, fallback),
+      detail: null,
+    },
+    ...options,
+  ];
+};
+
 const labelForReasoningEffort = (reasoningEffort: ComposerOptions["reasoningEffort"]): string => {
   switch (reasoningEffort) {
     case "low":
@@ -516,16 +617,23 @@ function parseInlineMarkdown(text: string, keyPrefix: string): React.ReactNode[]
   return nodes;
 }
 
-function SlackMarkdown({ text }: { text: string }) {
+const coerceSlackText = (text: unknown): string => (
+  typeof text === "string" && text.length > 0
+    ? text
+    : "No message content."
+);
+
+function SlackMarkdown({ text }: { text: unknown }) {
+  const safeText = coerceSlackText(text);
   const parts = useMemo(() => {
     const nodes: React.ReactNode[] = [];
-    const lines = text.split("\n");
+    const lines = safeText.split("\n");
     for (let i = 0; i < lines.length; i++) {
       if (i > 0) nodes.push(<br key={`br-${i}`} />);
       nodes.push(...parseInlineMarkdown(lines[i], `line-${i}`));
     }
     return nodes;
-  }, [text]);
+  }, [safeText]);
   return <>{parts}</>;
 }
 
@@ -533,16 +641,26 @@ const dedupePaths = (paths: string[]): string[] => Array.from(new Set(paths)).so
 
 const COMPOSER_MIN_HEIGHT = 64;
 const COMPOSER_MAX_HEIGHT = 224;
+const SLACK_COMPOSER_MIN_HEIGHT = 34;
 
-const syncComposerTextareaHeight = (textarea: HTMLTextAreaElement | null): void => {
+const syncComposerTextareaHeight = (
+  textarea: HTMLTextAreaElement | null,
+  {
+    minHeight = COMPOSER_MIN_HEIGHT,
+    maxHeight = COMPOSER_MAX_HEIGHT,
+  }: {
+    minHeight?: number;
+    maxHeight?: number;
+  } = {},
+): void => {
   if (!textarea) {
     return;
   }
 
   textarea.style.height = "auto";
-  const nextHeight = Math.min(COMPOSER_MAX_HEIGHT, Math.max(COMPOSER_MIN_HEIGHT, textarea.scrollHeight));
+  const nextHeight = Math.min(maxHeight, Math.max(minHeight, textarea.scrollHeight));
   textarea.style.height = `${nextHeight}px`;
-  textarea.style.overflowY = textarea.scrollHeight > COMPOSER_MAX_HEIGHT ? "auto" : "hidden";
+  textarea.style.overflowY = textarea.scrollHeight > maxHeight ? "auto" : "hidden";
 };
 
 const hasFileDragPayload = (dataTransfer: DataTransfer | null): boolean => {
@@ -580,6 +698,16 @@ const createProjectTileStyle = (iconColor: string): CSSProperties => {
 
   return {
     background: normalized,
+  };
+};
+
+const createAgentLandingTileStyle = (iconColor: string, muted = false): CSSProperties => {
+  const normalized = normalizeHexColor(iconColor) ?? "#0EA5E9";
+
+  return {
+    background: muted
+      ? `color-mix(in srgb, ${normalized} 68%, #202833 32%)`
+      : normalized,
   };
 };
 
@@ -736,6 +864,8 @@ function App() {
   const [agentViewStage, setAgentViewStage] = useState<AgentStage>("function");
   const agentSelectedProjectIdRef = useRef(agentSelectedProjectId);
   agentSelectedProjectIdRef.current = agentSelectedProjectId;
+  const slackSelectedProjectIdRef = useRef(slackSelectedProjectId);
+  slackSelectedProjectIdRef.current = slackSelectedProjectId;
   const [coreDetailsProjectId, setCoreDetailsProjectId] = useState<string | null>(null);
   const [programMode, setProgramMode] = useState<ProgramUpdateMode>("talk");
   const [skills, setSkills] = useState<Skill[]>([]);
@@ -1128,6 +1258,9 @@ function App() {
               setAgentViewStage(event.session.currentStage);
             }
           }
+          if (event.projectId === slackSelectedProjectIdRef.current) {
+            setSlackAgentSession(event.session);
+          }
           // Also update programAgentSession for programs page features
           setProgramAgentSession((prev) => {
             if (prev && prev.projectId === event.projectId) {
@@ -1510,6 +1643,15 @@ function App() {
     });
   };
 
+  const handleUpdateAgentDefaults = async (
+    advancedDefaults: Partial<Settings["advancedDefaults"]>,
+  ) => {
+    await withBusy("settings.agentDefaults", async () => {
+      const updated = await window.programs.updateSettings({ advancedDefaults });
+      setSettings(updated);
+    });
+  };
+
   const handleSetupClaude = async () => {
     await withBusy("auth.claude", async () => {
       const status = await window.programs.setupClaude();
@@ -1842,7 +1984,6 @@ function App() {
     await withBusy(`outline.generate.${projectId}`, async () => {
       const report = await window.programs.generateOutlineReport(input);
       setOutlineReports((current) => ({ ...current, [projectId]: report }));
-      pushToast("Program report generated.", "success");
     });
   };
 
@@ -1867,36 +2008,34 @@ function App() {
   const useComposerLayout = isSelectedProjectView || currentPage === "agents" || currentPage === "slack";
   const homeAppUpdateButton = getHomeAppUpdateButtonState(appUpdate);
   const currentPageDefinition = APP_PAGE_OPTIONS.find((page) => page.id === currentPage) ?? APP_PAGE_OPTIONS[1];
-  const programsTopBarButton = !selectedProject
-    ? homeAppUpdateButton === "prepare"
+  const sidebarAppUpdateButton = homeAppUpdateButton === "prepare"
+    ? (
+      <button type="button" className="sidebarFooterButton sidebarFooterButton-update windowNoDrag" disabled>
+        {busyKey === "app.update" || appUpdate.buildState === "installing" ? "Updating..." : "Preparing update..."}
+      </button>
+    )
+    : homeAppUpdateButton === "install"
       ? (
-        <button className="secondaryButton homeUpdateButton windowNoDrag" disabled>
-          {busyKey === "app.update" || appUpdate.buildState === "installing" ? "Updating..." : "Preparing update..."}
+        <button
+          type="button"
+          className="sidebarFooterButton sidebarFooterButton-update windowNoDrag"
+          onClick={() => void handleInstallAppUpdate()}
+          disabled={busyKey === "app.update"}
+        >
+          {busyKey === "app.update" ? "Updating..." : "Update"}
         </button>
       )
-      : homeAppUpdateButton === "install"
+      : homeAppUpdateButton === "issue"
         ? (
           <button
-            className="secondaryButton homeUpdateButton windowNoDrag"
-            onClick={() => void handleInstallAppUpdate()}
-            disabled={busyKey === "app.update"}
+            type="button"
+            className="sidebarFooterButton sidebarFooterButton-update windowNoDrag"
+            onClick={openSettingsModal}
           >
-            {busyKey === "app.update" ? "Updating..." : "Update App"}
+            Update issue
           </button>
         )
-        : homeAppUpdateButton === "issue"
-          ? (
-            <button className="secondaryButton homeUpdateButton windowNoDrag" onClick={openSettingsModal}>
-              Update issue
-            </button>
-          )
-          : null
-    : null;
-  const programsTopBar = programsTopBarButton ? (
-    <div className="homeTopBar windowNoDrag">
-      {programsTopBarButton}
-    </div>
-  ) : null;
+        : null;
   const programProjects = projects.filter((p) => projectCategories[p.id] === "program");
   const generalProjects = projects.filter((p) => projectCategories[p.id] === "general-project" || !projectCategories[p.id]);
   const ideaProjects = projects.filter((p) => projectCategories[p.id] === "idea-in-progress");
@@ -2061,6 +2200,12 @@ function App() {
               <div className="updateCardSpacer" />
 
               <div className="updateFooterStack">
+                <PendingApprovalsPanel
+                  projectId={selectedProject.id}
+                  session={programAgentSession}
+                  onSessionUpdate={setProgramAgentSession}
+                  pushToast={pushToast}
+                />
                 {programMode === "work" && showUpdateDock ? (
                   <UpdateStagePanel
                     plan={activePlan}
@@ -2204,7 +2349,6 @@ function App() {
             <SidebarToggleIcon />
           </button>
         </div>
-        {programsTopBar}
 
         <aside className="shellSidebar" aria-label="App navigation">
           <nav className="shellSidebarNav">
@@ -2221,28 +2365,35 @@ function App() {
           </nav>
           <div className="shellSidebarDivider" aria-hidden="true" />
           <div className="shellSidebarFooter">
-            <button
-              type="button"
-              className={showSettings ? "sidebarFooterButton active windowNoDrag" : "sidebarFooterButton windowNoDrag"}
-              onClick={openSettingsModal}
-              aria-label="Open settings"
-            >
-              <SettingsIcon />
-              <span>Settings</span>
-            </button>
-            <button
-              type="button"
-              className={
-                showUsageSheet
-                  ? "sidebarFooterButton sidebarFooterButton-usage active windowNoDrag"
-                  : "sidebarFooterButton sidebarFooterButton-usage windowNoDrag"
-              }
-              onClick={toggleUsageSheet}
-              aria-label="Open usage overview"
-            >
-              <TimerIcon />
-              <span>Usage</span>
-            </button>
+            {sidebarAppUpdateButton ? (
+              <div className="shellSidebarFooterUpdateRow">
+                {sidebarAppUpdateButton}
+              </div>
+            ) : null}
+            <div className="shellSidebarFooterActions">
+              <button
+                type="button"
+                className={showSettings ? "sidebarFooterButton active windowNoDrag" : "sidebarFooterButton windowNoDrag"}
+                onClick={openSettingsModal}
+                aria-label="Open settings"
+              >
+                <SettingsIcon />
+                <span>Settings</span>
+              </button>
+              <button
+                type="button"
+                className={
+                  showUsageSheet
+                    ? "sidebarFooterButton sidebarFooterButton-usage active windowNoDrag"
+                    : "sidebarFooterButton sidebarFooterButton-usage windowNoDrag"
+                }
+                onClick={toggleUsageSheet}
+                aria-label="Open usage overview"
+              >
+                <TimerIcon />
+                <span>Usage</span>
+              </button>
+            </div>
           </div>
         </aside>
 
@@ -2265,6 +2416,7 @@ function App() {
                 }
               }}
               onSessionUpdate={(s) => setSlackAgentSession(s)}
+              onUpdateAgentDefaults={handleUpdateAgentDefaults}
               pushToast={pushToast}
             />
           ) : currentPage === "agents" ? (
@@ -2289,6 +2441,7 @@ function App() {
               onSessionUpdate={(session) => {
                 setAgentSession(session);
               }}
+              onUpdateAgentDefaults={handleUpdateAgentDefaults}
               pushToast={pushToast}
             />
           ) : currentPage === "skills" ? (
@@ -2483,8 +2636,11 @@ function App() {
 
       {showUsageSheet ? (
         <UsageOverviewSheet
+          provider={settings.advancedDefaults.provider}
           auth={auth}
           usage={usage}
+          providerBusy={busyKey === "settings.agentDefaults"}
+          onProviderChange={(provider) => void handleUpdateAgentDefaults({ provider })}
           onClose={() => setShowUsageSheet(false)}
           onOpenSettings={() => {
             setShowUsageSheet(false);
@@ -2504,6 +2660,7 @@ function App() {
           busyKey={busyKey}
           theme={theme}
           settings={settings}
+          pushToast={pushToast}
           onClose={() => setProgramDetailsProjectId(null)}
           onGenerateFlowchart={async (provider: AiProvider) => {
             await withBusy("generate-flowchart", async () => {
@@ -2621,6 +2778,9 @@ function ComposerControlBar({
   addFilesBusy,
   sendBusy,
   isRunning,
+  hideAddFilesButton,
+  hideModelMenu,
+  hideThinkingMenu,
   hidePlanningMenu,
   hideSpeedMenu,
   onCodexModelChange,
@@ -2638,6 +2798,9 @@ function ComposerControlBar({
   addFilesBusy: boolean;
   sendBusy: boolean;
   isRunning: boolean;
+  hideAddFilesButton?: boolean;
+  hideModelMenu?: boolean;
+  hideThinkingMenu?: boolean;
   hidePlanningMenu?: boolean;
   hideSpeedMenu?: boolean;
   onCodexModelChange: (model: CodexModel) => void;
@@ -2684,56 +2847,60 @@ function ComposerControlBar({
   return (
     <div className="composerControlRow">
       <div className="composerControlCluster">
-        <button
-          className="secondaryButton composerIconButton"
-          onClick={() => {
-            closeMenus();
-            onAddFiles();
-          }}
-          disabled={addFilesBusy}
-          aria-label="Add files"
-        >
-          <PlusIcon />
-        </button>
+        {!hideAddFilesButton ? (
+          <button
+            className="secondaryButton composerIconButton"
+            onClick={() => {
+              closeMenus();
+              onAddFiles();
+            }}
+            disabled={addFilesBusy}
+            aria-label="Add files"
+          >
+            <PlusIcon />
+          </button>
+        ) : null}
 
-        <ComposerMenu
-          label={labelForComposerModel(options, modelCatalog)}
-          open={openMenu === "model"}
-          onToggle={() => setOpenMenu((current) => (current === "model" ? null : "model"))}
-          onClose={closeMenus}
-        >
+        {!hideModelMenu ? (
+          <ComposerMenu
+            label={labelForComposerModel(options, modelCatalog)}
+            open={openMenu === "model"}
+            onToggle={() => setOpenMenu((current) => (current === "model" ? null : "model"))}
+            onClose={closeMenus}
+          >
+              <div className="composerMenuSection">
+              <span className="composerMenuSectionTitle">GPT models</span>
+              {codexModelOptions.map((model) => (
+                <ComposerMenuOption
+                  key={model.id}
+                  label={model.label}
+                  detail={model.detail ?? undefined}
+                  active={options.provider === "codex" && options.model === model.id}
+                  onClick={() => {
+                    onCodexModelChange(model.id);
+                    closeMenus();
+                  }}
+                />
+              ))}
+            </div>
+
             <div className="composerMenuSection">
-            <span className="composerMenuSectionTitle">GPT models</span>
-            {codexModelOptions.map((model) => (
-              <ComposerMenuOption
-                key={model.id}
-                label={model.label}
-                detail={model.detail ?? undefined}
-                active={options.provider === "codex" && options.model === model.id}
-                onClick={() => {
-                  onCodexModelChange(model.id);
-                  closeMenus();
-                }}
-              />
-            ))}
-          </div>
-
-          <div className="composerMenuSection">
-            <span className="composerMenuSectionTitle">Claude models</span>
-            {claudeModelOptions.map((model) => (
-              <ComposerMenuOption
-                key={model.id}
-                label={model.label}
-                detail={model.detail ?? undefined}
-                active={options.provider === "claude" && options.claudeModel === model.id}
-                onClick={() => {
-                  onClaudeModelChange(model.id);
-                  closeMenus();
-                }}
-              />
-            ))}
-          </div>
-        </ComposerMenu>
+              <span className="composerMenuSectionTitle">Claude models</span>
+              {claudeModelOptions.map((model) => (
+                <ComposerMenuOption
+                  key={model.id}
+                  label={model.label}
+                  detail={model.detail ?? undefined}
+                  active={options.provider === "claude" && options.claudeModel === model.id}
+                  onClick={() => {
+                    onClaudeModelChange(model.id);
+                    closeMenus();
+                  }}
+                />
+              ))}
+            </div>
+          </ComposerMenu>
+        ) : null}
 
         {!hideSpeedMenu && options.provider === "codex" ? (
           <ComposerMenu
@@ -2764,48 +2931,50 @@ function ComposerControlBar({
           </ComposerMenu>
         ) : null}
 
-        <ComposerMenu
-          label={`Thinking: ${labelForReasoningEffort(options.reasoningEffort)}`}
-          open={openMenu === "thinking"}
-          onToggle={() => setOpenMenu((current) => (current === "thinking" ? null : "thinking"))}
-          onClose={closeMenus}
-        >
-          <div className="composerMenuSection">
-            <span className="composerMenuSectionTitle">Thinking depth</span>
-            <ComposerMenuOption
-              label="Low"
-              active={options.reasoningEffort === "low"}
-              onClick={() => {
-                onReasoningChange("low");
-                closeMenus();
-              }}
-            />
-            <ComposerMenuOption
-              label="Normal"
-              active={options.reasoningEffort === "medium"}
-              onClick={() => {
-                onReasoningChange("medium");
-                closeMenus();
-              }}
-            />
-            <ComposerMenuOption
-              label="High"
-              active={options.reasoningEffort === "high"}
-              onClick={() => {
-                onReasoningChange("high");
-                closeMenus();
-              }}
-            />
-            <ComposerMenuOption
-              label="Extra high"
-              active={options.reasoningEffort === "xhigh"}
-              onClick={() => {
-                onReasoningChange("xhigh");
-                closeMenus();
-              }}
-            />
-          </div>
-        </ComposerMenu>
+        {!hideThinkingMenu ? (
+          <ComposerMenu
+            label={`Thinking: ${labelForReasoningEffort(options.reasoningEffort)}`}
+            open={openMenu === "thinking"}
+            onToggle={() => setOpenMenu((current) => (current === "thinking" ? null : "thinking"))}
+            onClose={closeMenus}
+          >
+            <div className="composerMenuSection">
+              <span className="composerMenuSectionTitle">Thinking depth</span>
+              <ComposerMenuOption
+                label="Low"
+                active={options.reasoningEffort === "low"}
+                onClick={() => {
+                  onReasoningChange("low");
+                  closeMenus();
+                }}
+              />
+              <ComposerMenuOption
+                label="Normal"
+                active={options.reasoningEffort === "medium"}
+                onClick={() => {
+                  onReasoningChange("medium");
+                  closeMenus();
+                }}
+              />
+              <ComposerMenuOption
+                label="High"
+                active={options.reasoningEffort === "high"}
+                onClick={() => {
+                  onReasoningChange("high");
+                  closeMenus();
+                }}
+              />
+              <ComposerMenuOption
+                label="Extra high"
+                active={options.reasoningEffort === "xhigh"}
+                onClick={() => {
+                  onReasoningChange("xhigh");
+                  closeMenus();
+                }}
+              />
+            </div>
+          </ComposerMenu>
+        ) : null}
 
         {!hidePlanningMenu && (
           <ComposerMenu
@@ -3065,6 +3234,63 @@ function HomeProjectTile({
   );
 }
 
+function AgentLandingCard({
+  name,
+  color,
+  roleLabel,
+  reminder,
+  muted = false,
+  disabled = false,
+  onClick,
+  ariaLabel,
+}: {
+  name: string;
+  color: string;
+  roleLabel: string;
+  reminder: string;
+  muted?: boolean;
+  disabled?: boolean;
+  onClick?: () => void;
+  ariaLabel?: string;
+}) {
+  const content = (
+    <>
+      <article className="projectTile projectTileGradient agentLandingTile" style={createAgentLandingTileStyle(color, muted)}>
+        <div className="projectTileChrome agentLandingTileChrome">
+          <div className="agentLandingTileTopRow">
+            <span className="agentLandingAvatar">{initialsFromName(name)}</span>
+            <span className="agentLandingName">{name}</span>
+          </div>
+        </div>
+      </article>
+      <div className="agentLandingCaption">
+        <div className="agentLandingRole">{roleLabel}</div>
+        <div className="agentLandingReminder">{reminder}</div>
+      </div>
+    </>
+  );
+
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        className={`agentLandingCard agentLandingCard--interactive${muted ? " agentLandingCard--muted" : ""}${disabled ? " agentLandingCard--disabled" : ""}`}
+        disabled={disabled}
+        onClick={onClick}
+        aria-label={ariaLabel ?? `Open ${name}`}
+      >
+        {content}
+      </button>
+    );
+  }
+
+  return (
+    <div className={`agentLandingCard agentLandingCard--static${muted ? " agentLandingCard--muted" : ""}${disabled ? " agentLandingCard--disabled" : ""}`}>
+      {content}
+    </div>
+  );
+}
+
 function PlaceholderWorkspace({
   page,
   onReturn,
@@ -3293,13 +3519,19 @@ function ProjectOptionsSheet({
 }
 
 function UsageOverviewSheet({
+  provider,
   auth,
   usage,
+  providerBusy,
+  onProviderChange,
   onClose,
   onOpenSettings,
 }: {
+  provider: AiProvider;
   auth: AuthSnapshot;
   usage: UsageSnapshot;
+  providerBusy: boolean;
+  onProviderChange: (provider: AiProvider) => void;
   onClose: () => void;
   onOpenSettings: () => void;
 }) {
@@ -3345,6 +3577,34 @@ function UsageOverviewSheet({
 
   return (
     <Modal title="Usage" onClose={onClose} fullscreen>
+      <section className="usageProviderSection">
+        <div className="usageProviderHeader">
+          <div>
+            <h4>Agent Provider</h4>
+            <p>Choose which provider agent workflows use by default.</p>
+          </div>
+          <span className="usagePreviewLabel">{`Using ${labelForAgentProvider(provider)}`}</span>
+        </div>
+        <div className="usageProviderToggle" role="tablist" aria-label="Agent provider">
+          <button
+            type="button"
+            className={provider === "codex" ? "usageProviderOption active" : "usageProviderOption"}
+            onClick={() => onProviderChange("codex")}
+            disabled={providerBusy}
+          >
+            Use GPT
+          </button>
+          <button
+            type="button"
+            className={provider === "claude" ? "usageProviderOption active" : "usageProviderOption"}
+            onClick={() => onProviderChange("claude")}
+            disabled={providerBusy}
+          >
+            Use Claude
+          </button>
+        </div>
+      </section>
+
       {cards.length ? (
         <div className="usageCardGrid">
           {cards.map((card) => (
@@ -3443,6 +3703,256 @@ function UsageMetricBar({ window, dimmed = false }: { window: UsageWindow; dimme
         </div>
       ) : null}
       <p className="usageResetLabel">{metricDetail}</p>
+    </div>
+  );
+}
+
+const labelForPendingApprovalKind = (kind: PendingApproval["kind"]): string => {
+  switch (kind) {
+    case "handoff":
+      return "Handoff";
+    case "internet-research":
+      return "Internet Research";
+    case "codebase-scan":
+      return "Codebase Scan";
+    case "store-data":
+      return "Store Details";
+    case "plan":
+      return "Plan Run";
+    case "apply-pending-update":
+      return "Apply Update";
+    case "agent-update":
+      return "Agent Update";
+    case "validation":
+      return "Validation";
+  }
+};
+
+function PendingApprovalsPanel({
+  projectId,
+  session,
+  onSessionUpdate,
+  pushToast,
+}: {
+  projectId: string | null;
+  session: AgentSession | null;
+  onSessionUpdate: (session: AgentSession) => void;
+  pushToast: (message: string, level: "info" | "success" | "error") => void;
+}) {
+  const approvals = session?.pendingApprovals ?? [];
+  const [editingApprovalId, setEditingApprovalId] = useState<string | null>(null);
+  const [draftSummary, setDraftSummary] = useState("");
+  const [draftMessage, setDraftMessage] = useState("");
+  const [draftPayloadText, setDraftPayloadText] = useState("");
+  const [draftTargetDirectorId, setDraftTargetDirectorId] = useState<DirectorId | "">("");
+  const [busyApprovalId, setBusyApprovalId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!editingApprovalId) {
+      return;
+    }
+
+    if (!approvals.some((approval) => approval.id === editingApprovalId)) {
+      setEditingApprovalId(null);
+      setBusyApprovalId((current) => (current === editingApprovalId ? null : current));
+    }
+  }, [approvals, editingApprovalId]);
+
+  if (!projectId || approvals.length === 0) {
+    return null;
+  }
+
+  const openEditor = (approval: PendingApproval) => {
+    setEditingApprovalId(approval.id);
+    setDraftSummary(approval.summary);
+    setDraftMessage(approval.draftMessage ?? "");
+    setDraftPayloadText(approval.draftPayload ? JSON.stringify(approval.draftPayload, null, 2) : "");
+    setDraftTargetDirectorId(approval.targetDirectorId ?? "");
+  };
+
+  const saveEdits = async (approvalId: string) => {
+    if (!projectId) return;
+    setBusyApprovalId(approvalId);
+    try {
+      const updated = await window.programs.revisePendingApproval({
+        projectId,
+        approvalId,
+        summary: draftSummary,
+        draftMessage,
+        draftPayloadText,
+        targetDirectorId: draftTargetDirectorId || null,
+      });
+      onSessionUpdate(updated);
+      setEditingApprovalId(null);
+      pushToast("Approval draft updated.", "success");
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Could not update the approval draft.", "error");
+    } finally {
+      setBusyApprovalId(null);
+    }
+  };
+
+  const confirmApproval = async (approval: PendingApproval) => {
+    if (!projectId) return;
+    setBusyApprovalId(approval.id);
+    try {
+      if (editingApprovalId === approval.id) {
+        const revised = await window.programs.revisePendingApproval({
+          projectId,
+          approvalId: approval.id,
+          summary: draftSummary,
+          draftMessage,
+          draftPayloadText,
+          targetDirectorId: draftTargetDirectorId || null,
+        });
+        onSessionUpdate(revised);
+        setEditingApprovalId(null);
+      }
+      const updated = await window.programs.approvePendingApproval({
+        projectId,
+        approvalId: approval.id,
+      });
+      onSessionUpdate(updated);
+      pushToast("Approval confirmed.", "success");
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Could not confirm the approval.", "error");
+    } finally {
+      setBusyApprovalId(null);
+    }
+  };
+
+  const moveApprovalLater = async (approvalId: string) => {
+    if (!projectId) return;
+    setBusyApprovalId(approvalId);
+    try {
+      const updated = await window.programs.deferPendingApproval({ projectId, approvalId });
+      onSessionUpdate(updated);
+      setEditingApprovalId(null);
+      pushToast("Approval saved for later.", "info");
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Could not defer the approval.", "error");
+    } finally {
+      setBusyApprovalId(null);
+    }
+  };
+
+  const dismissApproval = async (approvalId: string) => {
+    if (!projectId) return;
+    setBusyApprovalId(approvalId);
+    try {
+      const updated = await window.programs.dismissPendingApproval({ projectId, approvalId });
+      onSessionUpdate(updated);
+      setEditingApprovalId(null);
+      pushToast("Approval dismissed.", "info");
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Could not dismiss the approval.", "error");
+    } finally {
+      setBusyApprovalId(null);
+    }
+  };
+
+  return (
+    <div className="pendingApprovalsPanel">
+      <div className="pendingApprovalsHeader">
+        <div>
+          <h4>Approvals</h4>
+          <p>High-impact actions stay here until you confirm, revise, or dismiss them.</p>
+        </div>
+        <span className="pendingApprovalsCount">{approvals.length}</span>
+      </div>
+      <div className="pendingApprovalsList">
+        {approvals.map((approval) => {
+          const isEditing = editingApprovalId === approval.id;
+          const isBusy = busyApprovalId === approval.id;
+          return (
+            <div key={approval.id} className="pendingApprovalCard">
+              <div className="pendingApprovalCardHead">
+                <div>
+                  <div className="pendingApprovalTitle">{approval.summary}</div>
+                  <div className="pendingApprovalMeta">
+                    <span>{labelForPendingApprovalKind(approval.kind)}</span>
+                    <span>{approval.status === "later" ? "Later" : "Pending"}</span>
+                    {approval.requestedByDirectorId ? <span>From {DIRECTOR_NAMES[approval.requestedByDirectorId]}</span> : null}
+                    {approval.targetDirectorId ? <span>To {DIRECTOR_NAMES[approval.targetDirectorId]}</span> : null}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="textButton"
+                  onClick={() => isEditing ? setEditingApprovalId(null) : openEditor(approval)}
+                  disabled={isBusy}
+                >
+                  {isEditing ? "Cancel Edit" : "Edit"}
+                </button>
+              </div>
+              {approval.draftMessage ? (
+                <p className="pendingApprovalCopy">{approval.draftMessage}</p>
+              ) : null}
+              {isEditing ? (
+                <div className="pendingApprovalEditor">
+                  <label>
+                    Summary
+                    <textarea
+                      value={draftSummary}
+                      onChange={(event) => setDraftSummary(event.target.value)}
+                      rows={2}
+                    />
+                  </label>
+                  <label>
+                    Draft Message
+                    <textarea
+                      value={draftMessage}
+                      onChange={(event) => setDraftMessage(event.target.value)}
+                      rows={4}
+                    />
+                  </label>
+                  {approval.targetDirectorId ? (
+                    <label>
+                      Target Director
+                      <select
+                        className="plannerSelect"
+                        value={draftTargetDirectorId}
+                        onChange={(event) => setDraftTargetDirectorId((event.target.value as DirectorId) || "")}
+                      >
+                        <option value="">None</option>
+                        {(Object.keys(DIRECTOR_NAMES) as DirectorId[]).map((directorId) => (
+                          <option key={directorId} value={directorId}>{DIRECTOR_NAMES[directorId]}</option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : null}
+                  <label>
+                    Draft Payload (JSON)
+                    <textarea
+                      value={draftPayloadText}
+                      onChange={(event) => setDraftPayloadText(event.target.value)}
+                      rows={8}
+                    />
+                  </label>
+                </div>
+              ) : approval.draftPayload ? (
+                <pre className="pendingApprovalPayload">{JSON.stringify(approval.draftPayload, null, 2)}</pre>
+              ) : null}
+              <div className="pendingApprovalActions">
+                {isEditing ? (
+                  <button className="secondaryButton" onClick={() => void saveEdits(approval.id)} disabled={isBusy}>
+                    Save Edit
+                  </button>
+                ) : null}
+                <button className="primaryButton" onClick={() => void confirmApproval(approval)} disabled={isBusy}>
+                  Confirm
+                </button>
+                <button className="secondaryButton" onClick={() => void moveApprovalLater(approval.id)} disabled={isBusy}>
+                  Later
+                </button>
+                <button className="secondaryButton" onClick={() => void dismissApproval(approval.id)} disabled={isBusy}>
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -4373,6 +4883,7 @@ function ProgramDetailsModal({
   busyKey,
   theme,
   settings,
+  pushToast,
   onClose,
   onGenerateFlowchart,
   onApplyPendingUpdate,
@@ -4387,6 +4898,7 @@ function ProgramDetailsModal({
   busyKey: string | null;
   theme: Theme;
   settings: Settings;
+  pushToast: (message: string, level: "info" | "success" | "error") => void;
   onClose: () => void;
   onGenerateFlowchart: (provider: AiProvider) => Promise<void>;
   onApplyPendingUpdate: () => Promise<void>;
@@ -4593,7 +5105,7 @@ function ProgramDetailsModal({
               onClick={() => void onApplyPendingUpdate()}
               disabled={busyKey === "apply-pending"}
             >
-              Apply Update
+              Request Approval
             </button>
           </div>
           <p className="modalLead">This is the saved final flowchart that will become the new current system state.</p>
@@ -4607,7 +5119,7 @@ function ProgramDetailsModal({
 
       {activeTab === "agentUpdates" && agentSession ? (
         <div className="detailsPanel">
-          <p className="modalLead">Planned updates from the iteration agent. Apply them one at a time.</p>
+          <p className="modalLead">Planned updates from the iteration agent. Queue them for approval one at a time.</p>
           <div className="agentPlannedUpdatesList">
             {agentSession.plannedUpdates
               .sort((a, b) => a.order - b.order)
@@ -4626,17 +5138,26 @@ function ProgramDetailsModal({
                       <button
                         className="primaryButton"
                         onClick={() => {
-                          void window.programs.agentExecuteUpdate({
-                            projectId: project.id,
-                            updateId: update.id,
-                            provider: settings.advancedDefaults.provider,
-                            model: settings.advancedDefaults.model,
-                            claudeModel: settings.advancedDefaults.claudeModel,
-                          });
-                          onClose();
+                          void (async () => {
+                            try {
+                              await window.programs.agentExecuteUpdate({
+                                projectId: project.id,
+                                updateId: update.id,
+                                provider: settings.advancedDefaults.provider,
+                                model: settings.advancedDefaults.model,
+                                claudeModel: settings.advancedDefaults.claudeModel,
+                              });
+                              onClose();
+                            } catch (error) {
+                              pushToast(
+                                error instanceof Error ? error.message : "Could not queue the update approval.",
+                                "error",
+                              );
+                            }
+                          })();
                         }}
                       >
-                        Apply Update
+                        Request Approval
                       </button>
                     ) : null}
                   </div>
@@ -4761,7 +5282,7 @@ function StoredDataModal({
               <p>Generate a report to explain what information the project stores in plain English.</p>
             </div>
             <button className="primaryButton" onClick={onGenerateReport} disabled={busy}>
-              {busy ? "Generating..." : "Generate report"}
+              {busy ? "Queueing..." : "Request report scan"}
             </button>
           </div>
         ) : (
@@ -4883,7 +5404,7 @@ function ConnectionsModal({
             </div>
             {report === null ? (
               <button className="secondaryButton smallButton" onClick={onGenerateReport} disabled={reportBusy}>
-                {reportBusy ? "Generating..." : "Generate report"}
+                {reportBusy ? "Queueing..." : "Request report scan"}
               </button>
             ) : null}
           </div>
@@ -5260,18 +5781,23 @@ function Modal({
   onClose,
   wide = false,
   fullscreen = false,
+  headerLeading,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   wide?: boolean;
   fullscreen?: boolean;
+  headerLeading?: ReactNode;
 }) {
   return (
     <div className="modalOverlay" onClick={onClose}>
       <div className={`modalFrame${wide ? " wide" : ""}${fullscreen ? " fullscreen" : ""}`} onClick={(event) => event.stopPropagation()}>
         <div className="modalHeader">
-          {title ? <h3>{title}</h3> : null}
+          <div className="modalHeaderLead">
+            {headerLeading ? <div className="modalHeaderLeading">{headerLeading}</div> : null}
+            {title ? <h3>{title}</h3> : null}
+          </div>
           <button className="textButton" onClick={onClose}>
             Close
           </button>
@@ -5719,7 +6245,7 @@ function CoreDetailsPillarExpanded({
         <div className="pillarChildren">
           <span className="pillarDetailLabel" style={{ marginBottom: 4, display: "block" }}>Sub-Pillars:</span>
           <div className="corePillarChips">
-            {pillar.corePillars.map((child) => (
+            {sortPillarsByOrder(pillar.corePillars).map((child) => (
               <button
                 key={child.id}
                 className={`corePillarChip${expandedChildId === child.id ? " active" : ""}`}
@@ -5902,7 +6428,7 @@ function CoreDetailsPanel({
             {coreDetails.corePillars.length > 0 ? (
               <>
                 <div className="corePillarChips">
-                  {coreDetails.corePillars.map((pillar) => (
+                  {sortPillarsByOrder(coreDetails.corePillars).map((pillar) => (
                     <button
                       key={pillar.id}
                       className={`corePillarChip${expandedPillarId === pillar.id ? " active" : ""}`}
@@ -6494,12 +7020,283 @@ const PILLAR_TYPE_LABELS: Record<PillarType, string> = {
   "hard-stop": "Hard Stop",
 };
 
+function DirectorFlowLinkPill({
+  link,
+  onNavigateToDirector,
+}: {
+  link: DirectorFlowLink;
+  onNavigateToDirector: (directorId: DirectorId) => void;
+}) {
+  if (link.kind === "director") {
+    return (
+      <button
+        type="button"
+        className="agentFlowPill agentFlowPill-button"
+        onClick={() => onNavigateToDirector(link.directorId)}
+      >
+        {link.label}
+      </button>
+    );
+  }
+
+  return <span className="agentFlowPill">{link.label}</span>;
+}
+
+function DirectorSummaryPanel({
+  directorId,
+  session,
+  projectId,
+  settings,
+  modelCatalog,
+  onNavigateToDirector,
+  onUpdateAgentDefaults,
+  onSessionUpdate,
+  pushToast,
+  onExpandedChange,
+}: {
+  directorId: DirectorId;
+  session: AgentSession | null;
+  projectId: string | null;
+  settings: Settings;
+  modelCatalog: ModelCatalog;
+  onNavigateToDirector: (directorId: DirectorId) => void;
+  onUpdateAgentDefaults: (advancedDefaults: Partial<Settings["advancedDefaults"]>) => Promise<void>;
+  onSessionUpdate: (session: AgentSession) => void;
+  pushToast: (message: string, level: "info" | "success" | "error") => void;
+  onExpandedChange?: (expanded: boolean) => void;
+}) {
+  const metadata = getDirectorMetadata(directorId);
+  const [isSavingDefaults, setIsSavingDefaults] = useState(false);
+  const [informationChainOpen, setInformationChainOpen] = useState(false);
+  const [projectNotesOpen, setProjectNotesOpen] = useState(false);
+  const directorOverrides = session?.directorSettingsOverrides?.[directorId];
+  const codexModelOptions = useMemo(
+    () => resolveModelOptions(settings.advancedDefaults.model, modelCatalog.codex, fallbackCodexModelLabel),
+    [modelCatalog.codex, settings.advancedDefaults.model],
+  );
+  const claudeModelOptions = useMemo(
+    () => resolveModelOptions(settings.advancedDefaults.claudeModel, modelCatalog.claude, fallbackClaudeModelLabel),
+    [modelCatalog.claude, settings.advancedDefaults.claudeModel],
+  );
+  const notes = getDirectorProjectNotes(directorId, session);
+  const liveContextItems = buildDirectorLiveContextItems(directorId, session);
+  const effectiveModel = directorOverrides?.model ?? settings.advancedDefaults.model;
+  const effectiveClaudeModel = directorOverrides?.claudeModel ?? settings.advancedDefaults.claudeModel;
+  const effectiveReasoning = directorOverrides?.reasoningEffort ?? metadata.runtimeDefaults.reasoningEffort;
+  const effectivePlanning = directorOverrides?.planningMode ?? metadata.runtimeDefaults.planningMode;
+  const activeModelLabel =
+    settings.advancedDefaults.provider === "claude"
+      ? labelForModel(effectiveClaudeModel, claudeModelOptions, fallbackClaudeModelLabel)
+      : labelForModel(effectiveModel, codexModelOptions, fallbackCodexModelLabel);
+
+  useLayoutEffect(() => {
+    setInformationChainOpen(false);
+    setProjectNotesOpen(false);
+    onExpandedChange?.(false);
+  }, [directorId, onExpandedChange]);
+
+  useLayoutEffect(() => {
+    onExpandedChange?.(informationChainOpen || projectNotesOpen);
+  }, [informationChainOpen, onExpandedChange, projectNotesOpen]);
+
+  const handleDefaultChange = async (
+    advancedDefaults: Partial<Settings["advancedDefaults"]>,
+  ) => {
+    setIsSavingDefaults(true);
+    try {
+      await onUpdateAgentDefaults(advancedDefaults);
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Failed to update the agent defaults.", "error");
+    } finally {
+      setIsSavingDefaults(false);
+    }
+  };
+
+  const handleDirectorOverride = async (overrides: DirectorSettingsOverride) => {
+    if (!projectId) return;
+    setIsSavingDefaults(true);
+    try {
+      const updated = await window.programs.updateDirectorSettings(projectId, directorId, overrides);
+      onSessionUpdate(updated);
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Failed to update director settings.", "error");
+    } finally {
+      setIsSavingDefaults(false);
+    }
+  };
+
+  return (
+    <div className="agentInfoPanel agentSummaryPanel">
+      <div className="agentSummaryGrid">
+        <section className="agentSummaryCard">
+          <div className="agentSummaryHeader">
+            <span className="agentSummaryEyebrow">Agent Defaults</span>
+            <span className="usagePreviewLabel">{`Using ${labelForAgentProvider(settings.advancedDefaults.provider)}`}</span>
+          </div>
+          <div className="agentRuntimeMeta">
+            <div className="agentRuntimeMetaRow">
+              <span className="pmStatusLabel">Active Provider</span>
+              <strong>{labelForAgentProvider(settings.advancedDefaults.provider)}</strong>
+            </div>
+            <div className="agentRuntimeMetaRow">
+              <span className="pmStatusLabel">Active Model</span>
+              <strong>{activeModelLabel}</strong>
+            </div>
+          </div>
+
+          <label className="agentRuntimeField">
+            <span className="pmStatusLabel">GPT Model</span>
+            <select
+              value={effectiveModel}
+              disabled={isSavingDefaults || !projectId}
+              onChange={(event) => void handleDirectorOverride({ model: event.target.value as CodexModel })}
+            >
+              {codexModelOptions.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="agentRuntimeField">
+            <span className="pmStatusLabel">Claude Model</span>
+            <select
+              value={effectiveClaudeModel}
+              disabled={isSavingDefaults || !projectId}
+              onChange={(event) => void handleDirectorOverride({ claudeModel: event.target.value as ClaudeModel })}
+            >
+              {claudeModelOptions.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="agentRuntimeField">
+            <span className="pmStatusLabel">Thinking</span>
+            <select
+              value={effectiveReasoning}
+              disabled={isSavingDefaults || !projectId}
+              onChange={(event) => void handleDirectorOverride({ reasoningEffort: event.target.value as ReasoningEffort })}
+            >
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+              <option value="xhigh">Extra High</option>
+            </select>
+          </label>
+
+          <label className="agentRuntimeField">
+            <span className="pmStatusLabel">Planning</span>
+            <select
+              value={effectivePlanning}
+              disabled={isSavingDefaults || !projectId}
+              onChange={(event) => void handleDirectorOverride({ planningMode: event.target.value as PlanningMode })}
+            >
+              <option value="none">None</option>
+              <option value="review">Review</option>
+              <option value="auto">Auto</option>
+            </select>
+          </label>
+          <p className="helperText">These defaults apply across the agent workflows for this project.</p>
+        </section>
+
+        <section className="agentSummaryCard">
+          <div className="agentSummaryHeader">
+            <span className="agentSummaryEyebrow">Agent Function</span>
+            <strong>{metadata.label}</strong>
+          </div>
+          <p className="agentSummaryDescription">{metadata.shortDescription}</p>
+
+          <details
+            className="agentSummaryDetails"
+            open={informationChainOpen}
+            onToggle={(event) => setInformationChainOpen(event.currentTarget.open)}
+          >
+            <summary>Information chain</summary>
+            <div className="agentSummaryDetailsBody">
+              <div className="agentSummaryFlowSection">
+                <span className="pmStatusLabel">Receives From</span>
+                <div className="agentFlowPills">
+                  {metadata.receivesFrom.map((link, index) => (
+                    <DirectorFlowLinkPill
+                      key={`${link.label}-${index}`}
+                      link={link}
+                      onNavigateToDirector={onNavigateToDirector}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="agentSummaryFlowSection">
+                <span className="pmStatusLabel">Sends To</span>
+                <div className="agentFlowPills">
+                  {metadata.sendsTo.map((link, index) => (
+                    <DirectorFlowLinkPill
+                      key={`${link.label}-${index}`}
+                      link={link}
+                      onNavigateToDirector={onNavigateToDirector}
+                    />
+                  ))}
+                </div>
+              </div>
+
+              <div className="agentSummaryLists">
+                <div>
+                  <span className="pmStatusLabel">Can Access</span>
+                  <ul className="agentSummaryList">
+                    {metadata.accessOverview.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+                <div>
+                  <span className="pmStatusLabel">Project Context Right Now</span>
+                  <ul className="agentSummaryList">
+                    {liveContextItems.map((item) => (
+                      <li key={item}>{item}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <details
+            className="agentSummaryDetails"
+            open={projectNotesOpen}
+            onToggle={(event) => setProjectNotesOpen(event.currentTarget.open)}
+          >
+            <summary>{notes.length > 0 ? `Project notes (${notes.length})` : "Project notes"}</summary>
+            <div className="agentSummaryDetailsBody">
+              {notes.length > 0 ? (
+                <ul className="agentSummaryList">
+                  {notes.map((note, index) => (
+                    <li key={`${directorId}-note-${index}`}>{note}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="coreDetailEmpty">No saved notes for this agent on the selected project yet.</p>
+              )}
+            </div>
+          </details>
+        </section>
+      </div>
+    </div>
+  );
+}
+
 function DirectorInfoPanel({
   directorId,
   focusMode,
   session,
   projectId,
+  settings,
+  modelCatalog,
   onSessionUpdate,
+  onUpdateAgentDefaults,
   onNavigateToDirector,
   pushToast,
 }: {
@@ -6507,7 +7304,10 @@ function DirectorInfoPanel({
   focusMode: DirectorFocusMode | null;
   session: AgentSession | null;
   projectId: string;
+  settings: Settings;
+  modelCatalog: ModelCatalog;
   onSessionUpdate: (session: AgentSession) => void;
+  onUpdateAgentDefaults: (advancedDefaults: Partial<Settings["advancedDefaults"]>) => Promise<void>;
   onNavigateToDirector: (directorId: DirectorId) => void;
   pushToast: (message: string, level: "info" | "success" | "error") => void;
 }) {
@@ -6516,52 +7316,72 @@ function DirectorInfoPanel({
 
   if (!session) return null;
 
+  const summaryPanel = (
+    <DirectorSummaryPanel
+      directorId={directorId}
+      session={session}
+      projectId={projectId}
+      settings={settings}
+      modelCatalog={modelCatalog}
+      onNavigateToDirector={onNavigateToDirector}
+      onUpdateAgentDefaults={onUpdateAgentDefaults}
+      onSessionUpdate={onSessionUpdate}
+      pushToast={pushToast}
+    />
+  );
+
   switch (directorId) {
     case "project-manager":
       return (
-        <div className="agentInfoPanel">
-          <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Project Status Overview</h5>
-          <div className="pmStatusGrid">
-            <div className="pmStatusCard">
-              <span className="pmStatusLabel">Dan — Creative</span>
-              <span className={`pmStatusValue${session.stages.function.confirmed && session.stages.thesis.confirmed ? " pmStatusDone" : ""}`}>
-                {session.stages.function.confirmed && session.stages.thesis.confirmed && session.stages.core_pillars.confirmed && session.stages.full_flow.confirmed
-                  ? "Complete" : "In Progress"}
-              </span>
-            </div>
-            <div className="pmStatusCard">
-              <span className="pmStatusLabel">Todd — R&D</span>
-              <span className={`pmStatusValue${session.versions.length > 0 ? " pmStatusDone" : ""}`}>
-                {session.versions.length > 0 ? `${session.versions.length} versions` : "Pending"}
-              </span>
-            </div>
-            <div className="pmStatusCard">
-              <span className="pmStatusLabel">Ping — Programming</span>
-              <span className="pmStatusValue">
-                {session.versionUpdates.filter((u) => u.status === "completed").length}/{session.versionUpdates.length} updates
-              </span>
-            </div>
-            <div className="pmStatusCard">
-              <span className="pmStatusLabel">Brad — Validation</span>
-              <span className="pmStatusValue">
-                {session.validationResults.length > 0 ? `${session.validationResults.length} results` : "None yet"}
-              </span>
+        <>
+          {summaryPanel}
+          <div className="agentInfoPanel">
+            <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Project Status Overview</h5>
+            <div className="pmStatusGrid">
+              <div className="pmStatusCard">
+                <span className="pmStatusLabel">Dan — Creative</span>
+                <span className={`pmStatusValue${session.stages.function.confirmed && session.stages.thesis.confirmed ? " pmStatusDone" : ""}`}>
+                  {session.stages.function.confirmed && session.stages.thesis.confirmed && session.stages.core_pillars.confirmed && session.stages.full_flow.confirmed
+                    ? "Complete" : "In Progress"}
+                </span>
+              </div>
+              <div className="pmStatusCard">
+                <span className="pmStatusLabel">Todd — R&D</span>
+                <span className={`pmStatusValue${session.versions.length > 0 ? " pmStatusDone" : ""}`}>
+                  {session.versions.length > 0 ? `${session.versions.length} versions` : "Pending"}
+                </span>
+              </div>
+              <div className="pmStatusCard">
+                <span className="pmStatusLabel">Ping — Programming</span>
+                <span className="pmStatusValue">
+                  {session.versionUpdates.filter((u) => u.status === "completed").length}/{session.versionUpdates.length} updates
+                </span>
+              </div>
+              <div className="pmStatusCard">
+                <span className="pmStatusLabel">Brad — Validation</span>
+                <span className="pmStatusValue">
+                  {session.validationResults.length > 0 ? `${session.validationResults.length} results` : "None yet"}
+                </span>
+              </div>
             </div>
           </div>
-        </div>
+        </>
       );
 
     case "creative-director": {
       // Dan: mode-dependent panel
       if (focusMode === "conversation") {
         return (
-          <div className="agentInfoPanel">
-            <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Conversation Mode</h5>
-            {session.danInternalNotes.length > 0 ? (
-              <p className="danNotesIndicator">{session.danInternalNotes.length} internal note{session.danInternalNotes.length !== 1 ? "s" : ""} recorded</p>
-            ) : null}
-            <p className="coreDetailValue">Brainstorm freely. Dan is listening and taking notes.</p>
-          </div>
+          <>
+            {summaryPanel}
+            <div className="agentInfoPanel">
+              <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Conversation Mode</h5>
+              {session.danInternalNotes.length > 0 ? (
+                <p className="danNotesIndicator">{session.danInternalNotes.length} internal note{session.danInternalNotes.length !== 1 ? "s" : ""} recorded</p>
+              ) : null}
+              <p className="coreDetailValue">Brainstorm freely. Dan is listening and taking notes.</p>
+            </div>
+          </>
         );
       }
 
@@ -6576,109 +7396,115 @@ function DirectorInfoPanel({
         };
         collectVibes(session.corePillars);
         return (
-          <div className="agentInfoPanel">
-            <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>
-              Vibe Gallery ({allVibes.length} vibes across all pillars)
-            </h5>
-            {allVibes.length > 0 ? (
-              <div className="vibeGallery">
-                {allVibes.map(({ pillarName, vibe }) => (
-                  <div key={vibe.id} className="vibeGalleryItem">
-                    <span className="vibeThumbIcon">{vibe.fileType === "image" ? "\u{1F5BC}" : "\u{1F4C4}"}</span>
-                    <div className="vibeGalleryMeta">
-                      <span className="vibeThumbName">{vibe.fileName}</span>
-                      <span className="vibeGalleryPillar">{pillarName}</span>
+          <>
+            {summaryPanel}
+            <div className="agentInfoPanel">
+              <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>
+                Vibe Gallery ({allVibes.length} vibes across all pillars)
+              </h5>
+              {allVibes.length > 0 ? (
+                <div className="vibeGallery">
+                  {allVibes.map(({ pillarName, vibe }) => (
+                    <div key={vibe.id} className="vibeGalleryItem">
+                      <span className="vibeThumbIcon">{vibe.fileType === "image" ? "\u{1F5BC}" : "\u{1F4C4}"}</span>
+                      <div className="vibeGalleryMeta">
+                        <span className="vibeThumbName">{vibe.fileName}</span>
+                        <span className="vibeGalleryPillar">{pillarName}</span>
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="coreDetailEmpty">No vibes attached yet. Attach vibes to core pillars.</p>
-            )}
-          </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="coreDetailEmpty">No vibes attached yet. Attach vibes to core pillars.</p>
+              )}
+            </div>
+          </>
         );
       }
 
       // Default: core-details mode
       return (
-        <div className="agentInfoPanel">
-          <div className="agentInfoTabs">
-            {(["function", "thesis", "core_pillars", "full_flow"] as const).map((tab) => (
-              <button
-                key={tab}
-                className={`agentInfoTabBtn${activeInfoTab === tab ? " active" : ""}`}
-                onClick={() => setActiveInfoTab(tab)}
-              >
-                {tab === "function" ? "Function" : tab === "thesis" ? "Thesis" : tab === "core_pillars" ? "Core Pillars" : "Full Flow"}
-              </button>
-            ))}
-          </div>
-          <div className="agentInfoTabContent">
-            {activeInfoTab === "function" ? (
-              <p className="coreDetailValue">
-                {session.stages.function.confirmed ? (
-                  <span className={session.stages.function.confirmed.status === "assumed" ? "assumedText" : ""}>
-                    {session.stages.function.confirmed.summary}
-                  </span>
-                ) : <em className="coreDetailEmpty">Not yet defined</em>}
-              </p>
-            ) : activeInfoTab === "thesis" ? (
-              <p className="coreDetailValue">
-                {session.stages.thesis.confirmed ? (
-                  <span className={session.stages.thesis.confirmed.status === "assumed" ? "assumedText" : ""}>
-                    {session.stages.thesis.confirmed.summary}
-                  </span>
-                ) : <em className="coreDetailEmpty">Not yet defined</em>}
-              </p>
-            ) : activeInfoTab === "core_pillars" ? (
-              (session.corePillars.length ?? 0) > 0 ? (
-                <>
-                  <div className="corePillarChips">
-                    {session.corePillars.map((p) => (
-                      <button
-                        key={p.id}
-                        className={`corePillarChip${expandedPillarId === p.id ? " active" : ""}`}
-                        onClick={() => setExpandedPillarId(expandedPillarId === p.id ? null : p.id)}
-                      >
-                        <span className={`pillarTypeBadge pillarTypeBadge--${p.pillarType}`}>{PILLAR_TYPE_LABELS[p.pillarType]}</span>
-                        {p.name}
-                      </button>
-                    ))}
-                  </div>
-                  {expandedPillarId ? (() => {
-                    const pillar = session.corePillars.find((x) => x.id === expandedPillarId);
-                    return pillar ? (
-                      <CoreDetailsPillarExpanded
-                        pillar={pillar}
-                        projectId={projectId}
-                        onSessionUpdate={onSessionUpdate}
-                        pushToast={pushToast}
-                      />
-                    ) : null;
-                  })() : null}
-                </>
-              ) : <em className="coreDetailEmpty">Not yet defined</em>
-            ) : (
-              (session.corePillars.length ?? 0) > 0 && session.stages.full_flow.confirmed ? (
-                <SimpleFlowchart
-                  pillars={session.corePillars}
-                  confirmation={session.stages.full_flow.confirmed}
-                  selectedNodeId={expandedPillarId}
-                  onSelectNode={(id) => setExpandedPillarId(expandedPillarId === id ? null : id)}
-                />
-              ) : (
+        <>
+          {summaryPanel}
+          <div className="agentInfoPanel">
+            <div className="agentInfoTabs">
+              {(["function", "thesis", "core_pillars", "full_flow"] as const).map((tab) => (
+                <button
+                  key={tab}
+                  className={`agentInfoTabBtn${activeInfoTab === tab ? " active" : ""}`}
+                  onClick={() => setActiveInfoTab(tab)}
+                >
+                  {tab === "function" ? "Function" : tab === "thesis" ? "Thesis" : tab === "core_pillars" ? "Core Pillars" : "Full Flow"}
+                </button>
+              ))}
+            </div>
+            <div className="agentInfoTabContent">
+              {activeInfoTab === "function" ? (
                 <p className="coreDetailValue">
-                  {session.stages.full_flow.confirmed?.summary ?? <em className="coreDetailEmpty">Not yet defined</em>}
+                  {session.stages.function.confirmed ? (
+                    <span className={session.stages.function.confirmed.status === "assumed" ? "assumedText" : ""}>
+                      {session.stages.function.confirmed.summary}
+                    </span>
+                  ) : <em className="coreDetailEmpty">Not yet defined</em>}
                 </p>
-              )
-            )}
+              ) : activeInfoTab === "thesis" ? (
+                <p className="coreDetailValue">
+                  {session.stages.thesis.confirmed ? (
+                    <span className={session.stages.thesis.confirmed.status === "assumed" ? "assumedText" : ""}>
+                      {session.stages.thesis.confirmed.summary}
+                    </span>
+                  ) : <em className="coreDetailEmpty">Not yet defined</em>}
+                </p>
+              ) : activeInfoTab === "core_pillars" ? (
+                (session.corePillars.length ?? 0) > 0 ? (
+                  <>
+                    <div className="corePillarChips">
+                      {sortPillarsByOrder(session.corePillars).map((p) => (
+                        <button
+                          key={p.id}
+                          className={`corePillarChip${expandedPillarId === p.id ? " active" : ""}`}
+                          onClick={() => setExpandedPillarId(expandedPillarId === p.id ? null : p.id)}
+                        >
+                          <span className={`pillarTypeBadge pillarTypeBadge--${p.pillarType}`}>{PILLAR_TYPE_LABELS[p.pillarType]}</span>
+                          {p.name}
+                        </button>
+                      ))}
+                    </div>
+                    {expandedPillarId ? (() => {
+                      const pillar = session.corePillars.find((x) => x.id === expandedPillarId);
+                      return pillar ? (
+                        <CoreDetailsPillarExpanded
+                          pillar={pillar}
+                          projectId={projectId}
+                          onSessionUpdate={onSessionUpdate}
+                          pushToast={pushToast}
+                        />
+                      ) : null;
+                    })() : null}
+                  </>
+                ) : <em className="coreDetailEmpty">Not yet defined</em>
+              ) : (
+                (session.corePillars.length ?? 0) > 0 && session.stages.full_flow.confirmed ? (
+                  <SimpleFlowchart
+                    pillars={session.corePillars}
+                    confirmation={session.stages.full_flow.confirmed}
+                    selectedNodeId={expandedPillarId}
+                    onSelectNode={(id) => setExpandedPillarId(expandedPillarId === id ? null : id)}
+                  />
+                ) : (
+                  <p className="coreDetailValue">
+                    {session.stages.full_flow.confirmed?.summary ?? <em className="coreDetailEmpty">Not yet defined</em>}
+                  </p>
+                )
+              )}
+            </div>
+            {session.stages.function.confirmed && session.stages.thesis.confirmed && session.stages.core_pillars.confirmed && session.stages.full_flow.confirmed ? (
+              <button className="primaryButton" style={{ marginTop: 12, fontSize: "0.8rem" }} onClick={() => onNavigateToDirector("rd-director")}>
+                Proceed to R&D
+              </button>
+            ) : null}
           </div>
-          {session.stages.function.confirmed && session.stages.thesis.confirmed && session.stages.core_pillars.confirmed && session.stages.full_flow.confirmed ? (
-            <button className="primaryButton" style={{ marginTop: 12, fontSize: "0.8rem" }} onClick={() => onNavigateToDirector("rd-director")}>
-              Proceed to R&D
-            </button>
-          ) : null}
-        </div>
+        </>
       );
     }
 
@@ -6686,58 +7512,64 @@ function DirectorInfoPanel({
       // Todd: mode-dependent panel
       if (focusMode === "research" || !focusMode) {
         return (
-          <div className="agentInfoPanel">
-            <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Feasibility Assessments</h5>
-            {session.feasibilityAssessments.length > 0 ? (
-              <div className="feasibilityList">
-                {session.feasibilityAssessments.map((a) => (
-                  <div key={a.id} className="feasibilityCard">
-                    <div className="feasibilityHeader">
-                      <span className={a.status === "assumed" ? "assumedText" : ""}>{a.area}</span>
-                      <span className={`complexityBadge complexityBadge--${a.complexity}`}>{a.complexity}</span>
-                    </div>
-                    <p className={`feasibilityText${a.status === "assumed" ? " assumedText" : ""}`}>{a.assessment}</p>
-                    {a.stackRecommendation ? <p className="feasibilityStack">Stack: {a.stackRecommendation}</p> : null}
-                    {a.costNotes ? <p className="feasibilityCost">Cost: {a.costNotes}</p> : null}
-                    {a.status === "assumed" ? (
-                      <div className="coreDetailReviewActions">
-                        <button className="coreDetailConfirmBtn" onClick={() => void window.programs.confirmAgentData({ projectId, dataType: "feasibility", itemId: a.id }).then(onSessionUpdate)}>Confirm</button>
+          <>
+            {summaryPanel}
+            <div className="agentInfoPanel">
+              <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Feasibility Assessments</h5>
+              {session.feasibilityAssessments.length > 0 ? (
+                <div className="feasibilityList">
+                  {session.feasibilityAssessments.map((a) => (
+                    <div key={a.id} className="feasibilityCard">
+                      <div className="feasibilityHeader">
+                        <span className={a.status === "assumed" ? "assumedText" : ""}>{a.area}</span>
+                        <span className={`complexityBadge complexityBadge--${a.complexity}`}>{a.complexity}</span>
                       </div>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
-            ) : <em className="coreDetailEmpty">No assessments yet. Discuss your concept to get feasibility analysis.</em>}
-          </div>
+                      <p className={`feasibilityText${a.status === "assumed" ? " assumedText" : ""}`}>{a.assessment}</p>
+                      {a.stackRecommendation ? <p className="feasibilityStack">Stack: {a.stackRecommendation}</p> : null}
+                      {a.costNotes ? <p className="feasibilityCost">Cost: {a.costNotes}</p> : null}
+                      {a.status === "assumed" ? (
+                        <div className="coreDetailReviewActions">
+                          <button className="coreDetailConfirmBtn" onClick={() => void window.programs.confirmAgentData({ projectId, dataType: "feasibility", itemId: a.id }).then(onSessionUpdate)}>Confirm</button>
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : <em className="coreDetailEmpty">No assessments yet. Discuss your concept to get feasibility analysis.</em>}
+            </div>
+          </>
         );
       }
 
       if (focusMode === "version-planning") {
         return (
-          <div className="agentInfoPanel">
-            <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Version Plans</h5>
-            {session.versions.length > 0 ? (
-              <div className="versionTimeline">
-                {session.versions.sort((a, b) => a.order - b.order).map((v) => (
-                  <div key={v.id} className="versionCard">
-                    <div className="versionHeader">
-                      <span className={`versionLabel${v.status === "assumed" ? " assumedText" : ""}`}>{v.label}</span>
-                      <StatusChip tone={v.status === "confirmed" ? "confirmed" : v.status === "assumed" ? "action_required" : "info"}>{v.status}</StatusChip>
-                    </div>
-                    <p className={v.status === "assumed" ? "assumedText" : ""}>{v.description}</p>
-                    <ul className="versionGoals">
-                      {v.goals.map((g, i) => <li key={i}>{g}</li>)}
-                    </ul>
-                    {v.status === "assumed" ? (
-                      <div className="coreDetailReviewActions">
-                        <button className="coreDetailConfirmBtn" onClick={() => void window.programs.confirmAgentData({ projectId, dataType: "versions", itemId: v.id }).then(onSessionUpdate)}>Confirm</button>
+          <>
+            {summaryPanel}
+            <div className="agentInfoPanel">
+              <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Version Plans</h5>
+              {session.versions.length > 0 ? (
+                <div className="versionTimeline">
+                  {session.versions.sort((a, b) => a.order - b.order).map((v) => (
+                    <div key={v.id} className="versionCard">
+                      <div className="versionHeader">
+                        <span className={`versionLabel${v.status === "assumed" ? " assumedText" : ""}`}>{v.label}</span>
+                        <StatusChip tone={v.status === "confirmed" ? "confirmed" : v.status === "assumed" ? "action_required" : "info"}>{v.status}</StatusChip>
                       </div>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
-            ) : <em className="coreDetailEmpty">No version plans yet. Start with feasibility research.</em>}
-          </div>
+                      <p className={v.status === "assumed" ? "assumedText" : ""}>{v.description}</p>
+                      <ul className="versionGoals">
+                        {v.goals.map((g, i) => <li key={i}>{g}</li>)}
+                      </ul>
+                      {v.status === "assumed" ? (
+                        <div className="coreDetailReviewActions">
+                          <button className="coreDetailConfirmBtn" onClick={() => void window.programs.confirmAgentData({ projectId, dataType: "versions", itemId: v.id }).then(onSessionUpdate)}>Confirm</button>
+                        </div>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
+              ) : <em className="coreDetailEmpty">No version plans yet. Start with feasibility research.</em>}
+            </div>
+          </>
         );
       }
 
@@ -6750,82 +7582,119 @@ function DirectorInfoPanel({
         groupedByVersion[label].push(u);
       }
       return (
-        <div className="agentInfoPanel">
-          <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Update Plan</h5>
-          {session.versionUpdates.length > 0 ? (
-            <div className="updatePlanList">
-              {Object.entries(groupedByVersion).map(([versionLabel, updates]) => (
-                <div key={versionLabel} className="updatePlanGroup">
-                  <h6 className="updatePlanGroupLabel">{versionLabel}</h6>
-                  {updates.sort((a, b) => a.order - b.order).map((u, idx) => (
-                    <div key={u.id} className="agentPlannedUpdateItem">
-                      <span className="orderBadge">{idx + 1}</span>
-                      <div className="updateContent">
-                        <div className="updateTitle">{u.title}</div>
-                        <div className="updateDescription">{u.description}</div>
+        <>
+          {summaryPanel}
+          <div className="agentInfoPanel">
+            <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Update Plan</h5>
+            {session.versionUpdates.length > 0 ? (
+              <div className="updatePlanList">
+                {Object.entries(groupedByVersion).map(([versionLabel, updates]) => (
+                  <div key={versionLabel} className="updatePlanGroup">
+                    <h6 className="updatePlanGroupLabel">{versionLabel}</h6>
+                    {updates.sort((a, b) => a.order - b.order).map((u, idx) => (
+                      <div key={u.id} className="agentPlannedUpdateItem">
+                        <span className="orderBadge">{idx + 1}</span>
+                        <div className="updateContent">
+                          <div className="updateTitle">{u.title}</div>
+                          <div className="updateDescription">{u.description}</div>
+                        </div>
+                        <StatusChip tone={u.status === "completed" ? "confirmed" : u.status === "failed" ? "action_required" : u.status === "in_progress" ? "info" : "neutral"}>{u.status}</StatusChip>
                       </div>
-                      <StatusChip tone={u.status === "completed" ? "confirmed" : u.status === "failed" ? "action_required" : u.status === "in_progress" ? "info" : "neutral"}>{u.status}</StatusChip>
-                    </div>
-                  ))}
-                </div>
-              ))}
-            </div>
-          ) : <em className="coreDetailEmpty">No updates planned yet. Define version plans first.</em>}
-        </div>
+                    ))}
+                  </div>
+                ))}
+              </div>
+            ) : <em className="coreDetailEmpty">No updates planned yet. Define version plans first.</em>}
+          </div>
+        </>
       );
     }
 
     case "programming-director":
       return (
-        <div className="agentInfoPanel">
-          <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Programming Queue</h5>
-          {session.versionUpdates.filter((u) => u.status === "pending" || u.status === "in_progress").length > 0 ? (
-            <div className="programmingQueue">
-              {session.versionUpdates.filter((u) => u.status === "pending" || u.status === "in_progress").map((u) => (
-                <div key={u.id} className="agentPlannedUpdateItem">
-                  <div className="updateContent">
-                    <div className="updateTitle">{u.title}</div>
-                    <div className="updateDescription">{u.description}</div>
-                  </div>
-                  <StatusChip tone={u.status === "in_progress" ? "info" : "neutral"}>{u.status}</StatusChip>
-                </div>
-              ))}
-            </div>
-          ) : <em className="coreDetailEmpty">No updates in the programming queue.</em>}
-          {session.dynamicSubAgents.length > 0 ? (
-            <>
-              <h5 style={{ margin: "12px 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Sub-Agents</h5>
-              <div className="agentTileGrid" style={{ gap: 8 }}>
-                {session.dynamicSubAgents.map((sa) => (
-                  <div key={sa.id} className="pmStatusCard" style={{ background: "var(--panel)" }}>
-                    <span className="pmStatusLabel">{sa.name}</span>
-                    <span className="pmStatusValue">{sa.role}</span>
+        <>
+          {summaryPanel}
+          <div className="agentInfoPanel">
+            <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Programming Queue</h5>
+            {session.versionUpdates.filter((u) => u.status === "pending" || u.status === "in_progress").length > 0 ? (
+              <div className="programmingQueue">
+                {session.versionUpdates.filter((u) => u.status === "pending" || u.status === "in_progress").map((u) => (
+                  <div key={u.id} className="agentPlannedUpdateItem">
+                    <div className="updateContent">
+                      <div className="updateTitle">{u.title}</div>
+                      <div className="updateDescription">{u.description}</div>
+                    </div>
+                    <StatusChip tone={u.status === "in_progress" ? "info" : "neutral"}>{u.status}</StatusChip>
                   </div>
                 ))}
               </div>
-            </>
-          ) : null}
-        </div>
+            ) : <em className="coreDetailEmpty">No updates in the programming queue.</em>}
+            <p className="coreDetailValue" style={{ marginTop: 12 }}>
+              {session.pingTaskContext?.currentTask
+                ? `Active task: ${session.pingTaskContext.currentTask}`
+                : "Ping is waiting for the next confirmed implementation task."}
+            </p>
+          </div>
+        </>
       );
 
     case "validation-director": {
       // Brad: mode-dependent panel
       if (focusMode === "identify-goal") {
         return (
-          <div className="agentInfoPanel">
-            <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Identify Goal</h5>
-            <p className="coreDetailValue">Reviewing core-details and vibes for the most recently updated pillars.</p>
-          </div>
+          <>
+            {summaryPanel}
+            <div className="agentInfoPanel">
+              <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Identify Goal</h5>
+              <p className="coreDetailValue">Reviewing core-details and vibes for the most recently updated pillars.</p>
+            </div>
+          </>
         );
       }
 
       if (focusMode === "test-current-state") {
         return (
+          <>
+            {summaryPanel}
+            <div className="agentInfoPanel">
+              <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Test Current-State</h5>
+              {session.validationResults.length > 0 ? (
+                <div className="validationResultsList">
+                  {session.validationResults.slice(-5).map((r) => (
+                    <div key={r.id} className={`validationResultCard validationResultCard--${r.passed ? "pass" : "fail"}`}>
+                      <span className="validationResultType">{r.validationType}</span>
+                      <span className={`validationResultStatus${r.passed ? " pmStatusDone" : ""}`}>{r.passed ? "PASS" : "FAIL"}</span>
+                      <p>{r.summary}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : <em className="coreDetailEmpty">No test results yet.</em>}
+            </div>
+          </>
+        );
+      }
+
+      // compare mode (default)
+      return (
+        <>
+          {summaryPanel}
           <div className="agentInfoPanel">
-            <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Test Current-State</h5>
+            <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Compare</h5>
+            <div className="validationFrequencyRow">
+              <span className="pillarDetailLabel">Frequency:</span>
+              <select
+                className="plannerSelect"
+                value={session.validationFrequency}
+                onChange={(e) => void window.programs.setValidationFrequency({ projectId, frequency: e.target.value as "every-update" | "every-version" | "manual" }).then(onSessionUpdate)}
+              >
+                <option value="manual">Manual</option>
+                <option value="every-update">Every Update</option>
+                <option value="every-version">Every Version</option>
+              </select>
+            </div>
             {session.validationResults.length > 0 ? (
               <div className="validationResultsList">
-                {session.validationResults.slice(-5).map((r) => (
+                {session.validationResults.map((r) => (
                   <div key={r.id} className={`validationResultCard validationResultCard--${r.passed ? "pass" : "fail"}`}>
                     <span className="validationResultType">{r.validationType}</span>
                     <span className={`validationResultStatus${r.passed ? " pmStatusDone" : ""}`}>{r.passed ? "PASS" : "FAIL"}</span>
@@ -6833,39 +7702,9 @@ function DirectorInfoPanel({
                   </div>
                 ))}
               </div>
-            ) : <em className="coreDetailEmpty">No test results yet.</em>}
+            ) : null}
           </div>
-        );
-      }
-
-      // compare mode (default)
-      return (
-        <div className="agentInfoPanel">
-          <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Compare</h5>
-          <div className="validationFrequencyRow">
-            <span className="pillarDetailLabel">Frequency:</span>
-            <select
-              className="plannerSelect"
-              value={session.validationFrequency}
-              onChange={(e) => void window.programs.setValidationFrequency({ projectId, frequency: e.target.value as "every-update" | "every-version" | "manual" }).then(onSessionUpdate)}
-            >
-              <option value="manual">Manual</option>
-              <option value="every-update">Every Update</option>
-              <option value="every-version">Every Version</option>
-            </select>
-          </div>
-          {session.validationResults.length > 0 ? (
-            <div className="validationResultsList">
-              {session.validationResults.map((r) => (
-                <div key={r.id} className={`validationResultCard validationResultCard--${r.passed ? "pass" : "fail"}`}>
-                  <span className="validationResultType">{r.validationType}</span>
-                  <span className={`validationResultStatus${r.passed ? " pmStatusDone" : ""}`}>{r.passed ? "PASS" : "FAIL"}</span>
-                  <p>{r.summary}</p>
-                </div>
-              ))}
-            </div>
-          ) : null}
-        </div>
+        </>
       );
     }
 
@@ -6873,6 +7712,76 @@ function DirectorInfoPanel({
       return null;
   }
 }
+
+function DirectorProfilePanel({
+  directorId,
+  session,
+  projectId,
+  settings,
+  modelCatalog,
+  onNavigateToDirector,
+  onUpdateAgentDefaults,
+  onSessionUpdate,
+  pushToast,
+}: {
+  directorId: DirectorId;
+  session: AgentSession | null;
+  projectId: string | null;
+  settings: Settings;
+  modelCatalog: ModelCatalog;
+  onNavigateToDirector: (directorId: DirectorId) => void;
+  onUpdateAgentDefaults: (advancedDefaults: Partial<Settings["advancedDefaults"]>) => Promise<void>;
+  onSessionUpdate: (session: AgentSession) => void;
+  pushToast: (message: string, level: "info" | "success" | "error") => void;
+}) {
+  const profilePanelRef = useRef<HTMLDivElement>(null);
+  const [hasExpandedSummary, setHasExpandedSummary] = useState(false);
+  const profile = getDirectorProfileMeta(directorId);
+
+  useLayoutEffect(() => {
+    if (!hasExpandedSummary) {
+      profilePanelRef.current?.scrollTo({ top: 0 });
+    }
+  }, [hasExpandedSummary]);
+
+  return (
+    <div
+      ref={profilePanelRef}
+      className={`directorProfilePanel${hasExpandedSummary ? " directorProfilePanel--scrollable" : " directorProfilePanel--static"}`}
+    >
+      <div className="directorProfilePanelContent">
+        <div
+          className="directorProfileCard"
+          style={{ "--director-profile-color": profile.color } as CSSProperties}
+        >
+          <div className="directorProfileAvatar" aria-hidden="true" />
+          <div className="directorProfileName">{profile.name}</div>
+          <span
+            className="agentActiveLabel directorProfileFunction"
+            style={{ borderColor: profile.color, color: profile.color }}
+          >
+            {profile.functionLabel}
+          </span>
+        </div>
+
+        <DirectorSummaryPanel
+          directorId={directorId}
+          session={session}
+          projectId={projectId}
+          settings={settings}
+          modelCatalog={modelCatalog}
+          onNavigateToDirector={onNavigateToDirector}
+          onUpdateAgentDefaults={onUpdateAgentDefaults}
+          onSessionUpdate={onSessionUpdate}
+          pushToast={pushToast}
+          onExpandedChange={setHasExpandedSummary}
+        />
+      </div>
+    </div>
+  );
+}
+
+type AgentDepartment = "Management" | "Creative" | "R&D" | "Programming" | "Validation";
 
 function AgentsPage({
   projects,
@@ -6884,6 +7793,7 @@ function AgentsPage({
   onSelectProject,
   onSetViewStage,
   onSessionUpdate,
+  onUpdateAgentDefaults,
   pushToast,
 }: {
   projects: Project[];
@@ -6895,6 +7805,7 @@ function AgentsPage({
   onSelectProject: (projectId: string | null) => void;
   onSetViewStage: (stage: AgentStage) => void;
   onSessionUpdate: (session: AgentSession) => void;
+  onUpdateAgentDefaults: (advancedDefaults: Partial<Settings["advancedDefaults"]>) => Promise<void>;
   pushToast: (message: string, level: "info" | "success" | "error") => void;
 }) {
   const [selectedDirectorId, setSelectedDirectorId] = useState<DirectorId | null>(null);
@@ -6905,42 +7816,64 @@ function AgentsPage({
   const [isLoading, setIsLoading] = useState(false);
   const [lastRouteHint, setLastRouteHint] = useState<{ directorId: DirectorId; reason: string } | null>(null);
   const [optimisticAgentMessages, setOptimisticAgentMessages] = useState<AgentChatMessage[]>([]);
-
-  const DIRECTOR_STATUS: Record<DirectorId, string> = {
-    "project-manager": "Project Director",
-    "creative-director": "Creative Director",
-    "rd-director": "R&D Director",
-    "programming-director": "Programming Director",
-    "validation-director": "Validation Director",
-  };
-  const [agentComposerOptions, setAgentComposerOptions] = useState<ComposerOptions>({
-    ...getComposerDefaults(settings),
-    planningMode: "none",
-  });
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const agentRuntimeOptions = useMemo<ComposerOptions>(
+    () => ({
+      ...getComposerDefaults(settings),
+      planningMode: "none",
+    }),
+    [
+      settings.advancedDefaults.provider,
+      settings.advancedDefaults.model,
+      settings.advancedDefaults.claudeModel,
+      settings.advancedDefaults.reasoningEffort,
+      settings.defaultSpeed,
+      settings.autoApprovePlans,
+    ],
+  );
 
   const DIRECTOR_SECTIONS: {
     id: DirectorId;
+    department: AgentDepartment;
     label: string;
     color: string;
-    subtitle: string;
+    landingRole: string;
+    landingReminder: string;
     focusModes?: DirectorFocusMode[];
   }[] = [
-    { id: "project-manager", label: "Jeff — Project Manager",
-      color: DIRECTOR_COLORS["project-manager"], subtitle: "Oversees all directors" },
-    { id: "creative-director", label: "Dan — Creative Director",
-      color: DIRECTOR_COLORS["creative-director"], subtitle: "Conversation · Core-details · Vibes",
+    { id: "project-manager", department: "Management", label: "Jeff — Project Manager",
+      color: DIRECTOR_COLORS["project-manager"], landingRole: "Director", landingReminder: "Project lead" },
+    { id: "creative-director", department: "Creative", label: "Dan — Creative Director",
+      color: DIRECTOR_COLORS["creative-director"], landingRole: "Director", landingReminder: "Idea shaping",
       focusModes: ["conversation", "core-details", "vibes"] as CreativeFocusMode[] },
-    { id: "rd-director", label: "Todd — R&D Director",
-      color: DIRECTOR_COLORS["rd-director"], subtitle: "Research · Version Planning · Update Planning",
+    { id: "rd-director", department: "R&D", label: "Todd — R&D Director",
+      color: DIRECTOR_COLORS["rd-director"], landingRole: "Director", landingReminder: "Research planning",
       focusModes: ["research", "version-planning", "update-planning"] as RdFocusMode[] },
-    { id: "programming-director", label: "Ping — Programming Director",
-      color: DIRECTOR_COLORS["programming-director"], subtitle: "Lead programmer + skill-based sub-agents" },
-    { id: "validation-director", label: "Brad — Validation Director",
-      color: DIRECTOR_COLORS["validation-director"], subtitle: "Identify Goal · Test Current-State · Compare",
+    { id: "programming-director", department: "Programming", label: "Ping — Programming Director",
+      color: DIRECTOR_COLORS["programming-director"], landingRole: "Director", landingReminder: "Build queue" },
+    { id: "validation-director", department: "Validation", label: "Brad — Validation Director",
+      color: DIRECTOR_COLORS["validation-director"], landingRole: "Director", landingReminder: "Test checks",
       focusModes: ["identify-goal", "test-current-state", "compare"] as ValidationFocusMode[] },
   ];
+
+  const AGENT_LANDING_SECTION_ORDER: AgentDepartment[] = ["Management", "Creative", "R&D", "Programming", "Validation"];
+  const PROGRAMMING_SUB_AGENTS = [
+    {
+      id: "pong",
+      name: "Pong",
+      roleLabel: "Front-end",
+      reminder: "UI support",
+      color: DIRECTOR_COLORS["programming-director"],
+    },
+    {
+      id: "pung",
+      name: "Pung",
+      roleLabel: "Back-end",
+      reminder: "API support",
+      color: DIRECTOR_COLORS["programming-director"],
+    },
+  ] as const;
 
   const selectedDirector = DIRECTOR_SECTIONS.find((d) => d.id === selectedDirectorId) ?? null;
 
@@ -7007,9 +7940,9 @@ function AgentsPage({
         projectId: agentSelectedProjectId,
         directorId: selectedDirectorId,
         focusMode: activeFocusMode,
-        provider: agentComposerOptions.provider,
-        model: agentComposerOptions.model,
-        claudeModel: agentComposerOptions.claudeModel,
+        provider: settings.advancedDefaults.provider,
+        model: settings.advancedDefaults.model,
+        claudeModel: settings.advancedDefaults.claudeModel,
         message: msg,
       });
       const refreshed = await window.programs.getAgentSession(agentSelectedProjectId);
@@ -7060,40 +7993,76 @@ function AgentsPage({
         )}
       </div>
 
+      {agentSelectedProjectId && (agentSession?.pendingApprovals.length ?? 0) > 0 ? (
+        <div className="conversationApprovalShelf">
+          <PendingApprovalsPanel
+            projectId={agentSelectedProjectId}
+            session={agentSession}
+            onSessionUpdate={onSessionUpdate}
+            pushToast={pushToast}
+          />
+        </div>
+      ) : null}
+
       {selectedDirectorId === null ? (
-        /* Director tile grid */
         <div className="agentSectionsScroll">
-          <div className="agentTileGrid" style={{ padding: "16px 20px" }}>
-            {DIRECTOR_SECTIONS.map((director) => {
-              const hasConversation =
-                (agentSession?.directorConversations?.[director.id]?.messages.length ?? 0) > 0 ||
-                (agentSession?.agentConversations?.[director.id]?.messages.length ?? 0) > 0;
-              return (
-                <article
-                  key={director.id}
-                  className={`projectTile projectTileGradient directorTile${!agentSelectedProjectId ? " agentTileDisabled" : ""}`}
-                  style={{ background: director.color }}
-                >
-                  <button
-                    className="projectTileOpenArea"
-                    aria-label={`Open ${director.label}`}
-                    disabled={!agentSelectedProjectId}
-                    onClick={() => handleSelectDirector(director.id)}
-                  />
-                  <div className="projectTileChrome">
-                    <div className="projectTileTopRow" />
-                    <div className="projectTileBottomRow">
-                      <div>
-                        <div className="tileName">{director.label}</div>
-                        <div className="directorSubtitle">{director.subtitle}</div>
-                      </div>
-                      {hasConversation ? <span className="agentStatusDot agentStatusDot--active" /> : <span className="agentStatusDot" />}
+          {AGENT_LANDING_SECTION_ORDER.map((department) => {
+            const director = DIRECTOR_SECTIONS.find((item) => item.department === department);
+            if (!director) {
+              return null;
+            }
+
+            const directorName = DIRECTOR_NAMES[director.id];
+
+            return (
+              <section key={department} className="agentDepartmentSection">
+                <div className="agentDepartmentHeader">
+                  <h4 className="agentDepartmentTitle">{department}</h4>
+                </div>
+
+                {department === "Programming" ? (
+                  <div className="agentProgrammingLane">
+                    <AgentLandingCard
+                      name={directorName}
+                      color={director.color}
+                      roleLabel={director.landingRole}
+                      reminder={director.landingReminder}
+                      muted={!agentSelectedProjectId}
+                      disabled={!agentSelectedProjectId}
+                      onClick={() => handleSelectDirector(director.id)}
+                      ariaLabel={`Open ${director.label}`}
+                    />
+                    <div className="agentProgrammingSubAgentStack">
+                      {PROGRAMMING_SUB_AGENTS.map((subAgent) => (
+                        <AgentLandingCard
+                          key={subAgent.id}
+                          name={subAgent.name}
+                          color={subAgent.color}
+                          roleLabel={subAgent.roleLabel}
+                          reminder={subAgent.reminder}
+                          muted
+                          disabled={!agentSelectedProjectId}
+                        />
+                      ))}
                     </div>
                   </div>
-                </article>
-              );
-            })}
-          </div>
+                ) : (
+                  <div className="agentDepartmentContent">
+                    <AgentLandingCard
+                      name={directorName}
+                      color={director.color}
+                      roleLabel={director.landingRole}
+                      reminder={director.landingReminder}
+                      muted={!agentSelectedProjectId}
+                      disabled={!agentSelectedProjectId}
+                      onClick={() => handleSelectDirector(director.id)}
+                      ariaLabel={`Open ${director.label}`}
+                    />
+                  </div>
+                )}
+              </section>
+            );
+          })}
         </div>
       ) : agentSelectedProjectId ? (
         /* Director chat view */
@@ -7121,7 +8090,10 @@ function AgentsPage({
                     focusMode={activeFocusMode}
                     session={agentSession}
                     projectId={agentSelectedProjectId}
+                    settings={settings}
+                    modelCatalog={modelCatalog}
                     onSessionUpdate={onSessionUpdate}
+                    onUpdateAgentDefaults={onUpdateAgentDefaults}
                     onNavigateToDirector={(id) => handleSelectDirector(id)}
                     pushToast={pushToast}
                   />
@@ -7134,22 +8106,20 @@ function AgentsPage({
 
                   <div className="agentUnifiedConversation">
                     {currentDirectorMessages.map((msg) => (
-                      <div key={msg.id} className={`agentConvoMessage agentConvoMessage-${msg.role}`} style={msg.role === 'assistant' ? { background: directorColor, color: '#fff' } : undefined}>
-                        <div className="agentConvoContent"><SlackMarkdown text={msg.content} /></div>
+                      <div key={msg.id} className={`agentConvoMessage agentConvoMessage-${msg.role}${msg.status === "working" ? " agentConvoMessage--working" : ""}`} style={msg.role === 'assistant' ? { background: directorColor, color: '#fff' } : undefined}>
+                        <div className="agentConvoContent">
+                          <SlackMarkdown text={msg.content} />
+                          {msg.status === "working" && (
+                            <span className="slackTypingDots slackTypingDots--inline">
+                              <span className="slackDot" />
+                              <span className="slackDot" />
+                              <span className="slackDot" />
+                            </span>
+                          )}
+                        </div>
                         <div className="slackMessageTimestamp">{formatSlackTimestamp(msg.createdAt)}</div>
                       </div>
                     ))}
-                    {isLoading ? (
-                      <div className="agentConvoMessage agentConvoMessage-assistant" style={{ background: directorColor, color: '#fff' }}>
-                        <div className="agentConvoContent">
-                          <span className="slackTypingDots">
-                            <span className="slackDot" />
-                            <span className="slackDot" />
-                            <span className="slackDot" />
-                          </span>
-                        </div>
-                      </div>
-                    ) : null}
                   </div>
 
                   {lastRouteHint ? (
@@ -7182,28 +8152,21 @@ function AgentsPage({
                       }}
                     />
                     <ComposerControlBar
-                      options={agentComposerOptions}
+                      options={agentRuntimeOptions}
                       modelCatalog={modelCatalog}
+                      hideAddFilesButton
+                      hideModelMenu
+                      hideThinkingMenu
                       hidePlanningMenu
                       hideSpeedMenu
                       addFilesBusy={false}
                       sendBusy={isLoading}
                       isRunning={isLoading}
-                      onCodexModelChange={(model) =>
-                        setAgentComposerOptions((o) => ({ ...o, provider: "codex", model, speed: "normal", reasoningEffort: "xhigh" }))
-                      }
-                      onClaudeModelChange={(claudeModel) =>
-                        setAgentComposerOptions((o) => ({ ...o, provider: "claude", claudeModel }))
-                      }
-                      onReasoningChange={(reasoningEffort) =>
-                        setAgentComposerOptions((o) => ({ ...o, reasoningEffort }))
-                      }
-                      onSpeedChange={(speed) =>
-                        setAgentComposerOptions((o) => ({ ...o, speed }))
-                      }
-                      onPlanningModeChange={(planningMode) =>
-                        setAgentComposerOptions((o) => ({ ...o, planningMode }))
-                      }
+                      onCodexModelChange={() => {}}
+                      onClaudeModelChange={() => {}}
+                      onReasoningChange={() => {}}
+                      onSpeedChange={() => {}}
+                      onPlanningModeChange={() => {}}
                       onAddFiles={() => {}}
                       onSubmit={() => void handleSend()}
                       onStop={() => {}}
@@ -7261,20 +8224,103 @@ function AgentsPage({
         </Modal>
       )}
 
-      {showDirectorProfile && selectedDirector && (
-        <Modal title="" onClose={() => setShowDirectorProfile(false)}>
-          <div className="directorProfileCard">
-            <div className="directorProfileAvatar" style={{ borderColor: directorColor }} />
-            <div className="directorProfileName">{DIRECTOR_NAMES[selectedDirectorId!]}</div>
-            <span className="agentActiveLabel" style={{ borderColor: directorColor, color: directorColor }}>
-              {DIRECTOR_STATUS[selectedDirectorId!]}
-            </span>
-          </div>
+      {showDirectorProfile && selectedDirectorId !== null && (
+        <Modal
+          title=""
+          onClose={() => setShowDirectorProfile(false)}
+          fullscreen
+        >
+          <DirectorProfilePanel
+            key={selectedDirectorId}
+            directorId={selectedDirectorId}
+            session={agentSession}
+            projectId={agentSelectedProjectId}
+            settings={settings}
+            modelCatalog={modelCatalog}
+            onNavigateToDirector={setSelectedDirectorId}
+            onUpdateAgentDefaults={onUpdateAgentDefaults}
+            onSessionUpdate={onSessionUpdate}
+            pushToast={pushToast}
+          />
         </Modal>
       )}
     </section>
   );
 }
+
+function RefreshProjectModal({
+  settings,
+  onConfirm,
+  onClose,
+}: {
+  settings: Settings;
+  onConfirm: (provider: AiProvider, model: string, claudeModel: string) => void;
+  onClose: () => void;
+}) {
+  const [provider, setProvider] = useState<AiProvider>(settings.advancedDefaults.provider);
+  const [modelSize, setModelSize] = useState<"big" | "mini">("big");
+
+  const resolvedModel = modelSize === "mini" ? "gpt-5.4-mini" : settings.advancedDefaults.model;
+  const resolvedClaudeModel = modelSize === "mini" ? "sonnet" : (settings.advancedDefaults.claudeModel || "opus");
+
+  return (
+    <Modal title="Refresh Project" onClose={onClose}>
+      <div className="refreshModal">
+        <p style={{ color: "var(--muted)", fontSize: 13, marginBottom: 16 }}>
+          Scan the codebase and map its current state into core-details. All results will be stored as assumptions until you confirm.
+        </p>
+        <div style={{ marginBottom: 12 }}>
+          <div className="directorStateLabel">Model Size</div>
+          <div className="refreshToggleGroup">
+            <button
+              type="button"
+              className={`refreshToggleBtn${modelSize === "big" ? " refreshToggleBtn--active" : ""}`}
+              onClick={() => setModelSize("big")}
+            >
+              Big
+            </button>
+            <button
+              type="button"
+              className={`refreshToggleBtn${modelSize === "mini" ? " refreshToggleBtn--active" : ""}`}
+              onClick={() => setModelSize("mini")}
+            >
+              Mini
+            </button>
+          </div>
+        </div>
+        <div style={{ marginBottom: 20 }}>
+          <div className="directorStateLabel">Provider</div>
+          <div className="refreshToggleGroup">
+            <button
+              type="button"
+              className={`refreshToggleBtn${provider === "claude" ? " refreshToggleBtn--active" : ""}`}
+              onClick={() => setProvider("claude")}
+            >
+              Claude
+            </button>
+            <button
+              type="button"
+              className={`refreshToggleBtn${provider === "codex" ? " refreshToggleBtn--active" : ""}`}
+              onClick={() => setProvider("codex")}
+            >
+              Codex
+            </button>
+          </div>
+        </div>
+        <button
+          type="button"
+          className="refreshButton"
+          onClick={() => onConfirm(provider, resolvedModel, resolvedClaudeModel)}
+        >
+          Refresh Now
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+const sortPillarsByOrder = <T extends { order?: number }>(pillars: T[]): T[] =>
+  [...pillars].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
 
 function SlackPage({
   projects,
@@ -7284,6 +8330,7 @@ function SlackPage({
   modelCatalog,
   onSelectProject,
   onSessionUpdate,
+  onUpdateAgentDefaults,
   pushToast,
 }: {
   projects: Project[];
@@ -7293,6 +8340,7 @@ function SlackPage({
   modelCatalog: ModelCatalog;
   onSelectProject: (projectId: string | null) => void;
   onSessionUpdate: (session: AgentSession) => void;
+  onUpdateAgentDefaults: (advancedDefaults: Partial<Settings["advancedDefaults"]>) => Promise<void>;
   pushToast: (message: string, level: "info" | "success" | "error") => void;
 }) {
   const [messageValue, setMessageValue] = useState("");
@@ -7301,32 +8349,69 @@ function SlackPage({
   const [showDirectorProfile, setShowDirectorProfile] = useState<DirectorId | null>(null);
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   const [alertedDirectorId, setAlertedDirectorId] = useState<DirectorId | null>(null);
-  const [pendingHandoff, setPendingHandoff] = useState<{ directorId: DirectorId; reason: string } | null>(null);
+  const [researchPanelMessage, setResearchPanelMessage] = useState<SlackChatMessage | null>(null);
+  const [updatePanelMessage, setUpdatePanelMessage] = useState<SlackChatMessage | null>(null);
   const [optimisticMessages, setOptimisticMessages] = useState<SlackChatMessage[]>([]);
-  const [slackComposerOptions, setSlackComposerOptions] = useState<ComposerOptions>(() => ({
-    ...getComposerDefaults(settings),
-    planningMode: "none" as const,
-  }));
+  const [devSelectionMode, setDevSelectionMode] = useState(false);
+  const [selectedDeleteIds, setSelectedDeleteIds] = useState<Set<string>>(new Set());
+  const [showRefreshModal, setShowRefreshModal] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const slackRuntimeOptions = useMemo<ComposerOptions>(
+    () => ({
+      ...getComposerDefaults(settings),
+      planningMode: "none",
+    }),
+    [
+      settings.advancedDefaults.provider,
+      settings.advancedDefaults.model,
+      settings.advancedDefaults.claudeModel,
+      settings.advancedDefaults.reasoningEffort,
+      settings.defaultSpeed,
+      settings.autoApprovePlans,
+    ],
+  );
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === slackSelectedProjectId) ?? null,
     [projects, slackSelectedProjectId],
   );
 
   const slackMessages = slackAgentSession?.slackMessages ?? [];
-  const displayMessages: SlackChatMessage[] = [...slackMessages, ...optimisticMessages];
+  const displayMessages = useMemo(
+    () => [...slackMessages, ...optimisticMessages],
+    [slackMessages, optimisticMessages],
+  );
+  const renderedSlackMessages = useMemo(
+    () => buildSlackConversationRenderItems(displayMessages),
+    [displayMessages],
+  );
+  const slackConversationSignature = useMemo(
+    () => displayMessages
+      .map((message) => [
+        message.id,
+        message.role,
+        message.directorId ?? "",
+        message.createdAt,
+        message.status ?? "",
+        message.content,
+        message.metadata ? JSON.stringify(message.metadata) : "",
+      ].join("|"))
+      .join("||"),
+    [displayMessages],
+  );
 
+  const presenceGuestId = slackAgentSession?.slackPresenceGuestId ?? null;
   const presentDirectors: DirectorId[] = useMemo(() => {
-    const seen = new Set<DirectorId>(["project-manager"]);
-    if (alertedDirectorId) seen.add(alertedDirectorId);
-    for (const msg of slackMessages) {
-      if (msg.directorId) seen.add(msg.directorId);
+    const directors: DirectorId[] = ["project-manager"];
+    if (presenceGuestId && presenceGuestId !== "project-manager") {
+      directors.push(presenceGuestId);
     }
-    return Array.from(seen);
-  }, [slackMessages, alertedDirectorId]);
+    return directors;
+  }, [presenceGuestId]);
 
   const activeDirectorId: DirectorId = alertedDirectorId
+    ?? presenceGuestId
     ?? slackAgentSession?.slackActiveDirectorId
     ?? "project-manager";
 
@@ -7334,7 +8419,7 @@ function SlackPage({
     if (chatScrollRef.current) {
       chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
     }
-  }, [displayMessages.length, isLoading]);
+  }, [slackConversationSignature, isLoading]);
 
   useEffect(() => {
     setOptimisticMessages([]);
@@ -7344,10 +8429,12 @@ function SlackPage({
     if (!slackSelectedProjectId) {
       setShowProjectDetails(false);
     }
+    setDevSelectionMode(false);
+    setSelectedDeleteIds(new Set());
   }, [slackSelectedProjectId]);
 
   useLayoutEffect(() => {
-    syncComposerTextareaHeight(composerInputRef.current);
+    syncComposerTextareaHeight(composerInputRef.current, { minHeight: SLACK_COMPOSER_MIN_HEIGHT });
   }, [messageValue, slackSelectedProjectId]);
 
   const NAME_TO_DIRECTOR: Record<string, DirectorId> = {
@@ -7382,54 +8469,28 @@ function SlackPage({
     }
 
     setIsLoading(true);
-    setPendingHandoff(null);
 
     try {
-      const response = await window.programs.slackChat({
+      await window.programs.slackChat({
         projectId: slackSelectedProjectId,
-        provider: slackComposerOptions.provider,
-        model: slackComposerOptions.model,
-        claudeModel: slackComposerOptions.claudeModel,
+        provider: settings.advancedDefaults.provider,
+        model: settings.advancedDefaults.model,
+        claudeModel: settings.advancedDefaults.claudeModel,
         message: msg,
         targetDirectorId,
       });
-      const refreshed = await window.programs.getAgentSession(slackSelectedProjectId);
-      if (refreshed) onSessionUpdate(refreshed);
-      if (response.handoffTo) {
-        setPendingHandoff({ directorId: response.handoffTo, reason: response.handoffReason ?? "" });
-      }
     } catch (error) {
       pushToast(error instanceof Error ? error.message : "Something went wrong.", "error");
     } finally {
+      try {
+        const refreshed = await window.programs.getAgentSession(slackSelectedProjectId);
+        if (refreshed) onSessionUpdate(refreshed);
+      } catch {
+        // Keep the latest optimistic or live event-driven state if the refresh fails.
+      }
       setIsLoading(false);
       setAlertedDirectorId(null);
       setSelectedMessageId(null);
-    }
-  };
-
-  const handleAcceptHandoff = async () => {
-    if (!pendingHandoff || !slackSelectedProjectId) return;
-    setIsLoading(true);
-    try {
-      const response = await window.programs.slackChat({
-        projectId: slackSelectedProjectId,
-        provider: slackComposerOptions.provider,
-        model: slackComposerOptions.model,
-        claudeModel: slackComposerOptions.claudeModel,
-        message: `[${DIRECTOR_NAMES[pendingHandoff.directorId]} has joined the channel]`,
-        targetDirectorId: pendingHandoff.directorId,
-      });
-      const refreshed = await window.programs.getAgentSession(slackSelectedProjectId);
-      if (refreshed) onSessionUpdate(refreshed);
-      if (response.handoffTo) {
-        setPendingHandoff({ directorId: response.handoffTo, reason: response.handoffReason ?? "" });
-      } else {
-        setPendingHandoff(null);
-      }
-    } catch (error) {
-      pushToast(error instanceof Error ? error.message : "Something went wrong.", "error");
-    } finally {
-      setIsLoading(false);
     }
   };
 
@@ -7441,6 +8502,51 @@ function SlackPage({
     } else {
       setSelectedMessageId(msg.id);
       setAlertedDirectorId(msg.directorId);
+    }
+  };
+
+  const toggleDeleteId = (id: string) => {
+    setSelectedDeleteIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleDeleteSelected = async () => {
+    if (!slackSelectedProjectId || selectedDeleteIds.size === 0) return;
+    try {
+      await window.programs.deleteSlackMessages({
+        projectId: slackSelectedProjectId,
+        messageIds: Array.from(selectedDeleteIds),
+      });
+      setSelectedDeleteIds(new Set());
+      const refreshed = await window.programs.getAgentSession(slackSelectedProjectId);
+      if (refreshed) onSessionUpdate(refreshed);
+      pushToast(`Deleted ${selectedDeleteIds.size} message(s)`, "success");
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "Delete failed", "error");
+    }
+  };
+
+  const handleRefreshProject = async (provider: AiProvider, model: string, claudeModel: string) => {
+    if (!slackSelectedProjectId) return;
+    setRefreshing(true);
+    setShowRefreshModal(false);
+    try {
+      await window.programs.refreshProject({
+        projectId: slackSelectedProjectId,
+        provider,
+        model,
+        claudeModel,
+      });
+      const refreshed = await window.programs.getAgentSession(slackSelectedProjectId);
+      if (refreshed) onSessionUpdate(refreshed);
+    } catch (err) {
+      pushToast(err instanceof Error ? err.message : "Refresh failed", "error");
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -7461,13 +8567,11 @@ function SlackPage({
 
           {slackSelectedProjectId && (
             <button
-              className="agentActiveLabel"
+              type="button"
+              className="slackDirectorChip slackDirectorChip--current"
               style={{
-                borderColor: DIRECTOR_COLORS[alertedDirectorId ?? activeDirectorId],
                 color: DIRECTOR_COLORS[alertedDirectorId ?? activeDirectorId],
                 whiteSpace: "nowrap",
-                cursor: "pointer",
-                background: "none",
               }}
               onClick={() => setShowDirectorProfile(alertedDirectorId ?? activeDirectorId)}
             >
@@ -7475,92 +8579,157 @@ function SlackPage({
             </button>
           )}
 
-          <div className="slackDirectorPresence">
-            {presentDirectors.map((dId) => (
-              <button
-                key={dId}
-                className={`slackDirectorChip${alertedDirectorId === dId ? " slackDirectorChip--alerted" : ""}`}
-                style={{ borderColor: DIRECTOR_COLORS[dId], color: DIRECTOR_COLORS[dId] }}
-                onClick={() => setShowDirectorProfile(dId)}
-              >
-                {DIRECTOR_NAMES[dId]}
-              </button>
-            ))}
-          </div>
+          {slackSelectedProjectId && (
+            <div className="slackDirectorPresence">
+              {presentDirectors
+                .filter((dId) => dId !== (alertedDirectorId ?? activeDirectorId))
+                .map((dId) => (
+                  <button
+                    key={dId}
+                    type="button"
+                    className={`slackDirectorChip${alertedDirectorId === dId ? " slackDirectorChip--alerted" : ""}`}
+                    style={{ borderColor: DIRECTOR_COLORS[dId], color: DIRECTOR_COLORS[dId] }}
+                    onClick={() => setShowDirectorProfile(dId)}
+                  >
+                    {DIRECTOR_NAMES[dId]}
+                  </button>
+                ))}
+            </div>
+          )}
         </div>
         {slackSelectedProjectId ? <div className="slackTopBarSpacer" aria-hidden="true" /> : null}
         {slackSelectedProjectId ? (
           <button
-            className="secondaryButton slackDetailsButton"
+            type="button"
+            className="slackTopBarButton"
+            disabled={refreshing}
+            onClick={() => setShowRefreshModal(true)}
+          >
+            {refreshing ? "Refreshing..." : "Refresh Project"}
+          </button>
+        ) : null}
+        {slackSelectedProjectId ? (
+          <button
+            type="button"
+            className={`slackTopBarButton slackDevButton${devSelectionMode ? " slackDevButton--active" : ""}`}
+            onClick={() => {
+              setDevSelectionMode((prev) => !prev);
+              setSelectedDeleteIds(new Set());
+            }}
+          >
+            {devSelectionMode ? "Done" : "(dev)"}
+          </button>
+        ) : null}
+        {slackSelectedProjectId ? (
+          <button
+            type="button"
+            className="slackTopBarButton slackDetailsButton"
             onClick={() => setShowProjectDetails(true)}
           >
-            View Details
+            Project Details
           </button>
         ) : null}
       </div>
 
       {slackSelectedProjectId ? (
         <>
-          <div className="conversationViewportShell">
+          {(slackAgentSession?.pendingApprovals.length ?? 0) > 0 ? (
+            <div className="conversationApprovalShelf">
+              <PendingApprovalsPanel
+                projectId={slackSelectedProjectId}
+                session={slackAgentSession}
+                onSessionUpdate={onSessionUpdate}
+                pushToast={pushToast}
+              />
+            </div>
+          ) : null}
+          <div className="conversationViewportShell slackConversationViewportShell">
             <div className="chatViewportDivider" aria-hidden="true" />
             <div className="agentContentLayout">
               <div className="agentChatPane">
-                <div className="agentChatScroll" ref={chatScrollRef}>
+                <div className="agentChatScroll slackChatScroll" ref={chatScrollRef}>
                   <div className="agentUnifiedConversation">
-                    {displayMessages.map((msg) => (
+                    {renderedSlackMessages.map(({ message: msg, dayLabel, showSenderLabel }) => (
                       <Fragment key={msg.id}>
-                        {msg.role === "assistant" && msg.directorId && (
-                          <div className="slackMessageLabel">{DIRECTOR_NAMES[msg.directorId]}</div>
+                        {dayLabel ? (
+                          <div className="slackDaySeparator">
+                            <span className="slackDaySeparatorLabel">{dayLabel}</span>
+                          </div>
+                        ) : null}
+                        {msg.role === "system" ? (
+                          <div
+                            className={`slackSystemMessage${devSelectionMode && selectedDeleteIds.has(msg.id) ? " slackMessageDeleteSelected" : ""}`}
+                            onClick={() => devSelectionMode && toggleDeleteId(msg.id)}
+                            style={devSelectionMode ? { cursor: "pointer" } : undefined}
+                          >
+                            {coerceSlackText(msg.content)}
+                          </div>
+                        ) : (
+                          <>
+                            {showSenderLabel && msg.role === "assistant" && msg.directorId && (
+                              <div className="slackMessageLabel">{DIRECTOR_NAMES[msg.directorId]}</div>
+                            )}
+                            <div
+                              className={`agentConvoMessage agentConvoMessage-${msg.role}${selectedMessageId === msg.id ? " slackMessageSelected" : ""}${msg.status === "working" ? " agentConvoMessage--working" : ""}${devSelectionMode && selectedDeleteIds.has(msg.id) ? " slackMessageDeleteSelected" : ""}`}
+                              style={msg.role === "assistant" && msg.directorId ? { background: DIRECTOR_COLORS[msg.directorId], color: "#fff" } : undefined}
+                              onClick={() => devSelectionMode ? toggleDeleteId(msg.id) : handleMessageClick(msg)}
+                            >
+                              <div className="agentConvoContent">
+                                {msg.status === "working" ? (
+                                  <span className="slackTypingDots">
+                                    <span className="slackDot" />
+                                    <span className="slackDot" />
+                                    <span className="slackDot" />
+                                  </span>
+                                ) : (
+                                  <SlackMarkdown text={msg.content} />
+                                )}
+                              </div>
+                              {msg.metadata?.type === "research-result" && (
+                                <button
+                                  className="slackViewMoreButton"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setResearchPanelMessage(msg);
+                                  }}
+                                >
+                                  View Research
+                                </button>
+                              )}
+                              {msg.metadata?.type === "refresh-update" && (
+                                <button
+                                  className="slackViewMoreButton"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setUpdatePanelMessage(msg);
+                                  }}
+                                >
+                                  View Update
+                                </button>
+                              )}
+                              <div className="slackMessageTimestamp">
+                                {formatSlackTimestamp(msg.createdAt)}
+                              </div>
+                            </div>
+                          </>
                         )}
-                        <div
-                          className={`agentConvoMessage agentConvoMessage-${msg.role}${selectedMessageId === msg.id ? " slackMessageSelected" : ""}`}
-                          style={msg.role === "assistant" && msg.directorId ? { background: DIRECTOR_COLORS[msg.directorId], color: "#fff" } : undefined}
-                          onClick={() => handleMessageClick(msg)}
-                        >
-                          <div className="agentConvoContent">
-                            <SlackMarkdown text={msg.content} />
-                          </div>
-                          <div className="slackMessageTimestamp">
-                            {formatSlackTimestamp(msg.createdAt)}
-                          </div>
-                        </div>
                       </Fragment>
                     ))}
 
-                    {isLoading && (
-                      <>
-                        <div className="slackMessageLabel">{DIRECTOR_NAMES[activeDirectorId]}</div>
-                        <div className="agentConvoMessage agentConvoMessage-assistant" style={{ background: DIRECTOR_COLORS[activeDirectorId], color: "#fff" }}>
-                          <div className="agentConvoContent">
-                            <span className="slackTypingDots">
-                              <span className="slackDot" />
-                              <span className="slackDot" />
-                              <span className="slackDot" />
-                            </span>
-                          </div>
-                        </div>
-                      </>
-                    )}
                   </div>
 
-                  {pendingHandoff && (
-                    <div className="slackHandoffBanner">
-                      <p><strong>{DIRECTOR_NAMES[pendingHandoff.directorId]}</strong> wants to join — {pendingHandoff.reason}</p>
-                      <button className="primaryButton" style={{ fontSize: '0.75rem', padding: '4px 10px' }} onClick={() => void handleAcceptHandoff()}>
-                        Let {DIRECTOR_NAMES[pendingHandoff.directorId]} in
-                      </button>
-                      <button className="secondaryButton" style={{ fontSize: '0.75rem', padding: '4px 10px' }} onClick={() => setPendingHandoff(null)}>
-                        Dismiss
-                      </button>
-                    </div>
-                  )}
                 </div>
 
                 <div className="slackComposerFooter">
-                  <div className="composerShell">
+                  {devSelectionMode && selectedDeleteIds.size > 0 && (
+                    <button className="slackDeleteSelectedButton" onClick={() => void handleDeleteSelected()}>
+                      Delete Selected ({selectedDeleteIds.size})
+                    </button>
+                  )}
+                  <div className="composerShell slackComposerShellCompact">
                     <textarea
                       ref={composerInputRef}
-                      className="composerInput"
+                      className="composerInput slackComposerInputCompact"
                       placeholder={alertedDirectorId ? `Replying to ${DIRECTOR_NAMES[alertedDirectorId]}...` : "Message the team..."}
                       value={messageValue}
                       onChange={(e) => setMessageValue(e.target.value)}
@@ -7573,26 +8742,21 @@ function SlackPage({
                       }}
                     />
                     <ComposerControlBar
-                      options={slackComposerOptions}
+                      options={slackRuntimeOptions}
                       modelCatalog={modelCatalog}
+                      hideAddFilesButton
+                      hideModelMenu
+                      hideThinkingMenu
                       hidePlanningMenu
                       hideSpeedMenu
                       addFilesBusy={false}
-                      sendBusy={isLoading}
+                      sendBusy={isLoading || !messageValue.trim()}
                       isRunning={isLoading}
-                      onCodexModelChange={(model) =>
-                        setSlackComposerOptions((o) => ({ ...o, provider: "codex", model, speed: "normal", reasoningEffort: "xhigh" }))
-                      }
-                      onClaudeModelChange={(claudeModel) =>
-                        setSlackComposerOptions((o) => ({ ...o, provider: "claude", claudeModel }))
-                      }
-                      onReasoningChange={(reasoningEffort) =>
-                        setSlackComposerOptions((o) => ({ ...o, reasoningEffort }))
-                      }
-                      onSpeedChange={(speed) => setSlackComposerOptions((o) => ({ ...o, speed }))}
-                      onPlanningModeChange={(planningMode) =>
-                        setSlackComposerOptions((o) => ({ ...o, planningMode }))
-                      }
+                      onCodexModelChange={() => {}}
+                      onClaudeModelChange={() => {}}
+                      onReasoningChange={() => {}}
+                      onSpeedChange={() => {}}
+                      onPlanningModeChange={() => {}}
                       onAddFiles={() => {}}
                       onSubmit={() => void handleSend()}
                       onStop={() => {}}
@@ -7601,6 +8765,64 @@ function SlackPage({
                   </div>
                 </div>
               </div>
+
+              {researchPanelMessage?.metadata?.type === "research-result" && (
+                <div className="slackResearchPanel">
+                  <div className="slackResearchPanelHeader">
+                    <h3>Research by Todd</h3>
+                    <button className="secondaryButton" style={{ fontSize: '0.75rem', padding: '4px 8px' }} onClick={() => setResearchPanelMessage(null)}>Close</button>
+                  </div>
+                  <div className="slackResearchPanelBody">
+                    <section>
+                      <h4>Research Prompt</h4>
+                      <p>{researchPanelMessage.metadata.researchPrompt}</p>
+                    </section>
+                    <section>
+                      <h4>General Findings</h4>
+                      <SlackMarkdown text={researchPanelMessage.metadata.generalSummary} />
+                    </section>
+                    <section>
+                      <h4>Project-Specific Findings</h4>
+                      <SlackMarkdown text={researchPanelMessage.metadata.projectSummary} />
+                    </section>
+                  </div>
+                </div>
+              )}
+
+              {updatePanelMessage?.metadata?.type === "refresh-update" && (
+                <div className="slackResearchPanel">
+                  <div className="slackResearchPanelHeader">
+                    <h3>Update by {DIRECTOR_NAMES[updatePanelMessage.metadata.directorId]}</h3>
+                    <button className="secondaryButton" style={{ fontSize: '0.75rem', padding: '4px 8px' }} onClick={() => setUpdatePanelMessage(null)}>Close</button>
+                  </div>
+                  <div className="slackResearchPanelBody">
+                    <section>
+                      <h4>Summary</h4>
+                      <SlackMarkdown text={updatePanelMessage.metadata.summary} />
+                    </section>
+                    {updatePanelMessage.metadata.same.length > 0 && (
+                      <section>
+                        <h4>Same (Matched Prior Understanding)</h4>
+                        <ul className="slackUpdateList">
+                          {updatePanelMessage.metadata.same.map((item, i) => (
+                            <li key={i}>{item}</li>
+                          ))}
+                        </ul>
+                      </section>
+                    )}
+                    {updatePanelMessage.metadata.updated.length > 0 && (
+                      <section>
+                        <h4>Updated (New / Changed / Removed)</h4>
+                        <ul className="slackUpdateList">
+                          {updatePanelMessage.metadata.updated.map((item, i) => (
+                            <li key={i}>{item}</li>
+                          ))}
+                        </ul>
+                      </section>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </>
@@ -7615,19 +8837,53 @@ function SlackPage({
         <SlackProjectDetailsModal
           project={selectedProject}
           session={slackAgentSession}
+          settings={settings}
+          modelCatalog={modelCatalog}
+          onUpdateAgentDefaults={onUpdateAgentDefaults}
+          onSessionUpdate={onSessionUpdate}
+          pushToast={pushToast}
           onClose={() => setShowProjectDetails(false)}
         />
       ) : null}
 
+      {showRefreshModal && (
+        <RefreshProjectModal
+          settings={settings}
+          onConfirm={handleRefreshProject}
+          onClose={() => setShowRefreshModal(false)}
+        />
+      )}
+
       {showDirectorProfile !== null && (
-        <Modal title="" onClose={() => setShowDirectorProfile(null)}>
-          <div className="directorProfileCard">
-            <div className="directorProfileAvatar" style={{ borderColor: DIRECTOR_COLORS[showDirectorProfile] }} />
-            <div className="directorProfileName">{DIRECTOR_NAMES[showDirectorProfile]}</div>
-            <span className="agentActiveLabel" style={{ borderColor: DIRECTOR_COLORS[showDirectorProfile], color: DIRECTOR_COLORS[showDirectorProfile] }}>
-              {DIRECTOR_LABELS[showDirectorProfile]}
-            </span>
-          </div>
+        <Modal
+          title=""
+          headerLeading={
+            <button
+              type="button"
+              className="textButton"
+              onClick={() => {
+                setShowProjectDetails(true);
+                setShowDirectorProfile(null);
+              }}
+            >
+              Project Details
+            </button>
+          }
+          onClose={() => setShowDirectorProfile(null)}
+          fullscreen
+        >
+          <DirectorProfilePanel
+            key={showDirectorProfile}
+            directorId={showDirectorProfile}
+            session={slackAgentSession}
+            projectId={slackSelectedProjectId}
+            settings={settings}
+            modelCatalog={modelCatalog}
+            onNavigateToDirector={setShowDirectorProfile}
+            onUpdateAgentDefaults={onUpdateAgentDefaults}
+            onSessionUpdate={onSessionUpdate}
+            pushToast={pushToast}
+          />
         </Modal>
       )}
     </section>
@@ -7637,132 +8893,260 @@ function SlackPage({
 function SlackProjectDetailsModal({
   project,
   session,
+  settings,
+  modelCatalog,
+  onUpdateAgentDefaults,
+  onSessionUpdate,
+  pushToast,
   onClose,
 }: {
   project: Project;
   session: AgentSession | null;
+  settings: Settings;
+  modelCatalog: ModelCatalog;
+  onUpdateAgentDefaults: (advancedDefaults: Partial<Settings["advancedDefaults"]>) => Promise<void>;
+  onSessionUpdate: (session: AgentSession) => void;
+  pushToast: (message: string, level: "info" | "success" | "error") => void;
   onClose: () => void;
 }) {
   const [showCoreDetails, setShowCoreDetails] = useState(false);
+  const [showAgents, setShowAgents] = useState(false);
+  const [selectedDirectorProfile, setSelectedDirectorProfile] = useState<DirectorId | null>(null);
   const [summaryRange, setSummaryRange] = useState<SlackDetailsRange>("daily");
   const [forecastRange, setForecastRange] = useState<SlackDetailsRange>("daily");
   const description = buildSlackProjectDescription(session);
   const functionSummary = session?.stages.function.confirmed?.summary?.trim() || null;
   const thesisSummary = session?.stages.thesis.confirmed?.summary?.trim() || null;
   const fullFlow = session?.stages.full_flow.confirmed ?? null;
+  const detailsExpanded = showCoreDetails || showAgents;
+  const agentsSectionId = useId();
+  const activeDirectorProfile = selectedDirectorProfile
+    ? getDirectorProfileMeta(selectedDirectorProfile)
+    : null;
 
   return (
-    <Modal title={`${project.name} Details`} onClose={onClose} fullscreen>
-      <div className="detailsScrollContent slackDetailsModalContent">
-        <section className="slackDetailsSection">
-          <div className="slackDetailsSectionHeader">
-            <h4>Project Description</h4>
-          </div>
-          <div className="slackDetailsCard">
-            <p className="slackDetailsDescription">{description}</p>
+    <Modal
+      title={activeDirectorProfile ? "" : `${project.name} Details`}
+      onClose={onClose}
+      fullscreen
+      headerLeading={selectedDirectorProfile ? (
+        <button
+          type="button"
+          className="textButton"
+          onClick={() => setSelectedDirectorProfile(null)}
+        >
+          Project Details
+        </button>
+      ) : undefined}
+    >
+      {selectedDirectorProfile ? (
+        <DirectorProfilePanel
+          key={selectedDirectorProfile}
+          directorId={selectedDirectorProfile}
+          session={session}
+          projectId={project.id}
+          settings={settings}
+          modelCatalog={modelCatalog}
+          onNavigateToDirector={setSelectedDirectorProfile}
+          onUpdateAgentDefaults={onUpdateAgentDefaults}
+          onSessionUpdate={onSessionUpdate}
+          pushToast={pushToast}
+        />
+      ) : (
+        <div className={`detailsScrollContent slackDetailsModalContent${detailsExpanded ? "" : " slackDetailsModalContent-static"}`}>
+          <section className="slackDetailsSection">
+            <div className="slackDetailsSectionHeader">
+              <h4>Project Description</h4>
+            </div>
+            <div className="slackDetailsCard">
+              <p className="slackDetailsDescription">{description}</p>
+              <button
+                type="button"
+                className="textButton slackDetailsToggle"
+                aria-expanded={showCoreDetails}
+                onClick={() => setShowCoreDetails((current) => !current)}
+              >
+                {showCoreDetails ? "Hide full core details" : "View full core details"}
+              </button>
+              {showCoreDetails ? (
+                <div className="agentCoreDetailsSection slackDetailsCoreGrid">
+                  <article className="coreDetailCard">
+                    <h4>Function</h4>
+                    <p className="coreDetailValue">{functionSummary ?? "Not yet defined."}</p>
+                  </article>
+                  <article className="coreDetailCard">
+                    <h4>Thesis</h4>
+                    <p className="coreDetailValue">{thesisSummary ?? "Not yet defined."}</p>
+                  </article>
+                  <article className="coreDetailCard coreDetailCard-full">
+                    <h4>Core Pillars</h4>
+                    {session?.corePillars.length ? (
+                      <div className="slackDetailsPillarList">
+                        {sortPillarsByOrder(session.corePillars).map((pillar) => (
+                          <SlackDetailsPillarTree key={pillar.id} pillar={pillar} />
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="coreDetailEmpty">Core pillars have not been defined yet.</p>
+                    )}
+                  </article>
+                  <article className="coreDetailCard coreDetailCard-full">
+                    <h4>Full Flow</h4>
+                    {fullFlow?.steps && fullFlow.steps.length > 0 ? (
+                      <ol className="flowStepList">
+                        {fullFlow.steps.map((step) => (
+                          <li key={step.id} className="flowStepItem">
+                            <div>
+                              <div>{step.description}</div>
+                              {step.pillarIds.length > 0 ? (
+                                <div className="flowStepPillars">
+                                  {step.pillarIds.map((pillarId) => {
+                                    const pillar = session?.corePillars.find((item) => item.id === pillarId);
+                                    return pillar ? (
+                                      <span key={pillarId} className="flowStepPillarTag">{pillar.name}</span>
+                                    ) : null;
+                                  })}
+                                </div>
+                              ) : null}
+                            </div>
+                          </li>
+                        ))}
+                      </ol>
+                    ) : (
+                      <p className="coreDetailValue">{fullFlow?.summary?.trim() || "Full flow has not been defined yet."}</p>
+                    )}
+                  </article>
+                </div>
+              ) : null}
+            </div>
+          </section>
+
+          <section className="slackDetailsSection">
+            <div className="slackDetailsSectionHeader">
+              <h4>Progress</h4>
+            </div>
+            <div className="slackDetailsProgressGrid">
+              <article className="slackDetailsCard slackDetailsProgressCard">
+                <div className="slackDetailsSubsectionHead">
+                  <h5>Summary</h5>
+                  <SlackDetailsRangeToggle value={summaryRange} onChange={setSummaryRange} />
+                </div>
+                <SlackDetailsPlaceholderPanel label="Summary" range={summaryRange} />
+              </article>
+              <article className="slackDetailsCard slackDetailsProgressCard">
+                <div className="slackDetailsSubsectionHead">
+                  <h5>Forecast</h5>
+                  <SlackDetailsRangeToggle value={forecastRange} onChange={setForecastRange} />
+                </div>
+                <SlackDetailsPlaceholderPanel label="Forecast" range={forecastRange} />
+              </article>
+            </div>
+          </section>
+
+          <section className="slackDetailsSection">
             <button
-              className="textButton slackDetailsToggle"
-              onClick={() => setShowCoreDetails((current) => !current)}
+              type="button"
+              className="slackDetailsSectionToggle"
+              aria-expanded={showAgents}
+              aria-controls={agentsSectionId}
+              onClick={() => setShowAgents((current) => !current)}
             >
-              {showCoreDetails ? "Hide full core details" : "View full core details"}
+              <span className="slackDetailsSectionToggleLabel">Agents</span>
+              <span className="slackDetailsSectionToggleHint">{showAgents ? "Collapse" : "Expand"}</span>
             </button>
-            {showCoreDetails ? (
-              <div className="agentCoreDetailsSection slackDetailsCoreGrid">
-                <article className="coreDetailCard">
-                  <h4>Function</h4>
-                  <p className="coreDetailValue">{functionSummary ?? "Not yet defined."}</p>
-                </article>
-                <article className="coreDetailCard">
-                  <h4>Thesis</h4>
-                  <p className="coreDetailValue">{thesisSummary ?? "Not yet defined."}</p>
-                </article>
-                <article className="coreDetailCard coreDetailCard-full">
-                  <h4>Core Pillars</h4>
-                  {session?.corePillars.length ? (
-                    <div className="slackDetailsPillarList">
-                      {session.corePillars.map((pillar) => (
-                        <SlackDetailsPillarTree key={pillar.id} pillar={pillar} />
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="coreDetailEmpty">Core pillars have not been defined yet.</p>
-                  )}
-                </article>
-                <article className="coreDetailCard coreDetailCard-full">
-                  <h4>Full Flow</h4>
-                  {fullFlow?.steps && fullFlow.steps.length > 0 ? (
-                    <ol className="flowStepList">
-                      {fullFlow.steps.map((step) => (
-                        <li key={step.id} className="flowStepItem">
-                          <div>
-                            <div>{step.description}</div>
-                            {step.pillarIds.length > 0 ? (
-                              <div className="flowStepPillars">
-                                {step.pillarIds.map((pillarId) => {
-                                  const pillar = session?.corePillars.find((item) => item.id === pillarId);
-                                  return pillar ? (
-                                    <span key={pillarId} className="flowStepPillarTag">{pillar.name}</span>
-                                  ) : null;
-                                })}
+            <div id={agentsSectionId} hidden={!showAgents}>
+              {showAgents ? (
+                <>
+                  <div className="slackDetailsCard slackDetailsAgentFlow">
+                    {SLACK_DETAILS_DIRECTOR_FLOW.map((directorId, index) => (
+                      <Fragment key={directorId}>
+                        <button
+                          type="button"
+                          className="slackDetailsAgentNode"
+                          style={{ "--slack-agent-color": DIRECTOR_COLORS[directorId] } as CSSProperties}
+                          onClick={() => setSelectedDirectorProfile(directorId)}
+                        >
+                          <span className="slackDetailsAgentRole">{DIRECTOR_LABELS[directorId]}</span>
+                          <span className="slackDetailsAgentName">{DIRECTOR_NAMES[directorId]}</span>
+                        </button>
+                        {index < SLACK_DETAILS_DIRECTOR_FLOW.length - 1 ? (
+                          <div className="slackDetailsAgentArrow" aria-hidden="true" />
+                        ) : null}
+                      </Fragment>
+                    ))}
+                  </div>
+
+                  {/* Director State Map */}
+                  {session && Object.keys(session.directorStateMap ?? {}).length > 0 ? (
+                    <div className="slackDetailsCard" style={{ marginTop: 12 }}>
+                      <h5 style={{ marginBottom: 8, fontSize: 13, color: "var(--text)" }}>Director State</h5>
+                      {Object.entries(session.directorStateMap ?? {}).map(([dId, ds]) => {
+                        if (!ds) return null;
+                        const dirId = dId as DirectorId;
+                        return (
+                          <div key={dId} className="directorStateSection">
+                            <div className="directorStateLabel">{DIRECTOR_NAMES[dirId]}</div>
+                            {ds.currentState ? (
+                              <div className="directorStateContent"><strong>Current:</strong> {ds.currentState}</div>
+                            ) : null}
+                            {ds.idealState ? (
+                              <div className="directorStateContent"><strong>Ideal:</strong> {ds.idealState}</div>
+                            ) : null}
+                            {ds.assumptions.length > 0 ? (
+                              <div className="directorStateContent" style={{ color: "var(--muted)" }}>
+                                {ds.assumptions.length} assumption(s)
                               </div>
                             ) : null}
                           </div>
-                        </li>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+
+                  {/* Sub-Agents from Core Pillars */}
+                  {session && session.dynamicSubAgents.filter((sa) => sa.sourcePillarId).length > 0 ? (
+                    <div className="slackDetailsCard" style={{ marginTop: 12 }}>
+                      <h5 style={{ marginBottom: 8, fontSize: 13, color: "var(--text)" }}>Pillar Sub-Agents</h5>
+                      {session.dynamicSubAgents.filter((sa) => sa.sourcePillarId).map((sa) => (
+                        <div key={sa.id} className="subAgentCard">
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <span style={{ fontWeight: 600, fontSize: 13 }}>{sa.name}</span>
+                            <span className={`subAgentModelBadge subAgentModelBadge--${sa.modelTier}`}>
+                              {sa.modelTier}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: 12, color: "var(--muted)" }}>{sa.role}</div>
+                        </div>
                       ))}
-                    </ol>
-                  ) : (
-                    <p className="coreDetailValue">{fullFlow?.summary?.trim() || "Full flow has not been defined yet."}</p>
-                  )}
-                </article>
-              </div>
-            ) : null}
-          </div>
-        </section>
+                    </div>
+                  ) : null}
 
-        <section className="slackDetailsSection">
-          <div className="slackDetailsSectionHeader">
-            <h4>Progress</h4>
-          </div>
-          <div className="slackDetailsProgressGrid">
-            <article className="slackDetailsCard slackDetailsProgressCard">
-              <div className="slackDetailsSubsectionHead">
-                <h5>Summary</h5>
-                <SlackDetailsRangeToggle value={summaryRange} onChange={setSummaryRange} />
-              </div>
-              <SlackDetailsPlaceholderPanel label="Summary" range={summaryRange} />
-            </article>
-            <article className="slackDetailsCard slackDetailsProgressCard">
-              <div className="slackDetailsSubsectionHead">
-                <h5>Forecast</h5>
-                <SlackDetailsRangeToggle value={forecastRange} onChange={setForecastRange} />
-              </div>
-              <SlackDetailsPlaceholderPanel label="Forecast" range={forecastRange} />
-            </article>
-          </div>
-        </section>
-
-        <section className="slackDetailsSection">
-          <div className="slackDetailsSectionHeader">
-            <h4>Agents</h4>
-          </div>
-          <div className="slackDetailsCard slackDetailsAgentFlow">
-            {SLACK_DETAILS_DIRECTOR_FLOW.map((directorId, index) => (
-              <Fragment key={directorId}>
-                <div
-                  className="slackDetailsAgentNode"
-                  style={{ "--slack-agent-color": DIRECTOR_COLORS[directorId] } as CSSProperties}
-                >
-                  <span className="slackDetailsAgentRole">{DIRECTOR_LABELS[directorId]}</span>
-                  <span className="slackDetailsAgentName">{DIRECTOR_NAMES[directorId]}</span>
-                </div>
-                {index < SLACK_DETAILS_DIRECTOR_FLOW.length - 1 ? (
-                  <div className="slackDetailsAgentArrow" aria-hidden="true" />
-                ) : null}
-              </Fragment>
-            ))}
-          </div>
-        </section>
-      </div>
+                  {/* Create Team button */}
+                  {session && session.corePillars.filter((p) => p.pillarType === "core").length > 0 &&
+                   session.dynamicSubAgents.filter((sa) => sa.sourcePillarId).length === 0 ? (
+                    <button
+                      type="button"
+                      className="refreshButton"
+                      style={{ marginTop: 12 }}
+                      onClick={async () => {
+                        try {
+                          const updated = await window.programs.createPillarSubAgents({ projectId: project.id });
+                          onSessionUpdate(updated);
+                          pushToast("Sub-agent team created", "success");
+                        } catch (err) {
+                          pushToast(err instanceof Error ? err.message : "Failed to create team", "error");
+                        }
+                      }}
+                    >
+                      Create Team
+                    </button>
+                  ) : null}
+                </>
+              ) : null}
+            </div>
+          </section>
+        </div>
+      )}
     </Modal>
   );
 }
@@ -7818,9 +9202,21 @@ function SlackDetailsPillarTree({
   pillar: CorePillar;
   depth?: number;
 }) {
+  const statusDotClass = pillar.pillarType === "tbd"
+    ? "pillarStatusDot pillarStatusDot--tbd"
+    : pillar.pillarType === "hard-stop"
+      ? "pillarStatusDot pillarStatusDot--hard-stop"
+      : null;
+
   return (
     <div className="corePillarExpanded slackDetailsPillarExpanded" style={{ marginLeft: depth > 0 ? 12 : 0 }}>
-      <div className="slackDetailsPillarHeading">{pillar.name}</div>
+      <div className="slackDetailsPillarHeading">
+        {statusDotClass ? <span className={statusDotClass} /> : null}
+        {pillar.name}
+        {pillar.function?.status === "assumed" ? (
+          <span className="pillarStatusBadge pillarStatusBadge--assumed">assumed</span>
+        ) : null}
+      </div>
       <div className="pillarDetailRow">
         <span className="pillarDetailLabel">Function:</span>
         <span>{pillar.function?.summary ?? "Not defined"}</span>
@@ -7829,9 +9225,17 @@ function SlackDetailsPillarTree({
         <span className="pillarDetailLabel">Thesis:</span>
         <span>{pillar.thesis?.summary ?? "Not defined"}</span>
       </div>
+      {pillar.assumptionText ? (
+        <div className={`pillarAssumptionText${pillar.assumptionSource === "dan" ? " pillarAssumptionText--dan" : ""}`}>
+          {pillar.assumptionSource === "dan" ? "Dan assumes: " : "Direction: "}{pillar.assumptionText}
+        </div>
+      ) : null}
+      {pillar.pillarType === "hard-stop" ? (
+        <div className="pillarAssumptionText" style={{ color: "#DC2626" }}>Hard end — nothing beyond this point</div>
+      ) : null}
       {pillar.corePillars.length > 0 ? (
         <div className="pillarChildren slackDetailsPillarChildren">
-          {pillar.corePillars.map((child) => (
+          {sortPillarsByOrder(pillar.corePillars).map((child) => (
             <SlackDetailsPillarTree key={child.id} pillar={child} depth={depth + 1} />
           ))}
         </div>

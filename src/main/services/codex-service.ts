@@ -13,6 +13,8 @@ import {
   flowchartGraphSchema,
   materializeFlowchartSnapshot,
 } from "@main/utils/flowchart";
+import { resolveOneShotReasoningEffort } from "@main/utils/one-shot-runtime";
+import { selectPreferredCodexModels } from "@main/utils/codex-model-catalog";
 import { isSubPath } from "@main/utils/fs";
 import { execCommand, getCommandEnv } from "@main/utils/process";
 import { DEFAULT_MODEL_CATALOG, type ModelOption } from "@shared/types";
@@ -23,6 +25,7 @@ import type {
   PlanStep,
   ProviderUsage,
   Project,
+  ReasoningEffort,
   Settings,
   SpeedMode,
   StartPlanInput,
@@ -288,62 +291,6 @@ ${FLOWCHART_PROMPT_RULES}
 - The summary must be one or two short sentences for the update history.
 - The commitMessage must be short and action-oriented.
 `.trim();
-};
-
-const parseModelVersion = (value: string): number[] => {
-  const match = value.match(/^gpt-(\d+)(?:\.(\d+))?/i);
-  if (!match) {
-    return [0, 0];
-  }
-
-  return [Number(match[1] || 0), Number(match[2] || 0)];
-};
-
-const compareModelIdsDescending = (left: string, right: string): number => {
-  const leftVersion = parseModelVersion(left);
-  const rightVersion = parseModelVersion(right);
-  for (let index = 0; index < Math.max(leftVersion.length, rightVersion.length); index += 1) {
-    const delta = (rightVersion[index] ?? 0) - (leftVersion[index] ?? 0);
-    if (delta !== 0) {
-      return delta;
-    }
-  }
-
-  return right.localeCompare(left);
-};
-
-const formatCodexModelLabel = (value: string): string =>
-  value
-    .replace(/^gpt-/i, "GPT-")
-    .split("-")
-    .map((part, index) => (index < 2 ? part : part.charAt(0).toUpperCase() + part.slice(1)))
-    .join(" ");
-
-const toModelOption = (model: z.infer<typeof modelListItemSchema>): ModelOption => ({
-  id: model.model,
-  label: formatCodexModelLabel(model.displayName || model.model),
-  detail: model.description ?? null,
-});
-
-const selectPreferredCodexModels = (models: z.infer<typeof modelListItemSchema>[]): ModelOption[] => {
-  const visible = models.filter((model) => !model.hidden && model.model.startsWith("gpt-"));
-  const general = [...visible]
-    .filter((model) => !model.model.includes("-codex"))
-    .sort((left, right) => compareModelIdsDescending(left.model, right.model));
-  const codex = [...visible]
-    .filter((model) => model.model.includes("-codex"))
-    .sort((left, right) => compareModelIdsDescending(left.model, right.model));
-  const chosen = [general[0], codex[0]].filter((model): model is z.infer<typeof modelListItemSchema> => Boolean(model));
-  const deduped = Array.from(new Map(chosen.map((model) => [model.model, toModelOption(model)])).values());
-
-  if (deduped.length === DEFAULT_MODEL_CATALOG.codex.length) {
-    return deduped;
-  }
-
-  const fallback = DEFAULT_MODEL_CATALOG.codex.filter(
-    (option) => !deduped.some((candidate) => candidate.id === option.id),
-  );
-  return [...deduped, ...fallback].slice(0, DEFAULT_MODEL_CATALOG.codex.length);
 };
 
 const parseUnifiedDiffStats = (diff: string | null): PlanDraft["diffStats"] => {
@@ -692,21 +639,27 @@ export class CodexService {
     prompt: string,
     model: string,
     outputSchema?: JsonSchema,
+    reasoningEffortOverride?: ReasoningEffort,
+    options?: { networkAccess?: boolean },
   ): Promise<string> {
     const { threadId } = await this.ensureThread(project, settings, "normal", model);
+    const reasoningEffort = resolveOneShotReasoningEffort(
+      settings.advancedDefaults.reasoningEffort,
+      reasoningEffortOverride,
+    );
 
     const result = (await this.sendRequest("turn/start", {
       threadId,
       cwd: project.localPath,
       input: [{ type: "text", text: prompt }],
-      effort: "high",
+      effort: reasoningEffort,
       model,
       ...(outputSchema ? { outputSchema } : {}),
       personality: "pragmatic",
       approvalPolicy: "never",
       sandboxPolicy: {
         type: "readOnly",
-        networkAccess: false,
+        networkAccess: options?.networkAccess ?? false,
       },
       summary: "auto",
     })) as { turn?: { id?: string } };

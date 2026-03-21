@@ -2,6 +2,7 @@ import { relative } from "node:path";
 import { dialog, ipcMain, shell } from "electron";
 import { isSubPath } from "@main/utils/fs";
 import type { ProgramsBackend } from "@main/backend";
+import { SLACK_CHAT_DISABLED_MESSAGE, SLACK_CHAT_ENABLED } from "@shared/types";
 import type {
   AddTodoInput,
   AgentAttachMaterialsInput,
@@ -169,7 +170,7 @@ export const registerIpc = (backend: ProgramsBackend): void => {
   ipcMain.handle("directors.chat", (_event, input: DirectorChatInput) =>
     backend.directorChat(input));
   ipcMain.handle("slack.chat", (_event, input: SlackChatInput) =>
-    backend.slackChat(input));
+    SLACK_CHAT_ENABLED ? backend.slackChat(input) : Promise.reject(new Error(SLACK_CHAT_DISABLED_MESSAGE)));
   ipcMain.handle("approvals.list", (_event, input: ListPendingApprovalsInput) =>
     backend.listPendingApprovals(input));
   ipcMain.handle("approvals.approve", (_event, input: ApprovePendingApprovalInput) =>
@@ -181,11 +182,11 @@ export const registerIpc = (backend: ProgramsBackend): void => {
   ipcMain.handle("approvals.dismiss", (_event, input: UpdatePendingApprovalStatusInput) =>
     backend.dismissPendingApproval(input));
   ipcMain.handle("slack.deleteMessages", (_event, input: DeleteSlackMessagesInput) =>
-    backend.deleteSlackMessages(input));
+    SLACK_CHAT_ENABLED ? backend.deleteSlackMessages(input) : Promise.reject(new Error(SLACK_CHAT_DISABLED_MESSAGE)));
   ipcMain.handle("slack.clearAll", (_event, projectId: string) =>
-    backend.clearSlackMessages(projectId));
+    SLACK_CHAT_ENABLED ? backend.clearSlackMessages(projectId) : Promise.reject(new Error(SLACK_CHAT_DISABLED_MESSAGE)));
   ipcMain.handle("slack.refreshProject", (_event, input: import("@shared/types").RefreshProjectInput) =>
-    backend.refreshProject(input));
+    SLACK_CHAT_ENABLED ? backend.refreshProject(input) : Promise.reject(new Error(SLACK_CHAT_DISABLED_MESSAGE)));
   ipcMain.handle("directors.setFocusMode", (_event, projectId: string, directorId: DirectorId, focusMode: DirectorFocusMode) =>
     backend.setDirectorFocusMode(projectId, directorId, focusMode));
   ipcMain.handle("directors.updateSettings", (_event, projectId: string, directorId: DirectorId, overrides: DirectorSettingsOverride) =>
@@ -196,7 +197,6 @@ export const registerIpc = (backend: ProgramsBackend): void => {
     backend.deriveProjectCategory(projectId));
   ipcMain.handle("projects.deriveCategory", (_event, projectId: string) =>
     backend.deriveProjectCategory(projectId));
-
   // Legacy multi-agent alias
   ipcMain.handle("agents.multiChat", (_event, input: DirectorChatInput) =>
     backend.directorChat(input));

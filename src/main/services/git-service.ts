@@ -1,6 +1,6 @@
 import { dirname, join } from "node:path";
-import { ensureDirectory, pathExists } from "@main/utils/fs";
-import { execCommand, execFileCommand } from "@main/utils/process";
+import { ensureDirectory, pathExists } from "../utils/fs.ts";
+import { execCommand, execFileCommand } from "../utils/process.ts";
 import type { DiffStats } from "@shared/types";
 
 export interface GitRemoteInfo {

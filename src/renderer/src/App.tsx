@@ -12,7 +12,9 @@ import {
 } from "react";
 import mermaid from "mermaid";
 import { getDirectorMetadata, type DirectorFlowLink } from "@shared/director-metadata";
+import { APP_PAGE_OPTIONS, getVisibleAppPageOptions, resolveVisibleAppPage, type AppPage } from "@shared/app-shell";
 import { normalizeFlowchartGraph } from "@shared/flowchart";
+import { sortPillarsByOrder } from "@shared/pillar-flow";
 import { InteractiveFlowchart } from "./components/InteractiveFlowchart";
 import { FlowchartDiff } from "./components/FlowchartDiff";
 import {
@@ -53,7 +55,6 @@ import {
   type ModelCatalog,
   type ModelOption,
   type PendingApproval,
-  type PillarType,
   type PlanDraft,
   type ProjectCategory,
   type ProviderUsage,
@@ -259,7 +260,6 @@ const emptyRuntimeState = (projectId: string): RuntimeState => ({
 const emptyModelCatalog: ModelCatalog = DEFAULT_MODEL_CATALOG;
 
 type HomeTileDotState = "ready" | "launching" | "running" | "updating" | "runningUpdating" | "error";
-type AppPage = "homepage" | "projects" | "slack" | "agents" | "skills" | "calendar" | "health";
 type UsageScheduleTone = "under" | "onTrack" | "over";
 type SlackDetailsRange = "daily" | "weekly" | "monthly";
 
@@ -279,6 +279,39 @@ const normalizeSentence = (value: string | null | undefined): string | null => {
   return /[.!?]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 };
 
+const buildLegacyConcept = (session: AgentSession | null): AgentCoreDetails | null => {
+  if (!session) {
+    return null;
+  }
+
+  const hasLegacyContent = Boolean(
+    session.stages.function.confirmed
+      || session.stages.thesis.confirmed
+      || session.stages.full_flow.confirmed
+      || session.corePillars.length > 0,
+  );
+
+  if (!hasLegacyContent) {
+    return null;
+  }
+
+  return {
+    function: session.stages.function.confirmed,
+    thesis: session.stages.thesis.confirmed,
+    corePillars: session.corePillars,
+    fullFlow: session.stages.full_flow.confirmed,
+  };
+};
+
+const getConfirmedConcept = (session: AgentSession | null): AgentCoreDetails | null =>
+  session?.danMemory?.confirmedConcept
+  ?? session?.toddMemory?.confirmedConcept
+  ?? buildLegacyConcept(session);
+
+const getWorkingConcept = (session: AgentSession | null): AgentCoreDetails | null =>
+  session?.danMemory?.draftConcept
+  ?? getConfirmedConcept(session);
+
 const summarizeCorePillars = (pillars: CorePillar[]): string | null => {
   const names = pillars
     .map((pillar) => pillar.name.trim())
@@ -286,15 +319,16 @@ const summarizeCorePillars = (pillars: CorePillar[]): string | null => {
     .slice(0, 2);
   if (names.length === 0) return null;
   if (names.length === 1) {
-    return `Core pillars currently center on ${names[0]}.`;
+    return `Concept currently centers on ${names[0]}.`;
   }
-  return `Core pillars currently center on ${names[0]} and ${names[1]}.`;
+  return `Concept currently centers on ${names[0]} and ${names[1]}.`;
 };
 
 const buildSlackProjectDescription = (session: AgentSession | null): string => {
-  const functionSummary = normalizeSentence(session?.stages.function.confirmed?.summary);
-  const thesisSummary = normalizeSentence(session?.stages.thesis.confirmed?.summary);
-  const pillarSummary = summarizeCorePillars(session?.corePillars ?? []);
+  const concept = getConfirmedConcept(session);
+  const functionSummary = normalizeSentence(concept?.function?.summary);
+  const thesisSummary = normalizeSentence(concept?.thesis?.summary);
+  const pillarSummary = summarizeCorePillars(concept?.corePillars ?? []);
   const sentences: string[] = [];
 
   if (functionSummary) {
@@ -318,12 +352,6 @@ const getDirectorProfileMeta = (directorId: DirectorId) => ({
   color: DIRECTOR_COLORS[directorId],
 });
 
-const countPillarVibes = (pillars: CorePillar[]): number =>
-  pillars.reduce(
-    (total, pillar) => total + (pillar.vibes?.length ?? 0) + countPillarVibes(pillar.corePillars),
-    0,
-  );
-
 const labelForDirectorStageStatus = (status: AgentSession["directorProgress"]["creative"]): string =>
   status
     .split("-")
@@ -335,6 +363,11 @@ const buildDirectorLiveContextItems = (directorId: DirectorId, session: AgentSes
     return ["Open a project with agent data to view this agent's live context for the selected project."];
   }
 
+  const confirmedConcept = getConfirmedConcept(session);
+  const workingConcept = getWorkingConcept(session);
+  const toddMemory = session.toddMemory;
+  const pingMemory = session.pingMemory;
+
   switch (directorId) {
     case "project-manager": {
       const activeDirector = session.directorProgress.currentDirector
@@ -342,78 +375,62 @@ const buildDirectorLiveContextItems = (directorId: DirectorId, session: AgentSes
         : "No active director has been set yet.";
       return [
         `Creative ${labelForDirectorStageStatus(session.directorProgress.creative)}, R&D ${labelForDirectorStageStatus(session.directorProgress.rd)}, Programming ${labelForDirectorStageStatus(session.directorProgress.programming)}, Validation ${labelForDirectorStageStatus(session.directorProgress.validation)}.`,
-        `${session.versions.length} version plan(s), ${session.versionUpdates.length} mapped update(s), and ${session.validationResults.length} validation result(s) are currently tracked.`,
+        `${confirmedConcept ? "Dan has locked the concept." : "Dan is still shaping the concept."} Todd is tracking ${toddMemory.futureUpdatePlan.length} planned update(s) and ${toddMemory.previousUpdateLog.length} completed execution report(s).`,
         `${(session.pendingApprovals ?? []).length} pending confirmation(s) and ${Object.values(session.directorStateMap ?? {}).reduce((total, snapshot) => total + (snapshot?.assumptions.length ?? 0), 0)} unresolved assumption(s) are currently visible to Jeff.`,
         activeDirector,
       ];
     }
-    case "creative-director":
+    case "creative-director": {
       return [
-        `${session.corePillars.length} core pillar(s) and ${countPillarVibes(session.corePillars)} vibe attachment(s) are currently attached to the project.`,
-        `${session.danInternalNotes.length} active note(s) are stored for Dan on this project.`,
-        `Function ${session.stages.function.confirmed ? "confirmed" : "pending"}, Thesis ${session.stages.thesis.confirmed ? "confirmed" : "pending"}, Full Flow ${session.stages.full_flow.confirmed ? "confirmed" : "pending"}.`,
+        confirmedConcept
+          ? `${confirmedConcept.corePillars.length} concept thread(s) are locked in for Dan to reference.`
+          : "No confirmed concept is locked in yet.",
+        `${session.danMemory.notes.length} conversation note(s) and ${session.danMemory.sideNotes.length} side note(s) are stored for Dan.`,
+        session.danMemory.draftConcept
+          ? `Dan currently has a ${session.danMemory.draftStatus === "ready-to-confirm" ? "ready-to-confirm" : "working"} draft concept.`
+          : "Dan is focused on concept conversation, not project current-state.",
       ];
-    case "rd-director":
+    }
+    case "rd-director": {
       return [
-        `${session.feasibilityAssessments.length} feasibility assessment(s) are on record.`,
-        `${session.versions.length} version plan(s) and ${session.versionUpdates.length} mapped update(s) are available for R&D planning.`,
-        `Creative details are ${session.stages.function.confirmed && session.stages.thesis.confirmed ? "ready to reference." : "still being defined."}`,
+        `${confirmedConcept ? "Confirmed Dan concept is available." : "Todd is waiting on confirmed Dan concept."}`,
+        `${[toddMemory.versionPlan.v1, toddMemory.versionPlan.v2, toddMemory.versionPlan.v3].filter(Boolean).length} roadmap version(s), ${toddMemory.futureUpdatePlan.length} future update(s), and ${toddMemory.previousUpdateLog.length} logged execution outcome(s) are available.`,
+        toddMemory.codebaseIndexedMap?.featureAreas.length
+          ? `Current codebase index covers ${toddMemory.codebaseIndexedMap.featureAreas.length} feature area(s).`
+          : "No codebase index has been stored yet.",
+        toddMemory.troubleLog.length > 0
+          ? `${toddMemory.troubleLog.length} recurring implementation issue(s) are tracked for follow-up.`
+          : "No recurring implementation issues are logged yet.",
       ];
+    }
     case "programming-director": {
-      const pending = session.versionUpdates.filter((update) => update.status === "pending").length;
-      const inProgress = session.versionUpdates.filter((update) => update.status === "in_progress").length;
-      const completed = session.versionUpdates.filter((update) => update.status === "completed").length;
+      const pending = toddMemory.futureUpdatePlan.filter((update) => update.status === "pending").length;
+      const inProgress = toddMemory.futureUpdatePlan.filter((update) => update.status === "in_progress").length;
+      const completed = toddMemory.futureUpdatePlan.filter((update) => update.status === "completed").length;
       return [
         `${pending} pending, ${inProgress} in-progress, and ${completed} completed implementation update(s) are in the queue.`,
-        `${session.corePillars.length} pillar(s) and ${session.versions.length} version plan(s) are available as implementation context.`,
-        `${session.pingTaskContext?.currentTask ? `Active task: ${session.pingTaskContext.currentTask}` : "No short-horizon programming task is active yet."}`,
+        pingMemory.codebaseMapSummary
+          ? "Ping has Todd's current codebase map summary and active update context."
+          : "Ping is waiting for Todd to hand down an active update context.",
+        pingMemory.activeTask
+          ? `Active task: ${pingMemory.activeTask}`
+          : "No short-horizon programming task is active yet.",
+        pingMemory.latestRawReport
+          ? `Latest execution result: ${pingMemory.latestRawReport.status.replace(/_/g, " ")}.`
+          : "No execution report has been recorded yet.",
       ];
     }
     case "validation-director":
       return [
         `${session.validationResults.length} validation result(s) have been recorded so far.`,
         `Validation frequency is currently ${session.validationFrequency.split("-").join(" ")}.`,
-        `${session.versionUpdates.filter((update) => update.status === "in_progress" || update.status === "completed").length} implementation update(s) are available to validate or compare.`,
+        `${toddMemory.futureUpdatePlan.filter((update) => update.status === "in_progress" || update.status === "completed").length} implementation update(s) are available to validate or compare.`,
       ];
   }
 };
 
 const getDirectorProjectNotes = (directorId: DirectorId, session: AgentSession | null): string[] =>
-  directorId === "creative-director" ? session?.danInternalNotes ?? [] : [];
-
-const APP_PAGE_OPTIONS: Array<{
-  id: AppPage;
-  label: string;
-}> = [
-  {
-    id: "homepage",
-    label: "Homepage",
-  },
-  {
-    id: "projects",
-    label: "Projects",
-  },
-  {
-    id: "slack",
-    label: "Slack",
-  },
-  {
-    id: "agents",
-    label: "Agents",
-  },
-  {
-    id: "skills",
-    label: "Skills",
-  },
-  {
-    id: "calendar",
-    label: "Calendar",
-  },
-  {
-    id: "health",
-    label: "Health",
-  },
-];
+  directorId === "creative-director" ? session?.danMemory.notes ?? session?.danInternalNotes ?? [] : [];
 
 const formatDate = (value: string | null): string =>
   value
@@ -913,6 +930,8 @@ function App() {
   const selectedDetail = selectedProjectId ? projectDetails[selectedProjectId] ?? null : null;
   const selectedRuntime = selectedProjectId ? projectRuntimes[selectedProjectId] ?? selectedDetail?.runtime ?? null : null;
   const activePlan = selectedDetail?.activePlan ?? null;
+  const activePage = resolveVisibleAppPage(currentPage);
+  const visiblePageOptions = getVisibleAppPageOptions();
 
   useEffect(() => {
     applyTheme(theme);
@@ -1048,10 +1067,13 @@ function App() {
   }, [composerValue, showUpdatePanel, selectedProjectId]);
 
   useEffect(() => {
-    if (currentPage !== "projects") {
+    if (activePage !== currentPage) {
+      setCurrentPage(activePage);
+    }
+    if (activePage !== "projects") {
       setShowUsageSheet(false);
     }
-  }, [currentPage]);
+  }, [activePage, currentPage]);
 
   useEffect(() => {
     if (!projectOptionsProjectId) {
@@ -2004,10 +2026,13 @@ function App() {
   const showRunningState = isProjectRunning || busyKey === "project.run";
   const canConfirmPlan = activePlan?.status === "awaitingApproval";
   const showUpdateDock = Boolean(activePlan);
-  const isSelectedProjectView = currentPage === "projects" && Boolean(selectedProject);
-  const useComposerLayout = isSelectedProjectView || currentPage === "agents" || currentPage === "slack";
+  const isSelectedProjectView = activePage === "projects" && Boolean(selectedProject);
+  const useComposerLayout = isSelectedProjectView || activePage === "agents" || activePage === "slack";
   const homeAppUpdateButton = getHomeAppUpdateButtonState(appUpdate);
-  const currentPageDefinition = APP_PAGE_OPTIONS.find((page) => page.id === currentPage) ?? APP_PAGE_OPTIONS[1];
+  const currentPageDefinition =
+    visiblePageOptions.find((page) => page.id === activePage)
+    ?? visiblePageOptions.find((page) => page.id === "projects")
+    ?? visiblePageOptions[0];
   const sidebarAppUpdateButton = homeAppUpdateButton === "prepare"
     ? (
       <button type="button" className="sidebarFooterButton sidebarFooterButton-update windowNoDrag" disabled>
@@ -2352,11 +2377,11 @@ function App() {
 
         <aside className="shellSidebar" aria-label="App navigation">
           <nav className="shellSidebarNav">
-            {APP_PAGE_OPTIONS.map((page) => (
+            {visiblePageOptions.map((page) => (
               <button
                 key={page.id}
                 type="button"
-                className={currentPage === page.id ? "sidebarNavButton active" : "sidebarNavButton"}
+                className={activePage === page.id ? "sidebarNavButton active" : "sidebarNavButton"}
                 onClick={() => setCurrentPage(page.id)}
               >
                 {page.label}
@@ -2398,9 +2423,9 @@ function App() {
         </aside>
 
         <main className={`shellContent${useComposerLayout ? " shellContent-composerLayout shellContent-detailLocked" : ""}`}>
-          {currentPage === "homepage" ? (
+          {activePage === "homepage" ? (
             <HomepageScratchpad projects={projects} />
-          ) : currentPage === "slack" ? (
+          ) : activePage === "slack" ? (
             <SlackPage
               projects={projects}
               settings={settings}
@@ -2419,7 +2444,7 @@ function App() {
               onUpdateAgentDefaults={handleUpdateAgentDefaults}
               pushToast={pushToast}
             />
-          ) : currentPage === "agents" ? (
+          ) : activePage === "agents" ? (
             <AgentsPage
               projects={projects}
               settings={settings}
@@ -2444,9 +2469,9 @@ function App() {
               onUpdateAgentDefaults={handleUpdateAgentDefaults}
               pushToast={pushToast}
             />
-          ) : currentPage === "skills" ? (
+          ) : activePage === "skills" ? (
             <SkillsPage skills={skills} onSkillsChange={setSkills} pushToast={pushToast} />
-          ) : currentPage === "projects" ? (
+          ) : activePage === "projects" ? (
             programsPage
           ) : (
             <PlaceholderWorkspace page={currentPageDefinition} onReturn={() => setCurrentPage("projects")} />
@@ -7012,13 +7037,154 @@ function CascadeCard({
   );
 }
 
-const PILLAR_TYPE_LABELS: Record<PillarType, string> = {
-  core: "Core",
-  side: "Side",
-  ghost: "Ghost",
-  tbd: "TBD",
-  "hard-stop": "Hard Stop",
+const collectConceptVibes = (pillars: CorePillar[], prefix = ""): { pillarName: string; vibe: VibeAttachment }[] => {
+  const items: { pillarName: string; vibe: VibeAttachment }[] = [];
+  for (const pillar of pillars) {
+    const name = prefix ? `${prefix} > ${pillar.name}` : pillar.name;
+    for (const vibe of pillar.vibes ?? []) {
+      items.push({ pillarName: name, vibe });
+    }
+    items.push(...collectConceptVibes(pillar.corePillars, name));
+  }
+  return items;
 };
+
+function ConceptThreadList({
+  pillars,
+  depth = 0,
+}: {
+  pillars: CorePillar[];
+  depth?: number;
+}) {
+  return (
+    <div className="conceptThreadList">
+      {sortPillarsByOrder(pillars).map((pillar) => (
+        <article
+          key={pillar.id}
+          className="conceptThreadCard"
+          style={{ marginLeft: depth > 0 ? depth * 16 : 0 }}
+        >
+          <div className="conceptThreadTitleRow">
+            <h5 className="conceptThreadTitle">{pillar.name}</h5>
+            {pillar.function?.status === "assumed" ? (
+              <span className="pillarStatusBadge pillarStatusBadge--assumed">assumed</span>
+            ) : null}
+          </div>
+          <div className="conceptThreadMeta">
+            {pillar.function?.summary ? (
+              <div className="conceptThreadMetaRow">
+                <span className="pillarDetailLabel">Role</span>
+                <span className={pillar.function.status === "assumed" ? "assumedText" : ""}>{pillar.function.summary}</span>
+              </div>
+            ) : null}
+            {pillar.thesis?.summary ? (
+              <div className="conceptThreadMetaRow">
+                <span className="pillarDetailLabel">Why it matters</span>
+                <span className={pillar.thesis.status === "assumed" ? "assumedText" : ""}>{pillar.thesis.summary}</span>
+              </div>
+            ) : null}
+            {pillar.fullFlow?.summary ? (
+              <div className="conceptThreadMetaRow">
+                <span className="pillarDetailLabel">Experience</span>
+                <span className={pillar.fullFlow.status === "assumed" ? "assumedText" : ""}>{pillar.fullFlow.summary}</span>
+              </div>
+            ) : null}
+            {pillar.description ? (
+              <p className="conceptThreadDescription">{pillar.description}</p>
+            ) : null}
+          </div>
+          {pillar.corePillars.length > 0 ? (
+            <ConceptThreadList pillars={pillar.corePillars} depth={depth + 1} />
+          ) : null}
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function ConceptOverview({
+  concept,
+  title,
+  emptyLabel,
+  experienceDescription,
+}: {
+  concept: AgentCoreDetails | null;
+  title?: string;
+  emptyLabel: string;
+  experienceDescription?: string | null;
+}) {
+  if (!concept) {
+    return <p className="coreDetailEmpty">{emptyLabel}</p>;
+  }
+
+  return (
+    <div className="conceptOverview">
+      {title ? <h5 className="conceptOverviewTitle">{title}</h5> : null}
+      <div className="conceptOverviewGrid">
+        <article className="coreDetailCard">
+          <h4>Function</h4>
+          <p className="coreDetailValue">{concept.function?.summary ?? "Not yet defined."}</p>
+        </article>
+        <article className="coreDetailCard">
+          <h4>Thesis</h4>
+          <p className="coreDetailValue">{concept.thesis?.summary ?? "Not yet defined."}</p>
+        </article>
+        <article className="coreDetailCard coreDetailCard-full">
+          <h4>User Experience</h4>
+          <p className="coreDetailValue">
+            {experienceDescription ?? concept.fullFlow?.summary ?? "The full experience has not been described yet."}
+          </p>
+        </article>
+        <article className="coreDetailCard coreDetailCard-full">
+          <h4>Concept Threads</h4>
+          {concept.corePillars.length > 0 ? (
+            <ConceptThreadList pillars={concept.corePillars} />
+          ) : (
+            <p className="coreDetailEmpty">No concept threads have been locked in yet.</p>
+          )}
+        </article>
+      </div>
+    </div>
+  );
+}
+
+function PingTranslationMessage({
+  zhText,
+  enText,
+}: {
+  zhText: string;
+  enText: string;
+}) {
+  const [phase, setPhase] = useState<"zh" | "swipe" | "en">("zh");
+
+  useEffect(() => {
+    setPhase("zh");
+    const swipeTimer = window.setTimeout(() => setPhase("swipe"), 900);
+    const englishTimer = window.setTimeout(() => setPhase("en"), 1400);
+    return () => {
+      window.clearTimeout(swipeTimer);
+      window.clearTimeout(englishTimer);
+    };
+  }, [enText, zhText]);
+
+  return (
+    <div className={`pingTranslationMessage pingTranslationMessage--${phase}`}>
+      <div className="pingTranslationText">{phase === "en" ? enText : zhText}</div>
+      {phase === "swipe" ? <span className="pingTranslationSwipe" aria-hidden="true" /> : null}
+    </div>
+  );
+}
+
+function renderPingAwareMessageContent(message: Pick<SlackChatMessage, "content" | "metadata">) {
+  return message.metadata?.type === "ping-translation" ? (
+    <PingTranslationMessage
+      zhText={message.metadata.zhResponse}
+      enText={message.metadata.enTranslation}
+    />
+  ) : (
+    <SlackMarkdown text={message.content} />
+  );
+}
 
 function DirectorFlowLinkPill({
   link,
@@ -7311,10 +7477,11 @@ function DirectorInfoPanel({
   onNavigateToDirector: (directorId: DirectorId) => void;
   pushToast: (message: string, level: "info" | "success" | "error") => void;
 }) {
-  const [expandedPillarId, setExpandedPillarId] = useState<string | null>(null);
-  const [activeInfoTab, setActiveInfoTab] = useState<"function" | "thesis" | "core_pillars" | "full_flow">("function");
-
   if (!session) return null;
+  const confirmedConcept = getConfirmedConcept(session);
+  const workingConcept = getWorkingConcept(session);
+  const toddMemory = session.toddMemory;
+  const pingMemory = session.pingMemory;
 
   const summaryPanel = (
     <DirectorSummaryPanel
@@ -7340,21 +7507,20 @@ function DirectorInfoPanel({
             <div className="pmStatusGrid">
               <div className="pmStatusCard">
                 <span className="pmStatusLabel">Dan — Creative</span>
-                <span className={`pmStatusValue${session.stages.function.confirmed && session.stages.thesis.confirmed ? " pmStatusDone" : ""}`}>
-                  {session.stages.function.confirmed && session.stages.thesis.confirmed && session.stages.core_pillars.confirmed && session.stages.full_flow.confirmed
-                    ? "Complete" : "In Progress"}
+                <span className={`pmStatusValue${confirmedConcept ? " pmStatusDone" : ""}`}>
+                  {confirmedConcept ? "Locked" : "In Progress"}
                 </span>
               </div>
               <div className="pmStatusCard">
                 <span className="pmStatusLabel">Todd — R&D</span>
-                <span className={`pmStatusValue${session.versions.length > 0 ? " pmStatusDone" : ""}`}>
-                  {session.versions.length > 0 ? `${session.versions.length} versions` : "Pending"}
+                <span className={`pmStatusValue${toddMemory.futureUpdatePlan.length > 0 ? " pmStatusDone" : ""}`}>
+                  {toddMemory.futureUpdatePlan.length > 0 ? `${toddMemory.futureUpdatePlan.length} updates` : "Pending"}
                 </span>
               </div>
               <div className="pmStatusCard">
                 <span className="pmStatusLabel">Ping — Programming</span>
                 <span className="pmStatusValue">
-                  {session.versionUpdates.filter((u) => u.status === "completed").length}/{session.versionUpdates.length} updates
+                  {toddMemory.futureUpdatePlan.filter((u) => u.status === "completed").length}/{toddMemory.futureUpdatePlan.length} updates
                 </span>
               </div>
               <div className="pmStatusCard">
@@ -7376,32 +7542,22 @@ function DirectorInfoPanel({
             {summaryPanel}
             <div className="agentInfoPanel">
               <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Conversation Mode</h5>
-              {session.danInternalNotes.length > 0 ? (
-                <p className="danNotesIndicator">{session.danInternalNotes.length} internal note{session.danInternalNotes.length !== 1 ? "s" : ""} recorded</p>
+              {session.danMemory.notes.length > 0 ? (
+                <p className="danNotesIndicator">{session.danMemory.notes.length} conversation note{session.danMemory.notes.length !== 1 ? "s" : ""} recorded</p>
               ) : null}
-              <p className="coreDetailValue">Brainstorm freely. Dan is listening and taking notes.</p>
+              <p className="coreDetailValue">Brainstorm freely. Dan is focused on the idea and keeps only concept notes from this conversation.</p>
             </div>
           </>
         );
       }
 
       if (focusMode === "vibes") {
-        const allVibes: { pillarName: string; vibe: VibeAttachment }[] = [];
-        const collectVibes = (pillars: CorePillar[], prefix = "") => {
-          for (const p of pillars) {
-            const name = prefix ? `${prefix} > ${p.name}` : p.name;
-            for (const v of (p.vibes ?? [])) allVibes.push({ pillarName: name, vibe: v });
-            collectVibes(p.corePillars, name);
-          }
-        };
-        collectVibes(session.corePillars);
+        const allVibes = collectConceptVibes(workingConcept?.corePillars ?? []);
         return (
           <>
             {summaryPanel}
             <div className="agentInfoPanel">
-              <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>
-                Vibe Gallery ({allVibes.length} vibes across all pillars)
-              </h5>
+              <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Vibe Gallery ({allVibes.length} references)</h5>
               {allVibes.length > 0 ? (
                 <div className="vibeGallery">
                   {allVibes.map(({ pillarName, vibe }) => (
@@ -7415,90 +7571,34 @@ function DirectorInfoPanel({
                   ))}
                 </div>
               ) : (
-                <p className="coreDetailEmpty">No vibes attached yet. Attach vibes to core pillars.</p>
+                <p className="coreDetailEmpty">No vibes attached yet. Attach vibes to the concept threads.</p>
               )}
             </div>
           </>
         );
       }
 
-      // Default: core-details mode
+      // Default: concept mode
       return (
         <>
           {summaryPanel}
           <div className="agentInfoPanel">
-            <div className="agentInfoTabs">
-              {(["function", "thesis", "core_pillars", "full_flow"] as const).map((tab) => (
-                <button
-                  key={tab}
-                  className={`agentInfoTabBtn${activeInfoTab === tab ? " active" : ""}`}
-                  onClick={() => setActiveInfoTab(tab)}
-                >
-                  {tab === "function" ? "Function" : tab === "thesis" ? "Thesis" : tab === "core_pillars" ? "Core Pillars" : "Full Flow"}
-                </button>
-              ))}
-            </div>
-            <div className="agentInfoTabContent">
-              {activeInfoTab === "function" ? (
-                <p className="coreDetailValue">
-                  {session.stages.function.confirmed ? (
-                    <span className={session.stages.function.confirmed.status === "assumed" ? "assumedText" : ""}>
-                      {session.stages.function.confirmed.summary}
-                    </span>
-                  ) : <em className="coreDetailEmpty">Not yet defined</em>}
-                </p>
-              ) : activeInfoTab === "thesis" ? (
-                <p className="coreDetailValue">
-                  {session.stages.thesis.confirmed ? (
-                    <span className={session.stages.thesis.confirmed.status === "assumed" ? "assumedText" : ""}>
-                      {session.stages.thesis.confirmed.summary}
-                    </span>
-                  ) : <em className="coreDetailEmpty">Not yet defined</em>}
-                </p>
-              ) : activeInfoTab === "core_pillars" ? (
-                (session.corePillars.length ?? 0) > 0 ? (
-                  <>
-                    <div className="corePillarChips">
-                      {sortPillarsByOrder(session.corePillars).map((p) => (
-                        <button
-                          key={p.id}
-                          className={`corePillarChip${expandedPillarId === p.id ? " active" : ""}`}
-                          onClick={() => setExpandedPillarId(expandedPillarId === p.id ? null : p.id)}
-                        >
-                          <span className={`pillarTypeBadge pillarTypeBadge--${p.pillarType}`}>{PILLAR_TYPE_LABELS[p.pillarType]}</span>
-                          {p.name}
-                        </button>
-                      ))}
-                    </div>
-                    {expandedPillarId ? (() => {
-                      const pillar = session.corePillars.find((x) => x.id === expandedPillarId);
-                      return pillar ? (
-                        <CoreDetailsPillarExpanded
-                          pillar={pillar}
-                          projectId={projectId}
-                          onSessionUpdate={onSessionUpdate}
-                          pushToast={pushToast}
-                        />
-                      ) : null;
-                    })() : null}
-                  </>
-                ) : <em className="coreDetailEmpty">Not yet defined</em>
-              ) : (
-                (session.corePillars.length ?? 0) > 0 && session.stages.full_flow.confirmed ? (
-                  <SimpleFlowchart
-                    pillars={session.corePillars}
-                    confirmation={session.stages.full_flow.confirmed}
-                    selectedNodeId={expandedPillarId}
-                    onSelectNode={(id) => setExpandedPillarId(expandedPillarId === id ? null : id)}
-                  />
-                ) : (
-                  <p className="coreDetailValue">
-                    {session.stages.full_flow.confirmed?.summary ?? <em className="coreDetailEmpty">Not yet defined</em>}
-                  </p>
-                )
-              )}
-            </div>
-            {session.stages.function.confirmed && session.stages.thesis.confirmed && session.stages.core_pillars.confirmed && session.stages.full_flow.confirmed ? (
+            <ConceptOverview
+              concept={workingConcept}
+              emptyLabel="Dan has not locked in the concept yet."
+              experienceDescription={session.danMemory.fullExperienceDescription}
+            />
+            {session.danMemory.notes.length > 0 ? (
+              <div className="conceptNotesBlock">
+                <span className="pmStatusLabel">Conversation Notes</span>
+                <ul className="agentSummaryList">
+                  {session.danMemory.notes.map((note, index) => (
+                    <li key={`dan-concept-note-${index}`}>{note}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+            {confirmedConcept ? (
               <button className="primaryButton" style={{ marginTop: 12, fontSize: "0.8rem" }} onClick={() => onNavigateToDirector("rd-director")}>
                 Proceed to R&D
               </button>
@@ -7509,74 +7609,82 @@ function DirectorInfoPanel({
     }
 
     case "rd-director": {
-      // Todd: mode-dependent panel
       if (focusMode === "research" || !focusMode) {
         return (
           <>
             {summaryPanel}
             <div className="agentInfoPanel">
-              <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Feasibility Assessments</h5>
-              {session.feasibilityAssessments.length > 0 ? (
-                <div className="feasibilityList">
-                  {session.feasibilityAssessments.map((a) => (
-                    <div key={a.id} className="feasibilityCard">
-                      <div className="feasibilityHeader">
-                        <span className={a.status === "assumed" ? "assumedText" : ""}>{a.area}</span>
-                        <span className={`complexityBadge complexityBadge--${a.complexity}`}>{a.complexity}</span>
+              <ConceptOverview
+                concept={toddMemory.confirmedConcept}
+                title="Confirmed Concept"
+                emptyLabel="Todd is waiting for Dan to lock the concept."
+                experienceDescription={session.danMemory.fullExperienceDescription}
+              />
+              <div className="agentInfoPanelSection">
+                <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Current Codebase Index</h5>
+                {toddMemory.codebaseIndexedMap ? (
+                  <div className="codebaseIndexPanel">
+                    <p className="coreDetailValue">{toddMemory.codebaseIndexedMap.summary ?? "No codebase summary yet."}</p>
+                    {toddMemory.codebaseIndexedMap.featureAreas.length > 0 ? (
+                      <div className="flowStepPillars">
+                        {toddMemory.codebaseIndexedMap.featureAreas.map((area) => (
+                          <span key={area} className="flowStepPillarTag">{area}</span>
+                        ))}
                       </div>
-                      <p className={`feasibilityText${a.status === "assumed" ? " assumedText" : ""}`}>{a.assessment}</p>
-                      {a.stackRecommendation ? <p className="feasibilityStack">Stack: {a.stackRecommendation}</p> : null}
-                      {a.costNotes ? <p className="feasibilityCost">Cost: {a.costNotes}</p> : null}
-                      {a.status === "assumed" ? (
-                        <div className="coreDetailReviewActions">
-                          <button className="coreDetailConfirmBtn" onClick={() => void window.programs.confirmAgentData({ projectId, dataType: "feasibility", itemId: a.id }).then(onSessionUpdate)}>Confirm</button>
-                        </div>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              ) : <em className="coreDetailEmpty">No assessments yet. Discuss your concept to get feasibility analysis.</em>}
+                    ) : null}
+                    {toddMemory.codebaseIndexedMap.repoNotes.length > 0 ? (
+                      <ul className="agentSummaryList">
+                        {toddMemory.codebaseIndexedMap.repoNotes.map((note, index) => (
+                          <li key={`repo-note-${index}`}>{note}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                    <p className="helperText">Indexed {formatDate(toddMemory.codebaseIndexedMap.indexedAt)}</p>
+                  </div>
+                ) : (
+                  <em className="coreDetailEmpty">Todd has not indexed the codebase yet.</em>
+                )}
+              </div>
             </div>
           </>
         );
       }
 
       if (focusMode === "version-planning") {
+        const roadmapVersions = [toddMemory.versionPlan.v1, toddMemory.versionPlan.v2, toddMemory.versionPlan.v3].filter(
+          (version): version is VersionPlan => Boolean(version),
+        );
         return (
           <>
             {summaryPanel}
             <div className="agentInfoPanel">
-              <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Version Plans</h5>
-              {session.versions.length > 0 ? (
+              <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Roadmap</h5>
+              {roadmapVersions.length > 0 ? (
                 <div className="versionTimeline">
-                  {session.versions.sort((a, b) => a.order - b.order).map((v) => (
+                  {roadmapVersions.sort((a, b) => a.order - b.order).map((v) => (
                     <div key={v.id} className="versionCard">
                       <div className="versionHeader">
                         <span className={`versionLabel${v.status === "assumed" ? " assumedText" : ""}`}>{v.label}</span>
                         <StatusChip tone={v.status === "confirmed" ? "confirmed" : v.status === "assumed" ? "action_required" : "info"}>{v.status}</StatusChip>
                       </div>
                       <p className={v.status === "assumed" ? "assumedText" : ""}>{v.description}</p>
-                      <ul className="versionGoals">
-                        {v.goals.map((g, i) => <li key={i}>{g}</li>)}
-                      </ul>
-                      {v.status === "assumed" ? (
-                        <div className="coreDetailReviewActions">
-                          <button className="coreDetailConfirmBtn" onClick={() => void window.programs.confirmAgentData({ projectId, dataType: "versions", itemId: v.id }).then(onSessionUpdate)}>Confirm</button>
-                        </div>
-                      ) : null}
+                        <ul className="versionGoals">
+                          {v.goals.map((g, i) => <li key={i}>{g}</li>)}
+                        </ul>
                     </div>
                   ))}
                 </div>
-              ) : <em className="coreDetailEmpty">No version plans yet. Start with feasibility research.</em>}
+              ) : <em className="coreDetailEmpty">Todd has not outlined V1-V3 yet.</em>}
             </div>
           </>
         );
       }
 
-      // update-planning mode
       const groupedByVersion: Record<string, VersionUpdate[]> = {};
-      for (const u of session.versionUpdates) {
-        const v = session.versions.find((ver) => ver.id === u.versionId);
+      for (const u of toddMemory.futureUpdatePlan) {
+        const v = [toddMemory.versionPlan.v1, toddMemory.versionPlan.v2, toddMemory.versionPlan.v3]
+          .filter((version): version is VersionPlan => Boolean(version))
+          .find((ver) => ver.id === u.versionId);
         const label = v?.label ?? "Unassigned";
         if (!groupedByVersion[label]) groupedByVersion[label] = [];
         groupedByVersion[label].push(u);
@@ -7585,8 +7693,8 @@ function DirectorInfoPanel({
         <>
           {summaryPanel}
           <div className="agentInfoPanel">
-            <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Update Plan</h5>
-            {session.versionUpdates.length > 0 ? (
+            <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Future Update Plan</h5>
+            {toddMemory.futureUpdatePlan.length > 0 ? (
               <div className="updatePlanList">
                 {Object.entries(groupedByVersion).map(([versionLabel, updates]) => (
                   <div key={versionLabel} className="updatePlanGroup">
@@ -7597,6 +7705,13 @@ function DirectorInfoPanel({
                         <div className="updateContent">
                           <div className="updateTitle">{u.title}</div>
                           <div className="updateDescription">{u.description}</div>
+                          {u.skillsNeeded.length > 0 ? (
+                            <div className="flowStepPillars" style={{ marginTop: 8 }}>
+                              {u.skillsNeeded.map((skill) => (
+                                <span key={`${u.id}-${skill}`} className="flowStepPillarTag">{skill}</span>
+                              ))}
+                            </div>
+                          ) : null}
                         </div>
                         <StatusChip tone={u.status === "completed" ? "confirmed" : u.status === "failed" ? "action_required" : u.status === "in_progress" ? "info" : "neutral"}>{u.status}</StatusChip>
                       </div>
@@ -7604,7 +7719,42 @@ function DirectorInfoPanel({
                   </div>
                 ))}
               </div>
-            ) : <em className="coreDetailEmpty">No updates planned yet. Define version plans first.</em>}
+            ) : <em className="coreDetailEmpty">No updates planned yet. Todd has not written the future update plan.</em>}
+            <div className="agentInfoPanelSection">
+              <h5 style={{ margin: "12px 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Previous Update Log</h5>
+              {toddMemory.previousUpdateLog.length > 0 ? (
+                <div className="validationResultsList">
+                  {toddMemory.previousUpdateLog.slice().reverse().map((entry) => (
+                    <div key={entry.id} className={`validationResultCard validationResultCard--${entry.status === "success" || entry.status === "no_changes" ? "pass" : "fail"}`}>
+                      <span className="validationResultType">{entry.goal}</span>
+                      <span className={`validationResultStatus${entry.status === "success" || entry.status === "no_changes" ? " pmStatusDone" : ""}`}>
+                        {entry.status.replace(/_/g, " ")}
+                      </span>
+                      <p>{entry.outcome}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <em className="coreDetailEmpty">No completed execution entries yet.</em>
+              )}
+            </div>
+            <div className="agentInfoPanelSection">
+              <h5 style={{ margin: "12px 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Trouble Log</h5>
+              {toddMemory.troubleLog.length > 0 ? (
+                <div className="validationResultsList">
+                  {toddMemory.troubleLog.map((entry) => (
+                    <div key={entry.id} className="validationResultCard validationResultCard--fail">
+                      <span className="validationResultType">{entry.title}</span>
+                      <span className="validationResultStatus">{entry.priority}</span>
+                      <p>{entry.details}</p>
+                      <p className="helperText">Seen {entry.occurrences} time(s). Last seen {formatDate(entry.lastSeenAt)}</p>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <em className="coreDetailEmpty">No recurring issues logged.</em>
+              )}
+            </div>
           </div>
         </>
       );
@@ -7616,13 +7766,20 @@ function DirectorInfoPanel({
           {summaryPanel}
           <div className="agentInfoPanel">
             <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Programming Queue</h5>
-            {session.versionUpdates.filter((u) => u.status === "pending" || u.status === "in_progress").length > 0 ? (
+            {toddMemory.futureUpdatePlan.filter((u) => u.status === "pending" || u.status === "in_progress").length > 0 ? (
               <div className="programmingQueue">
-                {session.versionUpdates.filter((u) => u.status === "pending" || u.status === "in_progress").map((u) => (
+                {toddMemory.futureUpdatePlan.filter((u) => u.status === "pending" || u.status === "in_progress").map((u) => (
                   <div key={u.id} className="agentPlannedUpdateItem">
                     <div className="updateContent">
                       <div className="updateTitle">{u.title}</div>
                       <div className="updateDescription">{u.description}</div>
+                      {u.skillsNeeded.length > 0 ? (
+                        <div className="flowStepPillars" style={{ marginTop: 8 }}>
+                          {u.skillsNeeded.map((skill) => (
+                            <span key={`${u.id}-${skill}`} className="flowStepPillarTag">{skill}</span>
+                          ))}
+                        </div>
+                      ) : null}
                     </div>
                     <StatusChip tone={u.status === "in_progress" ? "info" : "neutral"}>{u.status}</StatusChip>
                   </div>
@@ -7630,10 +7787,23 @@ function DirectorInfoPanel({
               </div>
             ) : <em className="coreDetailEmpty">No updates in the programming queue.</em>}
             <p className="coreDetailValue" style={{ marginTop: 12 }}>
-              {session.pingTaskContext?.currentTask
-                ? `Active task: ${session.pingTaskContext.currentTask}`
+              {pingMemory.activeTask
+                ? `Active task: ${pingMemory.activeTask}`
                 : "Ping is waiting for the next confirmed implementation task."}
             </p>
+            {pingMemory.context ? (
+              <p className="coreDetailValue" style={{ marginTop: 8 }}>{pingMemory.context}</p>
+            ) : null}
+            {pingMemory.codebaseMapSummary ? (
+              <p className="helperText" style={{ marginTop: 8 }}>{pingMemory.codebaseMapSummary}</p>
+            ) : null}
+            {pingMemory.latestRawReport ? (
+              <div className="validationResultCard validationResultCard--pass" style={{ marginTop: 12 }}>
+                <span className="validationResultType">Latest execution</span>
+                <span className="validationResultStatus">{pingMemory.latestRawReport.status.replace(/_/g, " ")}</span>
+                <p>{pingMemory.latestRawReport.summary}</p>
+              </div>
+            ) : null}
           </div>
         </>
       );
@@ -7646,7 +7816,7 @@ function DirectorInfoPanel({
             {summaryPanel}
             <div className="agentInfoPanel">
               <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Identify Goal</h5>
-              <p className="coreDetailValue">Reviewing core-details and vibes for the most recently updated pillars.</p>
+              <p className="coreDetailValue">Reviewing the confirmed concept and creative references for the most recent update.</p>
             </div>
           </>
         );
@@ -7960,8 +8130,22 @@ function AgentsPage({
 
   const directorColor = selectedDirector?.color ?? "#6366F1";
 
-  const formatFocusMode = (mode: DirectorFocusMode): string =>
-    mode.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+  const formatFocusMode = (mode: DirectorFocusMode): string => {
+    switch (mode) {
+      case "core-details":
+        return "Concept";
+      case "identify-goal":
+        return "Goal";
+      case "test-current-state":
+        return "Test";
+      case "version-planning":
+        return "Roadmap";
+      case "update-planning":
+        return "Updates";
+      default:
+        return mode.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+    }
+  };
 
   return (
     <section className={selectedDirectorId !== null && agentSelectedProjectId ? "agentsPage agentsPage-conversation" : "agentsPage"}>
@@ -8098,9 +8282,9 @@ function AgentsPage({
                     pushToast={pushToast}
                   />
 
-                  {selectedDirectorId === "creative-director" && activeFocusMode === "conversation" && agentSession && (agentSession.danInternalNotes?.length ?? 0) > 0 && (
+                  {selectedDirectorId === "creative-director" && activeFocusMode === "conversation" && agentSession && (agentSession.danMemory.notes?.length ?? 0) > 0 && (
                     <div className="danNotesIndicator">
-                      Dan has taken {agentSession.danInternalNotes.length} internal note{agentSession.danInternalNotes.length !== 1 ? "s" : ""}
+                      Dan has taken {agentSession.danMemory.notes.length} conversation note{agentSession.danMemory.notes.length !== 1 ? "s" : ""}
                     </div>
                   )}
 
@@ -8108,7 +8292,7 @@ function AgentsPage({
                     {currentDirectorMessages.map((msg) => (
                       <div key={msg.id} className={`agentConvoMessage agentConvoMessage-${msg.role}${msg.status === "working" ? " agentConvoMessage--working" : ""}`} style={msg.role === 'assistant' ? { background: directorColor, color: '#fff' } : undefined}>
                         <div className="agentConvoContent">
-                          <SlackMarkdown text={msg.content} />
+                          {renderPingAwareMessageContent(msg)}
                           {msg.status === "working" && (
                             <span className="slackTypingDots slackTypingDots--inline">
                               <span className="slackDot" />
@@ -8191,26 +8375,28 @@ function AgentsPage({
             <div className="progressSection">
               <h4>Dan — Creative</h4>
               <div className="progressItems">
-                <div className="progressItem"><span>Function</span><StatusChip tone={agentSession.stages.function.confirmed ? "confirmed" : "neutral"}>{agentSession.stages.function.confirmed ? "Confirmed" : "Pending"}</StatusChip></div>
-                <div className="progressItem"><span>Thesis</span><StatusChip tone={agentSession.stages.thesis.confirmed ? "confirmed" : "neutral"}>{agentSession.stages.thesis.confirmed ? "Confirmed" : "Pending"}</StatusChip></div>
-                <div className="progressItem"><span>Core Pillars</span><StatusChip tone={agentSession.stages.core_pillars.confirmed ? "confirmed" : "neutral"}>{agentSession.stages.core_pillars.confirmed ? "Confirmed" : "Pending"}</StatusChip></div>
-                <div className="progressItem"><span>Full Flow</span><StatusChip tone={agentSession.stages.full_flow.confirmed ? "confirmed" : "neutral"}>{agentSession.stages.full_flow.confirmed ? "Confirmed" : "Pending"}</StatusChip></div>
+                <div className="progressItem"><span>Concept</span><StatusChip tone={agentSession.danMemory.confirmedConcept ? "confirmed" : "neutral"}>{agentSession.danMemory.confirmedConcept ? "Locked" : "Pending"}</StatusChip></div>
+                <div className="progressItem"><span>Notes</span><span>{agentSession.danMemory.notes.length}</span></div>
+                <div className="progressItem"><span>Draft</span><span>{agentSession.danMemory.draftConcept ? (agentSession.danMemory.draftStatus ?? "working") : "None"}</span></div>
+                <div className="progressItem"><span>Experience</span><span>{agentSession.danMemory.fullExperienceDescription ? "Tracked" : "Pending"}</span></div>
               </div>
             </div>
             <div className="progressSection">
               <h4>Todd — R&D</h4>
               <div className="progressItems">
-                <div className="progressItem"><span>Feasibility</span><StatusChip tone={agentSession.feasibilityAssessments.length > 0 ? "confirmed" : "neutral"}>{agentSession.feasibilityAssessments.length} assessments</StatusChip></div>
-                <div className="progressItem"><span>Versions</span><StatusChip tone={agentSession.versions.length > 0 ? "confirmed" : "neutral"}>{agentSession.versions.length} planned</StatusChip></div>
-                <div className="progressItem"><span>Updates</span><StatusChip tone={agentSession.versionUpdates.length > 0 ? "confirmed" : "neutral"}>{agentSession.versionUpdates.length} mapped</StatusChip></div>
+                <div className="progressItem"><span>Roadmap</span><StatusChip tone={agentSession.versions.length > 0 ? "confirmed" : "neutral"}>{agentSession.versions.length} planned</StatusChip></div>
+                <div className="progressItem"><span>Future Updates</span><StatusChip tone={agentSession.toddMemory.futureUpdatePlan.length > 0 ? "confirmed" : "neutral"}>{agentSession.toddMemory.futureUpdatePlan.length} planned</StatusChip></div>
+                <div className="progressItem"><span>Trouble Log</span><span>{agentSession.toddMemory.troubleLog.length}</span></div>
+                <div className="progressItem"><span>Codebase Index</span><span>{agentSession.toddMemory.codebaseIndexedMap ? "Ready" : "Pending"}</span></div>
               </div>
             </div>
             <div className="progressSection">
               <h4>Ping — Programming</h4>
               <div className="progressItems">
-                <div className="progressItem"><span>Completed</span><span>{agentSession.versionUpdates.filter((u) => u.status === "completed").length}</span></div>
-                <div className="progressItem"><span>In Progress</span><span>{agentSession.versionUpdates.filter((u) => u.status === "in_progress").length}</span></div>
-                <div className="progressItem"><span>Pending</span><span>{agentSession.versionUpdates.filter((u) => u.status === "pending").length}</span></div>
+                <div className="progressItem"><span>Completed</span><span>{agentSession.toddMemory.futureUpdatePlan.filter((u) => u.status === "completed").length}</span></div>
+                <div className="progressItem"><span>In Progress</span><span>{agentSession.toddMemory.futureUpdatePlan.filter((u) => u.status === "in_progress").length}</span></div>
+                <div className="progressItem"><span>Pending</span><span>{agentSession.toddMemory.futureUpdatePlan.filter((u) => u.status === "pending").length}</span></div>
+                <div className="progressItem"><span>Latest Report</span><span>{agentSession.pingMemory.latestRawReport?.status ?? "None"}</span></div>
               </div>
             </div>
             <div className="progressSection">
@@ -8267,7 +8453,7 @@ function RefreshProjectModal({
     <Modal title="Refresh Project" onClose={onClose}>
       <div className="refreshModal">
         <p style={{ color: "var(--muted)", fontSize: 13, marginBottom: 16 }}>
-          Scan the codebase and map its current state into core-details. All results will be stored as assumptions until you confirm.
+          Scan the codebase and refresh Todd's indexed technical map. This does not rewrite Dan's concept memory.
         </p>
         <div style={{ marginBottom: 12 }}>
           <div className="directorStateLabel">Model Size</div>
@@ -8319,9 +8505,6 @@ function RefreshProjectModal({
   );
 }
 
-const sortPillarsByOrder = <T extends { order?: number }>(pillars: T[]): T[] =>
-  [...pillars].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-
 function SlackPage({
   projects,
   settings,
@@ -8351,6 +8534,7 @@ function SlackPage({
   const [alertedDirectorId, setAlertedDirectorId] = useState<DirectorId | null>(null);
   const [researchPanelMessage, setResearchPanelMessage] = useState<SlackChatMessage | null>(null);
   const [updatePanelMessage, setUpdatePanelMessage] = useState<SlackChatMessage | null>(null);
+  const [executionReportMessage, setExecutionReportMessage] = useState<SlackChatMessage | null>(null);
   const [optimisticMessages, setOptimisticMessages] = useState<SlackChatMessage[]>([]);
   const [devSelectionMode, setDevSelectionMode] = useState(false);
   const [selectedDeleteIds, setSelectedDeleteIds] = useState<Set<string>>(new Set());
@@ -8429,6 +8613,9 @@ function SlackPage({
     if (!slackSelectedProjectId) {
       setShowProjectDetails(false);
     }
+    setResearchPanelMessage(null);
+    setUpdatePanelMessage(null);
+    setExecutionReportMessage(null);
     setDevSelectionMode(false);
     setSelectedDeleteIds(new Set());
   }, [slackSelectedProjectId]);
@@ -8649,8 +8836,11 @@ function SlackPage({
               <div className="agentChatPane">
                 <div className="agentChatScroll slackChatScroll" ref={chatScrollRef}>
                   <div className="agentUnifiedConversation">
-                    {renderedSlackMessages.map(({ message: msg, dayLabel, showSenderLabel }) => (
-                      <Fragment key={msg.id}>
+                    {renderedSlackMessages.map(({ message: msg, dayLabel, showSenderLabel, isSenderContinuation }) => (
+                      <div
+                        key={msg.id}
+                        className={`slackConversationItem${isSenderContinuation ? " slackConversationItem--continuation" : ""}${msg.role === "user" ? " slackConversationItem--user" : ""}`}
+                      >
                         {dayLabel ? (
                           <div className="slackDaySeparator">
                             <span className="slackDaySeparatorLabel">{dayLabel}</span>
@@ -8682,7 +8872,7 @@ function SlackPage({
                                     <span className="slackDot" />
                                   </span>
                                 ) : (
-                                  <SlackMarkdown text={msg.content} />
+                                  renderPingAwareMessageContent(msg)
                                 )}
                               </div>
                               {msg.metadata?.type === "research-result" && (
@@ -8707,13 +8897,24 @@ function SlackPage({
                                   View Update
                                 </button>
                               )}
+                              {msg.metadata?.type === "execution-report" && (
+                                <button
+                                  className="slackViewMoreButton"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setExecutionReportMessage(msg);
+                                  }}
+                                >
+                                  View Report
+                                </button>
+                              )}
                               <div className="slackMessageTimestamp">
                                 {formatSlackTimestamp(msg.createdAt)}
                               </div>
                             </div>
                           </>
                         )}
-                      </Fragment>
+                      </div>
                     ))}
 
                   </div>
@@ -8823,6 +9024,69 @@ function SlackPage({
                   </div>
                 </div>
               )}
+
+              {executionReportMessage?.metadata?.type === "execution-report" && (
+                (() => {
+                  const report = executionReportMessage.metadata.report;
+                  return (
+                <div className="slackResearchPanel">
+                  <div className="slackResearchPanelHeader">
+                    <h3>{report.title}</h3>
+                    <button className="secondaryButton" style={{ fontSize: "0.75rem", padding: "4px 8px" }} onClick={() => setExecutionReportMessage(null)}>Close</button>
+                  </div>
+                  <div className="slackResearchPanelBody">
+                    <section>
+                      <h4>Summary</h4>
+                      <p>{report.summary}</p>
+                    </section>
+                    <section>
+                      <h4>Outcome</h4>
+                      <p>{report.outcome}</p>
+                    </section>
+                    <section>
+                      <h4>Ping Raw Report</h4>
+                      <p>Status: {report.rawReport.status.replace(/_/g, " ")}</p>
+                      <p>{report.rawReport.summary}</p>
+                      {report.rawReport.changedFiles.length > 0 ? (
+                        <>
+                          <h4>Changed Files</h4>
+                          <ul className="slackUpdateList">
+                            {report.rawReport.changedFiles.map((filePath) => (
+                              <li key={filePath}>{filePath}</li>
+                            ))}
+                          </ul>
+                        </>
+                      ) : null}
+                      {report.rawReport.blocker ? (
+                        <>
+                          <h4>Blocker</h4>
+                          <p>{report.rawReport.blocker}</p>
+                        </>
+                      ) : null}
+                      {report.rawReport.unexpectedNotes.length > 0 ? (
+                        <>
+                          <h4>Unexpected Notes</h4>
+                          <ul className="slackUpdateList">
+                            {report.rawReport.unexpectedNotes.map((item, index) => (
+                              <li key={`${report.id}-unexpected-${index}`}>{item}</li>
+                            ))}
+                          </ul>
+                        </>
+                      ) : null}
+                    </section>
+                    <section>
+                      <h4>Todd Follow-Up</h4>
+                      <p>
+                        {report.toddFollowUpNeeded
+                          ? report.toddFollowUpReason ?? "Jeff referred Todd for follow-up planning."
+                          : "No Todd follow-up needed."}
+                      </p>
+                    </section>
+                  </div>
+                </div>
+                  );
+                })()
+              )}
             </div>
           </div>
         </>
@@ -8915,9 +9179,7 @@ function SlackProjectDetailsModal({
   const [summaryRange, setSummaryRange] = useState<SlackDetailsRange>("daily");
   const [forecastRange, setForecastRange] = useState<SlackDetailsRange>("daily");
   const description = buildSlackProjectDescription(session);
-  const functionSummary = session?.stages.function.confirmed?.summary?.trim() || null;
-  const thesisSummary = session?.stages.thesis.confirmed?.summary?.trim() || null;
-  const fullFlow = session?.stages.full_flow.confirmed ?? null;
+  const concept = getConfirmedConcept(session);
   const detailsExpanded = showCoreDetails || showAgents;
   const agentsSectionId = useId();
   const activeDirectorProfile = selectedDirectorProfile
@@ -8966,56 +9228,15 @@ function SlackProjectDetailsModal({
                 aria-expanded={showCoreDetails}
                 onClick={() => setShowCoreDetails((current) => !current)}
               >
-                {showCoreDetails ? "Hide full core details" : "View full core details"}
+                {showCoreDetails ? "Hide full concept" : "View full concept"}
               </button>
               {showCoreDetails ? (
                 <div className="agentCoreDetailsSection slackDetailsCoreGrid">
-                  <article className="coreDetailCard">
-                    <h4>Function</h4>
-                    <p className="coreDetailValue">{functionSummary ?? "Not yet defined."}</p>
-                  </article>
-                  <article className="coreDetailCard">
-                    <h4>Thesis</h4>
-                    <p className="coreDetailValue">{thesisSummary ?? "Not yet defined."}</p>
-                  </article>
-                  <article className="coreDetailCard coreDetailCard-full">
-                    <h4>Core Pillars</h4>
-                    {session?.corePillars.length ? (
-                      <div className="slackDetailsPillarList">
-                        {sortPillarsByOrder(session.corePillars).map((pillar) => (
-                          <SlackDetailsPillarTree key={pillar.id} pillar={pillar} />
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="coreDetailEmpty">Core pillars have not been defined yet.</p>
-                    )}
-                  </article>
-                  <article className="coreDetailCard coreDetailCard-full">
-                    <h4>Full Flow</h4>
-                    {fullFlow?.steps && fullFlow.steps.length > 0 ? (
-                      <ol className="flowStepList">
-                        {fullFlow.steps.map((step) => (
-                          <li key={step.id} className="flowStepItem">
-                            <div>
-                              <div>{step.description}</div>
-                              {step.pillarIds.length > 0 ? (
-                                <div className="flowStepPillars">
-                                  {step.pillarIds.map((pillarId) => {
-                                    const pillar = session?.corePillars.find((item) => item.id === pillarId);
-                                    return pillar ? (
-                                      <span key={pillarId} className="flowStepPillarTag">{pillar.name}</span>
-                                    ) : null;
-                                  })}
-                                </div>
-                              ) : null}
-                            </div>
-                          </li>
-                        ))}
-                      </ol>
-                    ) : (
-                      <p className="coreDetailValue">{fullFlow?.summary?.trim() || "Full flow has not been defined yet."}</p>
-                    )}
-                  </article>
+                  <ConceptOverview
+                    concept={concept}
+                    emptyLabel="The concept has not been confirmed yet."
+                    experienceDescription={session?.danMemory.fullExperienceDescription}
+                  />
                 </div>
               ) : null}
             </div>

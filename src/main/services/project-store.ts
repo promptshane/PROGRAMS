@@ -2,8 +2,9 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { app } from "electron";
 import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
-import { CLAUDE_MODEL_OPTIONS, CODEX_MODEL_OPTIONS, AGENT_STAGES } from "@shared/types";
+import { CLAUDE_MODEL_OPTIONS, CODEX_MODEL_OPTIONS, AGENT_STAGES } from "../../shared/types.ts";
 import type {
+  AgentCoreDetails,
   AgentPlannedUpdate,
   AgentSession,
   AgentStage,
@@ -11,14 +12,18 @@ import type {
   AiProvider,
   CorePillar,
   CreativeFocusMode,
+  DanDraftStatus,
   DirectorConversation,
   DirectorId,
   DirectorFocusMode,
   DynamicSubAgent,
   FlowchartGraph,
   HomeScratchpadItem,
+  JeffExecutionReport,
   PendingPlannedUpdate,
   PendingApproval,
+  PingMemory,
+  PingRawReport,
   PlanningSession,
   ProjectCategory,
   ProjectDirectorProgress,
@@ -30,17 +35,21 @@ import type {
   Settings,
   SettingsUpdateInput,
   SetupState,
+  ToddCodebaseIndexedMap,
+  ToddMemory,
   UnifiedTodoItem,
   UpdateRecord,
   ValidationFocusMode,
-} from "@shared/types";
+  VersionPlan,
+  VersionUpdate,
+} from "../../shared/types.ts";
 import {
   sanitizeDirectorStateMap,
   sanitizePendingApprovals,
   sanitizeSlackMessages,
-} from "@shared/agent-session";
-import { DEFAULT_SETTINGS, DEFAULT_SETUP_STATE } from "@main/defaults";
-import { ensureDirectory, pathExists } from "@main/utils/fs";
+} from "../../shared/agent-session.ts";
+import { DEFAULT_SETTINGS, DEFAULT_SETUP_STATE } from "../defaults.ts";
+import { ensureDirectory, pathExists } from "../utils/fs.ts";
 
 interface LegacySettingsShape extends Partial<Settings> {
   githubClientId?: string | null;
@@ -92,6 +101,160 @@ const normalizeClaudeModel = (value: string | undefined): Settings["advancedDefa
 
 const normalizeProvider = (value: string | undefined): Settings["advancedDefaults"]["provider"] => {
   return value === "codex" || value === "claude" ? value : DEFAULT_SETTINGS.advancedDefaults.provider;
+};
+
+const buildConfirmedConceptFromLegacy = (session: {
+  stages: AgentSession["stages"];
+  corePillars: CorePillar[];
+}): AgentCoreDetails | null => {
+  const confirmedConcept: AgentCoreDetails = {
+    function: session.stages.function.confirmed ?? null,
+    thesis: session.stages.thesis.confirmed ?? null,
+    corePillars: session.corePillars,
+    fullFlow: session.stages.full_flow.confirmed ?? null,
+  };
+
+  return confirmedConcept.function || confirmedConcept.thesis || confirmedConcept.corePillars.length > 0 || confirmedConcept.fullFlow
+    ? confirmedConcept
+    : null;
+};
+
+const normalizeVersionUpdate = (update: VersionUpdate, index: number): VersionUpdate => ({
+  ...update,
+  order: typeof update.order === "number" ? update.order : index,
+  dependencies: Array.isArray(update.dependencies) ? update.dependencies : [],
+  pillarIds: Array.isArray(update.pillarIds) ? update.pillarIds : [],
+  skillsNeeded: Array.isArray(update.skillsNeeded) ? update.skillsNeeded.filter((item): item is string => typeof item === "string") : [],
+});
+
+const findRoadmapVersion = (versions: VersionPlan[], label: "v1" | "v2" | "v3"): VersionPlan | null =>
+  versions.find((version) => version.label.trim().toLowerCase().includes(label)) ?? null;
+
+const buildToddCodebaseIndexedMap = (session: {
+  currentCorePillars: CorePillar[];
+  directorStateMap: Partial<Record<DirectorId, AgentSession["directorStateMap"][DirectorId]>>;
+}, existing: ToddCodebaseIndexedMap | null): ToddCodebaseIndexedMap | null => {
+  const rdState = session.directorStateMap["rd-director"];
+  const featureAreas = session.currentCorePillars
+    .map((pillar) => pillar.name.trim())
+    .filter((name) => name.length > 0);
+  const repoNotes = rdState?.assumptions ?? [];
+  const summary = existing?.summary ?? rdState?.currentState ?? null;
+
+  if (!summary && featureAreas.length === 0 && repoNotes.length === 0 && !existing) {
+    return null;
+  }
+
+  return {
+    summary,
+    indexedAt: existing?.indexedAt ?? null,
+    featureAreas: existing?.featureAreas?.length ? existing.featureAreas : featureAreas,
+    repoNotes: existing?.repoNotes?.length ? existing.repoNotes : repoNotes,
+  };
+};
+
+const buildDanMemory = (session: {
+  danMemory?: AgentSession["danMemory"];
+  stages: AgentSession["stages"];
+  corePillars: CorePillar[];
+  danDraftCoreDetails: AgentCoreDetails | null;
+  danInternalNotes: string[];
+  danSideNotes: string[];
+  danDraftChangeSummary: string[];
+  danDraftStatus: AgentSession["danDraftStatus"];
+  danArchivedNotes: string[];
+  deletedNotes: string[];
+}): AgentSession["danMemory"] => {
+  const confirmedConcept = session.danMemory?.confirmedConcept ?? buildConfirmedConceptFromLegacy(session);
+  return {
+    confirmedConcept,
+    draftConcept: session.danMemory?.draftConcept ?? session.danDraftCoreDetails ?? null,
+    notes: session.danMemory?.notes ?? session.danInternalNotes ?? [],
+    sideNotes: session.danMemory?.sideNotes ?? session.danSideNotes ?? [],
+    draftChangeSummary: session.danMemory?.draftChangeSummary ?? session.danDraftChangeSummary ?? [],
+    draftStatus: session.danMemory?.draftStatus ?? session.danDraftStatus ?? null,
+    fullExperienceDescription: session.danMemory?.fullExperienceDescription
+      ?? confirmedConcept?.fullFlow?.summary
+      ?? null,
+    archivedNotes: session.danMemory?.archivedNotes ?? session.danArchivedNotes ?? [],
+    deletedNotes: session.danMemory?.deletedNotes ?? session.deletedNotes ?? [],
+  };
+};
+
+const buildToddMemory = (session: {
+  toddMemory?: ToddMemory;
+  versions: VersionPlan[];
+  versionUpdates: VersionUpdate[];
+  currentCorePillars: CorePillar[];
+  directorStateMap: AgentSession["directorStateMap"];
+  pingTaskContext: AgentSession["pingTaskContext"];
+  danMemory: AgentSession["danMemory"];
+}): ToddMemory => {
+  const futureUpdatePlan = session.toddMemory?.futureUpdatePlan?.length
+    ? session.toddMemory.futureUpdatePlan.map(normalizeVersionUpdate)
+    : session.versionUpdates.map(normalizeVersionUpdate);
+  const troubleLog = session.toddMemory?.troubleLog?.length
+    ? session.toddMemory.troubleLog
+    : session.pingTaskContext?.lastFailureReason
+      ? [{
+          id: `legacy-trouble-${session.pingTaskContext.currentTask ?? "task"}`,
+          title: session.pingTaskContext.currentTask ?? "Implementation issue",
+          details: session.pingTaskContext.lastFailureReason,
+          priority: "medium" as const,
+          occurrences: 1,
+          lastSeenAt: new Date().toISOString(),
+          updateIds: [],
+        }]
+      : [];
+
+  return {
+    confirmedConcept: session.toddMemory?.confirmedConcept ?? session.danMemory.confirmedConcept,
+    versionPlan: {
+      v1: session.toddMemory?.versionPlan.v1 ?? findRoadmapVersion(session.versions, "v1"),
+      v2: session.toddMemory?.versionPlan.v2 ?? findRoadmapVersion(session.versions, "v2"),
+      v3: session.toddMemory?.versionPlan.v3 ?? findRoadmapVersion(session.versions, "v3"),
+    },
+    futureUpdatePlan,
+    previousUpdateLog: session.toddMemory?.previousUpdateLog ?? [],
+    troubleLog,
+    codebaseIndexedMap: buildToddCodebaseIndexedMap(session, session.toddMemory?.codebaseIndexedMap ?? null),
+  };
+};
+
+const buildPingMemory = (session: {
+  pingMemory?: PingMemory;
+  pingTaskContext: AgentSession["pingTaskContext"];
+  toddMemory: ToddMemory;
+}): PingMemory => ({
+  activeUpdateId: session.pingMemory?.activeUpdateId ?? null,
+  activeTask: session.pingMemory?.activeTask ?? session.pingTaskContext?.currentTask ?? null,
+  context: session.pingMemory?.context ?? session.pingTaskContext?.toddUpdateExplanation ?? null,
+  codebaseMapSummary: session.pingMemory?.codebaseMapSummary ?? session.toddMemory.codebaseIndexedMap?.summary ?? null,
+  latestRawReport: session.pingMemory?.latestRawReport ?? null,
+  latestJeffReport: session.pingMemory?.latestJeffReport ?? null,
+});
+
+const syncLegacyFieldsFromMemory = (session: AgentSession): AgentSession => {
+  session.danInternalNotes = [...session.danMemory.notes];
+  session.danSideNotes = [...session.danMemory.sideNotes];
+  session.danDraftCoreDetails = session.danMemory.draftConcept;
+  session.danDraftChangeSummary = [...session.danMemory.draftChangeSummary];
+  session.danDraftStatus = session.danMemory.draftStatus;
+  session.danArchivedNotes = [...session.danMemory.archivedNotes];
+  session.deletedNotes = [...session.danMemory.deletedNotes];
+  session.versions = [session.toddMemory.versionPlan.v1, session.toddMemory.versionPlan.v2, session.toddMemory.versionPlan.v3]
+    .filter((version): version is VersionPlan => Boolean(version));
+  session.versionUpdates = session.toddMemory.futureUpdatePlan.map(normalizeVersionUpdate);
+  session.pingTaskContext = session.pingMemory.activeTask
+    ? {
+        currentTask: session.pingMemory.activeTask,
+        lastResult: session.pingMemory.latestRawReport?.summary ?? null,
+        lastFailureReason: session.pingMemory.latestRawReport?.blocker ?? null,
+        toddUpdateExplanation: session.pingMemory.context,
+        relevantPillarIds: [],
+      }
+    : session.pingTaskContext;
+  return session;
 };
 
 interface ProjectRow {
@@ -309,6 +472,10 @@ export class ProjectStore {
     this.ensureColumn("agent_sessions", "rd_focus_mode", "TEXT");
     this.ensureColumn("agent_sessions", "validation_focus_mode", "TEXT");
     this.ensureColumn("agent_sessions", "dan_internal_notes_json", "TEXT DEFAULT '[]'");
+    this.ensureColumn("agent_sessions", "dan_side_notes_json", "TEXT DEFAULT '[]'");
+    this.ensureColumn("agent_sessions", "dan_draft_core_details_json", "TEXT");
+    this.ensureColumn("agent_sessions", "dan_draft_change_summary_json", "TEXT DEFAULT '[]'");
+    this.ensureColumn("agent_sessions", "dan_draft_status", "TEXT");
     this.ensureColumn("agent_sessions", "project_category", "TEXT DEFAULT 'general-project'");
     this.ensureColumn("agent_sessions", "dynamic_sub_agents_json", "TEXT DEFAULT '[]'");
     this.ensureColumn("agent_sessions", "active_director_id", "TEXT");
@@ -325,6 +492,9 @@ export class ProjectStore {
     this.ensureColumn("agent_sessions", "ping_task_context_json", "TEXT");
     this.ensureColumn("agent_sessions", "brad_task_context_json", "TEXT");
     this.ensureColumn("agent_sessions", "slack_presence_guest_id", "TEXT");
+    this.ensureColumn("agent_sessions", "dan_memory_json", "TEXT");
+    this.ensureColumn("agent_sessions", "todd_memory_json", "TEXT");
+    this.ensureColumn("agent_sessions", "ping_memory_json", "TEXT");
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS home_scratchpad (
@@ -1030,7 +1200,11 @@ export class ProjectStore {
         corePillars: migratePillars(p.corePillars ?? []),
       }));
 
-    return {
+    const corePillars = migratePillars(rawPillars);
+    const currentCorePillars = migratePillars(JSON.parse((r.current_core_pillars_json as string) || "[]"));
+    const versionUpdates = (JSON.parse((r.version_updates_json as string) || "[]") as VersionUpdate[]).map(normalizeVersionUpdate);
+    const danDraftCoreDetails = JSON.parse((r.dan_draft_core_details_json as string) || "null") as AgentCoreDetails | null;
+    const baseSession = {
       id: row.id,
       projectId: row.project_id,
       currentStage,
@@ -1039,8 +1213,8 @@ export class ProjectStore {
       unifiedMessages: JSON.parse((r.unified_messages_json as string) || "[]"),
       scratchpad,
       plannedUpdates,
-      corePillars: migratePillars(rawPillars),
-      currentCorePillars: migratePillars(JSON.parse((r.current_core_pillars_json as string) || "[]")),
+      corePillars,
+      currentCorePillars,
       coreDetailsChatHistory: JSON.parse(row.core_details_chat_json || "[]"),
       attachedMaterials: JSON.parse(row.attached_materials_json || "[]"),
       miscMaterials: JSON.parse((r.misc_materials_json as string) || "[]"),
@@ -1051,7 +1225,7 @@ export class ProjectStore {
       // Director system fields
       directorConversations: directorConvos,
       versions: JSON.parse((r.versions_json as string) || "[]"),
-      versionUpdates: JSON.parse((r.version_updates_json as string) || "[]"),
+      versionUpdates,
       feasibilityAssessments: JSON.parse((r.feasibility_json as string) || "[]"),
       validationResults: JSON.parse((r.validation_results_json as string) || "[]"),
       validationFrequency: ((r.validation_frequency as string) || "manual") as AgentSession["validationFrequency"],
@@ -1061,6 +1235,10 @@ export class ProjectStore {
       rdFocusMode: ((r.rd_focus_mode as string) || null) as RdFocusMode | null,
       validationFocusMode: ((r.validation_focus_mode as string) || null) as ValidationFocusMode | null,
       danInternalNotes: JSON.parse((r.dan_internal_notes_json as string) || "[]"),
+      danSideNotes: JSON.parse((r.dan_side_notes_json as string) || "[]"),
+      danDraftCoreDetails,
+      danDraftChangeSummary: JSON.parse((r.dan_draft_change_summary_json as string) || "[]"),
+      danDraftStatus: ((r.dan_draft_status as string) || null) as DanDraftStatus | null,
       danArchivedNotes: JSON.parse((r.dan_archived_notes_json as string) || "[]"),
       deletedNotes: JSON.parse((r.deleted_notes_json as string) || "[]"),
       pingTaskContext: JSON.parse((r.ping_task_context_json as string) || "null"),
@@ -1073,10 +1251,19 @@ export class ProjectStore {
       pendingApprovals,
       directorSettingsOverrides: JSON.parse((r.director_settings_overrides_json as string) || "{}"),
       directorStateMap,
+      danMemory: JSON.parse((r.dan_memory_json as string) || "null") as AgentSession["danMemory"] | null,
+      toddMemory: JSON.parse((r.todd_memory_json as string) || "null") as ToddMemory | null,
+      pingMemory: JSON.parse((r.ping_memory_json as string) || "null") as PingMemory | null,
       // Deprecated aliases (kept for backward compat)
       agentConversations: directorConvos,
       activeAgentId: ((r.active_director_id as string | null) ?? (r.active_agent_id as string | null) ?? null) as DirectorId | null,
-    };
+    } as AgentSession;
+
+    baseSession.danMemory = buildDanMemory(baseSession);
+    baseSession.toddMemory = buildToddMemory(baseSession);
+    baseSession.pingMemory = buildPingMemory(baseSession);
+
+    return syncLegacyFieldsFromMemory(baseSession);
   }
 
   async getAgentSession(projectId: string): Promise<AgentSession | null> {
@@ -1100,6 +1287,21 @@ export class ProjectStore {
   }
 
   async saveAgentSession(session: AgentSession): Promise<void> {
+    const prepared = syncLegacyFieldsFromMemory({
+      ...session,
+      danMemory: buildDanMemory(session),
+      toddMemory: buildToddMemory({
+        ...session,
+        danMemory: buildDanMemory(session),
+      }),
+      pingMemory: buildPingMemory({
+        ...session,
+        toddMemory: buildToddMemory({
+          ...session,
+          danMemory: buildDanMemory(session),
+        }),
+      }),
+    } as AgentSession);
     this.run(
       `REPLACE INTO agent_sessions (
          id, project_id, current_stage, stages_json, scratchpad_json,
@@ -1110,56 +1312,66 @@ export class ProjectStore {
          feasibility_json, validation_results_json, validation_frequency, active_agent_id,
          director_conversations_json, director_progress_json,
          creative_focus_mode, rd_focus_mode, validation_focus_mode,
-         dan_internal_notes_json, project_category, dynamic_sub_agents_json, active_director_id,
+         dan_internal_notes_json, dan_side_notes_json, dan_draft_core_details_json,
+         dan_draft_change_summary_json, dan_draft_status,
+         project_category, dynamic_sub_agents_json, active_director_id,
          slack_messages_json, slack_active_director_id, pending_approvals_json,
          director_settings_overrides_json, current_core_pillars_json,
          director_state_map_json, deleted_notes_json, dan_archived_notes_json,
-         ping_task_context_json, brad_task_context_json, slack_presence_guest_id
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         ping_task_context_json, brad_task_context_json, slack_presence_guest_id,
+         dan_memory_json, todd_memory_json, ping_memory_json
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        session.id,
-        session.projectId,
-        session.currentStage,
-        JSON.stringify(session.stages),
-        JSON.stringify(session.scratchpad),
-        JSON.stringify(session.plannedUpdates),
-        JSON.stringify(session.corePillars),
-        JSON.stringify(session.coreDetailsChatHistory),
-        JSON.stringify(session.attachedMaterials),
-        session.provider,
-        session.createdAt,
-        session.updatedAt,
-        session.conversationMode,
-        JSON.stringify(session.unifiedMessages),
-        JSON.stringify(session.cascadePending),
-        JSON.stringify(session.miscMaterials),
-        JSON.stringify(session.directorConversations),
-        JSON.stringify(session.versions),
-        JSON.stringify(session.versionUpdates),
-        JSON.stringify(session.feasibilityAssessments),
-        JSON.stringify(session.validationResults),
-        session.validationFrequency,
-        session.activeDirectorId,
-        JSON.stringify(session.directorConversations),
-        JSON.stringify(session.directorProgress),
-        session.creativeFocusMode,
-        session.rdFocusMode,
-        session.validationFocusMode,
-        JSON.stringify(session.danInternalNotes),
-        session.projectCategory,
-        JSON.stringify(session.dynamicSubAgents),
-        session.activeDirectorId,
-        JSON.stringify(session.slackMessages ?? []),
-        session.slackActiveDirectorId ?? "project-manager",
-        JSON.stringify(session.pendingApprovals ?? []),
-        JSON.stringify(session.directorSettingsOverrides ?? {}),
-        JSON.stringify(session.currentCorePillars ?? []),
-        JSON.stringify(session.directorStateMap ?? {}),
-        JSON.stringify(session.deletedNotes ?? []),
-        JSON.stringify(session.danArchivedNotes ?? []),
-        JSON.stringify(session.pingTaskContext),
-        JSON.stringify(session.bradTaskContext),
-        session.slackPresenceGuestId,
+        prepared.id,
+        prepared.projectId,
+        prepared.currentStage,
+        JSON.stringify(prepared.stages),
+        JSON.stringify(prepared.scratchpad),
+        JSON.stringify(prepared.plannedUpdates),
+        JSON.stringify(prepared.corePillars),
+        JSON.stringify(prepared.coreDetailsChatHistory),
+        JSON.stringify(prepared.attachedMaterials),
+        prepared.provider,
+        prepared.createdAt,
+        prepared.updatedAt,
+        prepared.conversationMode,
+        JSON.stringify(prepared.unifiedMessages),
+        JSON.stringify(prepared.cascadePending),
+        JSON.stringify(prepared.miscMaterials),
+        JSON.stringify(prepared.directorConversations),
+        JSON.stringify(prepared.versions),
+        JSON.stringify(prepared.versionUpdates),
+        JSON.stringify(prepared.feasibilityAssessments),
+        JSON.stringify(prepared.validationResults),
+        prepared.validationFrequency,
+        prepared.activeDirectorId,
+        JSON.stringify(prepared.directorConversations),
+        JSON.stringify(prepared.directorProgress),
+        prepared.creativeFocusMode,
+        prepared.rdFocusMode,
+        prepared.validationFocusMode,
+        JSON.stringify(prepared.danInternalNotes),
+        JSON.stringify(prepared.danSideNotes ?? []),
+        JSON.stringify(prepared.danDraftCoreDetails),
+        JSON.stringify(prepared.danDraftChangeSummary ?? []),
+        prepared.danDraftStatus,
+        prepared.projectCategory,
+        JSON.stringify(prepared.dynamicSubAgents),
+        prepared.activeDirectorId,
+        JSON.stringify(prepared.slackMessages ?? []),
+        prepared.slackActiveDirectorId ?? "project-manager",
+        JSON.stringify(prepared.pendingApprovals ?? []),
+        JSON.stringify(prepared.directorSettingsOverrides ?? {}),
+        JSON.stringify(prepared.currentCorePillars ?? []),
+        JSON.stringify(prepared.directorStateMap ?? {}),
+        JSON.stringify(prepared.deletedNotes ?? []),
+        JSON.stringify(prepared.danArchivedNotes ?? []),
+        JSON.stringify(prepared.pingTaskContext),
+        JSON.stringify(prepared.bradTaskContext),
+        prepared.slackPresenceGuestId,
+        JSON.stringify(prepared.danMemory),
+        JSON.stringify(prepared.toddMemory),
+        JSON.stringify(prepared.pingMemory),
       ],
     );
   }

@@ -18,8 +18,15 @@ test("agent session save statement keeps columns and placeholders aligned", asyn
   const columns = match[1]!.split(",").map((value) => value.trim()).filter(Boolean);
   const placeholders = match[2]!.split(",").map((value) => value.trim()).filter(Boolean);
 
-  assert.equal(columns.length, 43);
-  assert.equal(placeholders.length, 43);
+  assert.equal(columns.length, placeholders.length);
+  assert.equal(columns.length, 50);
+  assert.ok(columns.includes("dan_side_notes_json"));
+  assert.ok(columns.includes("dan_draft_core_details_json"));
+  assert.ok(columns.includes("dan_draft_change_summary_json"));
+  assert.ok(columns.includes("dan_draft_status"));
+  assert.ok(columns.includes("dan_memory_json"));
+  assert.ok(columns.includes("todd_memory_json"));
+  assert.ok(columns.includes("ping_memory_json"));
 });
 
 test("ProjectStore round-trips agent sessions with a first Slack message and new Slack fields", async () => {
@@ -37,6 +44,16 @@ source = source.replace(
   'import { app } from "electron";',
   \`const app = { getPath: () => \${JSON.stringify(process.env.PROGRAMS_TEST_USER_DATA)}, getAppPath: () => \${JSON.stringify(process.cwd())} };\`,
 );
+const projectRoot = process.cwd();
+const absoluteImports = new Map([
+  ["../../shared/types.ts", pathToFileURL(path.join(projectRoot, "src/shared/types.ts")).href],
+  ["../../shared/agent-session.ts", pathToFileURL(path.join(projectRoot, "src/shared/agent-session.ts")).href],
+  ["../defaults.ts", pathToFileURL(path.join(projectRoot, "src/main/defaults.ts")).href],
+  ["../utils/fs.ts", pathToFileURL(path.join(projectRoot, "src/main/utils/fs.ts")).href],
+]);
+for (const [specifier, targetUrl] of absoluteImports) {
+  source = source.replaceAll('from "' + specifier + '"', 'from ' + JSON.stringify(targetUrl));
+}
 
 const tempDir = await mkdtemp(path.join(process.cwd(), ".tmp-programs-project-store-module-"));
 const tempPath = path.join(tempDir, "project-store.test.ts");
@@ -120,6 +137,15 @@ try {
     rdFocusMode: null,
     validationFocusMode: null,
     danInternalNotes: [],
+    danSideNotes: ["Maybe keep the ambient onboarding sound optional."],
+    danDraftCoreDetails: {
+      function: { summary: "Guide users into the workspace with a confident first-run flow.", status: "edited" },
+      thesis: null,
+      corePillars: [],
+      fullFlow: null,
+    },
+    danDraftChangeSummary: ["Added an onboarding draft function summary."],
+    danDraftStatus: "gathering",
     danArchivedNotes: ["[2026-03-19T12:00:00.000Z | slack draft processed] captured note"],
     deletedNotes: [],
     pingTaskContext: null,
@@ -152,6 +178,10 @@ try {
     slackMessageCount: reloaded?.slackMessages.length ?? 0,
     firstSlackContent: reloaded?.slackMessages[0]?.content ?? null,
     danArchivedNotes: reloaded?.danArchivedNotes ?? [],
+    danSideNotes: reloaded?.danSideNotes ?? [],
+    danDraftStatus: reloaded?.danDraftStatus ?? null,
+    danDraftFunction: reloaded?.danDraftCoreDetails?.function?.summary ?? null,
+    danDraftChangeSummary: reloaded?.danDraftChangeSummary ?? [],
     slackPresenceGuestId: reloaded?.slackPresenceGuestId ?? null,
   }));
 } finally {
@@ -178,6 +208,10 @@ try {
     assert.equal(result.slackMessageCount, 1);
     assert.equal(result.firstSlackContent, "Hello team");
     assert.deepEqual(result.danArchivedNotes, ["[2026-03-19T12:00:00.000Z | slack draft processed] captured note"]);
+    assert.deepEqual(result.danSideNotes, ["Maybe keep the ambient onboarding sound optional."]);
+    assert.equal(result.danDraftStatus, "gathering");
+    assert.equal(result.danDraftFunction, "Guide users into the workspace with a confident first-run flow.");
+    assert.deepEqual(result.danDraftChangeSummary, ["Added an onboarding draft function summary."]);
     assert.equal(result.slackPresenceGuestId, "creative-director");
   } finally {
     await rm(userDataDir, { recursive: true, force: true });

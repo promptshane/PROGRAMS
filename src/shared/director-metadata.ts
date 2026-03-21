@@ -81,7 +81,7 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     ],
     accessOverview: [
       "Project-wide summaries from Dan, Todd, and Ping.",
-      "Confirmed project state: core details, version plans, update queue, and validation summaries.",
+      "Confirmed concept memory, Todd's roadmap and update queue, and validation summaries.",
       "Unresolved assumptions, pending confirmations, and blocked actions.",
       "Recent Slack context for coordinating the next handoff.",
     ],
@@ -91,7 +91,7 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     id: "creative-director",
     name: DIRECTOR_NAMES["creative-director"],
     label: DIRECTOR_LABELS["creative-director"],
-    shortDescription: "Shapes the product concept, clarifies the core details, and captures the project’s creative direction.",
+    shortDescription: "Holds the heart of the idea and refines the confirmed concept through conversation.",
     introMessage: "I’ll think about the creative direction...",
     outroMessage: "I’ve captured the creative thread for now.",
     runtimeDefaults: {
@@ -105,9 +105,9 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     ],
     sendsTo: [directorLink("rd-director")],
     accessOverview: [
-      "Ideal core-details plus the optional current-state snapshot for reference.",
-      "Nested pillars, side pillars, ghost pillars, and uncertainty markers inside the ideal flow.",
-      "Dan's active working notes only; archived notes stay hidden unless explicitly recovered later.",
+      "Confirmed concept memory plus Dan's working draft for the current conversation.",
+      "Current conversation notes, side-notes, and the full experience description for the idea.",
+      "Archived notes stay hidden unless explicitly recovered later.",
     ],
     notesSource: "danInternalNotes",
   },
@@ -115,7 +115,7 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     id: "rd-director",
     name: DIRECTOR_NAMES["rd-director"],
     label: DIRECTOR_LABELS["rd-director"],
-    shortDescription: "Turns the concept into concrete research, version planning, and implementation-ready update plans.",
+    shortDescription: "Turns Dan's confirmed concept into technical roadmap, future updates, and codebase-aware planning.",
     introMessage: "Let me research and plan this out...",
     outroMessage: "I’ve mapped the R&D angle for now.",
     runtimeDefaults: {
@@ -129,9 +129,9 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     ],
     sendsTo: [directorLink("programming-director")],
     accessOverview: [
-      "Dan's ideal core-details and the current-state snapshot for comparison.",
-      "Compact codebase-map summaries from the latest repo scan or refresh.",
-      "Todd's planning state: current/ideal snapshots, assumptions, version plans, and mapped updates.",
+      "Only Dan's confirmed concept memory, not Dan's unconfirmed draft or side-notes.",
+      "Todd's codebase index from the latest repo scan or refresh.",
+      "Todd's planning state: V1-V3 roadmap, future update plan, previous update log, and trouble log.",
     ],
     notesSource: "directorStateMap",
   },
@@ -139,7 +139,7 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     id: "programming-director",
     name: DIRECTOR_NAMES["programming-director"],
     label: DIRECTOR_LABELS["programming-director"],
-    shortDescription: "Owns implementation and manages the active programming queue for the current iteration.",
+    shortDescription: "Executes Todd-approved updates, reports the result, and returns to waiting.",
     introMessage: "I'll look at the implementation...",
     outroMessage: "I’m stepping back out of the code thread.",
     runtimeDefaults: {
@@ -153,9 +153,8 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     ],
     sendsTo: [directorLink("validation-director")],
     accessOverview: [
-      "Relevant confirmed ideal core-details (function/thesis + touched pillars only).",
-      "Todd's current update plan with the active update explanation.",
-      "Short-horizon context: current task, last result, and last failure reason.",
+      "Todd's active update context and the current codebase map summary.",
+      "Short-horizon execution context: current task, latest raw report, and blocker state.",
       "Repo access on demand while implementing the active update.",
     ],
     notesSource: null,
@@ -180,7 +179,7 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
       contextLink("User"),
     ],
     accessOverview: [
-      "Relevant confirmed ideal core-details (function/thesis + validated pillars only).",
+      "Confirmed concept memory relevant to the validation target.",
       "Todd's explanation of what the update was supposed to achieve.",
       "Short-horizon context: current task, last result, last failure reason.",
     ],

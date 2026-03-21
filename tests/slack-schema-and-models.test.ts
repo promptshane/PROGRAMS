@@ -4,18 +4,34 @@ import { DEFAULT_MODEL_CATALOG } from "../src/shared/types.ts";
 import { selectPreferredCodexModels } from "../src/main/utils/codex-model-catalog.ts";
 import { buildSlackResponseContract } from "../src/main/utils/slack-flow.ts";
 import {
+  directorBradCompareSchema,
+  directorBradGoalSchema,
+  directorBradTestSchema,
+  directorPingSchema,
+  directorPmSchema,
+  directorToddResearchSchema,
+  directorToddUpdateSchema,
+  directorToddVersionSchema,
+} from "../src/main/utils/director-chat-schema.ts";
+import {
   danSlackSchema,
   directorSlackSchema,
+  pingSlackSchema,
   refreshMappingSchema,
   refreshScanSchema,
   researchSlackSchema,
+  toddUpdateSlackSchema,
+  toddVersionSlackSchema,
 } from "../src/main/utils/slack-schema.ts";
 
 test("Slack strict schemas require every declared property", () => {
   const schemaPairs = [
     ["dan", danSlackSchema],
     ["director", directorSlackSchema],
+    ["ping", pingSlackSchema],
     ["research", researchSlackSchema],
+    ["todd-version", toddVersionSlackSchema],
+    ["todd-update", toddUpdateSlackSchema],
     ["refresh-scan", refreshScanSchema],
     ["refresh-mapping", refreshMappingSchema],
   ] as const;
@@ -29,7 +45,57 @@ test("Slack strict schemas require every declared property", () => {
   }
 });
 
-test("Slack response contract stays synchronized with standard and research schemas", () => {
+test("Director DM strict schemas require every declared property", () => {
+  const schemaPairs = [
+    ["pm", directorPmSchema],
+    ["todd-research", directorToddResearchSchema],
+    ["todd-version", directorToddVersionSchema],
+    ["todd-update", directorToddUpdateSchema],
+    ["ping", directorPingSchema],
+    ["brad-goal", directorBradGoalSchema],
+    ["brad-test", directorBradTestSchema],
+    ["brad-compare", directorBradCompareSchema],
+  ] as const;
+
+  for (const [label, schema] of schemaPairs) {
+    assert.deepEqual(
+      [...schema.required].sort(),
+      Object.keys(schema.properties).sort(),
+      `${label} schema required keys should match declared properties`,
+    );
+  }
+});
+
+test("Todd nested planning schemas require every declared item property", () => {
+  const dmResearchItem = directorToddResearchSchema.properties.feasibilityAssessments.items;
+  const dmVersionItem = directorToddVersionSchema.properties.versions.items;
+  const dmUpdateItem = directorToddUpdateSchema.properties.updates.items;
+  const slackVersionItem = toddVersionSlackSchema.properties.versions.items;
+  const slackUpdateItem = toddUpdateSlackSchema.properties.updates.items;
+
+  assert.deepEqual(
+    [...dmResearchItem.required].sort(),
+    Object.keys(dmResearchItem.properties).sort(),
+  );
+  assert.deepEqual(
+    [...dmVersionItem.required].sort(),
+    Object.keys(dmVersionItem.properties).sort(),
+  );
+  assert.deepEqual(
+    [...dmUpdateItem.required].sort(),
+    Object.keys(dmUpdateItem.properties).sort(),
+  );
+  assert.deepEqual(
+    [...slackVersionItem.required].sort(),
+    Object.keys(slackVersionItem.properties).sort(),
+  );
+  assert.deepEqual(
+    [...slackUpdateItem.required].sort(),
+    Object.keys(slackUpdateItem.properties).sort(),
+  );
+});
+
+test("Slack response contract stays synchronized with standard and specialized schemas", () => {
   const contracts = [
     {
       contract: buildSlackResponseContract("creative-director", "codebase-analysis"),
@@ -43,10 +109,18 @@ test("Slack response contract stays synchronized with standard and research sche
       contract: buildSlackResponseContract("rd-director", "internet-research"),
       required: [...researchSlackSchema.required].sort(),
     },
+    {
+      contract: buildSlackResponseContract("rd-director", "version-planning"),
+      required: [...toddVersionSlackSchema.required].sort(),
+    },
+    {
+      contract: buildSlackResponseContract("rd-director", "update-planning"),
+      required: [...toddUpdateSlackSchema.required].sort(),
+    },
   ] as const;
 
   for (const { contract, required } of contracts) {
-    const fields = [...contract.matchAll(/"([^"]+)":/g)].map((match) => match[1]!).sort();
+    const fields = [...contract.matchAll(/^- "([^"]+)":/gm)].map((match) => match[1]!).sort();
     assert.deepEqual(fields, required);
   }
 });
@@ -62,8 +136,21 @@ test("Dan contract includes notes and draft lifecycle fields", () => {
   const contract = buildSlackResponseContract("creative-director", "codebase-analysis");
 
   assert.ok(contract.includes('"notesToAppend"'));
+  assert.ok(contract.includes('"sideNotesToAppend"'));
   assert.ok(contract.includes('"conversationStatus"'));
+  assert.ok(contract.includes('"draftChangeSummary"'));
   assert.ok(contract.includes('"draftCoreDetails"'));
+  assert.ok(contract.includes('"presenceAction"'));
+});
+
+test("Todd planning contracts include confirmation and plan arrays", () => {
+  const versionContract = buildSlackResponseContract("rd-director", "version-planning");
+  const updateContract = buildSlackResponseContract("rd-director", "update-planning");
+
+  assert.ok(versionContract.includes('"confirmationSuggested"'));
+  assert.ok(versionContract.includes('"versions"'));
+  assert.ok(updateContract.includes('"confirmationSuggested"'));
+  assert.ok(updateContract.includes('"updates"'));
 });
 
 test("Codex model selection keeps GPT-5.4 alongside GPT-5.4 Mini", () => {

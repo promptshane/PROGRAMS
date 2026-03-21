@@ -5475,6 +5475,257 @@ select {
   min-height: 56px;
 }
 
+.agentInfoPanelSection {
+  margin-top: 14px;
+}
+
+.conceptOverview {
+  display: grid;
+  gap: 12px;
+}
+
+.conceptOverviewTitle {
+  margin: 0;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.conceptOverviewGrid {
+  display: grid;
+  gap: 12px;
+}
+
+.conceptThreadList {
+  display: grid;
+  gap: 10px;
+}
+
+.conceptThreadCard {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+
+.conceptThreadTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.conceptThreadTitle {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.conceptThreadMeta {
+  display: grid;
+  gap: 6px;
+}
+
+.conceptThreadMetaRow {
+  display: grid;
+  grid-template-columns: minmax(96px, 120px) 1fr;
+  gap: 8px;
+  align-items: start;
+}
+
+.conceptThreadDescription {
+  margin: 4px 0 0;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.conceptNotesBlock {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.codebaseIndexPanel {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+
+.pingTranslationMessage {
+  position: relative;
+  overflow: hidden;
+  min-height: 1.4em;
+}
+
+.pingTranslationText {
+  position: relative;
+  z-index: 1;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.pingTranslationSwipe {
+  position: absolute;
+  inset: -4px;
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.16) 35%, rgba(255, 255, 255, 0.82) 50%, rgba(255, 255, 255, 0.16) 65%, transparent 100%);
+  transform: translateX(-125%);
+  animation: pingTranslateSwipe 480ms ease forwards;
+  pointer-events: none;
+}
+
+@keyframes pingTranslateSwipe {
+  from {
+    transform: translateX(-125%);
+  }
+  to {
+    transform: translateX(125%);
+  }
+}
+
+.pillarFlowOverview {
+  display: grid;
+  gap: 10px;
+}
+
+.pillarFlowOverviewHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pillarFlowOverviewTitle {
+  margin: 0;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.pillarFlowOverviewCopy {
+  margin: 4px 0 0;
+  font-size: 0.77rem;
+  line-height: 1.5;
+  color: var(--muted);
+  max-width: 58ch;
+}
+
+.pillarFlowLaneTabs {
+  margin-left: auto;
+  align-self: flex-start;
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--panel-soft);
+}
+
+.pillarFlowLaneTabs .agentInfoTabBtn {
+  border-right: 1px solid var(--border);
+}
+
+.pillarFlowLaneTabs .agentInfoTabBtn:last-child {
+  border-right: none;
+}
+
+.pillarFlowLegend {
+  font-size: 0.72rem;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+.pillarFlowEntries {
+  display: grid;
+  gap: 10px;
+}
+
+.pillarFlowCard {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+}
+
+.pillarFlowCard--core {
+  box-shadow: inset 3px 0 0 #059669;
+}
+
+.pillarFlowCard--side {
+  box-shadow: inset 3px 0 0 #0284C7;
+}
+
+.pillarFlowCard--ghost {
+  box-shadow: inset 3px 0 0 #64748B;
+}
+
+.pillarFlowCard--tbd {
+  box-shadow: inset 3px 0 0 #EAB308;
+}
+
+.pillarFlowCard--hard-stop {
+  box-shadow: inset 3px 0 0 #DC2626;
+}
+
+.pillarFlowCardHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pillarFlowCardHeaderMain {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pillarFlowCardTitleBlock {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.pillarFlowCardTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pillarFlowCardTitle {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.pillarFlowCardTrail {
+  font-size: 0.72rem;
+  color: var(--muted);
+}
+
+.pillarFlowCardBody {
+  display: grid;
+  gap: 6px;
+}
+
+.pillarFlowConnections {
+  display: grid;
+  gap: 6px;
+}
+
 /* --- Update Agent Section --- */
 
 .agentUpdateSection {
@@ -5751,6 +6002,22 @@ select {
   flex: 0 0 auto;
 }
 
+.slackConversationItem {
+  display: flex;
+  flex-direction: column;
+}
+
+.slackConversationItem--continuation {
+  margin-top: -5px;
+}
+
+.slackConversationItem--user::before {
+  content: "";
+  display: block;
+  height: 0.625rem;
+  margin: 6px 0 4px;
+}
+
 .agentConvoMessage {
   padding: 10px 14px;
   border-radius: 16px;
@@ -5868,8 +6135,7 @@ select {
   opacity: 0.55;
   align-self: flex-start;
   padding-left: 6px;
-  margin-bottom: -8px;
-  margin-top: 4px;
+  margin: 6px 0 4px;
 }
 
 .slackDaySeparator {
@@ -6061,6 +6327,9 @@ select {
   margin-right: 6px;
   vertical-align: middle;
 }
+.pillarStatusDot--core { background: #059669; }
+.pillarStatusDot--side { background: #0284C7; }
+.pillarStatusDot--ghost { background: #64748B; }
 .pillarStatusDot--tbd { background: #EAB308; }
 .pillarStatusDot--hard-stop { background: #DC2626; }
 .pillarAssumptionText {

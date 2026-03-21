@@ -9,7 +9,7 @@ const loadAgentSessionModule = async () => {
   const sourcePath = new URL("../src/shared/agent-session.ts", import.meta.url);
   const typesUrl = new URL("../src/shared/types.ts", import.meta.url).href;
   const originalSource = await readFile(sourcePath, "utf8");
-  const rewrittenSource = originalSource.replace('} from "./types";', `} from ${JSON.stringify(typesUrl)};`);
+  const rewrittenSource = originalSource.replace('} from "./types.ts";', `} from ${JSON.stringify(typesUrl)};`);
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "programs-agent-session-"));
   const tempPath = path.join(tempDir, "agent-session.test.ts");
   await writeFile(tempPath, rewrittenSource, "utf8");

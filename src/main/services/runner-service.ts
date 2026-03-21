@@ -1,10 +1,10 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { app } from "electron";
 import { join, resolve } from "node:path";
-import type { Project, RuntimeState } from "@shared/types";
-import { EMPTY_RUNTIME } from "@main/defaults";
-import { readTextFile, writeTextFile } from "@main/utils/fs";
-import { execCommand, execFileCommand, getCommandEnv } from "@main/utils/process";
+import type { Project, RuntimeState } from "../../shared/types.ts";
+import { EMPTY_RUNTIME } from "../defaults.ts";
+import { readTextFile, writeTextFile } from "../utils/fs.ts";
+import { execCommand, execFileCommand, getCommandEnv } from "../utils/process.ts";
 
 type Emit = (
   event:

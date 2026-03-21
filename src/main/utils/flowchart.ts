@@ -1,15 +1,15 @@
 import { readdir } from "node:fs/promises";
 import { basename, join, relative, sep } from "node:path";
 import { z } from "zod";
-import { createStarterFlowchart } from "../defaults";
-import { pathExists, readTextFile, writeTextFile } from "./fs";
-import { compileFlowchartGraph, normalizeFlowchartGraph, validateFlowchartGraph } from "../../shared/flowchart";
+import { createStarterFlowchart } from "../defaults.ts";
+import { pathExists, readTextFile, writeTextFile } from "./fs.ts";
+import { compileFlowchartGraph, normalizeFlowchartGraph, validateFlowchartGraph } from "../../shared/flowchart.ts";
 import {
   extractActionHintsFromText,
   extractNavigationHintsFromText,
   type FlowchartHintGroup,
   type FlowchartHintItem,
-} from "../../shared/flowchart-hints";
+} from "../../shared/flowchart-hints.ts";
 import type { FlowchartGraph, FlowchartSnapshot, Project } from "../../shared/types";
 
 const MAX_HINT_FILES = 120;

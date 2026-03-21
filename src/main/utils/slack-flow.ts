@@ -21,11 +21,34 @@ export const RESEARCH_SLACK_RESPONSE_FIELDS = [
   "projectSummary",
 ] as const;
 
+export const TODD_VERSION_SLACK_RESPONSE_FIELDS = [
+  ...STANDARD_SLACK_RESPONSE_FIELDS,
+  "confirmationSuggested",
+  "versions",
+] as const;
+
+export const TODD_UPDATE_SLACK_RESPONSE_FIELDS = [
+  ...STANDARD_SLACK_RESPONSE_FIELDS,
+  "confirmationSuggested",
+  "updates",
+] as const;
+
 export const DAN_SLACK_RESPONSE_FIELDS = [
   ...STANDARD_SLACK_RESPONSE_FIELDS,
   "notesToAppend",
+  "sideNotesToAppend",
   "conversationStatus",
+  "draftChangeSummary",
   "draftCoreDetails",
+  "presenceAction",
+] as const;
+
+export const PING_SLACK_RESPONSE_FIELDS = [
+  ...STANDARD_SLACK_RESPONSE_FIELDS,
+  "status",
+  "zhResponse",
+  "enTranslation",
+  "rawReport",
 ] as const;
 
 const AUTO_ROUTED_SLACK_DIRECTORS: DirectorId[] = [
@@ -55,6 +78,25 @@ const EXPLICIT_INTERNET_RESEARCH_PATTERNS = [
   /\bfind\s+(sources?|articles?|docs|documentation|pricing)\b/i,
 ] as const;
 
+const TODD_UPDATE_PLANNING_PATTERNS = [
+  /\bupdate\s+sequence\b/i,
+  /\bupdate\s+plan\b/i,
+  /\bimplementation\s+plan\b/i,
+  /\bimplementation\s+steps\b/i,
+  /\brollout\s+steps\b/i,
+  /\bgrouped\s+updates\b/i,
+  /\bbreak\s+(it|this)\s+into\s+updates\b/i,
+  /\bqueue\s+the\s+updates\b/i,
+] as const;
+
+const TODD_VERSION_PLANNING_PATTERNS = [
+  /\broadmap\b/i,
+  /\bmilestone(s)?\b/i,
+  /\bversion\s+(roadmap|plan|plans)\b/i,
+  /\bplan\s+(the\s+)?versions\b/i,
+  /\bv[123]\b/i,
+] as const;
+
 const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
   Object.prototype.hasOwnProperty.call(value, key);
 
@@ -78,9 +120,16 @@ export const resolveToddSlackMode = (text: string): SlackDirectorMode => {
     return "codebase-analysis";
   }
 
-  return EXPLICIT_INTERNET_RESEARCH_PATTERNS.some((pattern) => pattern.test(normalized))
-    ? "internet-research"
-    : "codebase-analysis";
+  if (EXPLICIT_INTERNET_RESEARCH_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return "internet-research";
+  }
+  if (TODD_UPDATE_PLANNING_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return "update-planning";
+  }
+  if (TODD_VERSION_PLANNING_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return "version-planning";
+  }
+  return "codebase-analysis";
 };
 
 export const resolveSlackDirectorMode = (
@@ -99,6 +148,14 @@ export const normalizeSlackDirectorMode = (
 
   if (mode === "internet-research") {
     return "internet-research";
+  }
+
+  if (mode === "version-planning") {
+    return "version-planning";
+  }
+
+  if (mode === "update-planning") {
+    return "update-planning";
   }
 
   if (mode === "codebase-analysis") {
@@ -121,8 +178,16 @@ export const buildSlackResponseContract = (
   mode: SlackDirectorMode,
 ): string => {
   const isResearchMode = directorId === "rd-director" && mode === "internet-research";
+  const isToddVersionPlanning = directorId === "rd-director" && mode === "version-planning";
+  const isToddUpdatePlanning = directorId === "rd-director" && mode === "update-planning";
   const fields = directorId === "creative-director"
     ? DAN_SLACK_RESPONSE_FIELDS
+    : directorId === "programming-director"
+      ? PING_SLACK_RESPONSE_FIELDS
+    : isToddVersionPlanning
+      ? TODD_VERSION_SLACK_RESPONSE_FIELDS
+    : isToddUpdatePlanning
+      ? TODD_UPDATE_SLACK_RESPONSE_FIELDS
     : isResearchMode
       ? RESEARCH_SLACK_RESPONSE_FIELDS
       : STANDARD_SLACK_RESPONSE_FIELDS;
@@ -143,12 +208,32 @@ export const buildSlackResponseContract = (
         return `- "generalSummary": string|null. Broad external findings. Use null if no external research was needed.`;
       case "projectSummary":
         return `- "projectSummary": string|null. Project-specific external findings. Use null if no external research was needed.`;
+      case "confirmationSuggested":
+        return `- "confirmationSuggested": boolean. Required for Todd planning modes. Use true when the proposed roadmap or update plan should be confirmed and stored.`;
+      case "versions":
+        return `- "versions": array|null. Required for Todd version-planning only. Each item must include label, description, and goals. Use null when you are only discussing.`;
+      case "updates":
+        return `- "updates": array|null. Required for Todd update-planning only. Each item must include title, description, versionLabel, dependencies, area, and skillsNeeded. Use null when you are only discussing.`;
       case "notesToAppend":
         return `- "notesToAppend": string[]. Required for Dan only. New short working notes to append this turn. Use [] when nothing new should be stored.`;
+      case "sideNotesToAppend":
+        return `- "sideNotesToAppend": string[]. Required for Dan only. Low-priority side notes that should stay out of main working memory. Use [] when none apply.`;
       case "conversationStatus":
-        return `- "conversationStatus": string. Required for Dan only. Use "gathering" while you still need more discussion, or "ready-to-draft" when you are done asking questions and can draft the ideal core-details now.`;
+        return `- "conversationStatus": string. Required for Dan only. Use "gathering" while you still need more discussion, or "ready-to-confirm" when you are done asking questions and want to present a full draft for confirmation.`;
+      case "draftChangeSummary":
+        return `- "draftChangeSummary": string[]. Required for Dan only. Concise bullet-style change summary for what Dan would present for confirmation. Use [] when no synthesized change summary is ready yet.`;
       case "draftCoreDetails":
-        return `- "draftCoreDetails": object|null. Required for Dan only. When "conversationStatus" is "ready-to-draft", provide the full ideal core-details draft with unique pillar names; otherwise use null.`;
+        return `- "draftCoreDetails": object|null. Required for Dan only. Provide the current working draft whenever durable details changed; use null only when nothing about the draft changed this turn.`;
+      case "presenceAction":
+        return `- "presenceAction": string. Required for Dan only. Use "stay" when Dan should remain present in Slack after replying, or "exit" when Dan is explicitly stepping out.`;
+      case "status":
+        return `- "status": string. Required for Ping only. Use "success", "blocked", "unexpected", or "no_changes".`;
+      case "zhResponse":
+        return `- "zhResponse": string. Required for Ping only. Short Mandarin status line.`;
+      case "enTranslation":
+        return `- "enTranslation": string. Required for Ping only. Short literal English translation.`;
+      case "rawReport":
+        return `- "rawReport": object|null. Required for Ping only. Minimal execution report with "summary", "changedFiles", "blocker", and "unexpectedNotes".`;
       default:
         return `- "${field}": string|null.`;
     }
@@ -179,6 +264,66 @@ export const validateSlackTurnParsedResponse = (
     }
   }
 
+  if (directorId === "rd-director" && (mode === "version-planning" || mode === "update-planning")) {
+    if (!hasOwn(parsed, "confirmationSuggested") || typeof parsed.confirmationSuggested !== "boolean") {
+      throw new Error(`Slack structured output is missing "confirmationSuggested" for ${DIRECTOR_NAMES[directorId]}.`);
+    }
+  }
+
+  if (directorId === "rd-director" && mode === "version-planning") {
+    if (!hasOwn(parsed, "versions")) {
+      throw new Error(`Slack structured output is missing "versions" for ${DIRECTOR_NAMES[directorId]}.`);
+    }
+    if (parsed.versions !== null) {
+      if (!Array.isArray(parsed.versions)) {
+        throw new Error(`Slack structured output has an invalid "versions" field for ${DIRECTOR_NAMES[directorId]}.`);
+      }
+      for (const item of parsed.versions) {
+        if (!isRecord(item)) {
+          throw new Error(`Slack structured output has an invalid "versions" item for ${DIRECTOR_NAMES[directorId]}.`);
+        }
+        if (typeof item.label !== "string" || typeof item.description !== "string") {
+          throw new Error(`Slack structured output has an invalid "versions" item for ${DIRECTOR_NAMES[directorId]}.`);
+        }
+        if (!Array.isArray(item.goals) || !item.goals.every((goal) => typeof goal === "string")) {
+          throw new Error(`Slack structured output has an invalid "versions.goals" field for ${DIRECTOR_NAMES[directorId]}.`);
+        }
+      }
+    }
+  }
+
+  if (directorId === "rd-director" && mode === "update-planning") {
+    if (!hasOwn(parsed, "updates")) {
+      throw new Error(`Slack structured output is missing "updates" for ${DIRECTOR_NAMES[directorId]}.`);
+    }
+    if (parsed.updates !== null) {
+      if (!Array.isArray(parsed.updates)) {
+        throw new Error(`Slack structured output has an invalid "updates" field for ${DIRECTOR_NAMES[directorId]}.`);
+      }
+      for (const item of parsed.updates) {
+        if (!isRecord(item)) {
+          throw new Error(`Slack structured output has an invalid "updates" item for ${DIRECTOR_NAMES[directorId]}.`);
+        }
+        if (
+          typeof item.title !== "string"
+          || typeof item.description !== "string"
+          || typeof item.versionLabel !== "string"
+        ) {
+          throw new Error(`Slack structured output has an invalid "updates" item for ${DIRECTOR_NAMES[directorId]}.`);
+        }
+        if (!Array.isArray(item.dependencies) || !item.dependencies.every((dependency) => typeof dependency === "string")) {
+          throw new Error(`Slack structured output has an invalid "updates.dependencies" field for ${DIRECTOR_NAMES[directorId]}.`);
+        }
+        if (item.area !== null && typeof item.area !== "string") {
+          throw new Error(`Slack structured output has an invalid "updates.area" field for ${DIRECTOR_NAMES[directorId]}.`);
+        }
+        if (!Array.isArray(item.skillsNeeded) || !item.skillsNeeded.every((skill) => typeof skill === "string")) {
+          throw new Error(`Slack structured output has an invalid "updates.skillsNeeded" field for ${DIRECTOR_NAMES[directorId]}.`);
+        }
+      }
+    }
+  }
+
   if (directorId === "creative-director") {
     if (!hasOwn(parsed, "notesToAppend") || !Array.isArray(parsed.notesToAppend)) {
       throw new Error(`Slack structured output is missing a valid "notesToAppend" field for ${DIRECTOR_NAMES[directorId]}.`);
@@ -187,11 +332,25 @@ export const validateSlackTurnParsedResponse = (
       throw new Error(`Slack structured output has an invalid "notesToAppend" field for ${DIRECTOR_NAMES[directorId]}.`);
     }
 
+    if (!hasOwn(parsed, "sideNotesToAppend") || !Array.isArray(parsed.sideNotesToAppend)) {
+      throw new Error(`Slack structured output is missing a valid "sideNotesToAppend" field for ${DIRECTOR_NAMES[directorId]}.`);
+    }
+    if (!parsed.sideNotesToAppend.every((item) => typeof item === "string")) {
+      throw new Error(`Slack structured output has an invalid "sideNotesToAppend" field for ${DIRECTOR_NAMES[directorId]}.`);
+    }
+
     if (!hasOwn(parsed, "conversationStatus")) {
       throw new Error(`Slack structured output is missing "conversationStatus" for ${DIRECTOR_NAMES[directorId]}.`);
     }
-    if (parsed.conversationStatus !== "gathering" && parsed.conversationStatus !== "ready-to-draft") {
+    if (parsed.conversationStatus !== "gathering" && parsed.conversationStatus !== "ready-to-confirm") {
       throw new Error(`Slack structured output has an invalid "conversationStatus" for ${DIRECTOR_NAMES[directorId]}.`);
+    }
+
+    if (!hasOwn(parsed, "draftChangeSummary") || !Array.isArray(parsed.draftChangeSummary)) {
+      throw new Error(`Slack structured output is missing a valid "draftChangeSummary" field for ${DIRECTOR_NAMES[directorId]}.`);
+    }
+    if (!parsed.draftChangeSummary.every((item) => typeof item === "string")) {
+      throw new Error(`Slack structured output has an invalid "draftChangeSummary" field for ${DIRECTOR_NAMES[directorId]}.`);
     }
 
     if (!hasOwn(parsed, "draftCoreDetails")) {
@@ -200,8 +359,48 @@ export const validateSlackTurnParsedResponse = (
     if (parsed.draftCoreDetails !== null && !isRecord(parsed.draftCoreDetails)) {
       throw new Error(`Slack structured output has an invalid "draftCoreDetails" field for ${DIRECTOR_NAMES[directorId]}.`);
     }
-    if (parsed.conversationStatus === "ready-to-draft" && !isRecord(parsed.draftCoreDetails)) {
-      throw new Error(`Slack structured output must include "draftCoreDetails" when ${DIRECTOR_NAMES[directorId]} is ready to draft.`);
+
+    if (!hasOwn(parsed, "presenceAction")) {
+      throw new Error(`Slack structured output is missing "presenceAction" for ${DIRECTOR_NAMES[directorId]}.`);
+    }
+    if (parsed.presenceAction !== "stay" && parsed.presenceAction !== "exit") {
+      throw new Error(`Slack structured output has an invalid "presenceAction" for ${DIRECTOR_NAMES[directorId]}.`);
+    }
+
+    if (parsed.conversationStatus === "ready-to-confirm" && !isRecord(parsed.draftCoreDetails)) {
+      throw new Error(`Slack structured output must include "draftCoreDetails" when ${DIRECTOR_NAMES[directorId]} is ready to confirm.`);
+    }
+  }
+
+  if (directorId === "programming-director") {
+    if (!hasOwn(parsed, "status") || typeof parsed.status !== "string") {
+      throw new Error(`Slack structured output is missing "status" for ${DIRECTOR_NAMES[directorId]}.`);
+    }
+    if (!hasOwn(parsed, "zhResponse") || typeof parsed.zhResponse !== "string" || !parsed.zhResponse.trim()) {
+      throw new Error(`Slack structured output is missing "zhResponse" for ${DIRECTOR_NAMES[directorId]}.`);
+    }
+    if (!hasOwn(parsed, "enTranslation") || typeof parsed.enTranslation !== "string" || !parsed.enTranslation.trim()) {
+      throw new Error(`Slack structured output is missing "enTranslation" for ${DIRECTOR_NAMES[directorId]}.`);
+    }
+    if (!hasOwn(parsed, "rawReport")) {
+      throw new Error(`Slack structured output is missing "rawReport" for ${DIRECTOR_NAMES[directorId]}.`);
+    }
+    if (parsed.rawReport !== null) {
+      if (!isRecord(parsed.rawReport)) {
+        throw new Error(`Slack structured output has an invalid "rawReport" field for ${DIRECTOR_NAMES[directorId]}.`);
+      }
+      if (typeof parsed.rawReport.summary !== "string") {
+        throw new Error(`Slack structured output is missing "rawReport.summary" for ${DIRECTOR_NAMES[directorId]}.`);
+      }
+      if (!Array.isArray(parsed.rawReport.changedFiles) || !parsed.rawReport.changedFiles.every((item) => typeof item === "string")) {
+        throw new Error(`Slack structured output has an invalid "rawReport.changedFiles" field for ${DIRECTOR_NAMES[directorId]}.`);
+      }
+      if (parsed.rawReport.blocker !== null && typeof parsed.rawReport.blocker !== "string") {
+        throw new Error(`Slack structured output has an invalid "rawReport.blocker" field for ${DIRECTOR_NAMES[directorId]}.`);
+      }
+      if (!Array.isArray(parsed.rawReport.unexpectedNotes) || !parsed.rawReport.unexpectedNotes.every((item) => typeof item === "string")) {
+        throw new Error(`Slack structured output has an invalid "rawReport.unexpectedNotes" field for ${DIRECTOR_NAMES[directorId]}.`);
+      }
     }
   }
 

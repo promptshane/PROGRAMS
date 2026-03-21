@@ -1,7 +1,7 @@
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { app, safeStorage } from "electron";
-import { ensureDirectory, pathExists } from "@main/utils/fs";
+import { ensureDirectory, pathExists } from "../utils/fs.ts";
 
 interface SecretsFile {
   githubToken?: string;

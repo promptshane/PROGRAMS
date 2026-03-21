@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { app } from "electron";
 import { join } from "node:path";
-import type { PlaywrightAction, PlaywrightRunResult } from "@shared/types";
-import { ensureDirectory, pathExists, readTextFile } from "@main/utils/fs";
-import { execFileCommand } from "@main/utils/process";
+import type { PlaywrightAction, PlaywrightRunResult } from "../../shared/types.ts";
+import { ensureDirectory, pathExists, readTextFile } from "../utils/fs.ts";
+import { execFileCommand } from "../utils/process.ts";
 
 export class PlaywrightService {
   getRunnerScriptPath(): string {

@@ -11,7 +11,7 @@ import {
   formatFlowchartRepoHints,
   flowchartGraphSchema,
   materializeFlowchartSnapshot,
-} from "@main/utils/flowchart";
+} from "../utils/flowchart.ts";
 import {
   buildClaudeAuthStatus,
   buildClaudePrintArgs,
@@ -21,12 +21,12 @@ import {
   parseClaudeCliAuthMetadata,
   parseClaudeCliFeatures,
   parseClaudeLocalAuthMetadata,
-} from "@main/utils/claude-cli";
-import { execCommand, getCommandEnv } from "@main/utils/process";
+} from "../utils/claude-cli.ts";
+import { execCommand, getCommandEnv } from "../utils/process.ts";
 import {
   buildClaudeOneShotSettingsArg,
   resolveOneShotReasoningEffort,
-} from "@main/utils/one-shot-runtime";
+} from "../utils/one-shot-runtime.ts";
 import type {
   ClaudeConnectionTestResult,
   ClaudeAuthStatus,
@@ -37,7 +37,7 @@ import type {
   ReasoningEffort,
   Settings,
   StartPlanInput,
-} from "@shared/types";
+} from "../../shared/types.ts";
 
 type Emit = (
   event:

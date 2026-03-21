@@ -4,6 +4,7 @@ export interface SlackConversationRenderItem {
   message: SlackChatMessage;
   dayLabel: string | null;
   showSenderLabel: boolean;
+  isSenderContinuation: boolean;
 }
 
 const slackWeekdayFormatter = new Intl.DateTimeFormat(undefined, {
@@ -79,11 +80,13 @@ export const buildSlackConversationRenderItems = (
     const dayKey = getSlackDayKey(message.createdAt);
     const senderKey = getSlackSenderKey(message);
     const isAssistant = message.role === "assistant" && Boolean(message.directorId);
+    const isSenderContinuation = dayKey === previousDayKey && senderKey !== null && senderKey === previousSenderKey;
 
     items.push({
       message,
       dayLabel: dayKey === previousDayKey ? null : formatSlackDaySeparator(message.createdAt, now) || null,
       showSenderLabel: Boolean(isAssistant && (dayKey !== previousDayKey || senderKey !== previousSenderKey)),
+      isSenderContinuation,
     });
 
     previousDayKey = dayKey;

@@ -26,6 +26,56 @@ export const researchSlackSchema = buildStrictObjectSchema({
   idealState: { type: ["string", "null"] },
 });
 
+const toddVersionItemSchema = buildStrictObjectSchema({
+  label: { type: "string" },
+  description: { type: "string" },
+  goals: {
+    type: "array" as const,
+    items: { type: "string" },
+  },
+});
+
+export const toddVersionSlackSchema = buildStrictObjectSchema({
+  response: { type: "string" },
+  handoffTo: { type: ["string", "null"] },
+  handoffReason: { type: ["string", "null"] },
+  currentState: { type: ["string", "null"] },
+  idealState: { type: ["string", "null"] },
+  confirmationSuggested: { type: "boolean" },
+  versions: {
+    type: ["array", "null"] as const,
+    items: toddVersionItemSchema,
+  },
+});
+
+const toddUpdateItemSchema = buildStrictObjectSchema({
+  title: { type: "string" },
+  description: { type: "string" },
+  versionLabel: { type: "string" },
+  dependencies: {
+    type: "array" as const,
+    items: { type: "string" },
+  },
+  area: { type: ["string", "null"] },
+  skillsNeeded: {
+    type: "array" as const,
+    items: { type: "string" },
+  },
+});
+
+export const toddUpdateSlackSchema = buildStrictObjectSchema({
+  response: { type: "string" },
+  handoffTo: { type: ["string", "null"] },
+  handoffReason: { type: ["string", "null"] },
+  currentState: { type: ["string", "null"] },
+  idealState: { type: ["string", "null"] },
+  confirmationSuggested: { type: "boolean" },
+  updates: {
+    type: ["array", "null"] as const,
+    items: toddUpdateItemSchema,
+  },
+});
+
 const danDraftPillarSchema = buildStrictObjectSchema({
   name: { type: "string" },
   pillarType: { type: "string" },
@@ -63,9 +113,46 @@ export const danSlackSchema = buildStrictObjectSchema({
     type: "array" as const,
     items: { type: "string" },
   },
+  sideNotesToAppend: {
+    type: "array" as const,
+    items: { type: "string" },
+  },
   conversationStatus: { type: "string" },
+  draftChangeSummary: {
+    type: "array" as const,
+    items: { type: "string" },
+  },
   draftCoreDetails: {
     ...danDraftCoreDetailsSchema,
+    type: ["object", "null"] as const,
+  },
+  presenceAction: { type: "string" },
+});
+
+const pingRawReportSchema = buildStrictObjectSchema({
+  summary: { type: "string" },
+  changedFiles: {
+    type: "array" as const,
+    items: { type: "string" },
+  },
+  blocker: { type: ["string", "null"] },
+  unexpectedNotes: {
+    type: "array" as const,
+    items: { type: "string" },
+  },
+});
+
+export const pingSlackSchema = buildStrictObjectSchema({
+  response: { type: "string" },
+  handoffTo: { type: ["string", "null"] },
+  handoffReason: { type: ["string", "null"] },
+  currentState: { type: ["string", "null"] },
+  idealState: { type: ["string", "null"] },
+  status: { type: "string" },
+  zhResponse: { type: "string" },
+  enTranslation: { type: "string" },
+  rawReport: {
+    ...pingRawReportSchema,
     type: ["object", "null"] as const,
   },
 });

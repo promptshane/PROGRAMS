@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import type { ProjectRuntimeConfig } from "@shared/types";
-import { pathExists } from "@main/utils/fs";
+import { pathExists } from "./fs.ts";
 
 export const slugifyRepositoryName = (name: string): string =>
   name

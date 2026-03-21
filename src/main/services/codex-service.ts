@@ -12,12 +12,12 @@ import {
   formatFlowchartRepoHints,
   flowchartGraphSchema,
   materializeFlowchartSnapshot,
-} from "@main/utils/flowchart";
-import { resolveOneShotReasoningEffort } from "@main/utils/one-shot-runtime";
-import { selectPreferredCodexModels } from "@main/utils/codex-model-catalog";
-import { isSubPath } from "@main/utils/fs";
-import { execCommand, getCommandEnv } from "@main/utils/process";
-import { DEFAULT_MODEL_CATALOG, type ModelOption } from "@shared/types";
+} from "../utils/flowchart.ts";
+import { resolveOneShotReasoningEffort } from "../utils/one-shot-runtime.ts";
+import { selectPreferredCodexModels } from "../utils/codex-model-catalog.ts";
+import { isSubPath } from "../utils/fs.ts";
+import { execCommand, getCommandEnv } from "../utils/process.ts";
+import { DEFAULT_MODEL_CATALOG, type ModelOption } from "../../shared/types.ts";
 import type {
   CodexAuthStatus,
   FlowchartGraph,
@@ -29,7 +29,7 @@ import type {
   Settings,
   SpeedMode,
   StartPlanInput,
-} from "@shared/types";
+} from "../../shared/types.ts";
 
 type Emit = (
   event:

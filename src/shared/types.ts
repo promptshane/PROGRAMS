@@ -669,6 +669,7 @@ export interface AgentChatMessage {
   content: string;
   createdAt: string;
   status?: "working" | "complete";
+  metadata?: PingTranslationMetadata | null;
 }
 
 export type SlackMessageMetadata =
@@ -684,7 +685,12 @@ export type SlackMessageMetadata =
       same: string[];
       updated: string[];
       summary: string;
-    };
+    }
+  | {
+      type: "execution-report";
+      report: JeffExecutionReport;
+    }
+  | PingTranslationMetadata;
 
 export interface SlackChatMessage {
   id: string;
@@ -783,6 +789,8 @@ export type CreativeFocusMode = "conversation" | "core-details" | "vibes";
 export type RdFocusMode = "research" | "version-planning" | "update-planning";
 export type ValidationFocusMode = "identify-goal" | "test-current-state" | "compare";
 export type DirectorFocusMode = CreativeFocusMode | RdFocusMode | ValidationFocusMode;
+export type DanDraftStatus = "gathering" | "ready-to-confirm";
+export type DanPresenceAction = "stay" | "exit";
 
 // --- Director Progress Tracking ---
 
@@ -804,6 +812,9 @@ export type ProjectCategory = "program" | "general-project" | "idea-in-progress"
 // --- Pillar Types ---
 
 export type PillarType = "core" | "side" | "ghost" | "tbd" | "hard-stop";
+
+export const SLACK_CHAT_ENABLED = true;
+export const SLACK_CHAT_DISABLED_MESSAGE = "Slack chat is temporarily disabled while the DM workflow is being rebuilt.";
 
 export interface VibeAttachment {
   id: string;
@@ -852,6 +863,7 @@ export interface VersionUpdate {
   status: "pending" | "in_progress" | "completed" | "failed";
   dependencies: string[];
   pillarIds: string[];
+  skillsNeeded: string[];
 }
 
 export interface ValidationResult {
@@ -957,6 +969,116 @@ export interface PendingApproval {
   updatedAt: string;
 }
 
+export interface DanMemory {
+  confirmedConcept: AgentCoreDetails | null;
+  draftConcept: AgentCoreDetails | null;
+  notes: string[];
+  sideNotes: string[];
+  draftChangeSummary: string[];
+  draftStatus: DanDraftStatus | null;
+  fullExperienceDescription: string | null;
+  archivedNotes: string[];
+  deletedNotes: string[];
+}
+
+export interface ToddCodebaseIndexedMap {
+  summary: string | null;
+  indexedAt: string | null;
+  featureAreas: string[];
+  repoNotes: string[];
+}
+
+export interface ToddUpdateLogEntry {
+  id: string;
+  updateId: string | null;
+  goal: string;
+  outcome: string;
+  status: PingRawReportStatus;
+  reportId: string | null;
+  createdAt: string;
+}
+
+export interface ToddTroubleLogEntry {
+  id: string;
+  title: string;
+  details: string;
+  priority: "low" | "medium" | "high";
+  occurrences: number;
+  lastSeenAt: string;
+  updateIds: string[];
+}
+
+export interface ToddMemory {
+  confirmedConcept: AgentCoreDetails | null;
+  versionPlan: {
+    v1: VersionPlan | null;
+    v2: VersionPlan | null;
+    v3: VersionPlan | null;
+  };
+  futureUpdatePlan: VersionUpdate[];
+  previousUpdateLog: ToddUpdateLogEntry[];
+  troubleLog: ToddTroubleLogEntry[];
+  codebaseIndexedMap: ToddCodebaseIndexedMap | null;
+}
+
+export type PingRawReportStatus = "success" | "blocked" | "unexpected" | "no_changes";
+
+export type PingLifecyclePhase = "intro" | "outro";
+
+export interface PingTranslationMetadataBase {
+  type: "ping-translation";
+  zhResponse: string;
+  enTranslation: string;
+}
+
+export interface PingStatusTranslationMetadata extends PingTranslationMetadataBase {
+  kind: "status";
+  status: PingRawReportStatus;
+}
+
+export interface PingLifecycleTranslationMetadata extends PingTranslationMetadataBase {
+  kind: "lifecycle";
+  phase: PingLifecyclePhase;
+}
+
+export type PingTranslationMetadata =
+  | PingStatusTranslationMetadata
+  | PingLifecycleTranslationMetadata;
+
+export interface PingRawReport {
+  status: PingRawReportStatus;
+  updateId: string | null;
+  goal: string | null;
+  summary: string;
+  zhResponse: string;
+  enTranslation: string;
+  changedFiles: string[];
+  blocker: string | null;
+  unexpectedNotes: string[];
+  createdAt: string;
+}
+
+export interface JeffExecutionReport {
+  id: string;
+  updateId: string | null;
+  title: string;
+  summary: string;
+  outcome: string;
+  toddFollowUpNeeded: boolean;
+  toddFollowUpReason: string | null;
+  rawReport: PingRawReport;
+  createdAt: string;
+}
+
+export interface PingMemory {
+  activeUpdateId: string | null;
+  activeTask: string | null;
+  context: string | null;
+  codebaseMapSummary: string | null;
+  latestRawReport: PingRawReport | null;
+  latestJeffReport: JeffExecutionReport | null;
+}
+
 export interface AgentSession {
   id: string;
   projectId: string;
@@ -988,6 +1110,10 @@ export interface AgentSession {
   rdFocusMode: RdFocusMode | null;
   validationFocusMode: ValidationFocusMode | null;
   danInternalNotes: string[];
+  danSideNotes: string[];
+  danDraftCoreDetails: AgentCoreDetails | null;
+  danDraftChangeSummary: string[];
+  danDraftStatus: DanDraftStatus | null;
   danArchivedNotes: string[];
   deletedNotes: string[];
   pingTaskContext: ShortHorizonContext | null;
@@ -1000,6 +1126,9 @@ export interface AgentSession {
   pendingApprovals: PendingApproval[];
   directorSettingsOverrides: Partial<Record<DirectorId, DirectorSettingsOverride>>;
   directorStateMap: Partial<Record<DirectorId, DirectorStateSnapshot>>;
+  danMemory: DanMemory;
+  toddMemory: ToddMemory;
+  pingMemory: PingMemory;
   /** @deprecated Use directorConversations */
   agentConversations: Record<string, DirectorConversation>;
   /** @deprecated Use activeDirectorId */
@@ -1337,7 +1466,11 @@ export interface SlackChatInput {
   targetDirectorId?: DirectorId | null;
 }
 
-export type SlackDirectorMode = "codebase-analysis" | "internet-research";
+export type SlackDirectorMode =
+  | "codebase-analysis"
+  | "internet-research"
+  | "version-planning"
+  | "update-planning";
 
 export interface SlackDirectorApprovalPayload {
   action: "runSlackDirector";

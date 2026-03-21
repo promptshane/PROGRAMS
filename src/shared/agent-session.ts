@@ -7,7 +7,7 @@ import {
   type PendingApprovalKind,
   type PendingApprovalStatus,
   type SlackChatMessage,
-} from "./types";
+} from "./types.ts";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);

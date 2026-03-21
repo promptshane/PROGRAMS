@@ -5,7 +5,7 @@ import type {
   GitHubLoginPrompt,
   RepoVisibility,
 } from "@shared/types";
-import { SecureStore } from "@main/services/secure-store";
+import { SecureStore } from "./secure-store.ts";
 
 interface DeviceCodeResponse {
   device_code: string;

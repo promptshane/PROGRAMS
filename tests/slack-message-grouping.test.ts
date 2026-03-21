@@ -21,6 +21,7 @@ test("Slack conversation grouping shows the sender label only on the first bubbl
   ]);
 
   assert.deepEqual(items.map((item) => item.showSenderLabel), [true, false]);
+  assert.deepEqual(items.map((item) => item.isSenderContinuation), [false, true]);
   assert.equal(items[1].dayLabel, null);
 });
 
@@ -71,6 +72,7 @@ test("Slack conversation grouping resets the sender label when the sender change
   ]);
 
   assert.deepEqual(items.map((item) => item.showSenderLabel), [true, false, true, false, false, true]);
+  assert.deepEqual(items.map((item) => item.isSenderContinuation), [false, true, false, true, false, false]);
 });
 
 test("Slack conversation grouping resets the sender label on a new day", () => {
@@ -94,6 +96,7 @@ test("Slack conversation grouping resets the sender label on a new day", () => {
   });
 
   assert.deepEqual(items.map((item) => item.showSenderLabel), [true, true]);
+  assert.deepEqual(items.map((item) => item.isSenderContinuation), [false, false]);
   assert.equal(items[0].dayLabel !== null, true);
   assert.equal(items[1].dayLabel !== null, true);
 });

@@ -62,3 +62,13 @@ export const buildPingLifecycleTranslationMetadata = (
     enTranslation,
   };
 };
+
+export const buildTranslatedMessageMetadata = (
+  zhResponse: string,
+  enTranslation: string,
+): PingTranslationMetadata => ({
+  type: "ping-translation",
+  kind: "message",
+  zhResponse,
+  enTranslation,
+});

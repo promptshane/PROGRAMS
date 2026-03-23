@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { AgentSession, CorePillar, PendingApproval } from "../src/shared/types.ts";
+import type { AgentSession, CorePillar, DirectorId, PendingApproval } from "../src/shared/types.ts";
 import { getDirectorMetadata } from "../src/shared/director-metadata.ts";
 import { buildPingLifecycleTranslationMetadata } from "../src/shared/ping-translations.ts";
 
@@ -146,7 +146,7 @@ const createSession = (): AgentSession => {
     danArchivedNotes: [],
     deletedNotes: [],
     pingTaskContext: null,
-    bradTaskContext: null,
+    pongTaskContext: null,
     projectCategory: "general-project",
     dynamicSubAgents: [],
     slackMessages: [],
@@ -165,6 +165,9 @@ const createSession = (): AgentSession => {
       fullExperienceDescription: null,
       archivedNotes: [],
       deletedNotes: [],
+      rawMemories: [],
+      forgottenMemories: [],
+      creativeHistory: [],
     },
     toddMemory: {
       confirmedConcept: null,
@@ -228,7 +231,7 @@ const createDanPayload = (overrides: Record<string, unknown> = {}) => ({
   currentState: "We are shaping the onboarding direction.",
   idealState: null,
   notesToAppend: ["User wants onboarding to explain the workspace immediately."],
-  sideNotesToAppend: [],
+  rawMemoriesToAppend: null,
   conversationStatus: "gathering",
   draftChangeSummary: ["Added an onboarding flow and workspace landing sequence."],
   draftCoreDetails: createDanDraft(),
@@ -410,6 +413,7 @@ const createBackendHarness = (responses: Array<Record<string, unknown>>) => {
   const prompts: string[] = [];
   let responseIndex = 0;
   let storedSession: AgentSession | null = null;
+  const savedSessions: AgentSession[] = [];
   const settings = {
     advancedDefaults: {
       provider: "codex",
@@ -421,10 +425,12 @@ const createBackendHarness = (responses: Array<Record<string, unknown>>) => {
     id: "project-1",
     name: "Dan Test Project",
   };
+  const cloneSession = (session: AgentSession): AgentSession => JSON.parse(JSON.stringify(session)) as AgentSession;
   const store = {
     readSettings: async () => settings,
     getAgentSession: async () => storedSession,
     saveAgentSession: async (session: AgentSession) => {
+      savedSessions.push(cloneSession(session));
       storedSession = session;
     },
     getProject: async () => project,
@@ -464,6 +470,7 @@ const createBackendHarness = (responses: Array<Record<string, unknown>>) => {
   backend.requireProject = async () => project;
   backend.getSlackProviderPreflightErrors = async () => ({ codex: null, claude: null });
   backend.saveAgentSession = async (_projectId: string, session: AgentSession) => {
+    savedSessions.push(cloneSession(session));
     storedSession = session;
   };
   backend.stageSlackDirectorIntroSequence = async (session: AgentSession, _projectId: string, directorId: string) => {
@@ -491,6 +498,9 @@ const createBackendHarness = (responses: Array<Record<string, unknown>>) => {
     getStoredSession() {
       return storedSession;
     },
+    getSavedSessions() {
+      return savedSessions;
+    },
   };
 };
 
@@ -505,7 +515,7 @@ test("Dan gathering turns update draft state and side notes without mutating con
   });
   const harness = createBackendHarness([
     createDanPayload({
-      sideNotesToAppend: ["Optional ambient audio could stay as a side experiment."],
+      rawMemoriesToAppend: [{ content: "Optional ambient audio could stay as a side experiment.", relatedPillarNames: [] }],
     }),
   ]);
 
@@ -527,7 +537,8 @@ test("Dan gathering turns update draft state and side notes without mutating con
   assert.equal(session.stages.full_flow.confirmed, null);
   assert.equal(session.danDraftStatus, "gathering");
   assert.deepEqual(session.danInternalNotes, ["User wants onboarding to explain the workspace immediately."]);
-  assert.deepEqual(session.danSideNotes, ["Optional ambient audio could stay as a side experiment."]);
+  assert.equal(session.danMemory.rawMemories.length, 1);
+  assert.equal(session.danMemory.rawMemories[0].content, "Optional ambient audio could stay as a side experiment.");
   assert.deepEqual(session.danDraftChangeSummary, ["Added an onboarding flow and workspace landing sequence."]);
   assert.equal(
     session.danDraftCoreDetails?.function?.summary,
@@ -538,13 +549,13 @@ test("Dan gathering turns update draft state and side notes without mutating con
   assert.equal(session.slackActiveDirectorId, "creative-director");
 });
 
-test("Dan prompt only includes matching side notes for explicit recall requests", async () => {
+test("Dan prompt includes matching back-up memories for explicit recall requests", async () => {
   const recallSession = createSession();
-  recallSession.danMemory.sideNotes = [
+  recallSession.danMemory.forgottenMemories = [
     "Animated onboarding could use a slow camera pan.",
     "Pricing experiment mentioned for a later phase.",
   ];
-  recallSession.danSideNotes = [...recallSession.danMemory.sideNotes];
+  recallSession.danSideNotes = [...recallSession.danMemory.forgottenMemories];
   recallSession.slackMessages.push({
     id: "user-1",
     role: "user",
@@ -566,13 +577,13 @@ test("Dan prompt only includes matching side notes for explicit recall requests"
     mode: "codebase-analysis",
   });
 
-  assert.match(recallHarness.prompts[0] ?? "", /Relevant side-notes for explicit recall only:/);
+  assert.match(recallHarness.prompts[0] ?? "", /Back-up: Forgotten Memories/);
   assert.match(recallHarness.prompts[0] ?? "", /Animated onboarding could use a slow camera pan\./);
   assert.doesNotMatch(recallHarness.prompts[0] ?? "", /Pricing experiment mentioned for a later phase\./);
 
   const nonRecallSession = createSession();
-  nonRecallSession.danMemory.sideNotes = [...recallSession.danMemory.sideNotes];
-  nonRecallSession.danSideNotes = [...nonRecallSession.danMemory.sideNotes];
+  nonRecallSession.danMemory.forgottenMemories = [...recallSession.danMemory.forgottenMemories];
+  nonRecallSession.danSideNotes = [...nonRecallSession.danMemory.forgottenMemories];
   nonRecallSession.slackMessages.push({
     id: "user-2",
     role: "user",
@@ -594,7 +605,7 @@ test("Dan prompt only includes matching side notes for explicit recall requests"
     mode: "codebase-analysis",
   });
 
-  assert.doesNotMatch(nonRecallHarness.prompts[0] ?? "", /Relevant side-notes for explicit recall only:/);
+  assert.doesNotMatch(nonRecallHarness.prompts[0] ?? "", /Back-up: Forgotten Memories/);
 });
 
 test("Dan prompt keeps concept structure private and surfaces only concept memory plus draft context", async () => {
@@ -625,7 +636,7 @@ test("Dan prompt keeps concept structure private and surfaces only concept memor
   });
 
   const prompt = harness.prompts[0] ?? "";
-  assert.match(prompt, /Confirmed concept memory:/);
+  assert.match(prompt, /Hard Memory \(Ideal Creative Truth\):/);
   assert.match(prompt, /Dan's working draft:/);
   assert.match(prompt, /Function draft:/);
   assert.match(prompt, /Onboarding/);
@@ -707,7 +718,7 @@ test("Dan uses the same reducer path in DM and Slack, and Slack presence changes
   const slackSession = createSession();
   const sharedPayload = createDanPayload({
     notesToAppend: ["User wants a guided first-run experience."],
-    sideNotesToAppend: ["Maybe add ambient motion later."],
+    rawMemoriesToAppend: [{ content: "Maybe add ambient motion later.", relatedPillarNames: [] }],
   });
 
   const dmHarness = createBackendHarness([sharedPayload]);
@@ -817,6 +828,96 @@ test("Dan uses the same reducer path in DM and Slack, and Slack presence changes
   assert.equal(exitSession.slackActiveDirectorId, "project-manager");
 });
 
+test("DM focus mode inference resolves from the message when focusMode is omitted", async () => {
+  const assertDmTurn = async (args: {
+    directorId: DirectorId;
+    message: string;
+    expectedFocusMode: string | null;
+    response: Record<string, unknown>;
+    promptPattern: RegExp;
+  }) => {
+    const session = createSession();
+    session.slackMessages.push({
+      id: `user-${args.directorId}`,
+      role: "user",
+      directorId: null,
+      content: args.message,
+      createdAt: NOW,
+    });
+
+    const harness = createBackendHarness([args.response]);
+    harness.setStoredSession(session);
+
+    await (harness.backend.directorChat as Function)({
+      projectId: "project-1",
+      directorId: args.directorId,
+      message: args.message,
+      provider: "codex",
+      model: "gpt-5.4",
+      claudeModel: "sonnet",
+      focusMode: null,
+    });
+
+    const savedSessions = harness.getSavedSessions();
+    const workingSnapshot = savedSessions[0];
+    const conversation = workingSnapshot?.directorConversations?.[args.directorId];
+    const placeholder = conversation?.messages.at(-1);
+
+    assert.ok(conversation);
+    assert.equal(conversation?.focusMode, args.expectedFocusMode);
+    assert.equal(placeholder?.status, "working");
+    assert.equal(placeholder?.content, "");
+    assert.match(harness.prompts[0] ?? "", args.promptPattern);
+  };
+
+  await assertDmTurn({
+    directorId: "creative-director",
+    message: "Let's talk about the vibe, palette, and visual direction.",
+    expectedFocusMode: "vibes",
+    response: createDanPayload({
+      response: "I’m leaning into that visual direction.",
+      draftCoreDetails: null,
+      draftChangeSummary: [],
+      notesToAppend: [],
+      rawMemoriesToAppend: null,
+    }),
+    promptPattern: /Focus hint: the user is discussing inspiration, mood, or attachments\./,
+  });
+
+  await assertDmTurn({
+    directorId: "rd-director",
+    message: "Break this into a V1 roadmap.",
+    expectedFocusMode: "version-planning",
+    response: {
+      response: "Roadmap framed.",
+      handoffTo: null,
+      handoffReason: null,
+      currentState: null,
+      idealState: null,
+      confirmationSuggested: false,
+      versions: null,
+    },
+    promptPattern: /You are in Version Planning mode/,
+  });
+
+  await assertDmTurn({
+    directorId: "validation-director",
+    message: "Compare the current output against the intended goal.",
+    expectedFocusMode: "compare",
+    response: {
+      response: "Comparison complete.",
+      handoffTo: null,
+      handoffReason: null,
+      currentState: null,
+      idealState: null,
+      passed: null,
+      improvementAreas: null,
+      summary: null,
+    },
+    promptPattern: /You are in Compare mode/,
+  });
+});
+
 test("Todd DM prompt receives the codebase map and confirmed concept memory without Dan's old flow language", async () => {
   const session = createSession();
   session.corePillars = createFlowPillars();
@@ -883,6 +984,7 @@ test("Ping routed Slack updates force direct execution instead of review plannin
   assert.equal(session.pingTaskContext?.currentTask, "Ship Ping update: Apply the latest update in Slack.");
   assert.equal(session.pingMemory.activeTask, "Ship Ping update: Apply the latest update in Slack.");
   assert.equal(session.pingMemory.context, "Apply the latest update in Slack.");
+  assert.equal(session.toddMemory.futureUpdatePlan[0]?.status, "in_progress");
   assert.equal(session.versionUpdates[0]?.status, "in_progress");
 });
 

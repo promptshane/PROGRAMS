@@ -40,7 +40,7 @@ const DIRECTOR_NAMES: Record<DirectorId, string> = {
   "creative-director": "Dan",
   "rd-director": "Todd",
   "programming-director": "Ping",
-  "validation-director": "Brad",
+  "validation-director": "Pong",
 };
 
 const DIRECTOR_LABELS: Record<DirectorId, string> = {

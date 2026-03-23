@@ -1,26 +1,28 @@
 export function FlowchartControls({
-  zoomLevel,
-  maxZoom,
+  scale,
+  minScale,
+  maxScale,
   onZoomIn,
   onZoomOut,
   onReset,
 }: {
-  zoomLevel: number;
-  maxZoom: number;
+  scale: number;
+  minScale: number;
+  maxScale: number;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onReset: () => void;
 }) {
-  const isFullyZoomedOut = zoomLevel >= maxZoom;
-  const isFullyZoomedIn = zoomLevel <= 1;
+  const isAtMin = scale <= minScale + 0.001;
+  const isAtMax = scale >= maxScale - 0.001;
 
   return (
     <div className="flowchartControls">
       <button
         className="flowchartControlBtn"
         onClick={onZoomIn}
-        disabled={isFullyZoomedIn}
-        aria-label="Zoom in (show fewer nodes)"
+        disabled={isAtMax}
+        aria-label="Zoom in"
         title="Zoom in"
       >
         +
@@ -28,8 +30,8 @@ export function FlowchartControls({
       <button
         className="flowchartControlBtn"
         onClick={onZoomOut}
-        disabled={isFullyZoomedOut}
-        aria-label="Zoom out (show more nodes)"
+        disabled={isAtMin}
+        aria-label="Zoom out"
         title="Zoom out"
       >
         &minus;

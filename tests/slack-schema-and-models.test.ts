@@ -4,9 +4,9 @@ import { DEFAULT_MODEL_CATALOG } from "../src/shared/types.ts";
 import { selectPreferredCodexModels } from "../src/main/utils/codex-model-catalog.ts";
 import { buildSlackResponseContract } from "../src/main/utils/slack-flow.ts";
 import {
-  directorBradCompareSchema,
-  directorBradGoalSchema,
-  directorBradTestSchema,
+  directorPongCompareSchema,
+  directorPongGoalSchema,
+  directorPongTestSchema,
   directorPingSchema,
   directorPmSchema,
   directorToddResearchSchema,
@@ -52,9 +52,9 @@ test("Director DM strict schemas require every declared property", () => {
     ["todd-version", directorToddVersionSchema],
     ["todd-update", directorToddUpdateSchema],
     ["ping", directorPingSchema],
-    ["brad-goal", directorBradGoalSchema],
-    ["brad-test", directorBradTestSchema],
-    ["brad-compare", directorBradCompareSchema],
+    ["pong-goal", directorPongGoalSchema],
+    ["pong-test", directorPongTestSchema],
+    ["pong-compare", directorPongCompareSchema],
   ] as const;
 
   for (const [label, schema] of schemaPairs) {
@@ -136,7 +136,7 @@ test("Dan contract includes notes and draft lifecycle fields", () => {
   const contract = buildSlackResponseContract("creative-director", "codebase-analysis");
 
   assert.ok(contract.includes('"notesToAppend"'));
-  assert.ok(contract.includes('"sideNotesToAppend"'));
+  assert.ok(contract.includes('"rawMemoriesToAppend"'));
   assert.ok(contract.includes('"conversationStatus"'));
   assert.ok(contract.includes('"draftChangeSummary"'));
   assert.ok(contract.includes('"draftCoreDetails"'));

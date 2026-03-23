@@ -149,7 +149,7 @@ try {
     danArchivedNotes: ["[2026-03-19T12:00:00.000Z | slack draft processed] captured note"],
     deletedNotes: [],
     pingTaskContext: null,
-    bradTaskContext: null,
+    pongTaskContext: null,
     projectCategory: "general-project",
     dynamicSubAgents: [],
     slackMessages: [

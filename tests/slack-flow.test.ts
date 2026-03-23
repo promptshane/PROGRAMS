@@ -84,7 +84,7 @@ test("approval descriptors preserve Todd roadmap and update-planning handoffs", 
   assert.equal(updateDescriptor.payload.mode, "update-planning");
 });
 
-test("automatic Slack routing excludes Brad for this pass", () => {
+test("automatic Slack routing excludes Pong for this pass", () => {
   assert.equal(canAutoRouteSlackDirector("project-manager"), true);
   assert.equal(canAutoRouteSlackDirector("creative-director"), true);
   assert.equal(canAutoRouteSlackDirector("rd-director"), true);
@@ -162,7 +162,7 @@ test("Dan Slack responses require draftCoreDetails when ready-to-confirm", () =>
       currentState: null,
       idealState: "Ideal summary",
       notesToAppend: ["User wants an animated onboarding flow."],
-      sideNotesToAppend: [],
+      rawMemoriesToAppend: null,
       conversationStatus: "ready-to-confirm",
       draftChangeSummary: ["Added onboarding as a primary pillar."],
       draftCoreDetails: null,

@@ -5,6 +5,7 @@ import type {
   PendingApprovalKind,
   SlackDirectorApprovalPayload,
   SlackDirectorMode,
+  ValidationFocusMode,
 } from "../../shared/types.ts";
 
 export const STANDARD_SLACK_RESPONSE_FIELDS = [
@@ -36,7 +37,7 @@ export const TODD_UPDATE_SLACK_RESPONSE_FIELDS = [
 export const DAN_SLACK_RESPONSE_FIELDS = [
   ...STANDARD_SLACK_RESPONSE_FIELDS,
   "notesToAppend",
-  "sideNotesToAppend",
+  "rawMemoriesToAppend",
   "conversationStatus",
   "draftChangeSummary",
   "draftCoreDetails",
@@ -49,6 +50,32 @@ export const PING_SLACK_RESPONSE_FIELDS = [
   "zhResponse",
   "enTranslation",
   "rawReport",
+] as const;
+
+export const PONG_GOAL_SLACK_RESPONSE_FIELDS = [
+  ...STANDARD_SLACK_RESPONSE_FIELDS,
+  "zhResponse",
+  "enTranslation",
+  "goalSummary",
+  "relevantPillarIds",
+] as const;
+
+export const PONG_TEST_SLACK_RESPONSE_FIELDS = [
+  ...STANDARD_SLACK_RESPONSE_FIELDS,
+  "zhResponse",
+  "enTranslation",
+  "validationPassed",
+  "validationSummary",
+  "validationDetails",
+] as const;
+
+export const PONG_COMPARE_SLACK_RESPONSE_FIELDS = [
+  ...STANDARD_SLACK_RESPONSE_FIELDS,
+  "zhResponse",
+  "enTranslation",
+  "passed",
+  "improvementAreas",
+  "comparisonSummary",
 ] as const;
 
 const AUTO_ROUTED_SLACK_DIRECTORS: DirectorId[] = [
@@ -114,6 +141,36 @@ const validateNullableStringField = (
   }
 };
 
+const validateNullableBooleanField = (
+  parsed: Record<string, unknown>,
+  field: string,
+): void => {
+  if (!hasOwn(parsed, field)) {
+    throw new Error(`Slack structured output is missing "${field}".`);
+  }
+
+  const value = parsed[field];
+  if (value !== null && typeof value !== "boolean") {
+    throw new Error(`Slack structured output has an invalid "${field}" field.`);
+  }
+};
+
+const validateNullableStringArrayField = (
+  parsed: Record<string, unknown>,
+  field: string,
+): void => {
+  if (!hasOwn(parsed, field)) {
+    throw new Error(`Slack structured output is missing "${field}".`);
+  }
+
+  const value = parsed[field];
+  if (value !== null) {
+    if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+      throw new Error(`Slack structured output has an invalid "${field}" field.`);
+    }
+  }
+};
+
 export const resolveToddSlackMode = (text: string): SlackDirectorMode => {
   const normalized = text.trim();
   if (!normalized) {
@@ -175,22 +232,31 @@ export const canAutoRouteSlackDirector = (directorId: DirectorId): boolean =>
 
 export const buildSlackResponseContract = (
   directorId: DirectorId,
-  mode: SlackDirectorMode,
+  mode: SlackDirectorMode | ValidationFocusMode,
 ): string => {
   const isResearchMode = directorId === "rd-director" && mode === "internet-research";
   const isToddVersionPlanning = directorId === "rd-director" && mode === "version-planning";
   const isToddUpdatePlanning = directorId === "rd-director" && mode === "update-planning";
+  const isPongGoalMode = directorId === "validation-director" && mode === "identify-goal";
+  const isPongTestMode = directorId === "validation-director" && mode === "test-current-state";
+  const isPongCompareMode = directorId === "validation-director" && mode === "compare";
   const fields = directorId === "creative-director"
     ? DAN_SLACK_RESPONSE_FIELDS
     : directorId === "programming-director"
       ? PING_SLACK_RESPONSE_FIELDS
-    : isToddVersionPlanning
-      ? TODD_VERSION_SLACK_RESPONSE_FIELDS
-    : isToddUpdatePlanning
-      ? TODD_UPDATE_SLACK_RESPONSE_FIELDS
-    : isResearchMode
-      ? RESEARCH_SLACK_RESPONSE_FIELDS
-      : STANDARD_SLACK_RESPONSE_FIELDS;
+      : isPongGoalMode
+        ? PONG_GOAL_SLACK_RESPONSE_FIELDS
+      : isPongTestMode
+        ? PONG_TEST_SLACK_RESPONSE_FIELDS
+      : isPongCompareMode
+        ? PONG_COMPARE_SLACK_RESPONSE_FIELDS
+      : isToddVersionPlanning
+        ? TODD_VERSION_SLACK_RESPONSE_FIELDS
+      : isToddUpdatePlanning
+        ? TODD_UPDATE_SLACK_RESPONSE_FIELDS
+      : isResearchMode
+        ? RESEARCH_SLACK_RESPONSE_FIELDS
+        : STANDARD_SLACK_RESPONSE_FIELDS;
 
   const descriptions = fields.map((field) => {
     switch (field) {
@@ -215,9 +281,9 @@ export const buildSlackResponseContract = (
       case "updates":
         return `- "updates": array|null. Required for Todd update-planning only. Each item must include title, description, versionLabel, dependencies, area, and skillsNeeded. Use null when you are only discussing.`;
       case "notesToAppend":
-        return `- "notesToAppend": string[]. Required for Dan only. New short working notes to append this turn. Use [] when nothing new should be stored.`;
-      case "sideNotesToAppend":
-        return `- "sideNotesToAppend": string[]. Required for Dan only. Low-priority side notes that should stay out of main working memory. Use [] when none apply.`;
+        return `- "notesToAppend": string[]. Required for Dan only. Soft memory notes for this session. These are temporary working notes cleared when Dan leaves. Use [] when nothing new should be stored.`;
+      case "rawMemoriesToAppend":
+        return `- "rawMemoriesToAppend": array|null. Required for Dan only. Raw user inputs to store as back-up memory tied to pillars. Each item: {"content": string, "relatedPillarNames": string[]}. Use null when none apply.`;
       case "conversationStatus":
         return `- "conversationStatus": string. Required for Dan only. Use "gathering" while you still need more discussion, or "ready-to-confirm" when you are done asking questions and want to present a full draft for confirmation.`;
       case "draftChangeSummary":
@@ -229,11 +295,27 @@ export const buildSlackResponseContract = (
       case "status":
         return `- "status": string. Required for Ping only. Use "success", "blocked", "unexpected", or "no_changes".`;
       case "zhResponse":
-        return `- "zhResponse": string. Required for Ping only. Short Mandarin status line.`;
+        return `- "zhResponse": string. Required for Ping only. Short Mandarin line shown first in chat.`;
       case "enTranslation":
-        return `- "enTranslation": string. Required for Ping only. Short literal English translation.`;
+        return `- "enTranslation": string. Required for Ping only. Short literal English translation shown second.`;
       case "rawReport":
         return `- "rawReport": object|null. Required for Ping only. Minimal execution report with "summary", "changedFiles", "blocker", and "unexpectedNotes".`;
+      case "goalSummary":
+        return `- "goalSummary": string|null. Required for Pong identify-goal mode. Clear summary of the expected state.`;
+      case "relevantPillarIds":
+        return `- "relevantPillarIds": string[]|null. Required for Pong identify-goal mode. Pillar IDs relevant to the goal.`;
+      case "validationPassed":
+        return `- "validationPassed": boolean|null. Required for Pong test-current-state mode. Use null when just discussing.`;
+      case "validationSummary":
+        return `- "validationSummary": string|null. Required for Pong test-current-state mode. Use null when just discussing.`;
+      case "validationDetails":
+        return `- "validationDetails": string|null. Required for Pong test-current-state mode. Use null when just discussing.`;
+      case "passed":
+        return `- "passed": boolean|null. Required for Pong compare mode. Use null when just discussing.`;
+      case "improvementAreas":
+        return `- "improvementAreas": string[]|null. Required for Pong compare mode. Use null when just discussing.`;
+      case "comparisonSummary":
+        return `- "comparisonSummary": string|null. Required for Pong compare mode. Use null when just discussing.`;
       default:
         return `- "${field}": string|null.`;
     }
@@ -247,7 +329,7 @@ Use null for any optional field that does not apply. Do not omit fields.`;
 export const validateSlackTurnParsedResponse = (
   parsed: Record<string, unknown>,
   directorId: DirectorId,
-  mode: SlackDirectorMode,
+  mode: SlackDirectorMode | ValidationFocusMode,
 ): Record<string, unknown> => {
   for (const field of STANDARD_SLACK_RESPONSE_FIELDS) {
     validateNullableStringField(parsed, field);
@@ -332,11 +414,8 @@ export const validateSlackTurnParsedResponse = (
       throw new Error(`Slack structured output has an invalid "notesToAppend" field for ${DIRECTOR_NAMES[directorId]}.`);
     }
 
-    if (!hasOwn(parsed, "sideNotesToAppend") || !Array.isArray(parsed.sideNotesToAppend)) {
-      throw new Error(`Slack structured output is missing a valid "sideNotesToAppend" field for ${DIRECTOR_NAMES[directorId]}.`);
-    }
-    if (!parsed.sideNotesToAppend.every((item) => typeof item === "string")) {
-      throw new Error(`Slack structured output has an invalid "sideNotesToAppend" field for ${DIRECTOR_NAMES[directorId]}.`);
+    if (hasOwn(parsed, "rawMemoriesToAppend") && parsed.rawMemoriesToAppend !== null && !Array.isArray(parsed.rawMemoriesToAppend)) {
+      throw new Error(`Slack structured output has an invalid "rawMemoriesToAppend" field for ${DIRECTOR_NAMES[directorId]}.`);
     }
 
     if (!hasOwn(parsed, "conversationStatus")) {
@@ -401,6 +480,32 @@ export const validateSlackTurnParsedResponse = (
       if (!Array.isArray(parsed.rawReport.unexpectedNotes) || !parsed.rawReport.unexpectedNotes.every((item) => typeof item === "string")) {
         throw new Error(`Slack structured output has an invalid "rawReport.unexpectedNotes" field for ${DIRECTOR_NAMES[directorId]}.`);
       }
+    }
+  }
+
+  if (directorId === "validation-director") {
+    if (!hasOwn(parsed, "zhResponse") || typeof parsed.zhResponse !== "string" || !parsed.zhResponse.trim()) {
+      throw new Error(`Slack structured output is missing "zhResponse" for ${DIRECTOR_NAMES[directorId]}.`);
+    }
+    if (!hasOwn(parsed, "enTranslation") || typeof parsed.enTranslation !== "string" || !parsed.enTranslation.trim()) {
+      throw new Error(`Slack structured output is missing "enTranslation" for ${DIRECTOR_NAMES[directorId]}.`);
+    }
+
+    if (mode === "identify-goal") {
+      validateNullableStringField(parsed, "goalSummary");
+      validateNullableStringArrayField(parsed, "relevantPillarIds");
+    }
+
+    if (mode === "test-current-state") {
+      validateNullableBooleanField(parsed, "validationPassed");
+      validateNullableStringField(parsed, "validationSummary");
+      validateNullableStringField(parsed, "validationDetails");
+    }
+
+    if (mode === "compare") {
+      validateNullableBooleanField(parsed, "passed");
+      validateNullableStringArrayField(parsed, "improvementAreas");
+      validateNullableStringField(parsed, "comparisonSummary");
     }
   }
 

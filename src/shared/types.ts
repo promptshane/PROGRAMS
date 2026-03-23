@@ -738,7 +738,7 @@ export type DirectorId =
   | "creative-director"    // Dan
   | "rd-director"          // Todd
   | "programming-director" // Ping
-  | "validation-director"; // Brad
+  | "validation-director"; // Pong
 
 /** @deprecated Use DirectorId */
 export type AgentId = DirectorId;
@@ -748,7 +748,7 @@ export const DIRECTOR_NAMES: Record<DirectorId, string> = {
   "creative-director": "Dan",
   "rd-director": "Todd",
   "programming-director": "Ping",
-  "validation-director": "Brad",
+  "validation-director": "Pong",
 };
 
 export const DIRECTOR_LABELS: Record<DirectorId, string> = {
@@ -969,6 +969,21 @@ export interface PendingApproval {
   updatedAt: string;
 }
 
+export interface DanRawMemory {
+  id: string;
+  content: string;
+  relatedPillarIds: string[];
+  createdAt: string;
+}
+
+export interface DanHistoryLogEntry {
+  id: string;
+  action: string;
+  summary: string;
+  affectedPillarIds: string[];
+  createdAt: string;
+}
+
 export interface DanMemory {
   confirmedConcept: AgentCoreDetails | null;
   draftConcept: AgentCoreDetails | null;
@@ -979,6 +994,9 @@ export interface DanMemory {
   fullExperienceDescription: string | null;
   archivedNotes: string[];
   deletedNotes: string[];
+  rawMemories: DanRawMemory[];
+  forgottenMemories: string[];
+  creativeHistory: DanHistoryLogEntry[];
 }
 
 export interface ToddCodebaseIndexedMap {
@@ -1041,9 +1059,14 @@ export interface PingLifecycleTranslationMetadata extends PingTranslationMetadat
   phase: PingLifecyclePhase;
 }
 
+export interface PingMessageTranslationMetadata extends PingTranslationMetadataBase {
+  kind: "message";
+}
+
 export type PingTranslationMetadata =
   | PingStatusTranslationMetadata
-  | PingLifecycleTranslationMetadata;
+  | PingLifecycleTranslationMetadata
+  | PingMessageTranslationMetadata;
 
 export interface PingRawReport {
   status: PingRawReportStatus;
@@ -1117,7 +1140,7 @@ export interface AgentSession {
   danArchivedNotes: string[];
   deletedNotes: string[];
   pingTaskContext: ShortHorizonContext | null;
-  bradTaskContext: ShortHorizonContext | null;
+  pongTaskContext: ShortHorizonContext | null;
   projectCategory: ProjectCategory;
   dynamicSubAgents: DynamicSubAgent[];
   slackMessages: SlackChatMessage[];

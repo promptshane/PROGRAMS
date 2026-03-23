@@ -62,7 +62,7 @@ const createSession = (): AgentSession => {
     danArchivedNotes: [],
     deletedNotes: [],
     pingTaskContext: null,
-    bradTaskContext: null,
+    pongTaskContext: null,
     projectCategory: "general-project",
     dynamicSubAgents: [],
     slackMessages: [],

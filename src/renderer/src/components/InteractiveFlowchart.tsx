@@ -1,10 +1,14 @@
 import { useRef, useState, useEffect, useCallback } from "react";
 import type { FlowchartGraph, Theme } from "@shared/types";
 import { useFlowchartViewer } from "../hooks/useFlowchartViewer";
+import { useGuidedFlowchart } from "../hooks/useGuidedFlowchart";
 import { FlowchartNode } from "./FlowchartNode";
 import { FlowchartEdge } from "./FlowchartEdge";
 import { FlowchartControls } from "./FlowchartControls";
 import { NodeDescriptionPanel } from "./NodeDescriptionPanel";
+import { GuidedFlowStep } from "./GuidedFlowStep";
+
+type FlowchartMode = "guided" | "overview";
 
 export function InteractiveFlowchart({
   graph,
@@ -20,12 +24,13 @@ export function InteractiveFlowchart({
   };
 }) {
   const viewportRef = useRef<HTMLDivElement>(null);
-  const [containerSize, setContainerSize] = useState({ width: 800, height: 500 });
+  const [containerSize, setContainerSize] = useState({ width: 800, height: 460 });
+  // Diff views always use overview; non-diff views start in guided
+  const [mode, setMode] = useState<FlowchartMode>(diffHighlights ? "overview" : "guided");
 
   useEffect(() => {
     const el = viewportRef.current;
     if (!el) return;
-
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
       if (entry) {
@@ -39,8 +44,8 @@ export function InteractiveFlowchart({
     return () => observer.disconnect();
   }, []);
 
-  const viewer = useFlowchartViewer(graph, containerSize.width, containerSize.height);
-  const { layout, selectedNodeId, selectedNode, zoomLevel, maxZoom, visibleNodeIds, viewTransform, selectNode, zoomIn, zoomOut, resetView } = viewer;
+  const guided = useGuidedFlowchart(graph);
+  const overview = useFlowchartViewer(graph, containerSize.width, containerSize.height);
 
   const getDiffStatus = useCallback(
     (nodeId: string): "added" | "modified" | "removed" | null => {
@@ -53,7 +58,9 @@ export function InteractiveFlowchart({
     [diffHighlights],
   );
 
-  if (layout.nodes.length === 0) {
+  const isGuided = mode === "guided" && !diffHighlights;
+
+  if (!isGuided && overview.layout.nodes.length === 0) {
     return (
       <div className="flowchartViewer flowchartViewer--empty">
         <p className="helperText">No flowchart data available.</p>
@@ -63,68 +70,110 @@ export function InteractiveFlowchart({
 
   return (
     <div className={`flowchartViewer flowchartViewer--${theme}`}>
-      <div ref={viewportRef} className="flowchartViewport">
-        <div
-          className="flowchartCanvas"
-          style={{
-            width: layout.width,
-            height: layout.height,
-            transform: `translate(${viewTransform.x}px, ${viewTransform.y}px) scale(${viewTransform.scale})`,
-          }}
-        >
-          {/* Edge layer (SVG) */}
-          <svg
-            className="flowchartEdgeLayer"
-            width={layout.width}
-            height={layout.height}
+      {/* Mode toggle — only shown when not in diff mode */}
+      {!diffHighlights ? (
+        <div className="flowchartModeToggle">
+          <button
+            className={`flowchartModeBtn ${mode === "guided" ? "flowchartModeBtn--active" : ""}`}
+            onClick={() => setMode("guided")}
           >
-            <defs>
-              <marker
-                id="flowchart-arrowhead"
-                markerWidth="10"
-                markerHeight="8"
-                refX="9"
-                refY="4"
-                orient="auto"
-              >
-                <path d="M0,0 L10,4 L0,8 Z" className="flowchartArrowhead" />
-              </marker>
-            </defs>
-            {layout.edges.map((edge) => {
-              const bothVisible = visibleNodeIds.has(edge.from) && visibleNodeIds.has(edge.to);
-              return (
-                <FlowchartEdge
-                  key={`${edge.from}-${edge.to}`}
-                  layoutEdge={edge}
-                  isVisible={bothVisible}
-                />
-              );
-            })}
-          </svg>
-
-          {/* Node layer (DOM) */}
-          {layout.nodes.map((layoutNode) => (
-            <FlowchartNode
-              key={layoutNode.id}
-              layoutNode={layoutNode}
-              isSelected={layoutNode.id === selectedNodeId}
-              isVisible={visibleNodeIds.has(layoutNode.id)}
-              diffStatus={getDiffStatus(layoutNode.id)}
-              onSelect={selectNode}
-            />
-          ))}
+            Guided
+          </button>
+          <button
+            className={`flowchartModeBtn ${mode === "overview" ? "flowchartModeBtn--active" : ""}`}
+            onClick={() => setMode("overview")}
+          >
+            Overview
+          </button>
         </div>
-      </div>
+      ) : null}
 
-      <FlowchartControls
-        zoomLevel={zoomLevel}
-        maxZoom={maxZoom}
-        onZoomIn={zoomIn}
-        onZoomOut={zoomOut}
-        onReset={resetView}
-      />
+      {isGuided ? (
+        /* ── Guided mode: pure card layout, no canvas ── */
+        guided.currentNode ? (
+          <GuidedFlowStep
+            currentNode={guided.currentNode}
+            options={guided.options}
+            canGoBack={guided.canGoBack}
+            onNavigate={guided.navigateTo}
+            onBack={guided.goBack}
+          />
+        ) : (
+          <div className="flowchartViewer flowchartViewer--empty">
+            <p className="helperText">No flowchart data available.</p>
+          </div>
+        )
+      ) : (
+        /* ── Overview mode: canvas with transform ── */
+        <>
+          <div ref={viewportRef} className="flowchartViewport">
+            <div
+              className="flowchartCanvas"
+              style={{
+                width: overview.layout.width,
+                height: overview.layout.height,
+                transform: `translate(${overview.viewTransform.x}px, ${overview.viewTransform.y}px) scale(${overview.viewTransform.scale})`,
+              }}
+            >
+              {/* Edge layer */}
+              <svg
+                className="flowchartEdgeLayer"
+                width={overview.layout.width}
+                height={overview.layout.height}
+              >
+                <defs>
+                  <marker
+                    id="flowchart-arrowhead"
+                    markerWidth="10"
+                    markerHeight="8"
+                    refX="9"
+                    refY="4"
+                    orient="auto"
+                  >
+                    <path d="M0,0 L10,4 L0,8 Z" className="flowchartArrowhead" />
+                  </marker>
+                </defs>
+                {overview.layout.edges.map((edge) => {
+                  const bothVisible =
+                    overview.visibleNodeIds.has(edge.from) && overview.visibleNodeIds.has(edge.to);
+                  return (
+                    <FlowchartEdge
+                      key={`${edge.from}-${edge.to}`}
+                      layoutEdge={edge}
+                      isVisible={bothVisible}
+                    />
+                  );
+                })}
+              </svg>
 
-      {selectedNode ? <NodeDescriptionPanel node={selectedNode} /> : null}
+              {/* Node layer */}
+              {overview.layout.nodes.map((layoutNode) => (
+                <FlowchartNode
+                  key={layoutNode.id}
+                  layoutNode={layoutNode}
+                  isSelected={layoutNode.id === overview.selectedNodeId}
+                  isVisible={overview.visibleNodeIds.has(layoutNode.id)}
+                  diffStatus={getDiffStatus(layoutNode.id)}
+                  onSelect={overview.selectNode}
+                />
+              ))}
+            </div>
+
+            <FlowchartControls
+              scale={overview.scale}
+              minScale={overview.minScale}
+              maxScale={overview.maxScale}
+              onZoomIn={overview.zoomIn}
+              onZoomOut={overview.zoomOut}
+              onReset={overview.resetView}
+            />
+          </div>
+
+          {overview.selectedNode ? (
+            <NodeDescriptionPanel node={overview.selectedNode} />
+          ) : null}
+        </>
+      )}
     </div>
   );
 }

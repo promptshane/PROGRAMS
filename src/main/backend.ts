@@ -51,6 +51,7 @@ import {
   resolveSlackDirectorMode,
   validateSlackTurnParsedResponse,
 } from "@main/utils/slack-flow";
+import { resolveDirectorChatFocusMode } from "@main/utils/director-chat-mode";
 import {
   danSlackSchema,
   directorSlackSchema,
@@ -61,9 +62,9 @@ import {
   toddVersionSlackSchema,
 } from "@main/utils/slack-schema";
 import {
-  directorBradCompareSchema,
-  directorBradGoalSchema,
-  directorBradTestSchema,
+  directorPongCompareSchema,
+  directorPongGoalSchema,
+  directorPongTestSchema,
   directorPingSchema,
   directorPmSchema,
   directorToddResearchSchema,
@@ -83,6 +84,7 @@ import { getDirectorRuntimeDefaults, getDirectorMetadata, type DirectorRuntimeDe
 import {
   buildPingLifecycleTranslationMetadata,
   buildPingStatusTranslationMetadata,
+  buildTranslatedMessageMetadata,
   getPingStatusTranslation,
 } from "@shared/ping-translations";
 import {
@@ -146,6 +148,8 @@ import type {
   DirectorId,
   DirectorStructuredData,
   DanMemory,
+  DanRawMemory,
+  DanHistoryLogEntry,
   EnvFileSnapshot,
   FeasibilityAssessment,
   GenerateFlowchartResult,
@@ -783,6 +787,26 @@ const normalizeDanDraftCoreDetails = (value: unknown): DanSlackDraftCoreDetails 
   };
 };
 
+const normalizeRawMemoriesToAppend = (
+  value: unknown,
+  pillarsByName: Map<string, CorePillar>,
+): DanRawMemory[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is Record<string, unknown> => isRecord(item))
+    .map((item) => ({
+      id: randomUUID(),
+      content: normalizeNonEmptyString(item.content) ?? "",
+      relatedPillarIds: Array.isArray(item.relatedPillarNames)
+        ? (item.relatedPillarNames as unknown[])
+            .map((name) => pillarsByName.get(String(name).trim().toLowerCase())?.id)
+            .filter((id): id is string => Boolean(id))
+        : [],
+      createdAt: new Date().toISOString(),
+    }))
+    .filter((entry) => entry.content.length > 0);
+};
+
 const sortNestedPillarsByOrder = (pillars: CorePillar[]): CorePillar[] =>
   [...pillars]
     .sort((left, right) => (left.order ?? 0) - (right.order ?? 0))
@@ -902,6 +926,11 @@ const syncAgentMemories = (session: AgentSession): AgentSession => {
       ?? null,
     archivedNotes: hasDanMemory ? [...session.danMemory!.archivedNotes] : session.danArchivedNotes ?? [],
     deletedNotes: hasDanMemory ? [...session.danMemory!.deletedNotes] : session.deletedNotes ?? [],
+    rawMemories: hasDanMemory ? [...(session.danMemory!.rawMemories ?? [])] : [],
+    forgottenMemories: hasDanMemory
+      ? [...(session.danMemory!.forgottenMemories ?? [])]
+      : [...(session.danSideNotes ?? []), ...(session.deletedNotes ?? [])],
+    creativeHistory: hasDanMemory ? [...(session.danMemory!.creativeHistory ?? [])] : [],
   };
 
   const toddMemory: ToddMemory = {
@@ -1178,6 +1207,48 @@ function formatConceptItems(pillars: CorePillar[], depth = 0): string[] {
   return lines;
 }
 
+function formatDanHardMemoryPillarTree(pillars: CorePillar[], depth = 0): string[] {
+  const lines: string[] = [];
+  for (const pillar of sortPillarsByOrder(pillars)) {
+    const indent = "  ".repeat(depth);
+    const typeLabel = pillar.pillarType === "side" ? " [side]"
+      : pillar.pillarType === "ghost" ? " [ghost]"
+      : "";
+    const assumptionFlag = pillar.assumptionSource === "dan" ? " (assumption)" : "";
+    lines.push(`${indent}- ${pillar.name}${typeLabel}${assumptionFlag}`);
+    if (pillar.function?.summary) lines.push(`${indent}  Function: ${pillar.function.summary}`);
+    if (pillar.thesis?.summary) lines.push(`${indent}  Thesis: ${pillar.thesis.summary}`);
+    if (pillar.description) lines.push(`${indent}  Notes: ${pillar.description}`);
+    if (pillar.corePillars.length > 0) {
+      lines.push(...formatDanHardMemoryPillarTree(pillar.corePillars, depth + 1));
+    }
+  }
+  return lines;
+}
+
+function formatDanHardMemory(session: AgentSession): string {
+  const concept = session.danMemory?.confirmedConcept ?? buildConfirmedConceptFromSession(session);
+  const parts: string[] = [];
+
+  if (concept?.function?.summary) parts.push(`Function: ${concept.function.summary}`);
+  if (concept?.thesis?.summary) parts.push(`Thesis: ${concept.thesis.summary}`);
+
+  if (concept?.corePillars?.length) {
+    parts.push("Core Pillar Tree:");
+    parts.push(...formatDanHardMemoryPillarTree(concept.corePillars));
+  }
+
+  if (concept?.fullFlow?.summary) {
+    parts.push(`Full-Flow: ${concept.fullFlow.summary}`);
+  } else if (session.danMemory?.fullExperienceDescription) {
+    parts.push(`Full-Flow: ${session.danMemory.fullExperienceDescription}`);
+  }
+
+  return parts.length > 0
+    ? `Hard Memory (Ideal Creative Truth):\n${parts.join("\n")}`
+    : "Hard Memory (Ideal Creative Truth):\n- None yet.";
+}
+
 function formatDanDraftCoreDetails(draft: AgentCoreDetails | null): string {
   if (!draft) {
     return "Dan's working draft:\n- None yet.";
@@ -1224,6 +1295,37 @@ function buildDanFocusHint(focusMode: DirectorFocusMode | null): string {
   }
 }
 
+function formatDanBackupMemoryForRecall(currentMessage: string, session: AgentSession): string {
+  if (!isDanRecallMessage(currentMessage)) return "";
+  const sections: string[] = [];
+
+  // Priority 2: Raw Memories
+  const rawMemories = session.danMemory?.rawMemories ?? [];
+  if (rawMemories.length > 0) {
+    const relevantRaw = selectRelevantDanSideNotes(currentMessage, rawMemories.map((m) => m.content));
+    if (relevantRaw.length > 0) {
+      sections.push(`Back-up: Raw Memories (user inputs tied to pillars):\n${relevantRaw.map((note) => `- ${note}`).join("\n")}`);
+    }
+  }
+
+  // Priority 3: Forgotten Memories
+  const forgottenMemories = session.danMemory?.forgottenMemories ?? [];
+  const legacySideNotes = session.danSideNotes ?? [];
+  const allForgotten = [...forgottenMemories, ...legacySideNotes];
+  if (allForgotten.length > 0) {
+    const relevantForgotten = selectRelevantDanSideNotes(currentMessage, allForgotten);
+    if (relevantForgotten.length > 0) {
+      sections.push(`Back-up: Forgotten Memories (lower priority, from past sessions):\n${relevantForgotten.map((note) => `- ${note}`).join("\n")}`);
+    }
+  }
+
+  if (sections.length === 0) {
+    sections.push("Back-up Memory: No matching memories found in Raw or Forgotten memories.");
+  }
+
+  return `\n${sections.join("\n\n")}`;
+}
+
 function buildDanSharedPrompt(args: {
   projectName: string;
   session: AgentSession;
@@ -1233,59 +1335,61 @@ function buildDanSharedPrompt(args: {
   currentMessage: string;
 }): string {
   const { projectName, session, focusMode, surface, conversationSection, currentMessage } = args;
-  const confirmedCoreContext = formatScopedCoreDetails(session, {
-    confirmedOnly: false,
-    includeCurrent: false,
-    includeIdeal: true,
-  });
-  const confirmedDanConcept = session.danMemory?.confirmedConcept ?? buildConfirmedConceptFromSession(session);
-  const confirmedConceptContext = confirmedDanConcept?.corePillars?.length
-    ? `Confirmed concept memory:\n${formatConceptItems(confirmedDanConcept.corePillars).join("\n")}`
-    : "Confirmed concept memory:\n- None yet.";
+  const hardMemorySection = formatDanHardMemory(session);
   const draftContext = formatDanDraftCoreDetails(session.danDraftCoreDetails);
-  const activeNotesSection = session.danInternalNotes.length > 0
-    ? `Active working notes:\n${session.danInternalNotes.map((note) => `- ${note}`).join("\n")}`
-    : "Active working notes:\n- None yet.";
-  const relevantSideNotes = selectRelevantDanSideNotes(currentMessage, session.danSideNotes ?? []);
-  const sideNotesSection = isDanRecallMessage(currentMessage)
-    ? relevantSideNotes.length > 0
-      ? `Relevant side-notes for explicit recall only:\n${relevantSideNotes.map((note) => `- ${note}`).join("\n")}`
-      : "Relevant side-notes for explicit recall only:\n- No matching side-notes found."
-    : "";
+  const softNotes = session.danMemory?.notes ?? session.danInternalNotes ?? [];
+  const softNotesSection = softNotes.length > 0
+    ? `Soft Memory (Session Notes):\n${softNotes.map((note) => `- ${note}`).join("\n")}`
+    : "Soft Memory (Session Notes):\n- None yet.";
+  const backupSection = formatDanBackupMemoryForRecall(currentMessage, session);
   const surfaceHint = surface === "slack"
     ? "You are replying in the team Slack flow. Jeff may still coordinate overall, but this turn is yours. Stay present unless you are explicitly stepping out."
     : "You are replying in a direct DM with the user. Always respond as Dan on this surface.";
 
   return `You are Dan, the Creative Director for "${projectName}".
-You are a strong creative partner, not a passive questionnaire.
+You are the ideal creative hierarchy architect — a strong creative partner, not a passive questionnaire.
+You define, refine, restructure, and preserve the project's ideal creative hierarchy.
+You do NOT hold current-state or implementation understanding. Only the ideal creative truth.
 
 Core operating rules:
 - Continuously synthesize the user's ideas into a private working draft of the project's core-details.
-- Lock down the global core-details first: Function, Thesis, the main concept areas, and the full experience.
+- Lock down the global core-details first: Function, Thesis, the main concept areas (pillars), and the Full-Flow.
 - Work one unresolved part of the idea at a time. If the user jumps, switch immediately and keep the earlier thread recoverable.
-- If the user adds detail while ignoring Dan's question, still capture it and place it under the right part of the idea.
-- Keep "notesToAppend" lean and durable. These are Dan's active working notes.
-- Put low-priority or speculative details into "sideNotesToAppend" so they stay out of Dan's main working memory.
-- Side-notes are only for explicit recall. Only use them when the user is clearly asking Dan to remember something older that is not already covered by main memory.
-- Ask questions only when they materially sharpen the concept. Dan is minimalist and should guide where the user is already going.
+- If the user adds detail while ignoring your question, still capture it and place it under the right part of the idea.
+- Keep "notesToAppend" lean and durable. These are soft memory notes for this session only — cleared when you leave.
+- Use "rawMemoriesToAppend" to capture important raw user inputs and link them to relevant pillars by name. These persist as back-up memory.
+- Ask questions only when they materially sharpen the concept. Be minimalist and guide where the user is already going.
 - Use "draftCoreDetails" for the private working draft. Do not write draft changes into confirmed project state directly from conversation.
-- Keep assumptions internal while gathering. Do not present them piecemeal.
-- When Dan reaches a natural stopping point and the user has nothing else to add, set "conversationStatus" to "ready-to-confirm".
+- Keep assumptions internal while gathering. Do not present them piecemeal. Mark assumptions clearly with assumptionSource and assumptionText.
+- When you reach a natural stopping point and the user has nothing else to add, set "conversationStatus" to "ready-to-confirm".
 - In that ready state, "response" should present the synthesized update, name what changed in concise terms, and ask the user to confirm.
 - Fill "draftChangeSummary" with concise change bullets whenever the working draft changed.
 - Use unique pillar names across the whole draft so they can be reconnected safely.
+- Always set "currentState" to null. You do not track implementation state.
 - "handoffTo" should be null unless another director truly needs to act next.
-- Set "presenceAction" to "stay" unless Dan is explicitly stepping out.
+- Set "presenceAction" to "stay" unless you are explicitly stepping out.
+
+Creative hierarchy management:
+- You can restructure the hierarchy at any time: move, merge, split, retitle, or reword pillars.
+- Refine parent pillar function and thesis as child pillars evolve, so each branch has a coherent overall function/thesis.
+- Core Pillars form the main timeline of the project.
+- Side Pillars are ideas likely to be added but with uncertain placement. They can optionally be bounded between two main timeline points.
+- Ghost Pillars are ideas worth keeping but would cause major ripple effects if integrated into the main timeline.
+- Full-Flow is simply the full core-pillar tree described plainly in words from beginning to end. It is derived from the pillar structure, not a separate creative system.
+
+Memory retrieval priority (when the user asks "do you remember..."):
+1. Hard Memory first (confirmed pillar tree below)
+2. Raw Memories second (back-up of user inputs that informed pillars)
+3. Forgotten Memories third (items from past sessions not promoted to Hard Memory)
+4. If nothing found in any layer, say it was not discussed
 
 ${surfaceHint}
 ${buildDanFocusHint(focusMode)}
 
-${confirmedCoreContext || "Project core details:\n- No confirmed core details yet."}
-${confirmedConceptContext}
+${hardMemorySection}
 ${draftContext}
-${activeNotesSection}
-${formatDanVibeSummary(session)}
-${sideNotesSection ? `\n${sideNotesSection}` : ""}
+${softNotesSection}
+${formatDanVibeSummary(session)}${backupSection}
 ${conversationSection}
 ${buildSlackResponseContract("creative-director", "codebase-analysis")}`.trim();
 }
@@ -1577,9 +1681,9 @@ function getSchemaForDirector(directorId: DirectorId, focusMode: DirectorFocusMo
       return directorToddUpdateSchema;
     case "programming-director": return directorPingSchema;
     case "validation-director":
-      if (focusMode === "identify-goal") return directorBradGoalSchema;
-      if (focusMode === "test-current-state") return directorBradTestSchema;
-      return directorBradCompareSchema;
+      if (focusMode === "identify-goal") return directorPongGoalSchema;
+      if (focusMode === "test-current-state") return directorPongTestSchema;
+      return directorPongCompareSchema;
   }
 }
 
@@ -1599,7 +1703,7 @@ function formatDirectorStatus(session: AgentSession): string {
   parts.push(`Todd (R&D): Feasibility=${session.feasibilityAssessments.length > 0 ? session.feasibilityAssessments.length + " assessments" : "pending"}, Versions=${roadmapLabels.length > 0 ? roadmapLabels.join("/") : "pending"}, Updates=${futureUpdatePlan.length > 0 ? futureUpdatePlan.length + " planned" : "pending"}`);
   const progUpdates = futureUpdatePlan.filter((u) => u.status === "in_progress" || u.status === "completed");
   parts.push(`Ping (Programming): ${progUpdates.length > 0 ? progUpdates.length + " updates processed" : "waiting for approved updates"}`);
-  parts.push(`Brad (Validation): ${session.validationResults.length > 0 ? session.validationResults.length + " results" : "no validations yet"}, Frequency=${session.validationFrequency}`);
+  parts.push(`Pong (Validation): ${session.validationResults.length > 0 ? session.validationResults.length + " results" : "no validations yet"}, Frequency=${session.validationFrequency}`);
   // Director state map summary
   const stateMap = session.directorStateMap ?? {};
   for (const [dId, ds] of Object.entries(stateMap)) {
@@ -1670,7 +1774,7 @@ Valid director IDs for handoff (use the exact ID string, not the name):
 - "creative-director" (Dan)
 - "rd-director" (Todd) — also handles internet research
 - "programming-director" (Ping)
-- "validation-director" (Brad)
+- "validation-director" (Pong)
 
 Current project status:
 ${statusContext}
@@ -1702,7 +1806,7 @@ Valid director IDs for handoff (use the exact ID string, not the name):
 - "project-manager" (Jeff)
 - "creative-director" (Dan)
 - "programming-director" (Ping)
-- "validation-director" (Brad)
+- "validation-director" (Pong)
 
 Current project status:
 ${statusContext}
@@ -1753,7 +1857,7 @@ Valid director IDs for handoff (use the exact ID string, not the name):
 - "project-manager" (Jeff)
 - "rd-director" (Todd) — also handles internet research
 - "programming-director" (Ping)
-- "validation-director" (Brad)
+- "validation-director" (Pong)
 
 Current project status:
 ${statusContext}
@@ -1790,7 +1894,7 @@ Valid director IDs for handoff (use the exact ID string, not the name):
 - "project-manager" (Jeff)
 - "creative-director" (Dan)
 - "rd-director" (Todd)
-- "validation-director" (Brad)
+- "validation-director" (Pong)
 
 ${pingCoreContext}
 ${taskSection}${updatesSection}
@@ -1800,19 +1904,19 @@ ${buildSlackResponseContract(directorId, mode)}`;
   }
 
   if (directorId === "validation-director") {
-    const bradCoreContext = formatScopedCoreDetails(session, {
+    const pongCoreContext = formatScopedCoreDetails(session, {
       confirmedOnly: true,
-      relevantPillarIds: session.bradTaskContext?.relevantPillarIds,
+      relevantPillarIds: session.pongTaskContext?.relevantPillarIds,
     });
-    const bradContext = session.bradTaskContext;
-    const taskSection = bradContext
-      ? `\nYour current task context:\n- Task: ${bradContext.currentTask ?? "none"}\n- Todd's explanation of what this update should achieve: ${bradContext.toddUpdateExplanation ?? "none"}\n${bradContext.lastResult ? `- Last result: ${bradContext.lastResult}` : ""}${bradContext.lastFailureReason ? `\n- Last failure: ${bradContext.lastFailureReason}` : ""}\n`
+    const pongContext = session.pongTaskContext;
+    const taskSection = pongContext
+      ? `\nYour current task context:\n- Task: ${pongContext.currentTask ?? "none"}\n- Todd's explanation of what this update should achieve: ${pongContext.toddUpdateExplanation ?? "none"}\n${pongContext.lastResult ? `- Last result: ${pongContext.lastResult}` : ""}${pongContext.lastFailureReason ? `\n- Last failure: ${pongContext.lastFailureReason}` : ""}\n`
       : "";
     const validationSection = session.validationResults.length > 0
       ? `\nPrior validation results:\n${session.validationResults.slice(-5).map((r) => `- ${r.validationType}: ${r.passed ? "PASS" : "FAIL"} — ${r.summary}`).join("\n")}\n`
       : "";
 
-    return `You are Brad, the Validation Director for "${projectName}".
+    return `You are Pong, the Validation Director for "${projectName}".
 You are in a team Slack channel. Your role:
 - Validate current behavior against confirmed intended results
 - You only receive confirmed core details relevant to your current validation
@@ -1826,7 +1930,7 @@ Valid director IDs for handoff (use the exact ID string, not the name):
 - "rd-director" (Todd)
 - "programming-director" (Ping)
 
-${bradCoreContext}
+${pongCoreContext}
 ${taskSection}${validationSection}
 ${stateContext}
 ${conversationSection}
@@ -1845,7 +1949,7 @@ Valid director IDs for handoff (use the exact ID string, not the name):
 - "creative-director" (Dan)
 - "rd-director" (Todd)
 - "programming-director" (Ping)
-- "validation-director" (Brad)
+- "validation-director" (Pong)
 
 Current project status:
 ${statusContext}
@@ -1898,6 +2002,14 @@ function buildReworkedSlackDirectorPrompt(
       ? `\nUnconfirmed items awaiting user review:\n${unconfirmedItems.map((item) => `- ${item}`).join("\n")}\nIf the user asks what needs confirmation, present these items clearly.\n`
       : "";
     const assumedSummary = buildAssumedStateSummary(session);
+    const creativeHistoryEntries = session.danMemory?.creativeHistory ?? [];
+    const creativeHistorySection = creativeHistoryEntries.length > 0
+      ? `\nDan's creative update history (reference when user asks about prior iterations):\n${
+          creativeHistoryEntries.slice(-10).map(
+            (entry) => `- [${entry.createdAt}] ${entry.action}: ${entry.summary}`,
+          ).join("\n")
+        }\n`
+      : "";
 
     return `You are Jeff, the Project Manager for "${projectName}".
 You are in a team Slack channel with the user and all directors.
@@ -1913,9 +2025,10 @@ You are the central coordinator. Your role:
 - If you can handle the message yourself, set handoffTo to null
 - If the user asks "anything for me to confirm?" or similar, present unresolved assumptions, assumed state, and pending confirmations clearly
 - Only confirmed information should move downstream for actual planning/building/testing
-- Brad stays manual for now; do not hand off automatically to the validation director in this pass
+- Pong stays manual for now; do not hand off automatically to the validation director in this pass
 - Be conversational and direct
 - When handing work to Todd, make the handoffReason explicit enough that PROGRAMS can tell whether this is codebase analysis, version planning, update planning, or internet research
+- If the user asks about prior creative iterations or what changed previously, reference Dan's creative update history below
 
 Valid director IDs for handoff (use the exact ID string, not the name):
 - "creative-director" (Dan)
@@ -1924,7 +2037,7 @@ Valid director IDs for handoff (use the exact ID string, not the name):
 
 Current project status:
 ${statusContext}
-${unconfirmedSection}${assumedSummary}
+${unconfirmedSection}${assumedSummary}${creativeHistorySection}
 ${coreContext}
 ${conversationSection}
 ${buildSlackResponseContract(directorId, mode)}`;
@@ -2118,19 +2231,19 @@ Return ONLY strict JSON with exactly these fields:
   }
 
   if (directorId === "validation-director") {
-    const bradCoreContext = formatScopedCoreDetails(session, {
+    const pongCoreContext = formatScopedCoreDetails(session, {
       confirmedOnly: true,
-      relevantPillarIds: session.bradTaskContext?.relevantPillarIds,
+      relevantPillarIds: session.pongTaskContext?.relevantPillarIds,
     });
-    const bradContext = session.bradTaskContext;
-    const taskSection = bradContext
-      ? `\nYour current task context:\n- Task: ${bradContext.currentTask ?? "none"}\n- Todd's explanation of what this update should achieve: ${bradContext.toddUpdateExplanation ?? "none"}\n${bradContext.lastResult ? `- Last result: ${bradContext.lastResult}` : ""}${bradContext.lastFailureReason ? `\n- Last failure: ${bradContext.lastFailureReason}` : ""}\n`
+    const pongContext = session.pongTaskContext;
+    const taskSection = pongContext
+      ? `\nYour current task context:\n- Task: ${pongContext.currentTask ?? "none"}\n- Todd's explanation of what this update should achieve: ${pongContext.toddUpdateExplanation ?? "none"}\n${pongContext.lastResult ? `- Last result: ${pongContext.lastResult}` : ""}${pongContext.lastFailureReason ? `\n- Last failure: ${pongContext.lastFailureReason}` : ""}\n`
       : "";
     const validationSection = session.validationResults.length > 0
       ? `\nPrior validation results:\n${session.validationResults.slice(-5).map((result) => `- ${result.validationType}: ${result.passed ? "PASS" : "FAIL"} — ${result.summary}`).join("\n")}\n`
       : "";
 
-    return `You are Brad, the Validation Director for "${projectName}".
+    return `You are Pong, the Validation Director for "${projectName}".
 You are in a team Slack channel. Your role:
 - Validate current behavior against confirmed intended results
 - You only receive confirmed core details relevant to your current validation
@@ -2144,7 +2257,7 @@ Valid director IDs for handoff (use the exact ID string, not the name):
 - "rd-director" (Todd)
 - "programming-director" (Ping)
 
-${bradCoreContext}
+${pongCoreContext}
 ${taskSection}${validationSection}
 ${stateContext}
 ${conversationSection}
@@ -2162,7 +2275,7 @@ Valid director IDs for handoff (use the exact ID string, not the name):
 - "creative-director" (Dan)
 - "rd-director" (Todd)
 - "programming-director" (Ping)
-- "validation-director" (Brad)
+- "validation-director" (Pong)
 
 Current project status:
 ${statusContext}
@@ -2209,7 +2322,7 @@ ${formatDirectorStatus(session)}
 ${coreContext}
 ${conversationSection}
 If the user's message should be handled by a specific director, set routeTo to the director ID and explain why in routeReason.
-Valid director IDs: creative-director (Dan), rd-director (Todd), programming-director (Ping), validation-director (Brad)
+Valid director IDs: creative-director (Dan), rd-director (Todd), programming-director (Ping), validation-director (Pong)
 If you can handle the message yourself, set routeTo to null.
 
 Respond as JSON: {"response": string, "routeTo": string|null, "routeReason": string|null}`;
@@ -2332,24 +2445,26 @@ Respond as JSON:
     }
 
     case "validation-director": {
-      const bradScopedContext = formatScopedCoreDetails(session, {
+      const pongScopedContext = formatScopedCoreDetails(session, {
         confirmedOnly: true,
-        relevantPillarIds: session.bradTaskContext?.relevantPillarIds,
+        relevantPillarIds: session.pongTaskContext?.relevantPillarIds,
       });
-      const bradCtx = session.bradTaskContext;
-      const bradTaskSection = bradCtx
-        ? `\nYour current task context:\n- Task: ${bradCtx.currentTask ?? "none"}\n- Todd's explanation of what this update should achieve: ${bradCtx.toddUpdateExplanation ?? "none"}\n${bradCtx.lastResult ? `- Last result: ${bradCtx.lastResult}` : ""}${bradCtx.lastFailureReason ? `\n- Last failure: ${bradCtx.lastFailureReason}` : ""}\n`
+      const pongCtx = session.pongTaskContext;
+      const pongTaskSection = pongCtx
+        ? `\nYour current task context:\n- Task: ${pongCtx.currentTask ?? "none"}\n- Todd's explanation of what this update should achieve: ${pongCtx.toddUpdateExplanation ?? "none"}\n${pongCtx.lastResult ? `- Last result: ${pongCtx.lastResult}` : ""}${pongCtx.lastFailureReason ? `\n- Last failure: ${pongCtx.lastFailureReason}` : ""}\n`
         : "";
 
       if (focusMode === "identify-goal") {
-        return `You are Brad, the Validation Director for "${projectName}".
+        return `You are Pong, the Validation Director for "${projectName}".
 You are in Identify Goal mode — reviewing confirmed core-details and vibes for the pillars being validated. Your role:
 - Review the confirmed core-details of the project, including any attached vibes
 - Identify what the expected state should be after the most recent updates
 - Summarize the goal clearly
+- Always answer first in concise Mandarin, then provide a simple literal English translation
+- Make "response" match the Mandarin line shown first in chat
 
-${bradScopedContext}
-${bradTaskSection}
+${pongScopedContext}
+${pongTaskSection}
 ${session.corePillars.length > 0 ? `Pillars with vibes:\n${session.corePillars.map((p) => {
   const vibeInfo = p.vibes?.length ? ` (${p.vibes.length} vibes)` : "";
   return `- ${p.name} [${p.pillarType}]${vibeInfo}${p.description ? `: ${p.description}` : ""}`;
@@ -2357,44 +2472,48 @@ ${session.corePillars.length > 0 ? `Pillars with vibes:\n${session.corePillars.m
 ${conversationSection}
 Include goalSummary with a clear summary of the expected state. Include relevantPillarIds with the IDs of pillars relevant to this goal.
 
-Respond as JSON: {"response": string, "goalSummary": string|null, "relevantPillarIds": string[]|null}`;
+Respond as JSON: {"response": string, "zhResponse": string, "enTranslation": string, "goalSummary": string|null, "relevantPillarIds": string[]|null}`;
       }
 
       if (focusMode === "test-current-state") {
-        return `You are Brad, the Validation Director for "${projectName}".
+        return `You are Pong, the Validation Director for "${projectName}".
 You are in Test Current-State mode — testing the current state against confirmed intended results. Your role:
 - Test functions and capture screenshots of visuals
 - Report what the current state looks like
 - Document any issues found
+- Always answer first in concise Mandarin, then provide a simple literal English translation
+- Make "response" match the Mandarin line shown first in chat
 
 Validation results so far: ${session.validationResults.length > 0
   ? session.validationResults.map((r) => `${r.validationType}: ${r.passed ? "PASS" : "FAIL"} - ${r.summary}`).join("; ")
   : "None yet"}
 
-${bradScopedContext}
-${bradTaskSection}
+${pongScopedContext}
+${pongTaskSection}
 ${conversationSection}
 Include validationPassed, validationSummary, and validationDetails when reporting results. Set to null if just discussing.
 
-Respond as JSON: {"response": string, "validationPassed": boolean|null, "validationSummary": string|null, "validationDetails": string|null}`;
+Respond as JSON: {"response": string, "zhResponse": string, "enTranslation": string, "validationPassed": boolean|null, "validationSummary": string|null, "validationDetails": string|null}`;
       }
 
       // Default: compare mode
-      return `You are Brad, the Validation Director for "${projectName}".
+      return `You are Pong, the Validation Director for "${projectName}".
 You are in Compare mode — comparing the current-state to the confirmed expected goal. Your role:
 - Compare the current state (screenshots/test results) to the confirmed expected goal
 - Return an objective comparison: current state vs intended goal-state
 - Identify specific areas for improvement
+- Always answer first in concise Mandarin, then provide a simple literal English translation
+- Make "response" match the Mandarin line shown first in chat
 
-${bradScopedContext}
-${bradTaskSection}
+${pongScopedContext}
+${pongTaskSection}
 Validation results so far: ${session.validationResults.length > 0
   ? session.validationResults.map((r) => `${r.validationType}: ${r.passed ? "PASS" : "FAIL"} - ${r.summary}`).join("; ")
   : "None yet"}
 ${conversationSection}
 Include passed (boolean), improvementAreas (specific areas that don't align with the plan), and comparisonSummary. Set to null if just discussing.
 
-Respond as JSON: {"response": string, "passed": boolean|null, "improvementAreas": string[]|null, "comparisonSummary": string|null}`;
+Respond as JSON: {"response": string, "zhResponse": string, "enTranslation": string, "passed": boolean|null, "improvementAreas": string[]|null, "comparisonSummary": string|null}`;
     }
   }
 }
@@ -2988,7 +3107,7 @@ Changes described: ${pending.description}`;
       danArchivedNotes: [],
       deletedNotes: [],
       pingTaskContext: null,
-      bradTaskContext: null,
+      pongTaskContext: null,
       projectCategory: "general-project",
       dynamicSubAgents: [],
       slackMessages: [],
@@ -3007,6 +3126,9 @@ Changes described: ${pending.description}`;
         fullExperienceDescription: null,
         archivedNotes: [],
         deletedNotes: [],
+        rawMemories: [],
+        forgottenMemories: [],
+        creativeHistory: [],
       },
       toddMemory: {
         confirmedConcept: null,
@@ -3162,6 +3284,52 @@ Changes described: ${pending.description}`;
     return message;
   }
 
+  private async tryStartSlackPingExecution(args: {
+    session: AgentSession;
+    project: Project;
+    provider: AiProvider;
+    model: string;
+    claudeModel: string;
+    directorId: DirectorId;
+  }): Promise<SlackChatMessage | null> {
+    const {
+      session,
+      project,
+      provider,
+      model,
+      claudeModel,
+      directorId,
+    } = args;
+
+    if (directorId !== "programming-director") {
+      return null;
+    }
+
+    syncAgentMemories(session);
+    const activeUpdateId = session.pingMemory.activeUpdateId;
+    if (!activeUpdateId) {
+      return null;
+    }
+
+    const activeUpdate = session.toddMemory.futureUpdatePlan.find((update) => update.id === activeUpdateId);
+    if (!activeUpdate) {
+      return null;
+    }
+
+    const executionMessage = this.appendSlackSystemMessage(session, "Handing this to Ping to update the code now.");
+    session.slackActiveDirectorId = "programming-director";
+    session.slackPresenceGuestId = "programming-director";
+    await this.saveAgentSession(project.id, session);
+    await this.routeUpdateToProgrammingNow({
+      projectId: project.id,
+      updateId: activeUpdate.id,
+      provider,
+      model,
+      claudeModel,
+    });
+    return executionMessage;
+  }
+
   private async stageSlackDirectorIntroSequence(
     session: AgentSession,
     projectId: string,
@@ -3253,9 +3421,6 @@ Changes described: ${pending.description}`;
     const notesToAppend = Array.isArray(parsed.notesToAppend)
       ? parsed.notesToAppend.filter((note): note is string => typeof note === "string" && note.trim().length > 0)
       : [];
-    const sideNotesToAppend = Array.isArray(parsed.sideNotesToAppend)
-      ? parsed.sideNotesToAppend.filter((note): note is string => typeof note === "string" && note.trim().length > 0)
-      : [];
     const conversationStatus = normalizeDanConversationStatus(parsed.conversationStatus);
     const draftCoreDetails = normalizeDanDraftCoreDetails(parsed.draftCoreDetails);
     const draftChangeSummary = Array.isArray(parsed.draftChangeSummary)
@@ -3264,8 +3429,17 @@ Changes described: ${pending.description}`;
     const presenceAction = normalizeDanPresenceAction(parsed.presenceAction);
 
     session.danMemory.notes = mergeTrimmedNotes(session.danMemory.notes, notesToAppend);
-    session.danMemory.sideNotes = mergeTrimmedNotes(session.danMemory.sideNotes, sideNotesToAppend);
     session.danMemory.draftStatus = conversationStatus;
+
+    // Raw memories: link raw user inputs to pillars
+    session.danMemory.rawMemories = session.danMemory.rawMemories ?? [];
+    const seedPillars = session.danDraftCoreDetails?.corePillars?.length
+      ? session.danDraftCoreDetails.corePillars
+      : session.corePillars;
+    const rawMemories = normalizeRawMemoriesToAppend(parsed.rawMemoriesToAppend, collectExistingPillarsByName(seedPillars));
+    if (rawMemories.length > 0) {
+      session.danMemory.rawMemories.push(...rawMemories);
+    }
 
     if (draftCoreDetails) {
       session.danMemory.draftConcept = buildDanDraftCoreDetailsState(session, draftCoreDetails);
@@ -3286,6 +3460,17 @@ Changes described: ${pending.description}`;
       assumptions: [],
     });
     session.danMemory.fullExperienceDescription = idealState;
+
+    // Session-end processing: when Dan exits, move soft notes to forgotten memories
+    if (presenceAction === "exit" && session.danMemory.notes.length > 0) {
+      session.danMemory.forgottenMemories = session.danMemory.forgottenMemories ?? [];
+      const timestamp = new Date().toISOString();
+      session.danMemory.forgottenMemories.push(
+        ...session.danMemory.notes.map((note) => `[${timestamp}] ${note}`),
+      );
+      session.danMemory.notes = [];
+    }
+
     syncAgentMemories(session);
 
     if (conversationStatus === "ready-to-confirm" && session.danMemory.draftConcept) {
@@ -3409,14 +3594,18 @@ Changes described: ${pending.description}`;
           const status = parsed.status === "blocked" || parsed.status === "unexpected" || parsed.status === "no_changes"
             ? parsed.status as PingRawReportStatus
             : "success";
+          const activeUpdateId = session.pingMemory.activeUpdateId ?? null;
+          const activeUpdate = activeUpdateId
+            ? session.toddMemory.futureUpdatePlan.find((update) => update.id === activeUpdateId) ?? null
+            : null;
           const rawReportPayload = parsed.rawReport && typeof parsed.rawReport === "object"
             ? parsed.rawReport as Record<string, unknown>
             : null;
           const enTranslation = typeof parsed.enTranslation === "string" ? parsed.enTranslation : response;
           const rawReport = buildPingRawReport({
             status,
-            updateId: session.pingMemory.activeUpdateId ?? null,
-            goal: session.pingMemory.context ?? null,
+            updateId: activeUpdate?.id ?? null,
+            goal: activeUpdate?.description ?? null,
             summary: typeof rawReportPayload?.summary === "string" ? rawReportPayload.summary : enTranslation,
             changedFiles: Array.isArray(rawReportPayload?.changedFiles)
               ? rawReportPayload.changedFiles.filter((item: unknown): item is string => typeof item === "string")
@@ -3429,11 +3618,11 @@ Changes described: ${pending.description}`;
           session.pingMemory.latestRawReport = rawReport;
           session.pingMemory.latestJeffReport = null;
           session.pingTaskContext = {
-            currentTask: session.pingMemory.activeTask,
+            currentTask: activeUpdate ? session.pingMemory.activeTask : null,
             lastResult: rawReport.summary,
             lastFailureReason: rawReport.blocker,
-            toddUpdateExplanation: session.pingMemory.context,
-            relevantPillarIds: session.pingTaskContext?.relevantPillarIds ?? [],
+            toddUpdateExplanation: activeUpdate?.description ?? null,
+            relevantPillarIds: activeUpdate?.pillarIds ?? [],
           };
           this.applySlackDirectorStateSnapshot(session, directorId, parsed);
           responsePlaceholder.content = typeof parsed.zhResponse === "string" && parsed.zhResponse.trim()
@@ -4782,6 +4971,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     const settings = await this.store.readSettings();
     await this.requireProviderReady(input.provider, settings);
     const project = await this.requireProject(input.projectId);
+    const resolvedFocusMode = resolveDirectorChatFocusMode(input.directorId, input.message, input.focusMode);
 
     let session = await this.store.getAgentSession(input.projectId);
     if (!session) {
@@ -4797,19 +4987,19 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     session.danDraftStatus = session.danDraftStatus ?? null;
 
     // Update focus mode on session
-    if (input.directorId === "creative-director" && input.focusMode) {
-      session.creativeFocusMode = input.focusMode as CreativeFocusMode;
-    } else if (input.directorId === "rd-director" && input.focusMode) {
-      session.rdFocusMode = input.focusMode as RdFocusMode;
-    } else if (input.directorId === "validation-director" && input.focusMode) {
-      session.validationFocusMode = input.focusMode as ValidationFocusMode;
+    if (input.directorId === "creative-director" && resolvedFocusMode) {
+      session.creativeFocusMode = resolvedFocusMode as CreativeFocusMode;
+    } else if (input.directorId === "rd-director" && resolvedFocusMode) {
+      session.rdFocusMode = resolvedFocusMode as RdFocusMode;
+    } else if (input.directorId === "validation-director" && resolvedFocusMode) {
+      session.validationFocusMode = resolvedFocusMode as ValidationFocusMode;
     }
 
     // Ensure this director has a conversation record
     if (!session.directorConversations[input.directorId]) {
       session.directorConversations[input.directorId] = {
         directorId: input.directorId,
-        focusMode: input.focusMode,
+        focusMode: resolvedFocusMode,
         messages: [],
         lastActiveAt: null,
       };
@@ -4818,7 +5008,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     session.agentConversations = session.directorConversations;
 
     const conv = session.directorConversations[input.directorId];
-    conv.focusMode = input.focusMode;
+    conv.focusMode = resolvedFocusMode;
     const userMessage = {
       id: randomUUID(),
       role: "user" as const,
@@ -4844,19 +5034,19 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       session.directorProgress.currentDirector = input.directorId;
     }
 
-    const prompt = buildDirectorPrompt(input.directorId, input.focusMode, project.name, session);
+    const prompt = buildDirectorPrompt(input.directorId, resolvedFocusMode, project.name, session);
     const service = this.aiService(input.provider);
     const dirOverrides = session.directorSettingsOverrides?.[input.directorId];
     const model = input.provider === "claude"
       ? (dirOverrides?.claudeModel ?? input.claudeModel)
       : (dirOverrides?.model ?? input.model);
-    const schema = getSchemaForDirector(input.directorId, input.focusMode);
+    const schema = getSchemaForDirector(input.directorId, resolvedFocusMode);
 
     // Emit intro message before AI call
     const introMsg: AgentChatMessage = {
       id: randomUUID(),
       role: "assistant" as const,
-      content: getDirectorMetadata(input.directorId).introMessage,
+      content: "",
       createdAt: new Date().toISOString(),
       status: "working",
     };
@@ -4875,13 +5065,21 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       resolveDirectorRuntime(session, input.directorId).reasoningEffort,
     );
     const parsedJson = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
-    const parsed = input.directorId === "creative-director"
-      ? validateSlackTurnParsedResponse(parsedJson, "creative-director", "codebase-analysis")
+    const parsed = input.directorId === "creative-director" || input.directorId === "validation-director"
+      ? validateSlackTurnParsedResponse(parsedJson, input.directorId, resolvedFocusMode as any)
       : parsedJson;
 
     // Update intro message with final response
-    introMsg.content = sanitizeSlackResponseContent(parsed.response, input.directorId);
+    introMsg.content = input.directorId === "validation-director" && typeof parsed.zhResponse === "string"
+      ? parsed.zhResponse
+      : sanitizeSlackResponseContent(parsed.response, input.directorId);
     introMsg.status = "complete";
+    introMsg.metadata = input.directorId === "validation-director"
+      ? buildTranslatedMessageMetadata(
+        introMsg.content,
+        typeof parsed.enTranslation === "string" ? parsed.enTranslation : parsed.response,
+      )
+      : null;
     const assistantMessage = introMsg;
 
     // Process structured data from director response
@@ -4908,7 +5106,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     }
 
     // Todd — Research mode: feasibility assessments
-    if (input.directorId === "rd-director" && input.focusMode === "research" && parsed.feasibilityAssessments) {
+    if (input.directorId === "rd-director" && resolvedFocusMode === "research" && parsed.feasibilityAssessments) {
       const assessments: FeasibilityAssessment[] = parsed.feasibilityAssessments.map((a: { area: string; assessment: string; stackRecommendation?: string | null; complexity: string; costNotes?: string | null }) => ({
         id: randomUUID(),
         area: a.area,
@@ -4934,7 +5132,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     }
 
     // Todd — Version Planning mode: versions
-    if (input.directorId === "rd-director" && input.focusMode === "version-planning" && parsed.versions) {
+    if (input.directorId === "rd-director" && resolvedFocusMode === "version-planning" && parsed.versions) {
       const versions: VersionPlan[] = parsed.versions.map((v: { label: string; description: string; goals: string[] }, idx: number) => ({
         id: randomUUID(),
         label: v.label,
@@ -4959,7 +5157,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     }
 
     // Todd — Update Planning mode: updates
-    if (input.directorId === "rd-director" && input.focusMode === "update-planning" && parsed.updates) {
+    if (input.directorId === "rd-director" && resolvedFocusMode === "update-planning" && parsed.updates) {
       const updates: VersionUpdate[] = parsed.updates.map((u: {
         title: string;
         description: string;
@@ -5034,8 +5232,8 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       assistantMessage.metadata = buildPingStatusTranslationMetadata(rawReport.status);
     }
 
-    // Brad — Test mode: validation results
-    if (input.directorId === "validation-director" && input.focusMode === "test-current-state" && parsed.validationPassed != null) {
+    // Pong — Test mode: validation results
+    if (input.directorId === "validation-director" && resolvedFocusMode === "test-current-state" && parsed.validationPassed != null) {
       const result: ValidationResult = {
         id: randomUUID(),
         updateId: "",
@@ -5061,8 +5259,8 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       });
     }
 
-    // Brad — Compare mode: comparison
-    if (input.directorId === "validation-director" && input.focusMode === "compare" && parsed.passed != null) {
+    // Pong — Compare mode: comparison
+    if (input.directorId === "validation-director" && resolvedFocusMode === "compare" && parsed.passed != null) {
       structuredData = {
         type: "comparison",
         passed: parsed.passed,
@@ -5071,8 +5269,8 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       };
     }
 
-    // Brad — Identify Goal mode: goal summary
-    if (input.directorId === "validation-director" && input.focusMode === "identify-goal" && parsed.goalSummary) {
+    // Pong — Identify Goal mode: goal summary
+    if (input.directorId === "validation-director" && resolvedFocusMode === "identify-goal" && parsed.goalSummary) {
       structuredData = {
         type: "goalSummary",
         summary: parsed.goalSummary,
@@ -5135,6 +5333,24 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     const initialMode = currentDirectorId === "project-manager"
       ? "codebase-analysis"
       : resolveSlackDirectorMode(currentDirectorId, input.message);
+    const executionMessage = await this.tryStartSlackPingExecution({
+      session,
+      project,
+      provider: input.provider,
+      model: input.model,
+      claudeModel: input.claudeModel,
+      directorId: currentDirectorId,
+    });
+    if (executionMessage) {
+      return {
+        sessionId: session.id,
+        directorId: currentDirectorId,
+        message: executionMessage,
+        handoffTo: null,
+        handoffReason: null,
+        chainedMessages: [],
+      };
+    }
     const { message, handoffTo, handoffReason, chainedMessages } = await this.runSlackDirectorChain({
       session,
       project,
@@ -5550,6 +5766,24 @@ Be concise and conversational.`;
         idealState: session.danMemory.fullExperienceDescription,
         assumptions: [],
       });
+
+      // History log: record what was confirmed
+      session.danMemory.creativeHistory = session.danMemory.creativeHistory ?? [];
+      session.danMemory.creativeHistory.push({
+        id: randomUUID(),
+        action: "confirmed",
+        summary: session.danMemory.draftChangeSummary.join("; ") || "Core details confirmed",
+        affectedPillarIds: draftCoreDetails.corePillars.map((p) => p.id),
+        createdAt: new Date().toISOString(),
+      });
+
+      // Move soft notes to forgotten memories before clearing
+      session.danMemory.forgottenMemories = session.danMemory.forgottenMemories ?? [];
+      const timestamp = new Date().toISOString();
+      for (const note of session.danMemory.notes ?? []) {
+        session.danMemory.forgottenMemories.push(`[${timestamp} | confirmed] ${note}`);
+      }
+
       archiveDanNotes(session, "dan draft confirmed", session.danMemory.notes ?? []);
       session.danMemory.archivedNotes = session.danArchivedNotes;
       session.danMemory.notes = [];
@@ -5590,7 +5824,21 @@ Be concise and conversational.`;
         session.currentCorePillars = payload.currentCorePillars as CorePillar[];
       }
       if (Array.isArray(payload.corePillars) && session.corePillars.length === 0) {
-        session.corePillars = payload.corePillars as CorePillar[];
+        session.corePillars = (payload.corePillars as CorePillar[]).map((p) => ({
+          ...p,
+          assumptionSource: p.assumptionSource ?? ("dan" as const),
+          assumptionText: p.assumptionText ?? "Bootstrapped from codebase scan — pending user review",
+        }));
+        // Bootstrap Dan's confirmed concept and record history
+        session.danMemory.confirmedConcept = buildConfirmedConceptFromSession(session);
+        session.danMemory.creativeHistory = session.danMemory.creativeHistory ?? [];
+        session.danMemory.creativeHistory.push({
+          id: randomUUID(),
+          action: "bootstrapped",
+          summary: "Initial pillars bootstrapped from Todd's codebase scan (assumptions pending review)",
+          affectedPillarIds: session.corePillars.map((p) => p.id),
+          createdAt: new Date().toISOString(),
+        });
       }
       if (payload.corePillarsSummary && typeof payload.corePillarsSummary === "string") {
         session.stages.core_pillars.confirmed = {
@@ -5646,6 +5894,18 @@ Be concise and conversational.`;
       payload.mode,
       payload.allowInternetResearch,
     );
+
+    const executionMessage = await this.tryStartSlackPingExecution({
+      session,
+      project,
+      provider,
+      model,
+      claudeModel,
+      directorId,
+    });
+    if (executionMessage) {
+      return;
+    }
 
     this.appendSlackSystemMessage(
       session,
@@ -5978,12 +6238,12 @@ Be concise and conversational.`;
       } catch { /* Playwright not available, continue without screenshots */ }
     }
 
-    // Populate Brad's short-horizon task context
+    // Populate Pong's short-horizon task context
     const relatedUpdate = session.versionUpdates.find((u) => u.id === input.updateId);
-    session.bradTaskContext = {
+    session.pongTaskContext = {
       currentTask: `Validating: ${relatedUpdate?.title ?? "project state"}`,
-      lastResult: session.bradTaskContext?.lastResult ?? null,
-      lastFailureReason: session.bradTaskContext?.lastFailureReason ?? null,
+      lastResult: session.pongTaskContext?.lastResult ?? null,
+      lastFailureReason: session.pongTaskContext?.lastFailureReason ?? null,
       toddUpdateExplanation: relatedUpdate?.description ?? null,
       relevantPillarIds: relatedUpdate?.pillarIds ?? [],
     };
@@ -5991,10 +6251,10 @@ Be concise and conversational.`;
     // Ask AI to validate — scoped to confirmed details for relevant pillars
     const coreContext = formatScopedCoreDetails(session, {
       confirmedOnly: true,
-      relevantPillarIds: session.bradTaskContext?.relevantPillarIds,
+      relevantPillarIds: session.pongTaskContext?.relevantPillarIds,
     });
-    const updateExplanation = session.bradTaskContext?.toddUpdateExplanation
-      ? `\nTodd's explanation of what this update should achieve: ${session.bradTaskContext.toddUpdateExplanation}`
+    const updateExplanation = session.pongTaskContext?.toddUpdateExplanation
+      ? `\nTodd's explanation of what this update should achieve: ${session.pongTaskContext.toddUpdateExplanation}`
       : "";
     const validationPrompt = input.validationType === "visual"
       ? `You are validating the visual output of "${project.name}". Compare the current state against the confirmed intended visual direction.\n${coreContext}${updateExplanation}\n${screenshotPaths.length > 0 ? `Screenshots taken: ${screenshotPaths.length}` : "No screenshots available."}\nDoes the current output match the intended visual direction? Report any mismatches.`
@@ -6007,7 +6267,7 @@ Be concise and conversational.`;
       settings,
       validationPrompt,
       model,
-      directorBradTestSchema,
+      directorPongTestSchema,
       resolveDirectorRuntime(session, "validation-director").reasoningEffort,
     );
     const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
@@ -6023,10 +6283,10 @@ Be concise and conversational.`;
       createdAt: new Date().toISOString(),
     };
 
-    // Update Brad's short-horizon context with result
-    if (session.bradTaskContext) {
-      session.bradTaskContext.lastResult = result.summary;
-      session.bradTaskContext.lastFailureReason = result.passed ? null : result.details;
+    // Update Pong's short-horizon context with result
+    if (session.pongTaskContext) {
+      session.pongTaskContext.lastResult = result.summary;
+      session.pongTaskContext.lastFailureReason = result.passed ? null : result.details;
     }
 
     session.validationResults.push(result);

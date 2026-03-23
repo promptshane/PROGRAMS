@@ -1,6 +1,6 @@
 import { SLACK_CHAT_ENABLED } from "./types.ts";
 
-export type AppPage = "homepage" | "projects" | "slack" | "agents" | "skills" | "calendar" | "health";
+export type AppPage = "homepage" | "projects" | "slack" | "agents" | "skills";
 
 export interface AppPageDefinition {
   id: AppPage;
@@ -10,11 +10,9 @@ export interface AppPageDefinition {
 export const APP_PAGE_OPTIONS: AppPageDefinition[] = [
   { id: "homepage", label: "Homepage" },
   { id: "projects", label: "Projects" },
-  { id: "slack", label: "Slack" },
   { id: "agents", label: "Agents" },
+  { id: "slack", label: "Slack" },
   { id: "skills", label: "Skills" },
-  { id: "calendar", label: "Calendar" },
-  { id: "health", label: "Health" },
 ];
 
 const SLACK_FALLBACK_PAGE: AppPage = "agents";

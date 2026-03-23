@@ -2,7 +2,6 @@ import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import type { FlowchartGraph } from "@shared/types";
 import { normalizeFlowchartGraph } from "@shared/flowchart";
 import { computeLayout, type FlowchartLayout, type LayoutNode } from "../lib/flowchart-layout";
-import { getVisibleNodeIds, getMaxHops, getDefaultNodeId } from "../lib/flowchart-navigation";
 
 export interface ViewTransform {
   x: number;
@@ -14,8 +13,9 @@ export interface FlowchartViewerState {
   layout: FlowchartLayout;
   selectedNodeId: string | null;
   selectedNode: LayoutNode | null;
-  zoomLevel: number;
-  maxZoom: number;
+  scale: number;
+  minScale: number;
+  maxScale: number;
   visibleNodeIds: Set<string>;
   viewTransform: ViewTransform;
   selectNode: (id: string) => void;
@@ -24,103 +24,111 @@ export interface FlowchartViewerState {
   resetView: () => void;
 }
 
+const ZOOM_STEP = 0.25;
+const MAX_SCALE = 3.0;
+
+function computeFitTransform(
+  layout: FlowchartLayout,
+  containerWidth: number,
+  containerHeight: number,
+): ViewTransform {
+  if (layout.width === 0 || layout.height === 0) return { x: 0, y: 0, scale: 1 };
+  const scaleX = containerWidth / layout.width;
+  const scaleY = containerHeight / layout.height;
+  const scale = Math.min(scaleX, scaleY, 1.5);
+  const x = (containerWidth - layout.width * scale) / 2;
+  const y = (containerHeight - layout.height * scale) / 2;
+  return { x, y, scale };
+}
+
 export function useFlowchartViewer(
   rawGraph: FlowchartGraph | null,
   containerWidth: number,
   containerHeight: number,
 ): FlowchartViewerState {
   const graph = useMemo(() => normalizeFlowchartGraph(rawGraph), [rawGraph]);
-  const layout = useMemo(() => (graph ? computeLayout(graph) : { nodes: [], edges: [], width: 0, height: 0 }), [graph]);
-  const maxZoom = useMemo(() => (graph ? getMaxHops(graph) : 1), [graph]);
+  const layout = useMemo(
+    () => (graph ? computeLayout(graph) : { nodes: [], edges: [], width: 0, height: 0 }),
+    [graph],
+  );
 
+  const fitTransform = useMemo(
+    () => computeFitTransform(layout, containerWidth, containerHeight),
+    [layout, containerWidth, containerHeight],
+  );
+
+  const minScale = fitTransform.scale;
+
+  const [scale, setScale] = useState(fitTransform.scale);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [zoomLevel, setZoomLevel] = useState(maxZoom);
-  const prevGraphRef = useRef(rawGraph);
 
-  // Reset selection when graph changes
+  const prevGraphRef = useRef(rawGraph);
+  // Reset when graph or container changes
   useEffect(() => {
     if (rawGraph !== prevGraphRef.current) {
       prevGraphRef.current = rawGraph;
       setSelectedNodeId(null);
-      setZoomLevel(maxZoom);
+      setScale(fitTransform.scale);
     }
-  }, [rawGraph, maxZoom]);
+  }, [rawGraph, fitTransform.scale]);
+
+  // Sync scale floor when container resizes
+  useEffect(() => {
+    setScale((prev) => Math.max(prev, fitTransform.scale));
+  }, [fitTransform.scale]);
 
   const selectedNode = useMemo(
     () => layout.nodes.find((n) => n.id === selectedNodeId) ?? null,
     [layout.nodes, selectedNodeId],
   );
 
-  const visibleNodeIds = useMemo(
-    () => (graph ? getVisibleNodeIds(graph, selectedNodeId, zoomLevel) : new Set<string>()),
-    [graph, selectedNodeId, zoomLevel],
-  );
+  // All nodes are always visible in overview mode
+  const visibleNodeIds = useMemo(() => new Set(layout.nodes.map((n) => n.id)), [layout.nodes]);
 
-  const computeTransform = useCallback(
-    (nodeId: string | null): ViewTransform => {
-      if (!nodeId || layout.width === 0) {
-        // Fit entire graph in container
-        const scaleX = containerWidth / Math.max(layout.width, 1);
-        const scaleY = containerHeight / Math.max(layout.height, 1);
-        const scale = Math.min(scaleX, scaleY, 1);
-        const x = (containerWidth - layout.width * scale) / 2;
-        const y = (containerHeight - layout.height * scale) / 2;
-        return { x, y, scale };
-      }
+  const viewTransform = useMemo((): ViewTransform => {
+    // Centered x,y for current scale (may be negative when zoomed in, that's fine)
+    const cx = (containerWidth - layout.width * scale) / 2;
+    const cy = (containerHeight - layout.height * scale) / 2;
 
-      const node = layout.nodes.find((n) => n.id === nodeId);
-      if (!node) {
-        const scale = Math.min(containerWidth / Math.max(layout.width, 1), containerHeight / Math.max(layout.height, 1), 1);
-        return { x: (containerWidth - layout.width * scale) / 2, y: (containerHeight - layout.height * scale) / 2, scale };
-      }
+    if (!selectedNodeId) return { x: cx, y: cy, scale };
 
-      // Scale to fit visible subset with some padding
-      const scale = Math.min(containerWidth / Math.max(layout.width, 1), containerHeight / Math.max(layout.height, 1), 1.2);
-      const centerX = node.x + node.width / 2;
-      const centerY = node.y + node.height / 2;
-      const x = containerWidth / 2 - centerX * scale;
-      const y = containerHeight / 2 - centerY * scale;
-      return { x, y, scale };
-    },
-    [containerWidth, containerHeight, layout],
-  );
+    const node = layout.nodes.find((n) => n.id === selectedNodeId);
+    if (!node) return { x: cx, y: cy, scale };
 
-  const viewTransform = useMemo(() => computeTransform(selectedNodeId), [computeTransform, selectedNodeId]);
+    // Pan to center on selected node at current scale
+    const nodeCx = node.x + node.width / 2;
+    const nodeCy = node.y + node.height / 2;
+    return {
+      x: containerWidth / 2 - nodeCx * scale,
+      y: containerHeight / 2 - nodeCy * scale,
+      scale,
+    };
+  }, [selectedNodeId, layout.nodes, layout.width, layout.height, scale, containerWidth, containerHeight]);
 
-  const selectNode = useCallback(
-    (id: string) => {
-      setSelectedNodeId((prev) => (prev === id ? null : id));
-    },
-    [],
-  );
+  const selectNode = useCallback((id: string) => {
+    setSelectedNodeId((prev) => (prev === id ? null : id));
+  }, []);
 
   const zoomIn = useCallback(() => {
-    setZoomLevel((prev) => {
-      const next = Math.max(1, prev - 1);
-      // If zooming in from full view with no selection, auto-select first node
-      if (prev >= maxZoom && !selectedNodeId && graph) {
-        const defaultId = getDefaultNodeId(graph);
-        if (defaultId) setSelectedNodeId(defaultId);
-      }
-      return next;
-    });
-  }, [maxZoom, selectedNodeId, graph]);
+    setScale((prev) => Math.min(MAX_SCALE, parseFloat((prev + ZOOM_STEP).toFixed(10))));
+  }, []);
 
   const zoomOut = useCallback(() => {
-    setZoomLevel((prev) => Math.min(maxZoom, prev + 1));
-  }, [maxZoom]);
+    setScale((prev) => Math.max(minScale, parseFloat((prev - ZOOM_STEP).toFixed(10))));
+  }, [minScale]);
 
   const resetView = useCallback(() => {
     setSelectedNodeId(null);
-    setZoomLevel(maxZoom);
-  }, [maxZoom]);
+    setScale(fitTransform.scale);
+  }, [fitTransform.scale]);
 
   return {
     layout,
     selectedNodeId,
     selectedNode,
-    zoomLevel,
-    maxZoom,
+    scale,
+    minScale,
+    maxScale: MAX_SCALE,
     visibleNodeIds,
     viewTransform,
     selectNode,

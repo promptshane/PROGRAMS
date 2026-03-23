@@ -97,6 +97,5 @@ test("Slack conversation grouping resets the sender label on a new day", () => {
 
   assert.deepEqual(items.map((item) => item.showSenderLabel), [true, true]);
   assert.deepEqual(items.map((item) => item.isSenderContinuation), [false, false]);
-  assert.equal(items[0].dayLabel !== null, true);
-  assert.equal(items[1].dayLabel !== null, true);
+  assert.deepEqual(items.map((item) => item.dayLabel), ["Yesterday", "Today"]);
 });

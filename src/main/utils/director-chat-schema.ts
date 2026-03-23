@@ -96,8 +96,10 @@ export const directorPingSchema = buildStrictObjectSchema({
   },
 });
 
-export const directorBradGoalSchema = buildStrictObjectSchema({
+export const directorPongGoalSchema = buildStrictObjectSchema({
   response: { type: "string" },
+  zhResponse: { type: "string" },
+  enTranslation: { type: "string" },
   goalSummary: { type: ["string", "null"] },
   relevantPillarIds: {
     type: ["array", "null"] as const,
@@ -105,15 +107,19 @@ export const directorBradGoalSchema = buildStrictObjectSchema({
   },
 });
 
-export const directorBradTestSchema = buildStrictObjectSchema({
+export const directorPongTestSchema = buildStrictObjectSchema({
   response: { type: "string" },
+  zhResponse: { type: "string" },
+  enTranslation: { type: "string" },
   validationPassed: { type: ["boolean", "null"] },
   validationSummary: { type: ["string", "null"] },
   validationDetails: { type: ["string", "null"] },
 });
 
-export const directorBradCompareSchema = buildStrictObjectSchema({
+export const directorPongCompareSchema = buildStrictObjectSchema({
   response: { type: "string" },
+  zhResponse: { type: "string" },
+  enTranslation: { type: "string" },
   passed: { type: ["boolean", "null"] },
   improvementAreas: {
     type: ["array", "null"] as const,

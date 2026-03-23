@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import type { AgentSession } from "../src/shared/types.ts";
 import { getVisibleAppPageOptions, resolveVisibleAppPage } from "../src/shared/app-shell.ts";
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -154,4 +155,167 @@ test("Slack chat no longer fails fast behind the quarantine gate", async () => {
 
   assert.equal(response.directorId, "project-manager");
   assert.equal(response.message.content, "Ready.");
+});
+
+test("Slack Ping with an active update skips the read-only chat turn and starts execution", async () => {
+  const backend = createBackend() as Record<string, unknown>;
+  (backend.ensureInitialized as Function) = async () => {};
+  (backend.requireProject as Function) = async () => ({ id: "project-1", name: "Slack Enabled Project" });
+
+  const session = (backend.createEmptyAgentSession as Function)("project-1", "codex") as AgentSession;
+  session.toddMemory.futureUpdatePlan = [
+    {
+      id: "update-1",
+      versionId: "version-1",
+      title: "Ship Ping update",
+      description: "Apply the latest update in Slack.",
+      order: 0,
+      status: "pending",
+      dependencies: [],
+      pillarIds: [],
+      skillsNeeded: [],
+    },
+  ];
+  session.pingMemory.activeUpdateId = "update-1";
+
+  let routedUpdate: Record<string, unknown> | null = null;
+  let chainCalled = false;
+  (backend.getOrCreateAgentSession as Function) = async () => session;
+  (backend.routeUpdateToProgrammingNow as Function) = async (input: Record<string, unknown>) => {
+    routedUpdate = input;
+    return { started: true };
+  };
+  (backend.runSlackDirectorChain as Function) = async () => {
+    chainCalled = true;
+    throw new Error("runSlackDirectorChain should not be called for an active Ping update");
+  };
+
+  const response = await (backend.slackChat as Function)({
+    projectId: "project-1",
+    provider: "codex",
+    model: "gpt-5.4",
+    claudeModel: "sonnet",
+    message: "Ping, apply the update.",
+    targetDirectorId: "programming-director",
+  });
+
+  assert.equal(chainCalled, false);
+  assert.deepEqual(routedUpdate, {
+    projectId: "project-1",
+    updateId: "update-1",
+    provider: "codex",
+    model: "gpt-5.4",
+    claudeModel: "sonnet",
+  });
+  assert.equal(response.directorId, "programming-director");
+  assert.equal(response.message.role, "system");
+  assert.equal(response.message.content, "Handing this to Ping to update the code now.");
+  assert.equal(session.slackActiveDirectorId, "programming-director");
+  assert.equal(session.slackPresenceGuestId, "programming-director");
+  assert.equal(session.slackMessages.at(-1)?.role, "system");
+  assert.equal(session.slackMessages.at(-1)?.content, "Handing this to Ping to update the code now.");
+});
+
+test("Slack approval replay also routes Ping directly when an active update exists", async () => {
+  const backend = createBackend() as Record<string, unknown>;
+  (backend.ensureInitialized as Function) = async () => {};
+  (backend.requireProject as Function) = async () => ({ id: "project-1", name: "Slack Enabled Project" });
+
+  const session = (backend.createEmptyAgentSession as Function)("project-1", "codex") as AgentSession;
+  session.toddMemory.futureUpdatePlan = [
+    {
+      id: "update-1",
+      versionId: "version-1",
+      title: "Ship Ping update",
+      description: "Apply the latest update in Slack.",
+      order: 0,
+      status: "pending",
+      dependencies: [],
+      pillarIds: [],
+      skillsNeeded: [],
+    },
+  ];
+  session.pingMemory.activeUpdateId = "update-1";
+
+  let routedUpdate: Record<string, unknown> | null = null;
+  let chainCalled = false;
+  (backend.routeUpdateToProgrammingNow as Function) = async (input: Record<string, unknown>) => {
+    routedUpdate = input;
+    return { started: true };
+  };
+  (backend.runSlackDirectorChain as Function) = async () => {
+    chainCalled = true;
+    throw new Error("runSlackDirectorChain should not be called for an active Ping approval");
+  };
+
+  await (backend.runSlackDirectorApproval as Function)(session, {
+    draftMessage: "Ping, apply the update.",
+    draftPayload: {
+      directorId: "programming-director",
+      provider: "codex",
+      model: "gpt-5.4",
+      claudeModel: "sonnet",
+      message: "Ping, apply the update.",
+      mode: "codebase-analysis",
+    },
+  });
+
+  assert.equal(chainCalled, false);
+  assert.deepEqual(routedUpdate, {
+    projectId: "project-1",
+    updateId: "update-1",
+    provider: "codex",
+    model: "gpt-5.4",
+    claudeModel: "sonnet",
+  });
+  assert.equal(session.slackMessages.at(-1)?.content, "Handing this to Ping to update the code now.");
+});
+
+test("Slack Ping falls back to the normal chat turn when the active update is stale", async () => {
+  const backend = createBackend() as Record<string, unknown>;
+  (backend.ensureInitialized as Function) = async () => {};
+  (backend.requireProject as Function) = async () => ({ id: "project-1", name: "Slack Enabled Project" });
+
+  const session = (backend.createEmptyAgentSession as Function)("project-1", "codex") as AgentSession;
+  session.pingMemory.activeUpdateId = "missing-update";
+  session.toddMemory.futureUpdatePlan = [];
+
+  let routedCalled = false;
+  let chainCalled = false;
+  (backend.getOrCreateAgentSession as Function) = async () => session;
+  (backend.routeUpdateToProgrammingNow as Function) = async () => {
+    routedCalled = true;
+    return { started: true };
+  };
+  (backend.runSlackDirectorChain as Function) = async () => {
+    chainCalled = true;
+    return {
+      message: {
+        id: "assistant-1",
+        role: "assistant",
+        directorId: "programming-director",
+        content: "I'll look at the implementation...",
+        createdAt: new Date().toISOString(),
+        status: "complete",
+      },
+      handoffTo: null,
+      handoffReason: null,
+      chainedMessages: [],
+    };
+  };
+
+  const response = await (backend.slackChat as Function)({
+    projectId: "project-1",
+    provider: "codex",
+    model: "gpt-5.4",
+    claudeModel: "sonnet",
+    message: "Ping, what should I do next?",
+    targetDirectorId: "programming-director",
+  });
+
+  assert.equal(routedCalled, false);
+  assert.equal(chainCalled, true);
+  assert.equal(response.directorId, "programming-director");
+  assert.equal(response.message.content, "I'll look at the implementation...");
+  assert.equal(session.slackMessages.some((msg) => msg.content === "Handing this to Ping to update the code now."), false);
 });

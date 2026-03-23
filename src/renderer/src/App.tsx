@@ -1,5 +1,6 @@
 import {
   Fragment,
+  useCallback,
   useEffect,
   useId,
   useLayoutEffect,
@@ -26,9 +27,7 @@ import {
   type AgentChatMessage,
   type AgentCoreDetails,
   type AgentPlannedUpdate,
-  type CoreDetailsProposal,
   type CorePillar,
-  type CreativeFocusMode,
   type DirectorChatResponse,
   type DirectorFocusMode,
   type DirectorId,
@@ -61,7 +60,6 @@ import {
   type Project,
   type ProjectDetail,
   type ProjectOutlineReport,
-  type RdFocusMode,
   type RuntimeState,
   type ScratchpadItem,
   type Settings,
@@ -74,7 +72,6 @@ import {
   type UpdateRecord,
   type UsageWindow,
   type UsageSnapshot,
-  type ValidationFocusMode,
   type ValidationResult,
   type VersionPlan,
   type VersionUpdate,
@@ -125,7 +122,7 @@ interface ComposerOptions {
   contextPaths: string[];
 }
 
-type ProgramDetailsTab = "history" | "current" | "planned" | "final" | "agentUpdates";
+type ProgramDetailsTab = "ideal" | "current" | "planned" | "history";
 
 const THEME_STORAGE_KEY = "programs.theme";
 const DEFAULT_ICON_COLORS = [
@@ -273,6 +270,14 @@ const SLACK_DETAILS_DIRECTOR_FLOW: DirectorId[] = [
   "validation-director",
 ];
 
+const SIDEBAR_AGENTS: { id: DirectorId; name: string; color: string }[] = [
+  { id: "project-manager", name: "Jeff", color: DIRECTOR_COLORS["project-manager"] },
+  { id: "creative-director", name: "Dan", color: DIRECTOR_COLORS["creative-director"] },
+  { id: "rd-director", name: "Todd", color: DIRECTOR_COLORS["rd-director"] },
+  { id: "programming-director", name: "Ping", color: DIRECTOR_COLORS["programming-director"] },
+  { id: "validation-director", name: "Pong", color: DIRECTOR_COLORS["validation-director"] },
+];
+
 const normalizeSentence = (value: string | null | undefined): string | null => {
   const trimmed = value?.trim() ?? "";
   if (!trimmed) return null;
@@ -351,6 +356,73 @@ const getDirectorProfileMeta = (directorId: DirectorId) => ({
   functionLabel: DIRECTOR_LABELS[directorId],
   color: DIRECTOR_COLORS[directorId],
 });
+
+const getDirectorFocusModes = (directorId: DirectorId): DirectorFocusMode[] => {
+  switch (directorId) {
+    case "creative-director":
+      return ["conversation", "core-details", "vibes"];
+    case "rd-director":
+      return ["research", "version-planning", "update-planning"];
+    case "validation-director":
+      return ["identify-goal", "test-current-state", "compare"];
+    default:
+      return [];
+  }
+};
+
+const formatDirectorFocusModeLabel = (mode: DirectorFocusMode): string => {
+  switch (mode) {
+    case "core-details":
+      return "Concept";
+    case "identify-goal":
+      return "Goal";
+    case "test-current-state":
+      return "Test";
+    case "version-planning":
+      return "Roadmap";
+    case "update-planning":
+      return "Updates";
+    default:
+      return mode.split("-").map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
+  }
+};
+
+const describeDirectorFocusMode = (directorId: DirectorId, mode: DirectorFocusMode): string => {
+  switch (directorId) {
+    case "creative-director":
+      switch (mode) {
+        case "conversation":
+          return "Brainstorm freely and keep the idea thread open.";
+        case "core-details":
+          return "Lock the concept, structure, and full experience.";
+        case "vibes":
+          return "Collect mood, style, and reference material.";
+      }
+      break;
+    case "rd-director":
+      switch (mode) {
+        case "research":
+          return "Check feasibility and codebase context.";
+        case "version-planning":
+          return "Shape the roadmap into versions.";
+        case "update-planning":
+          return "Break the roadmap into concrete updates.";
+      }
+      break;
+    case "validation-director":
+      switch (mode) {
+        case "identify-goal":
+          return "Define the expected outcome to validate.";
+        case "test-current-state":
+          return "Run checks against the current build.";
+        case "compare":
+          return "Compare actual output against the goal.";
+      }
+      break;
+  }
+
+  return "";
+};
 
 const labelForDirectorStageStatus = (status: AgentSession["directorProgress"]["creative"]): string =>
   status
@@ -488,8 +560,13 @@ const parseProjectSortTime = (value: string | null): number => {
   return Number.isNaN(parsed) ? 0 : parsed;
 };
 
-const sortProjectsForDisplay = (projects: Project[]): Project[] =>
+const sortProjectsForDisplay = (projects: Project[], lastViewed: Record<string, string> = {}): Project[] =>
   [...projects].sort((left, right) => {
+    const lastViewedDelta = parseProjectSortTime(lastViewed[right.id] ?? null) - parseProjectSortTime(lastViewed[left.id] ?? null);
+    if (lastViewedDelta !== 0) {
+      return lastViewedDelta;
+    }
+
     const lastUpdatedDelta = parseProjectSortTime(right.lastUpdatedAt) - parseProjectSortTime(left.lastUpdatedAt);
     if (lastUpdatedDelta !== 0) {
       return lastUpdatedDelta;
@@ -852,12 +929,23 @@ function App() {
   const [currentPage, setCurrentPage] = useState<AppPage>("projects");
   const [projectCategories, setProjectCategories] = useState<Record<string, ProjectCategory>>({});
   const [showSidebar, setShowSidebar] = useState(false);
+  const [sidebarProjectsOpen, setSidebarProjectsOpen] = useState(false);
+  const [sidebarAgentsOpen, setSidebarAgentsOpen] = useState(false);
+  const [selectedDirectorId, setSelectedDirectorId] = useState<DirectorId | null>(null);
+  const [projectLastViewed, setProjectLastViewed] = useState<Record<string, string>>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("projectLastViewed") ?? "{}") as Record<string, string>;
+    } catch {
+      return {};
+    }
+  });
   const [showUpdatePanel, setShowUpdatePanel] = useState(true);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [composerValue, setComposerValue] = useState("");
   const [composerOptions, setComposerOptions] = useState<ComposerOptions>(getComposerDefaults(emptySettings));
   const [showSettings, setShowSettings] = useState(false);
   const [showUsageSheet, setShowUsageSheet] = useState(false);
+  const [showProjectSettings, setShowProjectSettings] = useState(false);
   const [showAddProjectChooser, setShowAddProjectChooser] = useState(false);
   const [showAddProject, setShowAddProject] = useState(false);
   const [addProjectState, setAddProjectState] = useState<AddProjectFormState>(createEmptyForm());
@@ -879,11 +967,13 @@ function App() {
   const [slackSelectedProjectId, setSlackSelectedProjectId] = useState<string | null>(null);
   const [slackAgentSession, setSlackAgentSession] = useState<AgentSession | null>(null);
   const [agentViewStage, setAgentViewStage] = useState<AgentStage>("function");
+  const projectSelectionRequestIdRef = useRef(0);
   const agentSelectedProjectIdRef = useRef(agentSelectedProjectId);
   agentSelectedProjectIdRef.current = agentSelectedProjectId;
   const slackSelectedProjectIdRef = useRef(slackSelectedProjectId);
   slackSelectedProjectIdRef.current = slackSelectedProjectId;
-  const [coreDetailsProjectId, setCoreDetailsProjectId] = useState<string | null>(null);
+  const selectedProjectIdRef = useRef(selectedProjectId);
+  selectedProjectIdRef.current = selectedProjectId;
   const [programMode, setProgramMode] = useState<ProgramUpdateMode>("talk");
   const [skills, setSkills] = useState<Skill[]>([]);
   const [programAgentSession, setProgramAgentSession] = useState<AgentSession | null>(null);
@@ -932,6 +1022,105 @@ function App() {
   const activePlan = selectedDetail?.activePlan ?? null;
   const activePage = resolveVisibleAppPage(currentPage);
   const visiblePageOptions = getVisibleAppPageOptions();
+
+  const sortedProjects = useMemo(
+    () => sortProjectsForDisplay(projects, projectLastViewed),
+    [projects, projectLastViewed],
+  );
+
+  const handleSelectDirector = useCallback((directorId: DirectorId) => {
+    setSelectedDirectorId(directorId);
+    setSidebarAgentsOpen(true);
+  }, []);
+
+  const handleClearSelectedDirector = useCallback(() => {
+    setSelectedDirectorId(null);
+  }, []);
+
+  const syncProjectSelection = useCallback((projectId: string | null) => {
+    const requestId = ++projectSelectionRequestIdRef.current;
+    selectedProjectIdRef.current = projectId;
+    agentSelectedProjectIdRef.current = projectId;
+    slackSelectedProjectIdRef.current = projectId;
+
+    if (!projectId) {
+      setSelectedProjectId(null);
+      setAgentSelectedProjectId(null);
+      setSlackSelectedProjectId(null);
+      setAgentSession(null);
+      setSlackAgentSession(null);
+      setProgramAgentSession(null);
+      setAgentViewStage("function");
+      return;
+    }
+
+    const now = new Date().toISOString();
+    setProjectLastViewed((prev) => {
+      const next = { ...prev, [projectId]: now };
+      localStorage.setItem("projectLastViewed", JSON.stringify(next));
+      return next;
+    });
+    setSelectedProjectId(projectId);
+    setAgentSelectedProjectId(projectId);
+    setSlackSelectedProjectId(projectId);
+    setAgentSession(null);
+    setSlackAgentSession(null);
+    setProgramAgentSession(null);
+    setAgentViewStage("function");
+
+    void (async () => {
+      try {
+        const session = await window.programs.getAgentSession(projectId);
+        if (projectSelectionRequestIdRef.current !== requestId) {
+          return;
+        }
+
+        const nextSession = session ?? null;
+        setAgentSession(nextSession);
+        setSlackAgentSession(nextSession);
+        setProgramAgentSession(nextSession);
+        if (nextSession) {
+          setAgentViewStage(nextSession.currentStage);
+        }
+      } catch {
+        if (projectSelectionRequestIdRef.current !== requestId) {
+          return;
+        }
+
+        setAgentSession(null);
+        setSlackAgentSession(null);
+        setProgramAgentSession(null);
+      }
+    })();
+  }, []);
+
+  const selectProject = useCallback(
+    (projectId: string) => {
+      syncProjectSelection(projectId);
+      setCurrentPage("projects");
+      setSidebarProjectsOpen(false);
+    },
+    [syncProjectSelection],
+  );
+
+  useEffect(() => {
+    if (currentPage !== "projects") setSidebarProjectsOpen(false);
+    if (currentPage !== "agents") setSidebarAgentsOpen(false);
+  }, [currentPage]);
+
+  useEffect(() => {
+    if (!selectedProjectId) {
+      projectSelectionRequestIdRef.current += 1;
+      setAgentSelectedProjectId(null);
+      setSlackSelectedProjectId(null);
+      setAgentSession(null);
+      setSlackAgentSession(null);
+      setProgramAgentSession(null);
+      setAgentViewStage("function");
+      setSelectedDirectorId(null);
+      setSidebarAgentsOpen(false);
+    }
+  }, [selectedProjectId]);
 
   useEffect(() => {
     applyTheme(theme);
@@ -1025,14 +1214,9 @@ function App() {
     setShowUpdatePanel(Boolean(selectedProjectId));
   }, [selectedProjectId]);
 
-  // Load agent session for programs page features (Core Details, To-Do, Agent Updates)
   useEffect(() => {
-    if (selectedProjectId) {
-      window.programs.getAgentSession(selectedProjectId).then(setProgramAgentSession);
-    } else {
-      setProgramAgentSession(null);
-    }
-  }, [selectedProjectId]);
+    setShowProjectSettings(false);
+  }, [currentPage, selectedProjectId]);
 
   useEffect(() => {
     updateDropDepthRef.current = 0;
@@ -1187,7 +1371,9 @@ function App() {
             delete next[event.projectId];
             return next;
           });
-          setSelectedProjectId((current) => (current === event.projectId ? null : current));
+          if (selectedProjectIdRef.current === event.projectId) {
+            syncProjectSelection(null);
+          }
           setProjectOptionsProjectId((current) => (current === event.projectId ? null : current));
           setUnlinkProjectId((current) => (current === event.projectId ? null : current));
           setProgramDetailsProjectId((current) => (current === event.projectId ? null : current));
@@ -1412,7 +1598,7 @@ function App() {
         createRemote: false,
         visibility: "private",
       });
-      setSelectedProjectId(project.id);
+      selectProject(project.id);
     } else {
       const project = await window.programs.attachProject({
         localPath: formState.attachDirectory.trim(),
@@ -1420,7 +1606,7 @@ function App() {
         createRemote: false,
         visibility: "private",
       });
-      setSelectedProjectId(project.id);
+      selectProject(project.id);
     }
 
     resetAddProjectFlow();
@@ -1508,7 +1694,9 @@ function App() {
     await withBusy("project.unlink", async () => {
       await window.programs.unlinkProject(projectId);
       setUnlinkProjectId(null);
-      setSelectedProjectId((current) => (current === projectId ? null : current));
+      if (selectedProjectIdRef.current === projectId) {
+        syncProjectSelection(null);
+      }
     });
   };
 
@@ -2024,15 +2212,23 @@ function App() {
   const canStopProject = Boolean(selectedRuntime?.running);
   const canOpenProject = Boolean(currentRuntimeUrl || lastKnownRuntimeUrl);
   const showRunningState = isProjectRunning || busyKey === "project.run";
+  const summaryPrimaryActionLabel = showRunningState ? "Open program" : "Run program";
+  const summaryPrimaryActionDisabled = showRunningState
+    ? !canOpenProject || busyKey === "project.open"
+    : busyKey === "project.run";
+  const summaryKillActionDisabled = !canStopProject || busyKey === "project.kill";
+  const summaryPrimaryActionClassName = showRunningState
+    ? "actionButton actionButton-open summaryActionButton"
+    : "actionButton actionButton-run summaryActionButton";
+  const summaryKillActionClassName = canStopProject
+    ? "actionButton actionButton-stop summaryActionButton"
+    : "actionButton actionButton-cancel summaryActionButton";
   const canConfirmPlan = activePlan?.status === "awaitingApproval";
   const showUpdateDock = Boolean(activePlan);
   const isSelectedProjectView = activePage === "projects" && Boolean(selectedProject);
   const useComposerLayout = isSelectedProjectView || activePage === "agents" || activePage === "slack";
   const homeAppUpdateButton = getHomeAppUpdateButtonState(appUpdate);
-  const currentPageDefinition =
-    visiblePageOptions.find((page) => page.id === activePage)
-    ?? visiblePageOptions.find((page) => page.id === "projects")
-    ?? visiblePageOptions[0];
+
   const sidebarAppUpdateButton = homeAppUpdateButton === "prepare"
     ? (
       <button type="button" className="sidebarFooterButton sidebarFooterButton-update windowNoDrag" disabled>
@@ -2061,10 +2257,6 @@ function App() {
           </button>
         )
         : null;
-  const programProjects = projects.filter((p) => projectCategories[p.id] === "program");
-  const generalProjects = projects.filter((p) => projectCategories[p.id] === "general-project" || !projectCategories[p.id]);
-  const ideaProjects = projects.filter((p) => projectCategories[p.id] === "idea-in-progress");
-
   const renderProjectTiles = (list: Project[]) =>
     list.map((project) => (
       <HomeProjectTile
@@ -2073,7 +2265,7 @@ function App() {
         runtime={projectRuntimes[project.id] ?? null}
         isLaunching={Boolean(launchingProjects[project.id])}
         hasAssumedDetails={Boolean(projectAssumedFlags[project.id])}
-        onOpen={() => setSelectedProjectId(project.id)}
+        onOpen={() => selectProject(project.id)}
         onQuickAction={() => void handleHomeTileQuickAction(project)}
         onOpenOptions={() => openProjectOptions(project.id)}
       />
@@ -2081,31 +2273,9 @@ function App() {
 
   const programsPage = !selectedProject ? (
     <section className="minimalHome">
-      {programProjects.length > 0 && (
-        <div className="projectCategorySection">
-          <h4 className="agentSectionLabel">Programs</h4>
-          <div className="tileGrid">{renderProjectTiles(programProjects)}</div>
-        </div>
-      )}
-      {generalProjects.length > 0 && (
-        <div className="projectCategorySection">
-          <h4 className="agentSectionLabel">General Projects</h4>
-          <div className="tileGrid">{renderProjectTiles(generalProjects)}</div>
-        </div>
-      )}
-      {ideaProjects.length > 0 && (
-        <div className="projectCategorySection">
-          <h4 className="agentSectionLabel">Ideas In-Progress</h4>
-          <div className="tileGrid">{renderProjectTiles(ideaProjects)}</div>
-        </div>
-      )}
-      {programProjects.length === 0 && generalProjects.length === 0 && ideaProjects.length === 0 && (
-        <div className="projectCategorySection">
-          <h4 className="agentSectionLabel">Projects</h4>
-          <div className="tileGrid" />
-        </div>
-      )}
-      <div className="tileGrid" style={{ paddingLeft: 20 }}>
+      <div className="chatViewportDivider" aria-hidden="true" />
+      <div className="tileGrid">
+        {renderProjectTiles(sortedProjects)}
         <button className="projectTile addProjectTile" onClick={openAddProjectChooser}>
           <PlusIcon />
         </button>
@@ -2114,10 +2284,19 @@ function App() {
   ) : (
     <section className="projectLayout projectLayout-detail">
       <div className="projectTopBar windowNoDrag">
-        <button className="textButton windowNoDrag" onClick={() => setSelectedProjectId(null)}>
+        <button type="button" className="slackTopBarButton windowNoDrag" onClick={() => syncProjectSelection(null)}>
           Back
         </button>
+        <button
+          type="button"
+          className="slackTopBarButton slackDetailsButton windowNoDrag"
+          onClick={() => setShowProjectSettings(true)}
+        >
+          Project Settings
+        </button>
       </div>
+
+      <div className="chatViewportDivider pageChromeDivider" aria-hidden="true" />
 
       <div className={showUpdatePanel ? "projectDetailWorkspace updateOpen" : "projectDetailWorkspace"}>
         <div className="projectSummaryCard">
@@ -2134,37 +2313,45 @@ function App() {
                     System Details
                     {pendingUpdates[selectedProject.id] ? <span className="notificationBadge" /> : null}
                   </button>
-                  <button
-                    className="textButton planButtonWrapper summaryDetailButton"
-                    onClick={() => setCoreDetailsProjectId(selectedProject.id)}
-                  >
-                    Core Details
-                  </button>
                 </div>
                 {selectedProject.lastError ? <div className="errorBanner">{selectedProject.lastError}</div> : null}
               </div>
               <div className="summaryActionRail">
                 <button
-                  className={
-                    showRunningState
-                      ? "actionButton actionButton-open summaryActionButton"
-                      : "actionButton actionButton-run summaryActionButton"
-                  }
-                  onClick={showRunningState ? handleOpen : handleRun}
-                  disabled={
-                    showRunningState
-                      ? !canOpenProject || busyKey === "project.open"
-                      : busyKey === "project.run"
-                  }
+                  type="button"
+                  className={summaryPrimaryActionClassName}
+                  onClick={() => {
+                    if (summaryPrimaryActionDisabled) {
+                      return;
+                    }
+
+                    if (showRunningState) {
+                      void handleOpen();
+                    } else {
+                      void handleRun();
+                    }
+                  }}
+                  aria-label={summaryPrimaryActionLabel}
+                  title={summaryPrimaryActionLabel}
+                  aria-disabled={summaryPrimaryActionDisabled}
                 >
-                  {showRunningState ? "Open" : "Run"}
+                  {showRunningState ? <PlusIcon /> : <PlayIcon />}
                 </button>
                 <button
-                  className="actionButton actionButton-stop summaryActionButton"
-                  onClick={handleKill}
-                  disabled={!canStopProject || busyKey === "project.kill"}
+                  type="button"
+                  className={summaryKillActionClassName}
+                  onClick={() => {
+                    if (summaryKillActionDisabled) {
+                      return;
+                    }
+
+                    void handleKill();
+                  }}
+                  aria-label="Kill program"
+                  title="Kill program"
+                  aria-disabled={summaryKillActionDisabled}
                 >
-                  Stop
+                  <XIcon />
                 </button>
               </div>
             </div>
@@ -2377,16 +2564,126 @@ function App() {
 
         <aside className="shellSidebar" aria-label="App navigation">
           <nav className="shellSidebarNav">
-            {visiblePageOptions.map((page) => (
-              <button
-                key={page.id}
-                type="button"
-                className={activePage === page.id ? "sidebarNavButton active" : "sidebarNavButton"}
-                onClick={() => setCurrentPage(page.id)}
-              >
-                {page.label}
-              </button>
-            ))}
+            {visiblePageOptions.map((page) => {
+              if (page.id === "projects") {
+                return (
+                  <Fragment key="projects">
+                    <button
+                      type="button"
+                      className={activePage === "projects" ? "sidebarNavButton active" : "sidebarNavButton"}
+                      onClick={() => {
+                        setCurrentPage("projects");
+                        setSidebarProjectsOpen((prev) => !prev);
+                      }}
+                    >
+                      <span className="sidebarNavButtonLabel">{selectedProject ? selectedProject.name : "Projects"}</span>
+                      <span className={sidebarProjectsOpen ? "sidebarNavChevron open" : "sidebarNavChevron"}>
+                        <ChevronDownIcon />
+                      </span>
+                    </button>
+                    {sidebarProjectsOpen && (
+                      <div className="sidebarProjectList sidebarProjectList--full">
+                        {sortedProjects.slice(0, 5).map((project) => (
+                          <div key={project.id} className="sidebarProjectItemRow">
+                            <button
+                              type="button"
+                              className={project.id === selectedProjectId ? "sidebarProjectItem active" : "sidebarProjectItem"}
+                              onClick={() => selectProject(project.id)}
+                            >
+                              <span className="sidebarProjectDot" style={{ backgroundColor: project.iconColor }} />
+                              <span className="sidebarProjectName">{project.name}</span>
+                            </button>
+                            {project.id === selectedProjectId && (
+                              <button
+                                type="button"
+                                className="sidebarProjectDeselect"
+                                title="Deselect project"
+                                onClick={() => {
+                                  syncProjectSelection(null);
+                                  setCurrentPage("projects");
+                                  setSidebarProjectsOpen(false);
+                                }}
+                              >
+                                ×
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </Fragment>
+                );
+              }
+
+              if (page.id === "agents") {
+                return (
+                  <Fragment key="agents">
+                    <button
+                      type="button"
+                      className={`sidebarNavButton${activePage === "agents" ? " active" : ""}${!selectedProjectId ? " dimmed" : ""}`}
+                      onClick={() => {
+                        setCurrentPage("agents");
+                        setSidebarAgentsOpen((prev) => (selectedDirectorId ? true : !prev));
+                      }}
+                    >
+                      <span className="sidebarNavButtonLabel">{selectedDirectorId ? DIRECTOR_NAMES[selectedDirectorId] : page.label}</span>
+                      <span className={sidebarAgentsOpen ? "sidebarNavChevron open" : "sidebarNavChevron"}>
+                        <ChevronDownIcon />
+                      </span>
+                    </button>
+                    {sidebarAgentsOpen && (
+                      <div className="sidebarProjectList sidebarProjectList--full">
+                        {SIDEBAR_AGENTS.map((agent) => (
+                          <div key={agent.id} className="sidebarProjectItemRow">
+                            <button
+                              type="button"
+                              className={agent.id === selectedDirectorId ? "sidebarProjectItem active" : "sidebarProjectItem"}
+                              disabled={!selectedProjectId}
+                              onClick={() => {
+                                setCurrentPage("agents");
+                                handleSelectDirector(agent.id);
+                              }}
+                            >
+                              <span className="sidebarProjectDot" style={{ backgroundColor: agent.color }} />
+                              <span className="sidebarProjectName">{agent.name}</span>
+                            </button>
+                            {agent.id === selectedDirectorId && (
+                              <button
+                                type="button"
+                                className="sidebarProjectDeselect"
+                                title="Deselect agent"
+                                aria-label="Deselect agent"
+                                onClick={() => {
+                                  handleClearSelectedDirector();
+                                }}
+                              >
+                                ×
+                              </button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </Fragment>
+                );
+              }
+
+              const isDimmed = (page.id === "slack") && !selectedProjectId;
+              return (
+                <button
+                  key={page.id}
+                  type="button"
+                  className={`sidebarNavButton${activePage === page.id ? " active" : ""}${isDimmed ? " dimmed" : ""}`}
+                  onClick={() => {
+                    setCurrentPage(page.id);
+                    setSidebarProjectsOpen(false);
+                    setSidebarAgentsOpen(false);
+                  }}
+                >
+                  {page.label}
+                </button>
+              );
+            })}
           </nav>
           <div className="shellSidebarDivider" aria-hidden="true" />
           <div className="shellSidebarFooter">
@@ -2432,14 +2729,7 @@ function App() {
               slackSelectedProjectId={slackSelectedProjectId}
               slackAgentSession={slackAgentSession}
               modelCatalog={modelCatalog}
-              onSelectProject={async (projectId) => {
-                setSlackSelectedProjectId(projectId);
-                setSlackAgentSession(null);
-                if (projectId) {
-                  const session = await window.programs.getAgentSession(projectId);
-                  setSlackAgentSession(session ?? null);
-                }
-              }}
+              onSelectProject={syncProjectSelection}
               onSessionUpdate={(s) => setSlackAgentSession(s)}
               onUpdateAgentDefaults={handleUpdateAgentDefaults}
               pushToast={pushToast}
@@ -2452,16 +2742,10 @@ function App() {
               agentSelectedProjectId={agentSelectedProjectId}
               agentViewStage={agentViewStage}
               modelCatalog={modelCatalog}
-              onSelectProject={async (projectId) => {
-                setAgentSelectedProjectId(projectId);
-                setAgentSession(null);
-                setAgentViewStage("function");
-                if (projectId) {
-                  const session = await window.programs.getAgentSession(projectId);
-                  setAgentSession(session);
-                  if (session) setAgentViewStage(session.currentStage);
-                }
-              }}
+              selectedDirectorId={selectedDirectorId}
+              onSelectDirector={handleSelectDirector}
+              onClearSelectedDirector={handleClearSelectedDirector}
+              onSelectProject={syncProjectSelection}
               onSetViewStage={setAgentViewStage}
               onSessionUpdate={(session) => {
                 setAgentSession(session);
@@ -2471,10 +2755,8 @@ function App() {
             />
           ) : activePage === "skills" ? (
             <SkillsPage skills={skills} onSkillsChange={setSkills} pushToast={pushToast} />
-          ) : activePage === "projects" ? (
-            programsPage
           ) : (
-            <PlaceholderWorkspace page={currentPageDefinition} onReturn={() => setCurrentPage("projects")} />
+            programsPage
           )}
         </main>
       </div>
@@ -2598,6 +2880,13 @@ function App() {
         />
       ) : null}
 
+      {showProjectSettings && selectedProject ? (
+        <ProjectSettingsModal
+          project={selectedProject}
+          onClose={() => setShowProjectSettings(false)}
+        />
+      ) : null}
+
       {unlinkProjectId && unlinkProject ? (
         <Modal title="Unlink Project" onClose={() => setUnlinkProjectId(null)}>
           <div className="projectEditorStack">
@@ -2683,9 +2972,6 @@ function App() {
           pendingUpdate={pendingUpdates[programDetailsProjectId] ?? null}
           agentSession={programAgentSession}
           busyKey={busyKey}
-          theme={theme}
-          settings={settings}
-          pushToast={pushToast}
           onClose={() => setProgramDetailsProjectId(null)}
           onGenerateFlowchart={async (provider: AiProvider) => {
             await withBusy("generate-flowchart", async () => {
@@ -2716,16 +3002,6 @@ function App() {
             });
           }}
           onUndo={(update) => void handleUndoUpdate(update)}
-        />
-      ) : null}
-
-      {coreDetailsProjectId ? (
-        <CoreDetailsPanel
-          projectId={coreDetailsProjectId}
-          settings={settings}
-          agentSession={programAgentSession}
-          onClose={() => setCoreDetailsProjectId(null)}
-          pushToast={pushToast}
         />
       ) : null}
 
@@ -3262,85 +3538,64 @@ function HomeProjectTile({
 function AgentLandingCard({
   name,
   color,
-  roleLabel,
-  reminder,
+  footerLabel,
+  active = false,
   muted = false,
   disabled = false,
   onClick,
+  onOpenOptions,
   ariaLabel,
 }: {
   name: string;
   color: string;
-  roleLabel: string;
-  reminder: string;
+  footerLabel: string;
+  active?: boolean;
   muted?: boolean;
   disabled?: boolean;
   onClick?: () => void;
+  onOpenOptions?: () => void;
   ariaLabel?: string;
 }) {
-  const content = (
-    <>
-      <article className="projectTile projectTileGradient agentLandingTile" style={createAgentLandingTileStyle(color, muted)}>
-        <div className="projectTileChrome agentLandingTileChrome">
+  const isInteractive = Boolean(onClick && !disabled);
+  return (
+    <article className={`agentLandingCard${isInteractive ? " agentLandingCard--interactive" : " agentLandingCard--static"}${active ? " agentLandingCard--active" : ""}${muted ? " agentLandingCard--muted" : ""}${disabled ? " agentLandingCard--disabled" : ""}`}>
+      <div className="projectTile projectTileGradient agentLandingTile" style={createAgentLandingTileStyle(color, muted)}>
+        {isInteractive ? (
+          <button
+            type="button"
+            className="projectTileOpenArea"
+            onClick={onClick}
+            aria-label={ariaLabel ?? `Open ${name}`}
+            aria-pressed={active}
+          />
+        ) : null}
+        {onOpenOptions ? (
+          <div className="projectTileMenu agentLandingMenu">
+            <button
+              type="button"
+              className="projectTileMenuToggle"
+              aria-label={`Open ${name} profile`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpenOptions();
+              }}
+            >
+              <MoreIcon />
+            </button>
+          </div>
+        ) : null}
+        <div className="agentLandingTileChrome">
           <div className="agentLandingTileTopRow">
             <span className="agentLandingAvatar">{initialsFromName(name)}</span>
             <span className="agentLandingName">{name}</span>
           </div>
+          <div className="agentLandingFooter">{footerLabel}</div>
         </div>
-      </article>
-      <div className="agentLandingCaption">
-        <div className="agentLandingRole">{roleLabel}</div>
-        <div className="agentLandingReminder">{reminder}</div>
       </div>
-    </>
-  );
-
-  if (onClick) {
-    return (
-      <button
-        type="button"
-        className={`agentLandingCard agentLandingCard--interactive${muted ? " agentLandingCard--muted" : ""}${disabled ? " agentLandingCard--disabled" : ""}`}
-        disabled={disabled}
-        onClick={onClick}
-        aria-label={ariaLabel ?? `Open ${name}`}
-      >
-        {content}
-      </button>
-    );
-  }
-
-  return (
-    <div className={`agentLandingCard agentLandingCard--static${muted ? " agentLandingCard--muted" : ""}${disabled ? " agentLandingCard--disabled" : ""}`}>
-      {content}
-    </div>
+    </article>
   );
 }
 
-function PlaceholderWorkspace({
-  page,
-  onReturn,
-}: {
-  page: { label: string };
-  onReturn: () => void;
-}) {
-  return (
-    <section className="placeholderWorkspace">
-      <div className="placeholderWorkspaceIntro">
-        <h1>{page.label}</h1>
-      </div>
-
-      <div className="placeholderWorkspaceCard">
-        <div className="placeholderPanel">
-          <h4>{page.label}</h4>
-        </div>
-
-        <button className="primaryButton placeholderReturnButton" onClick={onReturn}>
-          Open Programs
-        </button>
-      </div>
-    </section>
-  );
-}
 
 function HomepageScratchpad({ projects }: { projects: Project[] }) {
   const [todos, setTodos] = useState<UnifiedTodoItem[]>([]);
@@ -3386,48 +3641,51 @@ function HomepageScratchpad({ projects }: { projects: Project[] }) {
 
   return (
     <section className="homepageScratchpad">
-      <h2 className="homeScratchpadTitle">To-do</h2>
+      <div className="chatViewportDivider" aria-hidden="true" />
+      <div className="homepageScratchpadContent">
+        <h2 className="homeScratchpadTitle">To-do</h2>
 
-      <div className="homeScratchpadInputRow">
-        <input
-          type="text"
-          className="homeScratchpadTextInput"
-          value={newText}
-          onChange={(e) => setNewText(e.target.value)}
-          placeholder="Add a to-do..."
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              handleAdd();
-            }
-          }}
-        />
-        <select
-          className="homeScratchpadProjectSelect"
-          value={newProjectId ?? ""}
-          onChange={(e) => setNewProjectId(e.target.value || null)}
-        >
-          <option value="">Unassigned</option>
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>{p.name}</option>
+        <div className="homeScratchpadInputRow">
+          <input
+            type="text"
+            className="homeScratchpadTextInput"
+            value={newText}
+            onChange={(e) => setNewText(e.target.value)}
+            placeholder="Add a to-do..."
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                handleAdd();
+              }
+            }}
+          />
+          <select
+            className="homeScratchpadProjectSelect"
+            value={newProjectId ?? ""}
+            onChange={(e) => setNewProjectId(e.target.value || null)}
+          >
+            <option value="">Unassigned</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+          <button className="primaryButton" onClick={handleAdd} disabled={!newText.trim()}>
+            Add
+          </button>
+        </div>
+
+        <div className="homeScratchpadGroups">
+          {todos.map((item) => (
+            <div key={item.id} className="unifiedTodoItem unifiedTodoItem--user">
+              <span className="unifiedTodoBullet">&bull;</span>
+              <span className="unifiedTodoText">{item.text}</span>
+              <button className="deleteBtn" onClick={() => handleRemove(item.id)}>&times;</button>
+            </div>
           ))}
-        </select>
-        <button className="primaryButton" onClick={handleAdd} disabled={!newText.trim()}>
-          Add
-        </button>
-      </div>
-
-      <div className="homeScratchpadGroups">
-        {todos.map((item) => (
-          <div key={item.id} className="unifiedTodoItem unifiedTodoItem--user">
-            <span className="unifiedTodoBullet">&bull;</span>
-            <span className="unifiedTodoText">{item.text}</span>
-            <button className="deleteBtn" onClick={() => handleRemove(item.id)}>&times;</button>
-          </div>
-        ))}
-        {todos.length === 0 ? (
-          <p className="homeScratchpadEmpty">No to-do items yet. Add bullet points above.</p>
-        ) : null}
+          {todos.length === 0 ? (
+            <p className="homeScratchpadEmpty">No to-do items yet. Add bullet points above.</p>
+          ) : null}
+        </div>
       </div>
     </section>
   );
@@ -3465,7 +3723,7 @@ function ProjectOptionsSheet({
   };
 
   return (
-    <BottomSheet title={project.name} onClose={onClose}>
+    <Modal title={project.name} onClose={onClose} fullscreen>
       <div className="projectOptionsContent">
         <div className="projectOptionsSection">
           <div className="agentInfoTabs">
@@ -3539,7 +3797,35 @@ function ProjectOptionsSheet({
           </button>
         </div>
       </div>
-    </BottomSheet>
+    </Modal>
+  );
+}
+
+function ProjectSettingsModal({
+  project,
+  onClose,
+}: {
+  project: Project;
+  onClose: () => void;
+}) {
+  return (
+    <Modal title="Project Settings" onClose={onClose} fullscreen>
+      <div className="settingsStack">
+        <section className="settingsSection">
+          <div className="settingsSectionHead">
+            <h4>{project.name}</h4>
+            <span className="usagePreviewLabel">Placeholder</span>
+          </div>
+          <div className="placeholderPanel">
+            <h4>Project-specific settings will live here.</h4>
+            <p>
+              This panel is a placeholder for later work on per-project defaults, workspace behavior, and other
+              options that should stay scoped to the selected project.
+            </p>
+          </div>
+        </section>
+      </div>
+    </Modal>
   );
 }
 
@@ -4906,9 +5192,6 @@ function ProgramDetailsModal({
   pendingUpdate,
   agentSession,
   busyKey,
-  theme,
-  settings,
-  pushToast,
   onClose,
   onGenerateFlowchart,
   onApplyPendingUpdate,
@@ -4921,57 +5204,39 @@ function ProgramDetailsModal({
   pendingUpdate: PendingPlannedUpdate | null;
   agentSession: AgentSession | null;
   busyKey: string | null;
-  theme: Theme;
-  settings: Settings;
-  pushToast: (message: string, level: "info" | "success" | "error") => void;
   onClose: () => void;
   onGenerateFlowchart: (provider: AiProvider) => Promise<void>;
   onApplyPendingUpdate: () => Promise<void>;
   onUndo: (update: UpdateRecord) => void;
 }) {
-  const [activeTab, setActiveTab] = useState<ProgramDetailsTab>("current");
-  const [selectedUpdateId, setSelectedUpdateId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<ProgramDetailsTab>("ideal");
 
   const savedUpdates = useMemo(
     () => [...updates].filter((u) => u.kind === "update" && (u.status === "saved" || u.status === "reverted")).reverse(),
     [updates],
   );
   const hasHistory = savedUpdates.length > 0;
-  const hasPlanned = Boolean(pendingUpdate?.previousFlowchart);
-  const hasFinal = Boolean(pendingUpdate);
-  const hasAgentUpdates = (agentSession?.plannedUpdates.length ?? 0) > 0;
-  const selectedUpdate = savedUpdates.find((u) => u.id === selectedUpdateId) ?? null;
-  const selectedIndex = selectedUpdate ? savedUpdates.indexOf(selectedUpdate) : -1;
-  const previousFlowchart = selectedIndex > 0 ? savedUpdates[selectedIndex - 1].flowchart : null;
-  const previousFlowchartGraph = selectedIndex > 0 ? savedUpdates[selectedIndex - 1].flowchartGraph : null;
+  const hasPlanned = Boolean(pendingUpdate) || (agentSession?.plannedUpdates.length ?? 0) > 0;
   const tabAvailability: Record<ProgramDetailsTab, boolean> = {
-    history: hasHistory,
+    ideal: true,
     current: true,
     planned: hasPlanned,
-    final: hasFinal,
-    agentUpdates: hasAgentUpdates,
+    history: hasHistory,
   };
   const tabOptions: Array<{ id: ProgramDetailsTab; label: string }> = [
-    { id: "history", label: "Update History" },
-    { id: "current", label: "Current System" },
-    { id: "planned", label: "Planned Updates" },
-    { id: "agentUpdates", label: "Agent Updates" },
-    { id: "final", label: "Final Product" },
+    { id: "ideal", label: "Ideal" },
+    { id: "current", label: "Current" },
+    { id: "planned", label: "Planned" },
+    { id: "history", label: "History" },
   ];
 
   useEffect(() => {
     const activeTabAvailable =
-      activeTab === "history" ? hasHistory : activeTab === "planned" ? hasPlanned : activeTab === "final" ? hasFinal : activeTab === "agentUpdates" ? hasAgentUpdates : true;
+      activeTab === "history" ? hasHistory : activeTab === "planned" ? hasPlanned : true;
     if (!activeTabAvailable) {
-      setActiveTab("current");
+      setActiveTab("ideal");
     }
-  }, [activeTab, hasFinal, hasHistory, hasPlanned, hasAgentUpdates]);
-
-  useEffect(() => {
-    if (activeTab !== "history") {
-      setSelectedUpdateId(null);
-    }
-  }, [activeTab]);
+  }, [activeTab, hasHistory, hasPlanned]);
 
   return (
     <Modal title="" onClose={onClose} fullscreen>
@@ -4990,93 +5255,14 @@ function ProgramDetailsModal({
         ))}
       </div>
       <div className="detailsScrollContent">
-      {activeTab === "history" ? (
+      {activeTab === "ideal" ? (
         <div className="detailsPanel">
-          {selectedUpdate ? (
-            <>
-              <div className="detailsHeading">
-                <div>
-                  <span className="fieldLabel">History snapshot</span>
-                  <h4>{`v${selectedIndex + 1} - ${selectedUpdate.summary}`}</h4>
-                </div>
-                <span className="helperText">{formatDate(selectedUpdate.createdAt)}</span>
-              </div>
-              {previousFlowchart ? (
-                (selectedUpdate.flowchartGraph || previousFlowchartGraph) ? (
-                  <FlowchartDiff
-                    oldGraph={previousFlowchartGraph}
-                    newGraph={selectedUpdate.flowchartGraph}
-                    theme={theme}
-                  />
-                ) : (
-                  <MermaidChartDiff
-                    oldChart={previousFlowchart}
-                    newChart={selectedUpdate.flowchart}
-                    flowchartGraph={selectedUpdate.flowchartGraph ?? previousFlowchartGraph}
-                    theme={theme}
-                  />
-                )
-              ) : (
-                selectedUpdate.flowchartGraph ? (
-                  <InteractiveFlowchart graph={selectedUpdate.flowchartGraph} theme={theme} />
-                ) : (
-                  <MermaidChart chart={selectedUpdate.flowchart} flowchartGraph={selectedUpdate.flowchartGraph} theme={theme} />
-                )
-              )}
-              <div className="modalActions">
-                <button className="secondaryButton" onClick={() => setSelectedUpdateId(null)}>
-                  Back to history
-                </button>
-                {selectedUpdate.status === "saved" ? (
-                  <button
-                    className="secondaryButton"
-                    disabled={busyKey === `undo-${selectedUpdate.id}`}
-                    onClick={() => onUndo(selectedUpdate)}
-                  >
-                    Undo Update
-                  </button>
-                ) : null}
-              </div>
-            </>
-          ) : (
-            <div className="historyStack">
-              {savedUpdates.length === 0 ? (
-                <div className="placeholderPanel">
-                  <h4>No updates yet</h4>
-                  <p>Saved updates will show up here once PROGRAMS has applied changes to this project.</p>
-                </div>
-              ) : (
-                <div className="historyListDetailed">
-                  {savedUpdates.map((update, index) => (
-                    <button
-                      key={update.id}
-                      className="historyDetailItem"
-                      onClick={() => setSelectedUpdateId(update.id)}
-                    >
-                      <div className="historyDetailTopRow">
-                        <span className="historyVersionTag">v{index + 1}</span>
-                        <strong className="historyDetailSummary">{update.summary}</strong>
-                        <span className="helperText">{formatDate(update.createdAt)}</span>
-                      </div>
-                      <p className="historyDetailDescription">{update.prompt}</p>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+          <CoreDetailsContent agentSession={agentSession} />
         </div>
       ) : null}
 
       {activeTab === "current" ? (
-        <>
-          <CurrentFlowchartPanel
-            flowchart={currentFlowchart}
-            flowchartGraph={currentFlowchartGraph}
-            theme={theme}
-            busyKey={busyKey}
-            onGenerateFlowchart={onGenerateFlowchart}
-          />
+        <div className="detailsPanel">
           <div className="detailsPlaceholderGrid">
             <div className="detailsPlaceholderCard">
               <span className="fieldLabel">Stored Data</span>
@@ -5091,103 +5277,72 @@ function ProgramDetailsModal({
               <p className="helperText">Runtime environment and process information.</p>
             </div>
           </div>
-        </>
-      ) : null}
-
-      {activeTab === "planned" && pendingUpdate ? (
-        <div className="detailsPanel">
-          <div className="detailsHeading">
-            <div>
-              <span className="fieldLabel">Planned changes</span>
-              <h4>Current to final diff</h4>
-            </div>
-            <span className="helperText">{formatDate(pendingUpdate.createdAt)}</span>
-          </div>
-          <p className="modalLead">This compares the current saved system flow to the planned end state.</p>
-          {(pendingUpdate.flowchartGraph || pendingUpdate.previousFlowchartGraph) ? (
-            <FlowchartDiff
-              oldGraph={pendingUpdate.previousFlowchartGraph}
-              newGraph={pendingUpdate.flowchartGraph}
-              theme={theme}
-            />
-          ) : (
-            <MermaidChartDiff
-              oldChart={pendingUpdate.previousFlowchart}
-              newChart={pendingUpdate.flowchart}
-              flowchartGraph={pendingUpdate.flowchartGraph ?? pendingUpdate.previousFlowchartGraph}
-              theme={theme}
-            />
-          )}
         </div>
       ) : null}
 
-      {activeTab === "final" && pendingUpdate ? (
+      {activeTab === "planned" ? (
         <div className="detailsPanel">
-          <div className="pendingUpdateBanner">
-            <span>{pendingUpdate.description}</span>
-            <button
-              className="primaryButton"
-              onClick={() => void onApplyPendingUpdate()}
-              disabled={busyKey === "apply-pending"}
-            >
-              Request Approval
-            </button>
-          </div>
-          <p className="modalLead">This is the saved final flowchart that will become the new current system state.</p>
-          {pendingUpdate.flowchartGraph ? (
-            <InteractiveFlowchart graph={pendingUpdate.flowchartGraph} theme={theme} />
-          ) : (
-            <MermaidChart chart={pendingUpdate.flowchart} flowchartGraph={pendingUpdate.flowchartGraph} theme={theme} />
-          )}
-        </div>
-      ) : null}
-
-      {activeTab === "agentUpdates" && agentSession ? (
-        <div className="detailsPanel">
-          <p className="modalLead">Planned updates from the iteration agent. Queue them for approval one at a time.</p>
-          <div className="agentPlannedUpdatesList">
-            {agentSession.plannedUpdates
-              .sort((a, b) => a.order - b.order)
-              .map((update, idx) => (
-                <div key={update.id} className="agentPlannedUpdateItem">
-                  <span className="orderBadge">{idx + 1}</span>
-                  <div className="updateContent">
-                    <div className="updateTitle">{update.title}</div>
-                    <div className="updateDescription">{update.description}</div>
-                  </div>
-                  <div className="updateActions">
-                    <StatusChip
-                      tone={update.status === "completed" ? "confirmed" : update.status === "failed" ? "action_required" : update.status === "in_progress" ? "info" : "neutral"}
-                    >{update.status}</StatusChip>
-                    {update.status === "pending" ? (
-                      <button
-                        className="primaryButton"
-                        onClick={() => {
-                          void (async () => {
-                            try {
-                              await window.programs.agentExecuteUpdate({
-                                projectId: project.id,
-                                updateId: update.id,
-                                provider: settings.advancedDefaults.provider,
-                                model: settings.advancedDefaults.model,
-                                claudeModel: settings.advancedDefaults.claudeModel,
-                              });
-                              onClose();
-                            } catch (error) {
-                              pushToast(
-                                error instanceof Error ? error.message : "Could not queue the update approval.",
-                                "error",
-                              );
-                            }
-                          })();
-                        }}
-                      >
-                        Request Approval
-                      </button>
-                    ) : null}
-                  </div>
+          {pendingUpdate ? (
+            <>
+              <div className="detailsHeading">
+                <div>
+                  <span className="fieldLabel">Version Roadmap</span>
+                  <h4>{pendingUpdate.description}</h4>
                 </div>
-              ))}
+                <span className="helperText">{formatDate(pendingUpdate.createdAt)}</span>
+              </div>
+            </>
+          ) : null}
+          {agentSession && agentSession.plannedUpdates.length > 0 ? (
+            <div className="agentPlannedUpdatesList">
+              {agentSession.plannedUpdates
+                .sort((a, b) => a.order - b.order)
+                .map((update, idx) => (
+                  <div key={update.id} className="agentPlannedUpdateItem">
+                    <span className="orderBadge">{idx + 1}</span>
+                    <div className="updateContent">
+                      <div className="updateTitle">{update.title}</div>
+                      <div className="updateDescription">{update.description}</div>
+                    </div>
+                    <div className="updateActions">
+                      <StatusChip
+                        tone={update.status === "completed" ? "confirmed" : update.status === "failed" ? "action_required" : update.status === "in_progress" ? "info" : "neutral"}
+                      >{update.status}</StatusChip>
+                    </div>
+                  </div>
+                ))}
+            </div>
+          ) : !pendingUpdate ? (
+            <div className="placeholderPanel">
+              <h4>No planned updates</h4>
+              <p>Planned updates will appear here once a roadmap has been defined.</p>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {activeTab === "history" ? (
+        <div className="detailsPanel">
+          <div className="historyStack">
+            {savedUpdates.length === 0 ? (
+              <div className="placeholderPanel">
+                <h4>No updates yet</h4>
+                <p>Saved updates will show up here once PROGRAMS has applied changes to this project.</p>
+              </div>
+            ) : (
+              <div className="historyListDetailed">
+                {savedUpdates.map((update, index) => (
+                  <div key={update.id} className="historyDetailItem">
+                    <div className="historyDetailTopRow">
+                      <span className="historyVersionTag">v{index + 1}</span>
+                      <strong className="historyDetailSummary">{update.summary}</strong>
+                      <span className="helperText">{formatDate(update.createdAt)}</span>
+                    </div>
+                    <p className="historyDetailDescription">{update.prompt}</p>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       ) : null}
@@ -5975,6 +6130,14 @@ function PlusIcon() {
   );
 }
 
+function PlayIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M8.5 6.75v10.5L17 12 8.5 6.75Z" fill="currentColor" />
+    </svg>
+  );
+}
+
 function TypewriterText({ text, speed = 8 }: { text: string; speed?: number }) {
   const [displayed, setDisplayed] = useState("");
   const prevTextRef = useRef("");
@@ -6021,6 +6184,21 @@ function StopIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <rect x="7" y="7" width="10" height="10" rx="1.5" fill="currentColor" />
+    </svg>
+  );
+}
+
+function XIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M7 7 17 17M17 7 7 17"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }
@@ -6159,327 +6337,61 @@ function MermaidChartDiff({
   return <MermaidChart chart={diffChart} flowchartGraph={flowchartGraph} theme={theme} />;
 }
 
-function CoreDetailsPillarExpanded({
-  pillar,
-  depth = 0,
-  projectId,
-  onSessionUpdate,
-  pushToast,
-}: {
-  pillar: CorePillar;
-  depth?: number;
-  projectId?: string;
-  onSessionUpdate?: (session: AgentSession) => void;
-  pushToast?: (message: string, level: "info" | "success" | "error") => void;
-}) {
-  const [expandedChildId, setExpandedChildId] = useState<string | null>(null);
-
-  const handleAttachVibe = async () => {
-    if (!projectId) return;
-    const result = await window.programs.pickMaterialFiles();
-    if (result.canceled || result.paths.length === 0) return;
-    try {
-      const session = await window.programs.attachVibe({
-        projectId,
-        pillarId: pillar.id,
-        filePaths: result.paths,
-      });
-      onSessionUpdate?.(session);
-      pushToast?.("Vibe attached.", "success");
-    } catch (error) {
-      pushToast?.(error instanceof Error ? error.message : "Failed to attach vibe.", "error");
-    }
-  };
-
-  const handleRemoveVibe = async (vibeId: string) => {
-    if (!projectId) return;
-    try {
-      const session = await window.programs.removeVibe({
-        projectId,
-        pillarId: pillar.id,
-        vibeId,
-      });
-      onSessionUpdate?.(session);
-    } catch (error) {
-      pushToast?.(error instanceof Error ? error.message : "Failed to remove vibe.", "error");
-    }
-  };
-
-  const vibes = pillar.vibes ?? [];
-
-  return (
-    <div className="corePillarExpanded" style={{ marginLeft: depth > 0 ? 12 : 0 }}>
-      <div className="pillarDetailRow">
-        <span className="pillarDetailLabel">Function:</span>
-        <span className={pillar.function?.status === "assumed" ? "assumedText" : ""}>
-          {pillar.function?.summary ?? "Not defined"}
-        </span>
-      </div>
-      <div className="pillarDetailRow">
-        <span className="pillarDetailLabel">Thesis:</span>
-        <span className={pillar.thesis?.status === "assumed" ? "assumedText" : ""}>
-          {pillar.thesis?.summary ?? "Not defined"}
-        </span>
-      </div>
-      {pillar.fullFlow ? (
-        <div className="pillarDetailRow">
-          <span className="pillarDetailLabel">Full-Flow:</span>
-          <span className={pillar.fullFlow.status === "assumed" ? "assumedText" : ""}>
-            {pillar.fullFlow.summary}
-          </span>
-        </div>
-      ) : null}
-
-      {/* Vibes section */}
-      <div className="pillarVibesSection">
-        <div className="pillarVibesHeader">
-          <span className="pillarDetailLabel">Vibes</span>
-          {projectId ? (
-            <button className="secondaryButton vibeAttachBtn" onClick={() => void handleAttachVibe()}>
-              + Add Vibe
-            </button>
-          ) : null}
-        </div>
-        {vibes.length > 0 ? (
-          <div className="vibeGrid">
-            {vibes.map((vibe) => (
-              <div key={vibe.id} className="vibeThumb">
-                {vibe.fileType === "image" ? (
-                  <div className="vibeThumbImage" title={vibe.fileName}>
-                    <span className="vibeThumbIcon">&#128247;</span>
-                  </div>
-                ) : (
-                  <div className="vibeThumbFile" title={vibe.fileName}>
-                    <span className="vibeThumbIcon">&#128196;</span>
-                  </div>
-                )}
-                <span className="vibeThumbName">{vibe.fileName}</span>
-                {projectId ? (
-                  <button className="vibeRemoveBtn" onClick={() => void handleRemoveVibe(vibe.id)}>&times;</button>
-                ) : null}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <span className="vibeEmpty">No vibes attached</span>
-        )}
-      </div>
-
-      {/* Sub-pillars (recursive) */}
-      {pillar.corePillars.length > 0 ? (
-        <div className="pillarChildren">
-          <span className="pillarDetailLabel" style={{ marginBottom: 4, display: "block" }}>Sub-Pillars:</span>
-          <div className="corePillarChips">
-            {sortPillarsByOrder(pillar.corePillars).map((child) => (
-              <button
-                key={child.id}
-                className={`corePillarChip${expandedChildId === child.id ? " active" : ""}`}
-                onClick={() => setExpandedChildId(expandedChildId === child.id ? null : child.id)}
-              >
-                {child.name}
-              </button>
-            ))}
-          </div>
-          {expandedChildId ? (() => {
-            const child = pillar.corePillars.find((c) => c.id === expandedChildId);
-            if (!child) return null;
-            return (
-              <CoreDetailsPillarExpanded
-                pillar={child}
-                depth={depth + 1}
-                projectId={projectId}
-                onSessionUpdate={onSessionUpdate}
-                pushToast={pushToast}
-              />
-            );
-          })() : null}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function CoreDetailsPanel({
-  projectId,
-  settings,
+function CoreDetailsContent({
   agentSession,
-  onClose,
-  pushToast,
 }: {
-  projectId: string;
-  settings: Settings;
   agentSession: AgentSession | null;
-  onClose: () => void;
-  pushToast: (message: string, level: "info" | "success" | "error") => void;
 }) {
-  const [inputValue, setInputValue] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const [activeTab, setActiveTab] = useState<"function" | "thesis" | "core_pillars" | "full_flow">("function");
-  const [expandedPillarId, setExpandedPillarId] = useState<string | null>(null);
-  const [updateAiMessage, setUpdateAiMessage] = useState<string | null>(null);
-  const [pendingProposal, setPendingProposal] = useState<CoreDetailsProposal | null>(null);
-  const [editedProposal, setEditedProposal] = useState<CoreDetailsProposal | null>(null);
-  const [coreDetails, setCoreDetails] = useState<AgentCoreDetails>({
+  const coreDetails: AgentCoreDetails = {
     function: agentSession?.stages.function.confirmed ?? null,
     thesis: agentSession?.stages.thesis.confirmed ?? null,
     corePillars: agentSession?.corePillars ?? [],
     fullFlow: agentSession?.stages.full_flow.confirmed ?? null,
-  });
-  const chatInputRef = useRef<HTMLTextAreaElement>(null);
-
-  const functionStatus = coreDetails.function?.status ?? null;
-  const thesisStatus = coreDetails.thesis?.status ?? null;
-  const pillarsStatus = agentSession?.stages.core_pillars.confirmed?.status ?? null;
-  const fullFlowStatus = coreDetails.fullFlow?.status ?? null;
-
-  const handleConfirmDetail = async (field: "function" | "thesis" | "core_pillars" | "full_flow") => {
-    try {
-      const session = await window.programs.agentConfirmCoreDetail(projectId, field);
-      setCoreDetails({
-        function: session.stages.function.confirmed ?? null,
-        thesis: session.stages.thesis.confirmed ?? null,
-        corePillars: session.corePillars,
-        fullFlow: session.stages.full_flow.confirmed ?? null,
-      });
-    } catch (error) {
-      pushToast(error instanceof Error ? error.message : "Failed to confirm.", "error");
-    }
   };
 
-  const focusEditForField = (field: "function" | "thesis" | "core_pillars" | "full_flow") => {
-    setActiveTab(field);
-    setTimeout(() => chatInputRef.current?.focus(), 50);
-  };
-
-  const handleSend = async () => {
-    if (!inputValue.trim()) return;
-    setIsLoading(true);
-    const msg = inputValue;
-    setInputValue("");
-    try {
-      const response = await window.programs.agentSuggestUpdate({
-        projectId,
-        provider: settings.advancedDefaults.provider,
-        model: settings.advancedDefaults.model,
-        claudeModel: settings.advancedDefaults.claudeModel,
-        message: msg,
-      });
-      setUpdateAiMessage(response.aiMessage);
-      if (response.proposal) {
-        setPendingProposal(response.proposal);
-        setEditedProposal(response.proposal);
-      }
-    } catch (error) {
-      pushToast(error instanceof Error ? error.message : "Failed to get suggestion.", "error");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleApply = async (proposal: CoreDetailsProposal) => {
-    try {
-      const session = await window.programs.agentApplyCoreDetails({ projectId, proposal });
-      setCoreDetails({
-        function: session.stages.function.confirmed ?? null,
-        thesis: session.stages.thesis.confirmed ?? null,
-        corePillars: session.corePillars,
-        fullFlow: session.stages.full_flow.confirmed ?? null,
-      });
-      setPendingProposal(null);
-      setEditedProposal(null);
-      setUpdateAiMessage(null);
-      pushToast("Core details updated.", "success");
-    } catch (error) {
-      pushToast(error instanceof Error ? error.message : "Failed to apply update.", "error");
-    }
-  };
-
-  const expandedPillar = expandedPillarId
-    ? coreDetails.corePillars.find((p) => p.id === expandedPillarId) ?? null
-    : null;
+  const functionSummary = coreDetails.function?.summary.trim() ? coreDetails.function.summary : "Not yet defined.";
+  const thesisSummary = coreDetails.thesis?.summary.trim() ? coreDetails.thesis.summary : "Not yet defined.";
+  const fullFlowSummary = coreDetails.fullFlow?.summary.trim() ? coreDetails.fullFlow.summary : "Not yet defined.";
+  const isFunctionAssumed = coreDetails.function?.status === "assumed" || coreDetails.function?.status === "edited";
+  const isThesisAssumed = coreDetails.thesis?.status === "assumed" || coreDetails.thesis?.status === "edited";
+  const isFullFlowAssumed = coreDetails.fullFlow?.status === "assumed" || coreDetails.fullFlow?.status === "edited";
 
   return (
-    <Modal title="Core Details" onClose={onClose} fullscreen>
-      <div className="agentInfoTabs">
-        {(["function", "thesis", "core_pillars", "full_flow"] as const).map((tab) => (
-          <button
-            key={tab}
-            className={`agentInfoTabBtn${activeTab === tab ? " active" : ""}`}
-            onClick={() => setActiveTab(tab)}
-          >
-            {tab === "function" ? "Function" : tab === "thesis" ? "Thesis" : tab === "core_pillars" ? "Core Pillars" : "Full Flow"}
-          </button>
-        ))}
-      </div>
-
-      <div className="coreDetailsPanelContent">
-        {activeTab === "function" ? (
-          <div className="coreDetailItem">
-            {(functionStatus === "assumed" || functionStatus === "edited") ? (
-              <>
-                <p className="assumedText">{coreDetails.function?.summary}</p>
-                <div className="coreDetailReviewActions">
-                  <button className="coreDetailConfirmBtn" onClick={() => void handleConfirmDetail("function")}>Confirm</button>
-                  <button className="coreDetailEditBtn" onClick={() => focusEditForField("function")}>Edit</button>
-                </div>
-              </>
-            ) : (
-              <p>{coreDetails.function?.summary ?? "Not yet defined. Define in Agents page."}</p>
-            )}
-          </div>
-        ) : activeTab === "thesis" ? (
-          <div className="coreDetailItem">
-            {(thesisStatus === "assumed" || thesisStatus === "edited") ? (
-              <>
-                <p className="assumedText">{coreDetails.thesis?.summary}</p>
-                <div className="coreDetailReviewActions">
-                  <button className="coreDetailConfirmBtn" onClick={() => void handleConfirmDetail("thesis")}>Confirm</button>
-                  <button className="coreDetailEditBtn" onClick={() => focusEditForField("thesis")}>Edit</button>
-                </div>
-              </>
-            ) : (
-              <p>{coreDetails.thesis?.summary ?? "Not yet defined. Define in Agents page."}</p>
-            )}
-          </div>
-        ) : activeTab === "core_pillars" ? (
-          <div className="coreDetailItem">
-            {(pillarsStatus === "assumed" || pillarsStatus === "edited") && (
-              <div className="coreDetailReviewActions" style={{ marginBottom: 10 }}>
-                <span className="assumedText" style={{ fontSize: "0.75rem" }}>AI-generated — please review</span>
-                <button className="coreDetailConfirmBtn" onClick={() => void handleConfirmDetail("core_pillars")}>Confirm All</button>
-                <button className="coreDetailEditBtn" onClick={() => focusEditForField("core_pillars")}>Edit</button>
-              </div>
-            )}
-            {coreDetails.corePillars.length > 0 ? (
-              <>
-                <div className="corePillarChips">
-                  {sortPillarsByOrder(coreDetails.corePillars).map((pillar) => (
-                    <button
-                      key={pillar.id}
-                      className={`corePillarChip${expandedPillarId === pillar.id ? " active" : ""}`}
-                      onClick={() => setExpandedPillarId(expandedPillarId === pillar.id ? null : pillar.id)}
-                    >
-                      {pillar.name}
-                    </button>
-                  ))}
-                </div>
-                {expandedPillar ? <CoreDetailsPillarExpanded pillar={expandedPillar} /> : null}
-              </>
-            ) : (
-              <p>Not yet defined. Define in Agents page.</p>
-            )}
-          </div>
+    <div className="coreDetailsReport">
+      <article className="coreDetailCard coreDetailsReportSection">
+        <h4>Function</h4>
+        <p className={`coreDetailValue${isFunctionAssumed ? " assumedText" : ""}`}>{functionSummary}</p>
+      </article>
+      <article className="coreDetailCard coreDetailsReportSection">
+        <h4>Thesis</h4>
+        <p className={`coreDetailValue${isThesisAssumed ? " assumedText" : ""}`}>{thesisSummary}</p>
+      </article>
+      <article className="coreDetailCard coreDetailsReportSection coreDetailsReportSection-pillars">
+        <h4>Core Pillars</h4>
+        {coreDetails.corePillars.length > 0 ? (
+          <ConceptThreadList pillars={coreDetails.corePillars} />
         ) : (
-          <div className="coreDetailItem">
-            {(fullFlowStatus === "assumed" || fullFlowStatus === "edited") ? (
-              <>
-                <p className="assumedText">{coreDetails.fullFlow?.summary}</p>
-                <div className="coreDetailReviewActions">
-                  <button className="coreDetailConfirmBtn" onClick={() => void handleConfirmDetail("full_flow")}>Confirm</button>
-                  <button className="coreDetailEditBtn" onClick={() => focusEditForField("full_flow")}>Edit</button>
-                </div>
-              </>
-            ) : coreDetails.fullFlow?.steps && coreDetails.fullFlow.steps.length > 0 ? (
+          <p className="coreDetailEmpty">No core pillars have been confirmed yet.</p>
+        )}
+      </article>
+      <article className="coreDetailCard coreDetailsReportSection coreDetailsReportSection-flow">
+        <h4>Full flow</h4>
+        {coreDetails.fullFlow ? (
+          <>
+            <p className={`coreDetailValue${isFullFlowAssumed ? " assumedText" : ""}`}>{fullFlowSummary}</p>
+            {coreDetails.fullFlow.currentState ? (
+              <div className="pillarDetailRow">
+                <span className="pillarDetailLabel">Current state</span>
+                <span className={isFullFlowAssumed ? "assumedText" : ""}>{coreDetails.fullFlow.currentState}</span>
+              </div>
+            ) : null}
+            {coreDetails.fullFlow.finalGoal ? (
+              <div className="pillarDetailRow">
+                <span className="pillarDetailLabel">Final goal</span>
+                <span className={isFullFlowAssumed ? "assumedText" : ""}>{coreDetails.fullFlow.finalGoal}</span>
+              </div>
+            ) : null}
+            {coreDetails.fullFlow.steps && coreDetails.fullFlow.steps.length > 0 ? (
               <ol className="flowStepList">
                 {coreDetails.fullFlow.steps.map((step) => (
                   <li key={step.id} className="flowStepItem">
@@ -6487,10 +6399,12 @@ function CoreDetailsPanel({
                       <div>{step.description}</div>
                       {step.pillarIds.length > 0 ? (
                         <div className="flowStepPillars">
-                          {step.pillarIds.map((pid) => {
-                            const pillar = coreDetails.corePillars.find((p) => p.id === pid);
+                          {step.pillarIds.map((pillarId) => {
+                            const pillar = coreDetails.corePillars.find((candidate) => candidate.id === pillarId);
                             return pillar ? (
-                              <span key={pid} className="flowStepPillarTag">{pillar.name}</span>
+                              <span key={pillarId} className="flowStepPillarTag">
+                                {pillar.name}
+                              </span>
                             ) : null;
                           })}
                         </div>
@@ -6499,92 +6413,13 @@ function CoreDetailsPanel({
                   </li>
                 ))}
               </ol>
-            ) : (
-              <p>{coreDetails.fullFlow?.summary ?? "Not yet defined. Define in Agents page."}</p>
-            )}
-          </div>
+            ) : null}
+          </>
+        ) : (
+          <p className="coreDetailEmpty">Not yet defined.</p>
         )}
-      </div>
-
-      {updateAiMessage || editedProposal ? (
-        <div className="coreDetailsAiSection">
-          {updateAiMessage ? (
-            <div className="updateAiMessage">{updateAiMessage}</div>
-          ) : null}
-          {editedProposal ? (
-            <div className="pendingProposalCard">
-              <h5>Proposed Changes</h5>
-              {editedProposal.updatedFunction != null ? (
-                <div className="proposalField">
-                  <div className="proposalFieldLabel">Function</div>
-                  <textarea
-                    className="proposalFieldValue"
-                    value={editedProposal.updatedFunction}
-                    onChange={(e) => setEditedProposal({ ...editedProposal, updatedFunction: e.target.value })}
-                  />
-                </div>
-              ) : null}
-              {editedProposal.updatedThesis != null ? (
-                <div className="proposalField">
-                  <div className="proposalFieldLabel">Thesis</div>
-                  <textarea
-                    className="proposalFieldValue"
-                    value={editedProposal.updatedThesis}
-                    onChange={(e) => setEditedProposal({ ...editedProposal, updatedThesis: e.target.value })}
-                  />
-                </div>
-              ) : null}
-              {editedProposal.updatedFullFlow != null ? (
-                <div className="proposalField">
-                  <div className="proposalFieldLabel">Full-Flow</div>
-                  <textarea
-                    className="proposalFieldValue"
-                    value={editedProposal.updatedFullFlow}
-                    onChange={(e) => setEditedProposal({ ...editedProposal, updatedFullFlow: e.target.value })}
-                  />
-                </div>
-              ) : null}
-              {editedProposal.updatedCorePillars != null ? (
-                <div className="proposalField">
-                  <div className="proposalFieldLabel">Core Pillars</div>
-                  <p className="coreDetailValue" style={{ fontSize: "0.8rem", margin: "2px 0 0" }}>
-                    {editedProposal.updatedCorePillars.map((p) => p.name).join(", ")}
-                  </p>
-                </div>
-              ) : null}
-              <div className="proposalActions">
-                <button className="primaryButton" onClick={() => void handleApply(editedProposal)}>Confirm</button>
-                <button className="secondaryButton" onClick={() => { setPendingProposal(null); setEditedProposal(null); setUpdateAiMessage(null); }}>Dismiss</button>
-              </div>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-
-      <div className="coreDetailsInputRow">
-        <textarea
-          ref={chatInputRef}
-          className="plannerInput"
-          value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          placeholder="Describe what to update..."
-          disabled={isLoading}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              void handleSend();
-            }
-          }}
-        />
-        <button
-          className="primaryButton"
-          onClick={() => void handleSend()}
-          disabled={!inputValue.trim() || isLoading}
-        >
-          {isLoading ? <RunningIndicator /> : "Send"}
-        </button>
-      </div>
-    </Modal>
+      </article>
+    </div>
   );
 }
 
@@ -7254,6 +7089,7 @@ function DirectorSummaryPanel({
     settings.advancedDefaults.provider === "claude"
       ? labelForModel(effectiveClaudeModel, claudeModelOptions, fallbackClaudeModelLabel)
       : labelForModel(effectiveModel, codexModelOptions, fallbackCodexModelLabel);
+  const focusModes = getDirectorFocusModes(directorId);
 
   useLayoutEffect(() => {
     setInformationChainOpen(false);
@@ -7375,6 +7211,20 @@ function DirectorSummaryPanel({
             <strong>{metadata.label}</strong>
           </div>
           <p className="agentSummaryDescription">{metadata.shortDescription}</p>
+
+          {focusModes.length > 0 ? (
+            <div className="agentInfoPanelSection">
+              <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Modes</h5>
+              <div className="directorModeReferenceGrid">
+                {focusModes.map((mode) => (
+                  <div key={mode} className="directorModeReferenceItem">
+                    <span className="directorModeReferenceLabel">{formatDirectorFocusModeLabel(mode)}</span>
+                    <span className="directorModeReferenceDescription">{describeDirectorFocusMode(directorId, mode)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           <details
             className="agentSummaryDetails"
@@ -7524,7 +7374,7 @@ function DirectorInfoPanel({
                 </span>
               </div>
               <div className="pmStatusCard">
-                <span className="pmStatusLabel">Brad — Validation</span>
+                <span className="pmStatusLabel">Pong — Validation</span>
                 <span className="pmStatusValue">
                   {session.validationResults.length > 0 ? `${session.validationResults.length} results` : "None yet"}
                 </span>
@@ -7809,7 +7659,7 @@ function DirectorInfoPanel({
       );
 
     case "validation-director": {
-      // Brad: mode-dependent panel
+      // Pong: mode-dependent panel
       if (focusMode === "identify-goal") {
         return (
           <>
@@ -7883,6 +7733,384 @@ function DirectorInfoPanel({
   }
 }
 
+function DirectorFunctionsPanel({
+  directorId,
+  session,
+  projectId,
+  onNavigateToDirector,
+  onSessionUpdate,
+}: {
+  directorId: DirectorId;
+  session: AgentSession | null;
+  projectId: string | null;
+  onNavigateToDirector: (directorId: DirectorId) => void;
+  onSessionUpdate: (session: AgentSession) => void;
+}) {
+  if (!session) return null;
+  const confirmedConcept = getConfirmedConcept(session);
+  const workingConcept = getWorkingConcept(session);
+  const toddMemory = session.toddMemory;
+  const pingMemory = session.pingMemory;
+
+  switch (directorId) {
+    case "project-manager":
+      return (
+        <div className="agentInfoPanel agentSummaryPanel">
+          <div className="agentSummaryGrid">
+            <section className="agentSummaryCard">
+              <div className="agentSummaryHeader">
+                <span className="agentSummaryEyebrow">Functions</span>
+              </div>
+              <details className="agentSummaryDetails">
+                <summary>Project Status Overview</summary>
+                <div className="agentSummaryDetailsBody">
+                  <div className="pmStatusGrid">
+                    <div className="pmStatusCard">
+                      <span className="pmStatusLabel">Dan — Creative</span>
+                      <span className={`pmStatusValue${confirmedConcept ? " pmStatusDone" : ""}`}>
+                        {confirmedConcept ? "Locked" : "In Progress"}
+                      </span>
+                    </div>
+                    <div className="pmStatusCard">
+                      <span className="pmStatusLabel">Todd — R&D</span>
+                      <span className={`pmStatusValue${toddMemory.futureUpdatePlan.length > 0 ? " pmStatusDone" : ""}`}>
+                        {toddMemory.futureUpdatePlan.length > 0 ? `${toddMemory.futureUpdatePlan.length} updates` : "Pending"}
+                      </span>
+                    </div>
+                    <div className="pmStatusCard">
+                      <span className="pmStatusLabel">Ping — Programming</span>
+                      <span className="pmStatusValue">
+                        {toddMemory.futureUpdatePlan.filter((u) => u.status === "completed").length}/{toddMemory.futureUpdatePlan.length} updates
+                      </span>
+                    </div>
+                    <div className="pmStatusCard">
+                      <span className="pmStatusLabel">Pong — Validation</span>
+                      <span className="pmStatusValue">
+                        {session.validationResults.length > 0 ? `${session.validationResults.length} results` : "None yet"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </details>
+            </section>
+          </div>
+        </div>
+      );
+
+    case "creative-director": {
+      const allVibes = collectConceptVibes(workingConcept?.corePillars ?? []);
+      return (
+        <div className="agentInfoPanel agentSummaryPanel">
+          <div className="agentSummaryGrid">
+            <section className="agentSummaryCard">
+              <div className="agentSummaryHeader">
+                <span className="agentSummaryEyebrow">Functions</span>
+              </div>
+              <details className="agentSummaryDetails">
+                <summary>Concept</summary>
+                <div className="agentSummaryDetailsBody">
+                  <ConceptOverview
+                    concept={workingConcept}
+                    emptyLabel="Dan has not locked in the concept yet."
+                    experienceDescription={session.danMemory.fullExperienceDescription}
+                  />
+                  {session.danMemory.notes.length > 0 ? (
+                    <div className="conceptNotesBlock">
+                      <span className="pmStatusLabel">Conversation Notes</span>
+                      <ul className="agentSummaryList">
+                        {session.danMemory.notes.map((note, index) => (
+                          <li key={`dan-concept-note-${index}`}>{note}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
+                  {confirmedConcept ? (
+                    <button className="primaryButton" style={{ marginTop: 12, fontSize: "0.8rem" }} onClick={() => onNavigateToDirector("rd-director")}>
+                      Proceed to R&D
+                    </button>
+                  ) : null}
+                </div>
+              </details>
+              <details className="agentSummaryDetails">
+                <summary>{`Vibe Gallery (${allVibes.length})`}</summary>
+                <div className="agentSummaryDetailsBody">
+                  {allVibes.length > 0 ? (
+                    <div className="vibeGallery">
+                      {allVibes.map(({ pillarName, vibe }) => (
+                        <div key={vibe.id} className="vibeGalleryItem">
+                          <span className="vibeThumbIcon">{vibe.fileType === "image" ? "\u{1F5BC}" : "\u{1F4C4}"}</span>
+                          <div className="vibeGalleryMeta">
+                            <span className="vibeThumbName">{vibe.fileName}</span>
+                            <span className="vibeGalleryPillar">{pillarName}</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="coreDetailEmpty">No vibes attached yet. Attach vibes to the concept threads.</p>
+                  )}
+                </div>
+              </details>
+            </section>
+          </div>
+        </div>
+      );
+    }
+
+    case "rd-director": {
+      const roadmapVersions = [toddMemory.versionPlan.v1, toddMemory.versionPlan.v2, toddMemory.versionPlan.v3].filter(
+        (version): version is VersionPlan => Boolean(version),
+      );
+      const groupedByVersion: Record<string, VersionUpdate[]> = {};
+      for (const u of toddMemory.futureUpdatePlan) {
+        const v = [toddMemory.versionPlan.v1, toddMemory.versionPlan.v2, toddMemory.versionPlan.v3]
+          .filter((version): version is VersionPlan => Boolean(version))
+          .find((ver) => ver.id === u.versionId);
+        const label = v?.label ?? "Unassigned";
+        if (!groupedByVersion[label]) groupedByVersion[label] = [];
+        groupedByVersion[label].push(u);
+      }
+      return (
+        <div className="agentInfoPanel agentSummaryPanel">
+          <div className="agentSummaryGrid">
+            <section className="agentSummaryCard">
+              <div className="agentSummaryHeader">
+                <span className="agentSummaryEyebrow">Functions</span>
+              </div>
+              <details className="agentSummaryDetails">
+                <summary>Research</summary>
+                <div className="agentSummaryDetailsBody">
+                  <ConceptOverview
+                    concept={toddMemory.confirmedConcept}
+                    title="Confirmed Concept"
+                    emptyLabel="Todd is waiting for Dan to lock the concept."
+                    experienceDescription={session.danMemory.fullExperienceDescription}
+                  />
+                  <div className="agentInfoPanelSection">
+                    <h5 style={{ margin: "8px 0", fontSize: "0.8rem", color: "var(--text-muted)" }}>Current Codebase Index</h5>
+                    {toddMemory.codebaseIndexedMap ? (
+                      <div className="codebaseIndexPanel">
+                        <p className="coreDetailValue">{toddMemory.codebaseIndexedMap.summary ?? "No codebase summary yet."}</p>
+                        {toddMemory.codebaseIndexedMap.featureAreas.length > 0 ? (
+                          <div className="flowStepPillars">
+                            {toddMemory.codebaseIndexedMap.featureAreas.map((area) => (
+                              <span key={area} className="flowStepPillarTag">{area}</span>
+                            ))}
+                          </div>
+                        ) : null}
+                        {toddMemory.codebaseIndexedMap.repoNotes.length > 0 ? (
+                          <ul className="agentSummaryList">
+                            {toddMemory.codebaseIndexedMap.repoNotes.map((note, index) => (
+                              <li key={`repo-note-${index}`}>{note}</li>
+                            ))}
+                          </ul>
+                        ) : null}
+                        <p className="helperText">Indexed {formatDate(toddMemory.codebaseIndexedMap.indexedAt)}</p>
+                      </div>
+                    ) : (
+                      <em className="coreDetailEmpty">Todd has not indexed the codebase yet.</em>
+                    )}
+                  </div>
+                </div>
+              </details>
+              <details className="agentSummaryDetails">
+                <summary>Roadmap</summary>
+                <div className="agentSummaryDetailsBody">
+                  {roadmapVersions.length > 0 ? (
+                    <div className="versionTimeline">
+                      {roadmapVersions.sort((a, b) => a.order - b.order).map((v) => (
+                        <div key={v.id} className="versionCard">
+                          <div className="versionHeader">
+                            <span className={`versionLabel${v.status === "assumed" ? " assumedText" : ""}`}>{v.label}</span>
+                            <StatusChip tone={v.status === "confirmed" ? "confirmed" : v.status === "assumed" ? "action_required" : "info"}>{v.status}</StatusChip>
+                          </div>
+                          <p className={v.status === "assumed" ? "assumedText" : ""}>{v.description}</p>
+                          <ul className="versionGoals">
+                            {v.goals.map((g, i) => <li key={i}>{g}</li>)}
+                          </ul>
+                        </div>
+                      ))}
+                    </div>
+                  ) : <em className="coreDetailEmpty">Todd has not outlined V1-V3 yet.</em>}
+                </div>
+              </details>
+              <details className="agentSummaryDetails">
+                <summary>Updates</summary>
+                <div className="agentSummaryDetailsBody">
+                  <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Future Update Plan</h5>
+                  {toddMemory.futureUpdatePlan.length > 0 ? (
+                    <div className="updatePlanList">
+                      {Object.entries(groupedByVersion).map(([versionLabel, updates]) => (
+                        <div key={versionLabel} className="updatePlanGroup">
+                          <h6 className="updatePlanGroupLabel">{versionLabel}</h6>
+                          {updates.sort((a, b) => a.order - b.order).map((u, idx) => (
+                            <div key={u.id} className="agentPlannedUpdateItem">
+                              <span className="orderBadge">{idx + 1}</span>
+                              <div className="updateContent">
+                                <div className="updateTitle">{u.title}</div>
+                                <div className="updateDescription">{u.description}</div>
+                                {u.skillsNeeded.length > 0 ? (
+                                  <div className="flowStepPillars" style={{ marginTop: 8 }}>
+                                    {u.skillsNeeded.map((skill) => (
+                                      <span key={`${u.id}-${skill}`} className="flowStepPillarTag">{skill}</span>
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </div>
+                              <StatusChip tone={u.status === "completed" ? "confirmed" : u.status === "failed" ? "action_required" : u.status === "in_progress" ? "info" : "neutral"}>{u.status}</StatusChip>
+                            </div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  ) : <em className="coreDetailEmpty">No updates planned yet.</em>}
+                  <div className="agentInfoPanelSection">
+                    <h5 style={{ margin: "12px 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Previous Update Log</h5>
+                    {toddMemory.previousUpdateLog.length > 0 ? (
+                      <div className="validationResultsList">
+                        {toddMemory.previousUpdateLog.slice().reverse().map((entry) => (
+                          <div key={entry.id} className={`validationResultCard validationResultCard--${entry.status === "success" || entry.status === "no_changes" ? "pass" : "fail"}`}>
+                            <span className="validationResultType">{entry.goal}</span>
+                            <span className={`validationResultStatus${entry.status === "success" || entry.status === "no_changes" ? " pmStatusDone" : ""}`}>
+                              {entry.status.replace(/_/g, " ")}
+                            </span>
+                            <p>{entry.outcome}</p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <em className="coreDetailEmpty">No completed execution entries yet.</em>
+                    )}
+                  </div>
+                  <div className="agentInfoPanelSection">
+                    <h5 style={{ margin: "12px 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Trouble Log</h5>
+                    {toddMemory.troubleLog.length > 0 ? (
+                      <div className="validationResultsList">
+                        {toddMemory.troubleLog.map((entry) => (
+                          <div key={entry.id} className="validationResultCard validationResultCard--fail">
+                            <span className="validationResultType">{entry.title}</span>
+                            <span className="validationResultStatus">{entry.priority}</span>
+                            <p>{entry.details}</p>
+                            <p className="helperText">Seen {entry.occurrences} time(s). Last seen {formatDate(entry.lastSeenAt)}</p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <em className="coreDetailEmpty">No recurring issues logged.</em>
+                    )}
+                  </div>
+                </div>
+              </details>
+            </section>
+          </div>
+        </div>
+      );
+    }
+
+    case "programming-director":
+      return (
+        <div className="agentInfoPanel agentSummaryPanel">
+          <div className="agentSummaryGrid">
+            <section className="agentSummaryCard">
+              <div className="agentSummaryHeader">
+                <span className="agentSummaryEyebrow">Functions</span>
+              </div>
+              <details className="agentSummaryDetails">
+                <summary>Programming Queue</summary>
+                <div className="agentSummaryDetailsBody">
+                  {toddMemory.futureUpdatePlan.filter((u) => u.status === "pending" || u.status === "in_progress").length > 0 ? (
+                    <div className="programmingQueue">
+                      {toddMemory.futureUpdatePlan.filter((u) => u.status === "pending" || u.status === "in_progress").map((u) => (
+                        <div key={u.id} className="agentPlannedUpdateItem">
+                          <div className="updateContent">
+                            <div className="updateTitle">{u.title}</div>
+                            <div className="updateDescription">{u.description}</div>
+                            {u.skillsNeeded.length > 0 ? (
+                              <div className="flowStepPillars" style={{ marginTop: 8 }}>
+                                {u.skillsNeeded.map((skill) => (
+                                  <span key={`${u.id}-${skill}`} className="flowStepPillarTag">{skill}</span>
+                                ))}
+                              </div>
+                            ) : null}
+                          </div>
+                          <StatusChip tone={u.status === "in_progress" ? "info" : "neutral"}>{u.status}</StatusChip>
+                        </div>
+                      ))}
+                    </div>
+                  ) : <em className="coreDetailEmpty">No updates in the programming queue.</em>}
+                  <p className="coreDetailValue" style={{ marginTop: 12 }}>
+                    {pingMemory.activeTask
+                      ? `Active task: ${pingMemory.activeTask}`
+                      : "Ping is waiting for the next confirmed implementation task."}
+                  </p>
+                  {pingMemory.context ? (
+                    <p className="coreDetailValue" style={{ marginTop: 8 }}>{pingMemory.context}</p>
+                  ) : null}
+                  {pingMemory.codebaseMapSummary ? (
+                    <p className="helperText" style={{ marginTop: 8 }}>{pingMemory.codebaseMapSummary}</p>
+                  ) : null}
+                  {pingMemory.latestRawReport ? (
+                    <div className="validationResultCard validationResultCard--pass" style={{ marginTop: 12 }}>
+                      <span className="validationResultType">Latest execution</span>
+                      <span className="validationResultStatus">{pingMemory.latestRawReport.status.replace(/_/g, " ")}</span>
+                      <p>{pingMemory.latestRawReport.summary}</p>
+                    </div>
+                  ) : null}
+                </div>
+              </details>
+            </section>
+          </div>
+        </div>
+      );
+
+    case "validation-director":
+      return (
+        <div className="agentInfoPanel agentSummaryPanel">
+          <div className="agentSummaryGrid">
+            <section className="agentSummaryCard">
+              <div className="agentSummaryHeader">
+                <span className="agentSummaryEyebrow">Functions</span>
+              </div>
+              <details className="agentSummaryDetails">
+                <summary>Validation Results</summary>
+                <div className="agentSummaryDetailsBody">
+                  {projectId ? (
+                    <div className="validationFrequencyRow">
+                      <span className="pillarDetailLabel">Frequency:</span>
+                      <select
+                        className="plannerSelect"
+                        value={session.validationFrequency}
+                        onChange={(e) => void window.programs.setValidationFrequency({ projectId, frequency: e.target.value as "every-update" | "every-version" | "manual" }).then(onSessionUpdate)}
+                      >
+                        <option value="manual">Manual</option>
+                        <option value="every-update">Every Update</option>
+                        <option value="every-version">Every Version</option>
+                      </select>
+                    </div>
+                  ) : null}
+                  {session.validationResults.length > 0 ? (
+                    <div className="validationResultsList">
+                      {session.validationResults.map((r) => (
+                        <div key={r.id} className={`validationResultCard validationResultCard--${r.passed ? "pass" : "fail"}`}>
+                          <span className="validationResultType">{r.validationType}</span>
+                          <span className={`validationResultStatus${r.passed ? " pmStatusDone" : ""}`}>{r.passed ? "PASS" : "FAIL"}</span>
+                          <p>{r.summary}</p>
+                        </div>
+                      ))}
+                    </div>
+                  ) : <em className="coreDetailEmpty">No validation results yet.</em>}
+                </div>
+              </details>
+            </section>
+          </div>
+        </div>
+      );
+
+    default:
+      return null;
+  }
+}
+
 function DirectorProfilePanel({
   directorId,
   session,
@@ -7946,6 +8174,13 @@ function DirectorProfilePanel({
           pushToast={pushToast}
           onExpandedChange={setHasExpandedSummary}
         />
+        <DirectorFunctionsPanel
+          directorId={directorId}
+          session={session}
+          projectId={projectId}
+          onNavigateToDirector={onNavigateToDirector}
+          onSessionUpdate={onSessionUpdate}
+        />
       </div>
     </div>
   );
@@ -7964,6 +8199,9 @@ function AgentsPage({
   onSetViewStage,
   onSessionUpdate,
   onUpdateAgentDefaults,
+  selectedDirectorId,
+  onSelectDirector,
+  onClearSelectedDirector,
   pushToast,
 }: {
   projects: Project[];
@@ -7976,11 +8214,13 @@ function AgentsPage({
   onSetViewStage: (stage: AgentStage) => void;
   onSessionUpdate: (session: AgentSession) => void;
   onUpdateAgentDefaults: (advancedDefaults: Partial<Settings["advancedDefaults"]>) => Promise<void>;
+  selectedDirectorId: DirectorId | null;
+  onSelectDirector: (directorId: DirectorId) => void;
+  onClearSelectedDirector: () => void;
   pushToast: (message: string, level: "info" | "success" | "error") => void;
 }) {
-  const [selectedDirectorId, setSelectedDirectorId] = useState<DirectorId | null>(null);
-  const [activeFocusMode, setActiveFocusMode] = useState<DirectorFocusMode | null>(null);
   const [showProgressPanel, setShowProgressPanel] = useState(false);
+  const [showAgentStructurePanel, setShowAgentStructurePanel] = useState(false);
   const [showDirectorProfile, setShowDirectorProfile] = useState(false);
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -8008,91 +8248,67 @@ function AgentsPage({
     department: AgentDepartment;
     label: string;
     color: string;
-    landingRole: string;
-    landingReminder: string;
-    focusModes?: DirectorFocusMode[];
   }[] = [
     { id: "project-manager", department: "Management", label: "Jeff — Project Manager",
-      color: DIRECTOR_COLORS["project-manager"], landingRole: "Director", landingReminder: "Project lead" },
+      color: DIRECTOR_COLORS["project-manager"] },
     { id: "creative-director", department: "Creative", label: "Dan — Creative Director",
-      color: DIRECTOR_COLORS["creative-director"], landingRole: "Director", landingReminder: "Idea shaping",
-      focusModes: ["conversation", "core-details", "vibes"] as CreativeFocusMode[] },
+      color: DIRECTOR_COLORS["creative-director"] },
     { id: "rd-director", department: "R&D", label: "Todd — R&D Director",
-      color: DIRECTOR_COLORS["rd-director"], landingRole: "Director", landingReminder: "Research planning",
-      focusModes: ["research", "version-planning", "update-planning"] as RdFocusMode[] },
+      color: DIRECTOR_COLORS["rd-director"] },
     { id: "programming-director", department: "Programming", label: "Ping — Programming Director",
-      color: DIRECTOR_COLORS["programming-director"], landingRole: "Director", landingReminder: "Build queue" },
-    { id: "validation-director", department: "Validation", label: "Brad — Validation Director",
-      color: DIRECTOR_COLORS["validation-director"], landingRole: "Director", landingReminder: "Test checks",
-      focusModes: ["identify-goal", "test-current-state", "compare"] as ValidationFocusMode[] },
+      color: DIRECTOR_COLORS["programming-director"] },
+    { id: "validation-director", department: "Validation", label: "Pong — Validation Director",
+      color: DIRECTOR_COLORS["validation-director"] },
   ];
 
   const AGENT_LANDING_SECTION_ORDER: AgentDepartment[] = ["Management", "Creative", "R&D", "Programming", "Validation"];
-  const PROGRAMMING_SUB_AGENTS = [
-    {
-      id: "pong",
-      name: "Pong",
-      roleLabel: "Front-end",
-      reminder: "UI support",
-      color: DIRECTOR_COLORS["programming-director"],
-    },
-    {
-      id: "pung",
-      name: "Pung",
-      roleLabel: "Back-end",
-      reminder: "API support",
-      color: DIRECTOR_COLORS["programming-director"],
-    },
-  ] as const;
 
   const selectedDirector = DIRECTOR_SECTIONS.find((d) => d.id === selectedDirectorId) ?? null;
+  const showInlineDirectorChat = Boolean(selectedDirectorId && selectedDirector && agentSelectedProjectId);
 
   const persistedDirectorMessages = selectedDirectorId
     ? agentSession?.directorConversations?.[selectedDirectorId]?.messages ?? agentSession?.agentConversations?.[selectedDirectorId]?.messages ?? []
     : [];
   const currentDirectorMessages = [...persistedDirectorMessages, ...optimisticAgentMessages];
+  const directorConversationSignature = useMemo(
+    () => currentDirectorMessages
+      .map((message) => [
+        message.id,
+        message.role,
+        message.createdAt,
+        message.status ?? "",
+        message.content,
+        message.metadata ? JSON.stringify(message.metadata) : "",
+      ].join("|"))
+      .join("||"),
+    [currentDirectorMessages],
+  );
 
   useEffect(() => {
     if (chatScrollRef.current) {
       chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
     }
-  }, [currentDirectorMessages.length, isLoading]);
+  }, [directorConversationSignature, isLoading, selectedDirectorId, agentSelectedProjectId]);
 
   useEffect(() => {
     setOptimisticAgentMessages([]);
   }, [persistedDirectorMessages.length]);
 
   useLayoutEffect(() => {
-    syncComposerTextareaHeight(composerInputRef.current);
+    syncComposerTextareaHeight(composerInputRef.current, { minHeight: SLACK_COMPOSER_MIN_HEIGHT });
   }, [inputValue, agentSelectedProjectId, selectedDirectorId]);
 
-  const handleSelectDirector = (directorId: DirectorId) => {
-    setSelectedDirectorId(directorId);
+  useEffect(() => {
     setLastRouteHint(null);
-    const director = DIRECTOR_SECTIONS.find((d) => d.id === directorId);
-    if (director?.focusModes?.length) {
-      const stored = agentSession?.directorConversations?.[directorId]?.focusMode ?? null;
-      setActiveFocusMode(stored ?? director.focusModes[0]);
-    } else {
-      setActiveFocusMode(null);
+    setOptimisticAgentMessages([]);
+    if (!selectedDirectorId) {
+      setShowDirectorProfile(false);
     }
-  };
-
-  const handleFocusModeChange = async (mode: DirectorFocusMode) => {
-    setActiveFocusMode(mode);
-    if (agentSelectedProjectId && selectedDirectorId) {
-      try {
-        const updated = await window.programs.setDirectorFocusMode(agentSelectedProjectId, selectedDirectorId, mode);
-        onSessionUpdate(updated);
-      } catch {
-        // Focus mode state is already set locally; backend sync is best-effort
-      }
-    }
-  };
+  }, [selectedDirectorId]);
 
   const handleSend = async () => {
     if (!inputValue.trim() || !agentSelectedProjectId || !selectedDirectorId) return;
-    const msg = inputValue;
+    const msg = inputValue.trim();
     setInputValue("");
     setLastRouteHint(null);
 
@@ -8109,7 +8325,7 @@ function AgentsPage({
       const response = await window.programs.directorChat({
         projectId: agentSelectedProjectId,
         directorId: selectedDirectorId,
-        focusMode: activeFocusMode,
+        focusMode: null,
         provider: settings.advancedDefaults.provider,
         model: settings.advancedDefaults.model,
         claudeModel: settings.advancedDefaults.claudeModel,
@@ -8129,32 +8345,23 @@ function AgentsPage({
   };
 
   const directorColor = selectedDirector?.color ?? "#6366F1";
-
-  const formatFocusMode = (mode: DirectorFocusMode): string => {
-    switch (mode) {
-      case "core-details":
-        return "Concept";
-      case "identify-goal":
-        return "Goal";
-      case "test-current-state":
-        return "Test";
-      case "version-planning":
-        return "Roadmap";
-      case "update-planning":
-        return "Updates";
-      default:
-        return mode.split("-").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
-    }
-  };
+  const currentDirectorSlackMessages = useMemo<SlackChatMessage[]>(
+    () => selectedDirectorId
+      ? currentDirectorMessages.map((message) => ({
+        ...message,
+        directorId: message.role === "assistant" ? selectedDirectorId : null,
+      }))
+      : [],
+    [currentDirectorMessages, selectedDirectorId],
+  );
+  const renderedDirectorMessages = useMemo(
+    () => buildSlackConversationRenderItems(currentDirectorSlackMessages),
+    [currentDirectorSlackMessages],
+  );
 
   return (
-    <section className={selectedDirectorId !== null && agentSelectedProjectId ? "agentsPage agentsPage-conversation" : "agentsPage"}>
+    <section className="agentsPage">
       <div className="agentsTopBar windowNoDrag">
-        {selectedDirectorId !== null && (
-          <button className="secondaryButton" style={{ height: '28px', padding: '0 10px', fontSize: '0.8rem', whiteSpace: 'nowrap' }} onClick={() => { setSelectedDirectorId(null); setActiveFocusMode(null); setLastRouteHint(null); }}>
-            Back
-          </button>
-        )}
         <select
           className="plannerSelect"
           value={agentSelectedProjectId ?? ""}
@@ -8165,15 +8372,25 @@ function AgentsPage({
             <option key={p.id} value={p.id}>{p.name}</option>
           ))}
         </select>
-        {selectedDirector && (
-          <button className="agentActiveLabel" style={{ borderColor: directorColor, color: directorColor, whiteSpace: 'nowrap', cursor: 'pointer', background: 'none' }} onClick={() => setShowDirectorProfile(true)}>
-            {DIRECTOR_NAMES[selectedDirectorId!]}
+        {selectedDirectorId !== null && selectedDirector && (
+          <button
+            type="button"
+            className="slackDirectorChip slackDirectorChip--current"
+            style={{ color: directorColor, whiteSpace: "nowrap" }}
+            onClick={() => setShowDirectorProfile(true)}
+          >
+            {DIRECTOR_NAMES[selectedDirectorId]}
           </button>
         )}
         {agentSelectedProjectId && !selectedDirectorId && (
-          <button className="secondaryButton" style={{ height: '28px', padding: '0 10px', fontSize: '0.8rem' }} onClick={() => setShowProgressPanel(true)}>
-            Progress
-          </button>
+          <>
+            <button className="secondaryButton" style={{ height: '28px', padding: '0 10px', fontSize: '0.8rem' }} onClick={() => setShowAgentStructurePanel(true)}>
+              Agent Structure
+            </button>
+            <button className="secondaryButton" style={{ height: '28px', padding: '0 10px', fontSize: '0.8rem' }} onClick={() => setShowProgressPanel(true)}>
+              Progress
+            </button>
+          </>
         )}
       </div>
 
@@ -8188,185 +8405,172 @@ function AgentsPage({
         </div>
       ) : null}
 
-      {selectedDirectorId === null ? (
-        <div className="agentSectionsScroll">
-          {AGENT_LANDING_SECTION_ORDER.map((department) => {
-            const director = DIRECTOR_SECTIONS.find((item) => item.department === department);
-            if (!director) {
-              return null;
-            }
+      <div className="chatViewportDivider pageChromeDivider" aria-hidden="true" />
+      <div className="agentLandingGrid">
+        {AGENT_LANDING_SECTION_ORDER.map((department) => {
+          const director = DIRECTOR_SECTIONS.find((item) => item.department === department);
+          if (!director) {
+            return null;
+          }
 
-            const directorName = DIRECTOR_NAMES[director.id];
+          const directorName = DIRECTOR_NAMES[director.id];
+          const isActive = selectedDirectorId === director.id;
 
-            return (
-              <section key={department} className="agentDepartmentSection">
-                <div className="agentDepartmentHeader">
-                  <h4 className="agentDepartmentTitle">{department}</h4>
-                </div>
+          return (
+            <section key={department} className="agentDepartmentSection">
+              <div className="agentDepartmentContent">
+                <AgentLandingCard
+                  name={directorName}
+                  color={director.color}
+                  footerLabel={department}
+                  active={isActive}
+                  muted={Boolean(agentSelectedProjectId && selectedDirectorId && !isActive) || !agentSelectedProjectId}
+                  disabled={!agentSelectedProjectId}
+                  onClick={() => {
+                    if (isActive) {
+                      onClearSelectedDirector();
+                      return;
+                    }
+                    onSelectDirector(director.id);
+                  }}
+                  onOpenOptions={agentSelectedProjectId ? () => {
+                    onSelectDirector(director.id);
+                    setShowDirectorProfile(true);
+                  } : undefined}
+                  ariaLabel={isActive ? `Close ${directorName} chat` : `Open ${directorName} chat`}
+                />
+              </div>
+            </section>
+          );
+        })}
+      </div>
 
-                {department === "Programming" ? (
-                  <div className="agentProgrammingLane">
-                    <AgentLandingCard
-                      name={directorName}
-                      color={director.color}
-                      roleLabel={director.landingRole}
-                      reminder={director.landingReminder}
-                      muted={!agentSelectedProjectId}
-                      disabled={!agentSelectedProjectId}
-                      onClick={() => handleSelectDirector(director.id)}
-                      ariaLabel={`Open ${director.label}`}
-                    />
-                    <div className="agentProgrammingSubAgentStack">
-                      {PROGRAMMING_SUB_AGENTS.map((subAgent) => (
-                        <AgentLandingCard
-                          key={subAgent.id}
-                          name={subAgent.name}
-                          color={subAgent.color}
-                          roleLabel={subAgent.roleLabel}
-                          reminder={subAgent.reminder}
-                          muted
-                          disabled={!agentSelectedProjectId}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="agentDepartmentContent">
-                    <AgentLandingCard
-                      name={directorName}
-                      color={director.color}
-                      roleLabel={director.landingRole}
-                      reminder={director.landingReminder}
-                      muted={!agentSelectedProjectId}
-                      disabled={!agentSelectedProjectId}
-                      onClick={() => handleSelectDirector(director.id)}
-                      ariaLabel={`Open ${director.label}`}
-                    />
-                  </div>
-                )}
-              </section>
-            );
-          })}
-        </div>
-      ) : agentSelectedProjectId ? (
-        /* Director chat view */
-        <>
-          <div className="conversationViewportShell">
-            <div className="chatViewportDivider" aria-hidden="true" />
-            <div className="agentContentLayout">
-              <div className="agentChatPane">
-                {selectedDirector?.focusModes && (
-                  <div className="directorFocusBar">
-                    {selectedDirector.focusModes.map((mode) => (
-                      <button
-                        key={mode}
-                        className={`focusModeBtn${activeFocusMode === mode ? " active" : ""}`}
-                        onClick={() => void handleFocusModeChange(mode)}
+      {showInlineDirectorChat ? (
+        <div className="agentInlineConversationShell">
+          <div className="chatViewportDivider" aria-hidden="true" />
+          <div className="agentContentLayout">
+            <div className="agentChatPane">
+              <div className="agentChatScroll slackChatScroll" ref={chatScrollRef}>
+                <div className="agentUnifiedConversation">
+                  {currentDirectorMessages.length === 0 ? (
+                    <div className="slackConversationItem">
+                      <div className="slackDaySeparator">
+                        <span className="slackDaySeparatorLabel">Today</span>
+                      </div>
+                      <div
+                        className="agentConvoMessage agentConvoMessage-assistant agentConvoMessage--intro"
+                        style={{ background: directorColor, color: "#fff" }}
                       >
-                        {formatFocusMode(mode)}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                <div className="agentChatScroll" ref={chatScrollRef}>
-                  <DirectorInfoPanel
-                    directorId={selectedDirectorId}
-                    focusMode={activeFocusMode}
-                    session={agentSession}
-                    projectId={agentSelectedProjectId}
-                    settings={settings}
-                    modelCatalog={modelCatalog}
-                    onSessionUpdate={onSessionUpdate}
-                    onUpdateAgentDefaults={onUpdateAgentDefaults}
-                    onNavigateToDirector={(id) => handleSelectDirector(id)}
-                    pushToast={pushToast}
-                  />
-
-                  {selectedDirectorId === "creative-director" && activeFocusMode === "conversation" && agentSession && (agentSession.danMemory.notes?.length ?? 0) > 0 && (
-                    <div className="danNotesIndicator">
-                      Dan has taken {agentSession.danMemory.notes.length} conversation note{agentSession.danMemory.notes.length !== 1 ? "s" : ""}
+                        <div className="agentConvoContent">What's on your mind?</div>
+                      </div>
                     </div>
-                  )}
-
-                  <div className="agentUnifiedConversation">
-                    {currentDirectorMessages.map((msg) => (
-                      <div key={msg.id} className={`agentConvoMessage agentConvoMessage-${msg.role}${msg.status === "working" ? " agentConvoMessage--working" : ""}`} style={msg.role === 'assistant' ? { background: directorColor, color: '#fff' } : undefined}>
+                  ) : null}
+                  {renderedDirectorMessages.map(({ message: msg, dayLabel }) => (
+                    <div key={msg.id} className="slackConversationItem">
+                      {dayLabel ? (
+                        <div className="slackDaySeparator">
+                          <span className="slackDaySeparatorLabel">{dayLabel}</span>
+                        </div>
+                      ) : null}
+                      <div
+                        className={`agentConvoMessage agentConvoMessage-${msg.role}${msg.status === "working" ? " agentConvoMessage--working" : ""}`}
+                        style={msg.role === "assistant" ? { background: directorColor, color: "#fff" } : undefined}
+                      >
                         <div className="agentConvoContent">
-                          {renderPingAwareMessageContent(msg)}
-                          {msg.status === "working" && (
-                            <span className="slackTypingDots slackTypingDots--inline">
+                          {msg.status === "working" ? (
+                            <span className="slackTypingDots">
                               <span className="slackDot" />
                               <span className="slackDot" />
                               <span className="slackDot" />
                             </span>
+                          ) : (
+                            renderPingAwareMessageContent(msg)
                           )}
                         </div>
                         <div className="slackMessageTimestamp">{formatSlackTimestamp(msg.createdAt)}</div>
                       </div>
-                    ))}
-                  </div>
-
-                  {lastRouteHint ? (
-                    <div className="agentRouteHint">
-                      <p>{lastRouteHint.reason}</p>
-                      <button
-                        className="primaryButton"
-                        onClick={() => handleSelectDirector(lastRouteHint.directorId)}
-                      >
-                        Go to {DIRECTOR_LABELS[lastRouteHint.directorId]}
-                      </button>
                     </div>
-                  ) : null}
+                  ))}
                 </div>
 
-                <div className="agentComposerFooter">
-                  <div className="composerShell">
-                    <textarea
-                      ref={composerInputRef}
-                      className="composerInput"
-                      value={inputValue}
-                      onChange={(e) => setInputValue(e.target.value)}
-                      placeholder={`Talk to ${DIRECTOR_NAMES[selectedDirectorId]} (${DIRECTOR_LABELS[selectedDirectorId]})...`}
-                      disabled={isLoading}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey) {
-                          e.preventDefault();
-                          void handleSend();
-                        }
-                      }}
-                    />
-                    <ComposerControlBar
-                      options={agentRuntimeOptions}
-                      modelCatalog={modelCatalog}
-                      hideAddFilesButton
-                      hideModelMenu
-                      hideThinkingMenu
-                      hidePlanningMenu
-                      hideSpeedMenu
-                      addFilesBusy={false}
-                      sendBusy={isLoading}
-                      isRunning={isLoading}
-                      onCodexModelChange={() => {}}
-                      onClaudeModelChange={() => {}}
-                      onReasoningChange={() => {}}
-                      onSpeedChange={() => {}}
-                      onPlanningModeChange={() => {}}
-                      onAddFiles={() => {}}
-                      onSubmit={() => void handleSend()}
-                      onStop={() => {}}
-                      submitLabel="Send"
-                    />
+                {lastRouteHint ? (
+                  <div className="agentRouteHint">
+                    <p>{lastRouteHint.reason}</p>
+                    <button
+                      className="primaryButton"
+                      onClick={() => onSelectDirector(lastRouteHint.directorId)}
+                    >
+                      Go to {DIRECTOR_LABELS[lastRouteHint.directorId]}
+                    </button>
                   </div>
+                ) : null}
+              </div>
+
+              <div className="slackComposerFooter">
+                <div className="composerShell slackComposerShellCompact">
+                  <textarea
+                    ref={composerInputRef}
+                    className="composerInput slackComposerInputCompact"
+                    value={inputValue}
+                    onChange={(e) => setInputValue(e.target.value)}
+                    placeholder={`Talk to ${DIRECTOR_NAMES[selectedDirectorId!]} (${DIRECTOR_LABELS[selectedDirectorId!]})...`}
+                    disabled={isLoading}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && !e.shiftKey) {
+                        e.preventDefault();
+                        void handleSend();
+                      }
+                    }}
+                  />
+                  <ComposerControlBar
+                    options={agentRuntimeOptions}
+                    modelCatalog={modelCatalog}
+                    hideAddFilesButton
+                    hideModelMenu
+                    hideThinkingMenu
+                    hidePlanningMenu
+                    hideSpeedMenu
+                    addFilesBusy={false}
+                    sendBusy={isLoading || !inputValue.trim()}
+                    isRunning={isLoading}
+                    onCodexModelChange={() => {}}
+                    onClaudeModelChange={() => {}}
+                    onReasoningChange={() => {}}
+                    onSpeedChange={() => {}}
+                    onPlanningModeChange={() => {}}
+                    onAddFiles={() => {}}
+                    onSubmit={() => void handleSend()}
+                    onStop={() => {}}
+                    submitLabel="Send"
+                  />
                 </div>
               </div>
             </div>
           </div>
-        </>
-      ) : (
-        <div className="placeholderPanel" style={{ marginTop: 48 }}>
-          <h4>{selectedDirector?.label ?? "Director"}</h4>
-          <p>Select a project above to start the director workflow.</p>
         </div>
+      ) : null}
+
+      {showAgentStructurePanel && (
+        <Modal title="Agent Structure" onClose={() => setShowAgentStructurePanel(false)}>
+          <div style={{ padding: '8px 0' }}>
+            <svg viewBox="0 0 640 380" width="100%" style={{ display: 'block' }}>
+              <line x1="320" y1="70" x2="110" y2="210" stroke="#555" strokeWidth="2" />
+              <line x1="320" y1="70" x2="460" y2="210" stroke="#555" strokeWidth="2" />
+              <line x1="460" y1="210" x2="350" y2="330" stroke="#555" strokeWidth="2" />
+              <line x1="460" y1="210" x2="570" y2="330" stroke="#555" strokeWidth="2" />
+              <circle cx="320" cy="70" r="44" fill="#991B1B" />
+              <text x="320" y="70" textAnchor="middle" dominantBaseline="middle" fill="white" fontSize="16" fontWeight="600">Jeff</text>
+              <circle cx="110" cy="210" r="44" fill="#C2410C" />
+              <text x="110" y="210" textAnchor="middle" dominantBaseline="middle" fill="white" fontSize="16" fontWeight="600">Dan</text>
+              <circle cx="460" cy="210" r="44" fill="#166534" />
+              <text x="460" y="210" textAnchor="middle" dominantBaseline="middle" fill="white" fontSize="16" fontWeight="600">Todd</text>
+              <circle cx="350" cy="330" r="44" fill="#A16207" />
+              <text x="350" y="330" textAnchor="middle" dominantBaseline="middle" fill="white" fontSize="16" fontWeight="600">Ping</text>
+              <circle cx="570" cy="330" r="44" fill="#5B21B6" />
+              <text x="570" y="330" textAnchor="middle" dominantBaseline="middle" fill="white" fontSize="16" fontWeight="600">Pong</text>
+            </svg>
+          </div>
+        </Modal>
       )}
 
       {showProgressPanel && agentSession && (
@@ -8400,7 +8604,7 @@ function AgentsPage({
               </div>
             </div>
             <div className="progressSection">
-              <h4>Brad — Validation</h4>
+              <h4>Pong — Validation</h4>
               <div className="progressItems">
                 <div className="progressItem"><span>Frequency</span><span>{agentSession.validationFrequency}</span></div>
                 <div className="progressItem"><span>Results</span><span>{agentSession.validationResults.length}</span></div>
@@ -8423,7 +8627,7 @@ function AgentsPage({
             projectId={agentSelectedProjectId}
             settings={settings}
             modelCatalog={modelCatalog}
-            onNavigateToDirector={setSelectedDirectorId}
+            onNavigateToDirector={onSelectDirector}
             onUpdateAgentDefaults={onUpdateAgentDefaults}
             onSessionUpdate={onSessionUpdate}
             pushToast={pushToast}
@@ -8626,7 +8830,7 @@ function SlackPage({
 
   const NAME_TO_DIRECTOR: Record<string, DirectorId> = {
     jeff: "project-manager", dan: "creative-director",
-    todd: "rd-director", ping: "programming-director", brad: "validation-director",
+    todd: "rd-director", ping: "programming-director", pong: "validation-director",
   };
 
   const handleSend = async () => {

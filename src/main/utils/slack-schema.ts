@@ -113,9 +113,15 @@ export const danSlackSchema = buildStrictObjectSchema({
     type: "array" as const,
     items: { type: "string" },
   },
-  sideNotesToAppend: {
-    type: "array" as const,
-    items: { type: "string" },
+  rawMemoriesToAppend: {
+    type: ["array", "null"] as const,
+    items: buildStrictObjectSchema({
+      content: { type: "string" },
+      relatedPillarNames: {
+        type: "array" as const,
+        items: { type: "string" },
+      },
+    }),
   },
   conversationStatus: { type: "string" },
   draftChangeSummary: {

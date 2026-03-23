@@ -178,6 +178,9 @@ const buildDanMemory = (session: {
       ?? null,
     archivedNotes: session.danMemory?.archivedNotes ?? session.danArchivedNotes ?? [],
     deletedNotes: session.danMemory?.deletedNotes ?? session.deletedNotes ?? [],
+    rawMemories: session.danMemory?.rawMemories ?? [],
+    forgottenMemories: session.danMemory?.forgottenMemories ?? [],
+    creativeHistory: session.danMemory?.creativeHistory ?? [],
   };
 };
 
@@ -490,7 +493,7 @@ export class ProjectStore {
     this.ensureColumn("agent_sessions", "deleted_notes_json", "TEXT DEFAULT '[]'");
     this.ensureColumn("agent_sessions", "dan_archived_notes_json", "TEXT DEFAULT '[]'");
     this.ensureColumn("agent_sessions", "ping_task_context_json", "TEXT");
-    this.ensureColumn("agent_sessions", "brad_task_context_json", "TEXT");
+    this.ensureColumn("agent_sessions", "pong_task_context_json", "TEXT");
     this.ensureColumn("agent_sessions", "slack_presence_guest_id", "TEXT");
     this.ensureColumn("agent_sessions", "dan_memory_json", "TEXT");
     this.ensureColumn("agent_sessions", "todd_memory_json", "TEXT");
@@ -1242,7 +1245,7 @@ export class ProjectStore {
       danArchivedNotes: JSON.parse((r.dan_archived_notes_json as string) || "[]"),
       deletedNotes: JSON.parse((r.deleted_notes_json as string) || "[]"),
       pingTaskContext: JSON.parse((r.ping_task_context_json as string) || "null"),
-      bradTaskContext: JSON.parse((r.brad_task_context_json as string) || "null"),
+      pongTaskContext: JSON.parse((r.pong_task_context_json as string) || "null"),
       projectCategory: ((r.project_category as string) || "general-project") as ProjectCategory,
       dynamicSubAgents: JSON.parse((r.dynamic_sub_agents_json as string) || "[]") as DynamicSubAgent[],
       slackMessages,
@@ -1318,7 +1321,7 @@ export class ProjectStore {
          slack_messages_json, slack_active_director_id, pending_approvals_json,
          director_settings_overrides_json, current_core_pillars_json,
          director_state_map_json, deleted_notes_json, dan_archived_notes_json,
-         ping_task_context_json, brad_task_context_json, slack_presence_guest_id,
+         ping_task_context_json, pong_task_context_json, slack_presence_guest_id,
          dan_memory_json, todd_memory_json, ping_memory_json
        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
@@ -1367,7 +1370,7 @@ export class ProjectStore {
         JSON.stringify(prepared.deletedNotes ?? []),
         JSON.stringify(prepared.danArchivedNotes ?? []),
         JSON.stringify(prepared.pingTaskContext),
-        JSON.stringify(prepared.bradTaskContext),
+        JSON.stringify(prepared.pongTaskContext),
         prepared.slackPresenceGuestId,
         JSON.stringify(prepared.danMemory),
         JSON.stringify(prepared.toddMemory),

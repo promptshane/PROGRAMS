@@ -17,7 +17,7 @@ test("validation director metadata reflects the expected information flow", () =
   assert.equal(metadata.sendsTo.some((link) => link.kind === "director" && link.directorId === "project-manager"), true);
 });
 
-test("project manager metadata keeps Brad out of automatic sends for this pass", () => {
+test("project manager metadata keeps Pong out of automatic sends for this pass", () => {
   const metadata = getDirectorMetadata("project-manager");
 
   assert.equal(metadata.outroMessage.length > 0, true);

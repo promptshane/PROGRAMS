@@ -11,22 +11,26 @@ export function FlowchartNode({
   layoutNode,
   isSelected,
   isVisible,
+  isCurrent,
   diffStatus,
   onSelect,
 }: {
   layoutNode: LayoutNode;
   isSelected: boolean;
   isVisible: boolean;
+  isCurrent?: boolean;
   diffStatus?: "added" | "modified" | "removed" | null;
-  onSelect: (id: string) => void;
+  onSelect?: (id: string) => void;
 }) {
   const { id, x, y, width, height, node } = layoutNode;
   const kindClass = `flowchartNode--${node.kind}`;
-  const stateClass = isSelected
-    ? "flowchartNode--selected"
-    : isVisible
-      ? ""
-      : "flowchartNode--hidden";
+  const stateClass = isCurrent
+    ? "flowchartNode--current"
+    : isSelected
+      ? "flowchartNode--selected"
+      : isVisible
+        ? ""
+        : "flowchartNode--hidden";
   const diffClass = diffStatus ? `flowchartNode--${diffStatus}` : "";
 
   return (
@@ -38,8 +42,9 @@ export function FlowchartNode({
         top: y,
         width,
         height,
+        cursor: onSelect ? "pointer" : "default",
       }}
-      onClick={() => onSelect(id)}
+      onClick={onSelect ? () => onSelect(id) : undefined}
       aria-label={`${node.label} (${KIND_LABELS[node.kind] ?? node.kind}): ${node.description}`}
       title={node.description}
     >

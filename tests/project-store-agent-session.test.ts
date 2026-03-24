@@ -160,6 +160,28 @@ try {
         content: "Hello team",
         createdAt: now,
       },
+      {
+        id: "slack-2",
+        role: "assistant",
+        directorId: "creative-director",
+        content: "Here is Dan's hard-memory report.",
+        createdAt: now,
+        status: "complete",
+        metadata: {
+          type: "hard-memory-report",
+          dataType: "danDraftCoreDetails",
+          directorId: "creative-director",
+          approvalId: "approval-1",
+          summary: "Confirm Dan core details",
+          currentState: "Current",
+          idealState: "Ideal",
+          changeSummary: ["Updated the function summary."],
+          draftCoreDetails: null,
+          roadmapVersions: null,
+          versionUpdates: null,
+          createdAt: now,
+        },
+      },
     ],
     slackActiveDirectorId: "project-manager",
     slackPresenceGuestId: "creative-director",
@@ -177,6 +199,8 @@ try {
     projectId: reloaded?.projectId ?? null,
     slackMessageCount: reloaded?.slackMessages.length ?? 0,
     firstSlackContent: reloaded?.slackMessages[0]?.content ?? null,
+    secondSlackMetadataType: reloaded?.slackMessages[1]?.metadata?.type ?? null,
+    secondSlackApprovalId: reloaded?.slackMessages[1]?.metadata?.approvalId ?? null,
     danArchivedNotes: reloaded?.danArchivedNotes ?? [],
     danSideNotes: reloaded?.danSideNotes ?? [],
     danDraftStatus: reloaded?.danDraftStatus ?? null,
@@ -205,8 +229,10 @@ try {
 
     const result = JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}");
     assert.equal(result.projectId, "project-1");
-    assert.equal(result.slackMessageCount, 1);
+    assert.equal(result.slackMessageCount, 2);
     assert.equal(result.firstSlackContent, "Hello team");
+    assert.equal(result.secondSlackMetadataType, "hard-memory-report");
+    assert.equal(result.secondSlackApprovalId, "approval-1");
     assert.deepEqual(result.danArchivedNotes, ["[2026-03-19T12:00:00.000Z | slack draft processed] captured note"]);
     assert.deepEqual(result.danSideNotes, ["Maybe keep the ambient onboarding sound optional."]);
     assert.equal(result.danDraftStatus, "gathering");

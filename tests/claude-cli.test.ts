@@ -74,6 +74,11 @@ test("buildClaudeAuthStatus handles signed-in, signed-out, incompatible, and run
     available: true,
     binaryPath: "/usr/local/bin/claude",
     version: "2.1.20",
+    cliAuth: {
+      loggedIn: true,
+      authMethod: "oauth",
+      apiProvider: "claude.ai",
+    },
     localAuth: {
       loggedIn: true,
       email: "user@example.com",
@@ -124,6 +129,11 @@ test("buildClaudeAuthStatus handles signed-in, signed-out, incompatible, and run
     available: true,
     binaryPath: "/usr/local/bin/claude",
     version: "2.1.20",
+    cliAuth: {
+      loggedIn: true,
+      authMethod: "oauth",
+      apiProvider: "claude.ai",
+    },
     localAuth: {
       loggedIn: true,
       email: "user@example.com",

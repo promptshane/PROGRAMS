@@ -20,18 +20,21 @@ export const RESEARCH_SLACK_RESPONSE_FIELDS = [
   ...STANDARD_SLACK_RESPONSE_FIELDS,
   "generalSummary",
   "projectSummary",
+  "notesToAppend",
 ] as const;
 
 export const TODD_VERSION_SLACK_RESPONSE_FIELDS = [
   ...STANDARD_SLACK_RESPONSE_FIELDS,
   "confirmationSuggested",
   "versions",
+  "notesToAppend",
 ] as const;
 
 export const TODD_UPDATE_SLACK_RESPONSE_FIELDS = [
   ...STANDARD_SLACK_RESPONSE_FIELDS,
   "confirmationSuggested",
   "updates",
+  "notesToAppend",
 ] as const;
 
 export const DAN_SLACK_RESPONSE_FIELDS = [
@@ -42,6 +45,7 @@ export const DAN_SLACK_RESPONSE_FIELDS = [
   "draftChangeSummary",
   "draftCoreDetails",
   "presenceAction",
+  "toddHandoffNotesToAppend",
 ] as const;
 
 export const PING_SLACK_RESPONSE_FIELDS = [
@@ -281,7 +285,9 @@ export const buildSlackResponseContract = (
       case "updates":
         return `- "updates": array|null. Required for Todd update-planning only. Each item must include title, description, versionLabel, dependencies, area, and skillsNeeded. Use null when you are only discussing.`;
       case "notesToAppend":
-        return `- "notesToAppend": string[]. Required for Dan only. Soft memory notes for this session. These are temporary working notes cleared when Dan leaves. Use [] when nothing new should be stored.`;
+        return directorId === "creative-director"
+          ? `- "notesToAppend": string[]. Required for Dan only. Soft memory notes for this session. These are temporary working notes cleared when Dan leaves. Use [] when nothing new should be stored.`
+          : `- "notesToAppend": string[]. Planning notes and working assumptions for Todd's soft memory. These persist through the session. Use [] when nothing new should be stored.`;
       case "rawMemoriesToAppend":
         return `- "rawMemoriesToAppend": array|null. Required for Dan only. Raw user inputs to store as back-up memory tied to pillars. Each item: {"content": string, "relatedPillarNames": string[]}. Use null when none apply.`;
       case "conversationStatus":
@@ -316,6 +322,8 @@ export const buildSlackResponseContract = (
         return `- "improvementAreas": string[]|null. Required for Pong compare mode. Use null when just discussing.`;
       case "comparisonSummary":
         return `- "comparisonSummary": string|null. Required for Pong compare mode. Use null when just discussing.`;
+      case "toddHandoffNotesToAppend":
+        return `- "toddHandoffNotesToAppend": string[]. Required for Dan only. Todd-bound planning observations (roadmap, build-order, implementation sequencing). These will be packaged and handed to Todd when Dan exits. Use [] when nothing applies.`;
       default:
         return `- "${field}": string|null.`;
     }

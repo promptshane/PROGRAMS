@@ -24,6 +24,10 @@ export const researchSlackSchema = buildStrictObjectSchema({
   handoffReason: { type: ["string", "null"] },
   currentState: { type: ["string", "null"] },
   idealState: { type: ["string", "null"] },
+  notesToAppend: {
+    type: "array" as const,
+    items: { type: "string" },
+  },
 });
 
 const toddVersionItemSchema = buildStrictObjectSchema({
@@ -45,6 +49,10 @@ export const toddVersionSlackSchema = buildStrictObjectSchema({
   versions: {
     type: ["array", "null"] as const,
     items: toddVersionItemSchema,
+  },
+  notesToAppend: {
+    type: "array" as const,
+    items: { type: "string" },
   },
 });
 
@@ -73,6 +81,10 @@ export const toddUpdateSlackSchema = buildStrictObjectSchema({
   updates: {
     type: ["array", "null"] as const,
     items: toddUpdateItemSchema,
+  },
+  notesToAppend: {
+    type: "array" as const,
+    items: { type: "string" },
   },
 });
 
@@ -133,6 +145,10 @@ export const danSlackSchema = buildStrictObjectSchema({
     type: ["object", "null"] as const,
   },
   presenceAction: { type: "string" },
+  toddHandoffNotesToAppend: {
+    type: "array" as const,
+    items: { type: "string" },
+  },
 });
 
 const pingRawReportSchema = buildStrictObjectSchema({

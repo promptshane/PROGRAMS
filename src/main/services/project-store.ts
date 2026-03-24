@@ -181,6 +181,7 @@ const buildDanMemory = (session: {
     rawMemories: session.danMemory?.rawMemories ?? [],
     forgottenMemories: session.danMemory?.forgottenMemories ?? [],
     creativeHistory: session.danMemory?.creativeHistory ?? [],
+    toddHandoffNotes: session.danMemory?.toddHandoffNotes ?? [],
   };
 };
 
@@ -221,6 +222,9 @@ const buildToddMemory = (session: {
     previousUpdateLog: session.toddMemory?.previousUpdateLog ?? [],
     troubleLog,
     codebaseIndexedMap: buildToddCodebaseIndexedMap(session, session.toddMemory?.codebaseIndexedMap ?? null),
+    notes: session.toddMemory?.notes ?? [],
+    pendingHandoff: session.toddMemory?.pendingHandoff ?? null,
+    backupNotes: session.toddMemory?.backupNotes ?? [],
   };
 };
 

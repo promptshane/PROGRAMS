@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { AgentSession, CorePillar, DirectorId, PendingApproval } from "../src/shared/types.ts";
+import type { AgentSession, CorePillar, DirectorId, HardMemoryReportMetadata, PendingApproval } from "../src/shared/types.ts";
 import { getDirectorMetadata } from "../src/shared/director-metadata.ts";
 import { buildPingLifecycleTranslationMetadata } from "../src/shared/ping-translations.ts";
 
@@ -713,6 +713,212 @@ test("Dan ready-to-confirm queues an approval and applying it confirms the draft
   assert.match(session.danArchivedNotes[0] ?? "", /dan draft confirmed/);
 });
 
+test("Dan DM ready-to-confirm turns attach hard-memory report metadata and keep it after approval", async () => {
+  const session = createSession();
+  session.slackMessages.push({
+    id: "user-dan-hard-memory",
+    role: "user",
+    directorId: null,
+    content: "Lock in the draft and show me the proposal.",
+    createdAt: NOW,
+  });
+
+  const harness = createBackendHarness([
+    createDanPayload({
+      response: "Here is the draft. Let me know if this is ready to store.",
+      conversationStatus: "ready-to-confirm",
+    }),
+  ]);
+  harness.setStoredSession(session);
+
+  const result = await (harness.backend.directorChat as Function)({
+    projectId: "project-1",
+    directorId: "creative-director",
+    message: "Lock in the draft and show me the proposal.",
+    provider: "codex",
+    model: "gpt-5.4",
+    claudeModel: "sonnet",
+    focusMode: null,
+  });
+
+  const metadata = result.message.metadata as HardMemoryReportMetadata | null;
+  assert.equal(metadata?.type, "hard-memory-report");
+  assert.equal(metadata?.dataType, "danDraftCoreDetails");
+  assert.equal(metadata?.directorId, "creative-director");
+  assert.equal(metadata?.approvalId, session.pendingApprovals[0]?.id ?? null);
+  assert.equal(metadata?.draftCoreDetails?.function?.summary, "Guide new users into the workspace with a focused onboarding flow.");
+  assert.deepEqual(metadata?.changeSummary, ["Added an onboarding flow and workspace landing sequence."]);
+  assert.equal(session.pendingApprovals.length, 1);
+
+  const approval = session.pendingApprovals[0] as PendingApproval;
+  await (harness.backend.approvePendingApproval as Function)({
+    projectId: session.projectId,
+    approvalId: approval.id,
+  });
+
+  const persistedReport = session.directorConversations["creative-director"]?.messages.find(
+    (message) => message.metadata?.type === "hard-memory-report",
+  );
+  const persistedMetadata = persistedReport?.metadata as HardMemoryReportMetadata | null;
+  assert.equal(persistedMetadata?.type, "hard-memory-report");
+  assert.equal(persistedMetadata?.approvalId, metadata?.approvalId ?? null);
+  assert.equal(session.pendingApprovals.length, 0);
+});
+
+test("Todd DM version-planning turns attach hard-memory report metadata and keep it after approval", async () => {
+  const session = createSession();
+  session.slackMessages.push({
+    id: "user-todd-version",
+    role: "user",
+    directorId: null,
+    content: "Build me a phased roadmap for the next release.",
+    createdAt: NOW,
+  });
+
+  const harness = createBackendHarness([
+    {
+      response: "The phased roadmap is ready.",
+      handoffTo: null,
+      handoffReason: null,
+      currentState: "We need a clear phased roadmap.",
+      idealState: "We have a concrete V1-V3 roadmap.",
+      confirmationSuggested: true,
+      versions: [
+        {
+          label: "V1",
+          description: "Ship the minimum viable experience.",
+          goals: ["Keep the first pass focused.", "Reduce setup friction."],
+        },
+        {
+          label: "V2",
+          description: "Add the next round of refinements.",
+          goals: ["Extend the core flow.", "Improve confidence."],
+        },
+      ],
+      notesToAppend: [],
+    },
+  ]);
+  harness.setStoredSession(session);
+
+  const result = await (harness.backend.directorChat as Function)({
+    projectId: "project-1",
+    directorId: "rd-director",
+    message: "Build me a phased roadmap for the next release.",
+    provider: "codex",
+    model: "gpt-5.4",
+    claudeModel: "sonnet",
+    focusMode: "version-planning",
+  });
+
+  const metadata = result.message.metadata as HardMemoryReportMetadata | null;
+  assert.equal(metadata?.type, "hard-memory-report");
+  assert.equal(metadata?.dataType, "versions");
+  assert.equal(metadata?.directorId, "rd-director");
+  assert.equal(metadata?.approvalId, session.pendingApprovals[0]?.id ?? null);
+  assert.deepEqual(metadata?.roadmapVersions?.map((version) => version.label), ["V1", "V2"]);
+  assert.equal(metadata?.summary, "The phased roadmap is ready.");
+  assert.equal(session.pendingApprovals.length, 1);
+
+  const approval = session.pendingApprovals[0] as PendingApproval;
+  await (harness.backend.approvePendingApproval as Function)({
+    projectId: session.projectId,
+    approvalId: approval.id,
+  });
+
+  const persistedReport = session.directorConversations["rd-director"]?.messages.find(
+    (message) => message.metadata?.type === "hard-memory-report",
+  );
+  const persistedMetadata = persistedReport?.metadata as HardMemoryReportMetadata | null;
+  assert.equal(persistedMetadata?.type, "hard-memory-report");
+  assert.equal(persistedMetadata?.approvalId, metadata?.approvalId ?? null);
+  assert.equal(session.pendingApprovals.length, 0);
+});
+
+test("Todd Slack update-planning turns attach hard-memory report metadata and keep it after approval", async () => {
+  const session = createSession();
+  session.corePillars = [
+    {
+      id: "onboarding",
+      name: "Onboarding",
+      pillarType: "core",
+      function: createDetail("Guide the user into the product."),
+      thesis: createDetail("The first pass should feel obvious."),
+      corePillars: [],
+      fullFlow: createDetail("Move from setup into the workspace."),
+      vibes: [],
+      description: "Onboarding flow",
+      connectedPillarIds: [],
+      assumptionText: null,
+      assumptionSource: null,
+      order: 1,
+    },
+  ];
+  session.slackMessages.push({
+    id: "user-todd-update",
+    role: "user",
+    directorId: null,
+    content: "Break this into grouped updates for the implementation plan.",
+    createdAt: NOW,
+  });
+
+  const harness = createBackendHarness([
+    {
+      response: "Grouped updates are ready.",
+      handoffTo: null,
+      handoffReason: null,
+      currentState: "We need smaller implementation slices.",
+      idealState: "We have grouped updates with clear dependencies.",
+      confirmationSuggested: true,
+      updates: [
+        {
+          title: "Ship the onboarding shell",
+          description: "Build the first pass of the onboarding experience.",
+          versionLabel: "V1",
+          dependencies: ["Navigation"],
+          area: "Onboarding",
+          skillsNeeded: ["React", "Routing"],
+        },
+      ],
+      notesToAppend: [],
+    },
+  ]);
+
+  const result = await (harness.backend.runSlackDirectorTurn as Function)({
+    session,
+    project: harness.project,
+    settings: harness.settings,
+    provider: "codex",
+    model: "gpt-5.4",
+    claudeModel: "sonnet",
+    directorId: "rd-director",
+    userMessage: "Break this into grouped updates for the implementation plan.",
+    mode: "update-planning",
+  });
+
+  const metadata = result.assistantMessage.metadata as HardMemoryReportMetadata | null;
+  assert.equal(metadata?.type, "hard-memory-report");
+  assert.equal(metadata?.dataType, "versionUpdates");
+  assert.equal(metadata?.directorId, "rd-director");
+  assert.equal(metadata?.approvalId, session.pendingApprovals[0]?.id ?? null);
+  assert.equal(metadata?.versionUpdates?.[0]?.area, "Onboarding");
+  assert.equal(metadata?.versionUpdates?.[0]?.skillsNeeded[0], "React");
+  assert.equal(session.pendingApprovals.length, 1);
+
+  const approval = session.pendingApprovals[0] as PendingApproval;
+  await (harness.backend.approvePendingApproval as Function)({
+    projectId: session.projectId,
+    approvalId: approval.id,
+  });
+
+  const persistedReport = session.slackMessages.find(
+    (message) => message.metadata?.type === "hard-memory-report",
+  );
+  const persistedMetadata = persistedReport?.metadata as HardMemoryReportMetadata | null;
+  assert.equal(persistedMetadata?.type, "hard-memory-report");
+  assert.equal(persistedMetadata?.approvalId, metadata?.approvalId ?? null);
+  assert.equal(session.pendingApprovals.length, 0);
+});
+
 test("Dan uses the same reducer path in DM and Slack, and Slack presence changes on handoff or exit", async () => {
   const dmSession = createSession();
   const slackSession = createSession();
@@ -910,9 +1116,11 @@ test("DM focus mode inference resolves from the message when focusMode is omitte
       handoffReason: null,
       currentState: null,
       idealState: null,
+      zhResponse: "比较完成。",
+      enTranslation: "Comparison complete.",
       passed: null,
       improvementAreas: null,
-      summary: null,
+      comparisonSummary: null,
     },
     promptPattern: /You are in Compare mode/,
   });

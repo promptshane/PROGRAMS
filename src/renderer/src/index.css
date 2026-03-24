@@ -2315,6 +2315,12 @@ select {
   overflow-y: auto;
 }
 
+.conceptDetailsPanel {
+  display: grid;
+  gap: 16px;
+  padding: 14px 16px 16px;
+}
+
 .bottomSheetOverlay {
   position: fixed;
   inset: 0;
@@ -4769,6 +4775,11 @@ select {
   pointer-events: auto;
 }
 
+.agentLandingMenu--bottom {
+  top: auto;
+  bottom: 10px;
+}
+
 .agentLandingAvatar {
   width: 34px;
   height: 34px;
@@ -4829,6 +4840,20 @@ select {
 
 .agentLandingCard--muted .agentLandingFooter {
   color: rgba(248, 251, 253, 0.78);
+}
+
+.agentLandingCard:not(.agentLandingCard--active) .agentLandingTile:focus-within {
+  border-color: transparent;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16), var(--shadow-sm);
+}
+
+.agentLandingCard:not(.agentLandingCard--active) .agentLandingTile:focus-within::before {
+  opacity: 0.58;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+
+.agentLandingCard:not(.agentLandingCard--active) .agentLandingTile:focus-within::after {
+  background: rgba(255, 255, 255, 0.05);
 }
 
 .agentTileDisabled {
@@ -5803,6 +5828,24 @@ select {
     flex-direction: column;
     align-items: stretch;
   }
+
+  .agentContentLayout {
+    flex-direction: column;
+  }
+
+  .agentChatPane {
+    min-height: 52vh;
+  }
+
+  .slackResearchPanel {
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    height: auto;
+    max-height: 42vh;
+    border-left: none;
+    border-top: 1px solid var(--border, #333);
+  }
 }
 
 .agentInfoTabs {
@@ -6389,6 +6432,7 @@ select {
 }
 
 .agentConvoMessage {
+  position: relative;
   padding: 10px 14px;
   border-radius: 16px;
   font-size: 0.8125rem;
@@ -6452,6 +6496,18 @@ select {
   min-height: 28px;
   display: flex;
   align-items: center;
+}
+
+.agentConvoMessage--hard-memory-report {
+  padding-bottom: 32px;
+}
+
+.agentConvoMessage--hard-memory-report .slackViewMoreButton--report {
+  position: absolute;
+  left: 12px;
+  bottom: 10px;
+  margin-top: 0;
+  z-index: 1;
 }
 @keyframes workingPulse {
   0%, 100% { opacity: 1; }
@@ -6790,7 +6846,8 @@ select {
 }
 
 .slackDetailsProgressCard {
-  align-content: start;
+  display: flex;
+  flex-direction: column;
   min-height: 220px;
 }
 
@@ -6805,6 +6862,47 @@ select {
   margin: 0;
   font-size: 0.95rem;
   color: var(--text);
+}
+
+.slackDetailsProgressCardBody {
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
+}
+
+.slackDetailsProgressCardFooter {
+  margin-top: auto;
+  display: flex;
+  justify-content: flex-start;
+}
+
+.historyLogDayRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 12px 18px;
+  background: none;
+  border: none;
+  border-top: 1px solid var(--border);
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.15s;
+}
+
+.historyLogDayRow:hover {
+  background: color-mix(in srgb, var(--panel-soft) 60%, transparent);
+}
+
+.historyLogDayLabel {
+  font-size: 13px;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.historyLogDayCount {
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .slackDetailsSegmentedControl {
@@ -6976,6 +7074,16 @@ select {
   background: rgba(255, 255, 255, 0.2);
 }
 
+.slackViewMoreButton--report {
+  background: color-mix(in srgb, #ef4444 18%, transparent);
+  border-color: color-mix(in srgb, #ef4444 70%, transparent);
+  color: #fff;
+}
+
+.slackViewMoreButton--report:hover {
+  background: color-mix(in srgb, #ef4444 26%, transparent);
+}
+
 /* --- Slack Research Panel --- */
 .slackResearchPanel {
   width: 380px;
@@ -7023,6 +7131,62 @@ select {
 }
 .slackResearchPanelBody p {
   margin: 0;
+}
+
+.hardMemoryReportPanel {
+  background: color-mix(in srgb, var(--panel, #1e1e1e) 94%, transparent);
+}
+
+.hardMemoryReportPanelHeader {
+  align-items: flex-start;
+}
+
+.hardMemoryReportPanelHeaderText {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.hardMemoryReportPanelHeaderText p {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.hardMemoryReportPanelMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 0.68rem;
+  color: var(--muted, #888);
+}
+
+.hardMemoryReportPanelMeta span {
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  background: color-mix(in srgb, var(--panel-soft) 80%, transparent);
+}
+
+.hardMemoryReportPanelBody {
+  gap: 12px;
+}
+
+.hardMemoryReportSections {
+  display: grid;
+  gap: 12px;
+}
+
+.hardMemoryReportActions {
+  margin-top: 4px;
+}
+
+.hardMemoryReportArchivedCopy {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--muted, #888);
+  line-height: 1.45;
 }
 
 .slackUpdateList {
@@ -7997,6 +8161,53 @@ select {
 
 .directorProfilePanelContent .agentInfoPanel {
   margin: 0;
+}
+
+.directorProfileLowerGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.directorProfileLowerGrid > :only-child {
+  grid-column: 1 / -1;
+}
+
+@media (max-width: 900px) {
+  .directorProfileLowerGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.memoryHandoffBadge {
+  display: inline-flex;
+  padding: 2px 8px;
+  border-radius: 8px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-left: 6px;
+  vertical-align: middle;
+}
+
+.memoryHandoffBadge--handoff {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.memoryHandoffBadge--dan {
+  background: color-mix(in srgb, var(--warning, #e8a735) 18%, transparent);
+  color: var(--warning, #e8a735);
+  border: 1px solid color-mix(in srgb, var(--warning, #e8a735) 30%, transparent);
+}
+
+.memoryPendingHandoffCard {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--warning, #e8a735) 30%, transparent);
+  background: color-mix(in srgb, var(--warning, #e8a735) 8%, var(--panel-soft));
 }
 
 .directorProfileAvatar {

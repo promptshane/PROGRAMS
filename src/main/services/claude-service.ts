@@ -1,7 +1,8 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { access, readFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import readline from "node:readline";
 import { z } from "zod";
 import {
@@ -22,11 +23,14 @@ import {
   parseClaudeCliFeatures,
   parseClaudeLocalAuthMetadata,
 } from "../utils/claude-cli.ts";
-import { execCommand, getCommandEnv } from "../utils/process.ts";
+import { execFileCommand, execCommand, getCommandEnv } from "../utils/process.ts";
+import { buildClaudeOneShotSettingsArg, resolveOneShotReasoningEffort } from "../utils/one-shot-runtime.ts";
 import {
-  buildClaudeOneShotSettingsArg,
-  resolveOneShotReasoningEffort,
-} from "../utils/one-shot-runtime.ts";
+  CLAUDE_USAGE_RATE_LIMITS_ENV,
+  buildClaudeUsageProbeSettingsArg,
+  parseClaudeStatusLineUsageWindows,
+  type ClaudeUsageWindowData,
+} from "../utils/claude-usage.ts";
 import type {
   ClaudeConnectionTestResult,
   ClaudeAuthStatus,
@@ -125,6 +129,7 @@ Rules:
 `.trim();
 
 const DAY_IN_MS = 24 * 60 * 60 * 1000;
+const CLAUDE_USAGE_PROBE_PROMPT = "Reply with exactly OK.";
 
 const formatClaudeNumber = (value: number): string =>
   new Intl.NumberFormat(undefined, {
@@ -169,12 +174,22 @@ const parseClaudeDay = (value: string): number | null => {
   return parseClaudeDate(value)?.getTime() ?? null;
 };
 
-interface ClaudeUsageWindowData {
-  label: string;
-  usedPercent: number;
-  resetsAt: string | null;
-  windowDurationMins: number | null;
-}
+const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
+  let timeout: NodeJS.Timeout | undefined;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error("timeout")), ms);
+      }),
+    ]);
+  } finally {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  }
+};
 
 const parseResetExpression = (expr: string): string | null => {
   const cleaned = expr.replace(/\bat\b/gi, "").replace(/\bon\b/gi, "").trim();
@@ -251,28 +266,6 @@ const parseClaudeUsageWindows = (text: string): ClaudeUsageWindowData[] | null =
 
 const sumClaudeTokens = (entry: ClaudeDailyModelTokenEntry | undefined): number =>
   Object.values(entry?.tokensByModel ?? {}).reduce((total, value) => total + value, 0);
-
-const sumClaudeActivity = (entries: ClaudeDailyActivityEntry[]) =>
-  entries.reduce(
-    (summary, entry) => ({
-      messageCount: summary.messageCount + entry.messageCount,
-      sessionCount: summary.sessionCount + entry.sessionCount,
-      toolCallCount: summary.toolCallCount + entry.toolCallCount,
-    }),
-    {
-      messageCount: 0,
-      sessionCount: 0,
-      toolCallCount: 0,
-    },
-  );
-
-const buildClaudeDetailLabel = (summary: ReturnType<typeof sumClaudeActivity>, lead: string): string => {
-  const parts = [lead, `${formatClaudeNumber(summary.sessionCount)} sessions`, `${formatClaudeNumber(summary.messageCount)} messages`];
-  if (summary.toolCallCount > 0) {
-    parts.push(`${formatClaudeNumber(summary.toolCallCount)} tool calls`);
-  }
-  return parts.join(" · ");
-};
 
 const formatContextPaths = (contextPaths: string[]): string =>
   contextPaths.length
@@ -502,11 +495,13 @@ export class ClaudeService {
   private readonly activeProcesses = new Map<string, ChildProcess>();
   private readonly pendingDiffRefresh = new Set<string>();
   private pendingLoginStdin: import("stream").Writable | null = null;
+  private readonly emit: Emit;
+  private readonly openExternal?: (url: string) => Promise<void>;
 
-  constructor(
-    private readonly emit: Emit,
-    private readonly openExternal?: (url: string) => Promise<void>,
-  ) {}
+  constructor(emit: Emit, openExternal?: (url: string) => Promise<void>) {
+    this.emit = emit;
+    this.openExternal = openExternal;
+  }
 
   getActivePlan(projectId: string): PlanDraft | null {
     return this.planDrafts.get(projectId) ?? null;
@@ -564,9 +559,8 @@ export class ClaudeService {
   async getUsage(settings: Settings): Promise<ProviderUsage> {
     const auth = await this.getAuthStatus(settings);
 
-    // Try live rate limit data via CLI first
     if (auth.available && auth.loggedIn && auth.binaryPath) {
-      const liveWindows = await this.readUsageWindows(auth.binaryPath);
+      const liveWindows = await this.readUsageWindows(auth.binaryPath, settings);
       if (liveWindows && liveWindows.length > 0) {
         return {
           status: "ready",
@@ -586,21 +580,8 @@ export class ClaudeService {
     const statsCache = await this.readStatsCache();
     if (statsCache) {
       const latestDayTimestamp = parseClaudeDay(statsCache.lastComputedDate);
-
-      // Recent (5h) — today's activity as a rolling-window analogue
-      const latestActivity = statsCache.dailyActivity.at(-1);
       const latestTokenEntry = statsCache.dailyModelTokens.at(-1);
       const latestTokens = sumClaudeTokens(latestTokenEntry);
-      const latestActivitySummary = latestActivity ? sumClaudeActivity([latestActivity]) : sumClaudeActivity([]);
-
-      // This Week — last 7 days
-      const weekActivity =
-        latestDayTimestamp === null
-          ? statsCache.dailyActivity
-          : statsCache.dailyActivity.filter((entry) => {
-              const entryDay = parseClaudeDay(entry.date);
-              return entryDay !== null && latestDayTimestamp - entryDay <= 6 * DAY_IN_MS;
-            });
       const weekTokenEntries =
         latestDayTimestamp === null
           ? statsCache.dailyModelTokens
@@ -609,7 +590,6 @@ export class ClaudeService {
               return entryDay !== null && latestDayTimestamp - entryDay <= 6 * DAY_IN_MS;
             });
       const weekTokens = weekTokenEntries.reduce((total, entry) => total + sumClaudeTokens(entry), 0);
-      const weekActivitySummary = sumClaudeActivity(weekActivity);
 
       const windows = [
         {
@@ -630,15 +610,9 @@ export class ClaudeService {
         },
       ];
 
-      let note = `Activity through ${formatClaudeDateLabel(statsCache.lastComputedDate)}. Claude does not expose rate limits — these are activity metrics.`;
-      if (!auth.available) {
-        note = `${note} Install Claude Code to keep this up to date.`;
-      } else if (!auth.loggedIn) {
-        note = `${note} Sign in to Claude Code to refresh.`;
-      } else if (!auth.ready) {
+      let note = `Live rate limits were not available for this session, so PROGRAMS is showing Claude activity history through ${formatClaudeDateLabel(statsCache.lastComputedDate)}.`;
+      if (!auth.ready) {
         note = `${note} ${auth.runtimeErrorMessage ?? "PROGRAMS needs a newer Claude Code install to refresh."}`;
-      } else {
-        note = `${note} Check console.anthropic.com for billing details.`;
       }
 
       return {
@@ -1495,16 +1469,119 @@ export class ClaudeService {
     return parseClaudeCliFeatures(helpText);
   }
 
-  private async readUsageWindows(binaryPath: string): Promise<ClaudeUsageWindowData[] | null> {
+  private async readUsageWindows(binaryPath: string, settings: Settings): Promise<ClaudeUsageWindowData[] | null> {
     try {
-      const withTimeout = <T>(p: Promise<T>, ms: number) =>
-        Promise.race([p, new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), ms))]);
-      const result = await withTimeout(
-        execCommand(`"${binaryPath}" -p "/status" --print --max-turns 1`, process.cwd()),
+      const liveWindows = await this.readUsageRateLimitWindows(binaryPath, settings);
+      if (liveWindows && liveWindows.length > 0) {
+        return liveWindows;
+      }
+
+      const statusWindows = await this.readUsageStatusWindows(binaryPath);
+      if (statusWindows && statusWindows.length > 0) {
+        return statusWindows;
+      }
+
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async readUsageRateLimitWindows(
+    binaryPath: string,
+    settings: Settings,
+  ): Promise<ClaudeUsageWindowData[] | null> {
+    const tempDir = await mkdtemp(join(tmpdir(), "programs-claude-rate-limits-"));
+    const capturePath = join(tempDir, "statusline.json");
+    const claudeConfigDir = join(tempDir, ".claude");
+    const claudeSettingsPath = join(claudeConfigDir, "settings.json");
+    let child: ChildProcess | null = null;
+
+    try {
+      await mkdir(claudeConfigDir, { recursive: true });
+
+      const probeSettings = JSON.parse(buildClaudeUsageProbeSettingsArg()) as Record<string, unknown>;
+      probeSettings.model = settings.advancedDefaults.claudeModel;
+      await writeFile(claudeSettingsPath, `${JSON.stringify(probeSettings, null, 2)}\n`, "utf8");
+
+      const env = {
+        ...process.env,
+        [CLAUDE_USAGE_RATE_LIMITS_ENV]: capturePath,
+      };
+
+      child = spawn(binaryPath, [CLAUDE_USAGE_PROBE_PROMPT], {
+        cwd: tempDir,
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      const raw = await withTimeout(this.readStatusLineCapture(capturePath, child), 10_000);
+      return raw ? parseClaudeStatusLineUsageWindows(raw) : null;
+    } catch {
+      return null;
+    } finally {
+      if (child && child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGTERM");
+      }
+
+      if (child) {
+        const runningChild = child;
+        await Promise.race([
+          new Promise<void>((resolve) => {
+            if (runningChild.exitCode !== null || runningChild.signalCode !== null) {
+              resolve();
+              return;
+            }
+
+            runningChild.once("close", () => resolve());
+          }),
+          new Promise((resolve) => setTimeout(resolve, 1500)),
+        ]).catch(() => undefined);
+
+        if (runningChild.exitCode === null && runningChild.signalCode === null) {
+          runningChild.kill("SIGKILL");
+        }
+      }
+
+      await rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+
+  private async readStatusLineCapture(path: string, child?: ChildProcess | null): Promise<string | null> {
+    for (let attempt = 0; attempt < 20; attempt++) {
+      if (child && (child.exitCode !== null || child.signalCode !== null)) {
+        return null;
+      }
+
+      try {
+        const raw = await readFile(path, "utf8");
+        if (!raw.trim()) {
+          continue;
+        }
+
+        JSON.parse(raw);
+        return raw;
+      } catch {
+        // The status line hook may still be flushing its final write.
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+
+    return null;
+  }
+
+  private async readUsageStatusWindows(binaryPath: string): Promise<ClaudeUsageWindowData[] | null> {
+    try {
+      const output = await withTimeout(
+        execFileCommand(binaryPath, ["-p", "/status", "--print", "--max-turns", "1"], process.cwd()),
         10_000,
       );
-      const text = `${result.stdout}\n${result.stderr}`.trim();
-      if (!text) return null;
+      const text = `${output.stdout}\n${output.stderr}`.trim();
+      if (!text) {
+        return null;
+      }
+
       return parseClaudeUsageWindows(text);
     } catch {
       return null;

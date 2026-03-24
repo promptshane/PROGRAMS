@@ -57,6 +57,38 @@ test("sanitizeSlackMessages repairs malformed legacy Slack assistant messages", 
   assert.equal(messages[1]?.content, "Keep this one.");
 });
 
+test("sanitizeSlackMessages preserves hard-memory report metadata", () => {
+  const hardMemoryReport = {
+    type: "hard-memory-report",
+    dataType: "danDraftCoreDetails",
+    directorId: "creative-director",
+    approvalId: "approval-1",
+    summary: "Confirm Dan's core details draft.",
+    currentState: "Current",
+    idealState: "Ideal",
+    changeSummary: ["Updated the function summary."],
+    draftCoreDetails: null,
+    roadmapVersions: null,
+    versionUpdates: null,
+    createdAt: "2026-03-19T12:00:00.000Z",
+  } as const;
+
+  const { messages, changed } = sanitizeSlackMessages([
+    {
+      id: "msg-1",
+      role: "assistant",
+      directorId: "creative-director",
+      content: "Here is the proposal.",
+      createdAt: "2026-03-19T12:00:00.000Z",
+      metadata: hardMemoryReport,
+    },
+  ]);
+
+  assert.equal(changed, true);
+  assert.equal(messages.length, 1);
+  assert.deepEqual(messages[0]?.metadata, hardMemoryReport);
+});
+
 test("sanitizeDirectorStateMap keeps string assumptions and drops malformed entries", () => {
   const { directorStateMap, changed } = sanitizeDirectorStateMap({
     "rd-director": {

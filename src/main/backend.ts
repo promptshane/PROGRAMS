@@ -97,6 +97,9 @@ import {
   normalizeDirectorId,
   SLACK_CHAT_DISABLED_MESSAGE,
   SLACK_CHAT_ENABLED,
+  type HardMemoryReportDataType,
+  type HardMemoryReportMetadata,
+  type HardMemoryReportUpdate,
 } from "@shared/types";
 import {
   BRANCH_PILLAR_TYPES,
@@ -548,6 +551,11 @@ interface DanSlackDraftCoreDetails {
 
 type DanPresenceAction = "stay" | "exit";
 
+interface DanSharedTurnResult {
+  presenceAction: DanPresenceAction;
+  hardMemoryApprovalId: string | null;
+}
+
 const SLACK_HISTORY_LIMIT = 12;
 const AUTO_SLACK_HANDOFF_LIMIT = 4;
 const DAN_SIDE_NOTE_LIMIT = 4;
@@ -931,6 +939,7 @@ const syncAgentMemories = (session: AgentSession): AgentSession => {
       ? [...(session.danMemory!.forgottenMemories ?? [])]
       : [...(session.danSideNotes ?? []), ...(session.deletedNotes ?? [])],
     creativeHistory: hasDanMemory ? [...(session.danMemory!.creativeHistory ?? [])] : [],
+    toddHandoffNotes: hasDanMemory ? [...(session.danMemory!.toddHandoffNotes ?? [])] : [],
   };
 
   const toddMemory: ToddMemory = {
@@ -942,6 +951,9 @@ const syncAgentMemories = (session: AgentSession): AgentSession => {
     previousUpdateLog: hasToddMemory ? [...session.toddMemory!.previousUpdateLog] : [],
     troubleLog: hasToddMemory ? [...session.toddMemory!.troubleLog] : [],
     codebaseIndexedMap: buildToddCodebaseMapFromSession(session, hasToddMemory ? session.toddMemory!.codebaseIndexedMap ?? null : null),
+    notes: hasToddMemory ? [...(session.toddMemory!.notes ?? [])] : [],
+    pendingHandoff: hasToddMemory ? session.toddMemory!.pendingHandoff ?? null : null,
+    backupNotes: hasToddMemory ? [...(session.toddMemory!.backupNotes ?? [])] : [],
   };
 
   const pingMemory: PingMemory = {
@@ -1341,6 +1353,10 @@ function buildDanSharedPrompt(args: {
   const softNotesSection = softNotes.length > 0
     ? `Soft Memory (Session Notes):\n${softNotes.map((note) => `- ${note}`).join("\n")}`
     : "Soft Memory (Session Notes):\n- None yet.";
+  const toddHandoffNotes = session.danMemory?.toddHandoffNotes ?? [];
+  const toddHandoffSection = toddHandoffNotes.length > 0
+    ? `\nTodd-Bound Handoff Notes (planning items to pass to Todd):\n${toddHandoffNotes.map((note) => `- ${note}`).join("\n")}`
+    : "";
   const backupSection = formatDanBackupMemoryForRecall(currentMessage, session);
   const surfaceHint = surface === "slack"
     ? "You are replying in the team Slack flow. Jeff may still coordinate overall, but this turn is yours. Stay present unless you are explicitly stepping out."
@@ -1368,6 +1384,9 @@ Core operating rules:
 - Always set "currentState" to null. You do not track implementation state.
 - "handoffTo" should be null unless another director truly needs to act next.
 - Set "presenceAction" to "stay" unless you are explicitly stepping out.
+- Recognize when the user mentions roadmap thinking, build-order logic, implementation sequencing, dependency logic, or "first do X then Y then Z". These belong to Todd's world.
+- Use "toddHandoffNotesToAppend" to capture these Todd-bound planning observations. Do NOT store them in "notesToAppend". They will be packaged and handed to Todd when you exit or confirm.
+- Continue the creative conversation normally — do not ignore Todd-bound information, just route it correctly.
 
 Creative hierarchy management:
 - You can restructure the hierarchy at any time: move, merge, split, retitle, or reword pillars.
@@ -1388,7 +1407,7 @@ ${buildDanFocusHint(focusMode)}
 
 ${hardMemorySection}
 ${draftContext}
-${softNotesSection}
+${softNotesSection}${toddHandoffSection}
 ${formatDanVibeSummary(session)}${backupSection}
 ${conversationSection}
 ${buildSlackResponseContract("creative-director", "codebase-analysis")}`.trim();
@@ -1787,6 +1806,12 @@ ${buildSlackResponseContract(directorId, mode)}`;
 
   if (directorId === "rd-director") {
     const toddCoreContext = formatScopedCoreDetails(session, { confirmedOnly: true, includeCurrent: true, includeIdeal: true });
+    const toddPendingHandoff = session.toddMemory?.pendingHandoff
+      ? `\nPending Handoff from Dan:\nSummary: ${session.toddMemory.pendingHandoff.summary}\nContext: ${session.toddMemory.pendingHandoff.context}\nRaw inputs:\n${session.toddMemory.pendingHandoff.rawInputs.map((i) => `- ${i}`).join("\n")}\nReceived: ${session.toddMemory.pendingHandoff.receivedAt}\n\nAcknowledge this handoff. Let the user know what Dan passed along and confirm whether it aligns with their planning intent.\n`
+      : "";
+    const toddNotesSection = (session.toddMemory?.notes ?? []).length > 0
+      ? `\nPlanning Notes (working assumptions):\n${session.toddMemory!.notes.map((note) => `- ${note}`).join("\n")}`
+      : "";
     return `You are Todd, the R&D Director for "${projectName}".
 You are in a team Slack channel. Your role:
 - Analyze technical questions, repo architecture, update planning, best practices, and product direction
@@ -1800,6 +1825,7 @@ You are in a team Slack channel. Your role:
     ? 'Provide "generalSummary" and "projectSummary" only as external-research summaries for this turn.'
     : 'Do not use external web research summaries in this mode; keep the answer grounded in repo analysis and confirmed project context.'}
 - Set handoffTo to null unless another director needs to act on your findings
+- Use "notesToAppend" to store planning notes and working assumptions as soft memory. Use [] when nothing new should be stored.
 - Be conversational and direct
 
 Valid director IDs for handoff (use the exact ID string, not the name):
@@ -1812,7 +1838,7 @@ Current project status:
 ${statusContext}
 
 ${toddCoreContext}
-${stateContext}
+${stateContext}${toddPendingHandoff}${toddNotesSection}
 ${conversationSection}
 ${buildSlackResponseContract(directorId, mode)}`;
   }
@@ -2340,6 +2366,12 @@ Respond as JSON: {"response": string, "routeTo": string|null, "routeReason": str
     }
 
     case "rd-director": {
+      const toddPendingHandoffDm = session.toddMemory?.pendingHandoff
+        ? `\nPending Handoff from Dan:\nSummary: ${session.toddMemory.pendingHandoff.summary}\nContext: ${session.toddMemory.pendingHandoff.context}\nRaw inputs:\n${session.toddMemory.pendingHandoff.rawInputs.map((i) => `- ${i}`).join("\n")}\nReceived: ${session.toddMemory.pendingHandoff.receivedAt}\n\nAcknowledge this handoff. Let the user know what Dan passed along and confirm whether it aligns with their planning intent.\n`
+        : "";
+      const toddNotesSectionDm = (session.toddMemory?.notes ?? []).length > 0
+        ? `\nPlanning Notes (working assumptions):\n${session.toddMemory!.notes.map((note) => `- ${note}`).join("\n")}`
+        : "";
       if (focusMode === "research") {
         const feasContext = session.feasibilityAssessments.length > 0
           ? `\nExisting feasibility assessments:\n${session.feasibilityAssessments.map((a) => `- ${a.area} [${a.complexity}]: ${a.assessment}`).join("\n")}`
@@ -2351,14 +2383,15 @@ You are in Research mode — researching what is possible given the user's const
 - Recommend stack/technology decisions
 - Lock in exactly what technical bridges/APIs are needed for the total function
 - Plan only from confirmed concept details plus your current codebase map
+- Use "notesToAppend" to store planning notes and working assumptions as soft memory. Use [] when nothing new should be stored.
 
 ${coreContext}
 ${toddCodebaseContext}
-${feasContext}
+${feasContext}${toddPendingHandoffDm}${toddNotesSectionDm}
 ${conversationSection}
 When you have feasibility assessments to propose, include them in the feasibilityAssessments array. Each item must include area, assessment, complexity (low/medium/high), stackRecommendation, and costNotes. Use null for stackRecommendation or costNotes when they do not apply. Set feasibilityAssessments to null if just chatting.
 
-Respond as JSON: {"response": string, "feasibilityAssessments": [...]|null}`;
+Respond as JSON: {"response": string, "feasibilityAssessments": [...]|null, "notesToAppend": [...]}`;
       }
 
       if (focusMode === "version-planning") {
@@ -2374,15 +2407,16 @@ You are in Version Planning mode — outlining the version roadmap. Your role:
 - V2 features a functional user experience
 - V3 features a polished releasable state
 - Use only confirmed concept details plus the codebase map to shape the roadmap order
+- Use "notesToAppend" to store planning notes and working assumptions as soft memory. Use [] when nothing new should be stored.
 
 ${coreContext}
 ${toddCodebaseContext}
 ${feasContext}
-${versionsContext}
+${versionsContext}${toddPendingHandoffDm}${toddNotesSectionDm}
 ${conversationSection}
 When you have version plans to propose, set confirmationSuggested to true and include them in the versions array. Set versions to null if just chatting.
 
-Respond as JSON: {"response": string, "confirmationSuggested": boolean, "versions": [...]|null}`;
+Respond as JSON: {"response": string, "confirmationSuggested": boolean, "versions": [...]|null, "notesToAppend": [...]}`;
       }
 
       // Default: update-planning mode
@@ -2398,15 +2432,16 @@ You are in Update Planning mode — specifying core updates from current state t
 - Optimize update order based on what sections the programmer focuses on per update
 - For V1: specific update plans. For V2: more general. For V3: end-state direction.
 - Use only confirmed concept details plus the codebase map to decide the update sequence.
+- Use "notesToAppend" to store planning notes and working assumptions as soft memory. Use [] when nothing new should be stored.
 
 ${coreContext}
 ${toddCodebaseContext}
 ${versionsContext}
-${updatesContext}
+${updatesContext}${toddPendingHandoffDm}${toddNotesSectionDm}
 ${conversationSection}
 When you have updates to propose, set confirmationSuggested to true and include them in the updates array. Each update must include title, description, versionLabel, dependencies, area, and skillsNeeded. Use [] for dependencies when none exist. Use null for area when no area label is useful. Set updates to null if just chatting.
 
-Respond as JSON: {"response": string, "confirmationSuggested": boolean, "updates": [...]|null}`;
+Respond as JSON: {"response": string, "confirmationSuggested": boolean, "updates": [...]|null, "notesToAppend": [...]}`;
     }
 
     case "programming-director": {
@@ -3129,6 +3164,7 @@ Changes described: ${pending.description}`;
         rawMemories: [],
         forgottenMemories: [],
         creativeHistory: [],
+        toddHandoffNotes: [],
       },
       toddMemory: {
         confirmedConcept: null,
@@ -3141,6 +3177,9 @@ Changes described: ${pending.description}`;
         previousUpdateLog: [],
         troubleLog: [],
         codebaseIndexedMap: null,
+        notes: [],
+        pendingHandoff: null,
+        backupNotes: [],
       },
       pingMemory: {
         activeUpdateId: null,
@@ -3175,6 +3214,35 @@ Changes described: ${pending.description}`;
     }
     const clipped = normalizedDetail.length > 160 ? `${normalizedDetail.slice(0, 157).trimEnd()}...` : normalizedDetail;
     return `${prefix}: ${clipped}`;
+  }
+
+  private buildHardMemoryReportMetadata(input: {
+    directorId: Extract<DirectorId, "creative-director" | "rd-director">;
+    dataType: HardMemoryReportDataType;
+    approvalId: string | null;
+    summary: string;
+    currentState: string | null;
+    idealState: string | null;
+    changeSummary?: string[];
+    draftCoreDetails?: AgentCoreDetails | null;
+    roadmapVersions?: VersionPlan[] | null;
+    versionUpdates?: HardMemoryReportUpdate[] | null;
+    createdAt?: string;
+  }): HardMemoryReportMetadata {
+    return {
+      type: "hard-memory-report",
+      dataType: input.dataType,
+      directorId: input.directorId,
+      approvalId: input.approvalId,
+      summary: input.summary,
+      currentState: input.currentState,
+      idealState: input.idealState,
+      changeSummary: input.changeSummary ?? [],
+      draftCoreDetails: input.draftCoreDetails ?? null,
+      roadmapVersions: input.roadmapVersions ?? null,
+      versionUpdates: input.versionUpdates ?? null,
+      createdAt: input.createdAt ?? new Date().toISOString(),
+    };
   }
 
   private queueApproval(
@@ -3387,9 +3455,9 @@ Changes described: ${pending.description}`;
   private queueDanDraftApproval(
     session: AgentSession,
     parsed: Record<string, unknown>,
-  ): void {
+  ): PendingApproval | null {
     if (!session.danDraftCoreDetails) {
-      return;
+      return null;
     }
 
     this.removeDanDraftApprovals(session);
@@ -3397,7 +3465,7 @@ Changes described: ${pending.description}`;
       ? session.danDraftChangeSummary.join(" | ")
       : sanitizeSlackResponseContent(parsed.response, "creative-director");
 
-    this.queueApproval(session, {
+    return this.queueApproval(session, {
       kind: "store-data",
       requestedByDirectorId: "creative-director",
       targetDirectorId: "creative-director",
@@ -3417,7 +3485,7 @@ Changes described: ${pending.description}`;
   private applyDanSharedTurnState(
     session: AgentSession,
     parsed: Record<string, unknown>,
-  ): DanPresenceAction {
+  ): DanSharedTurnResult {
     const notesToAppend = Array.isArray(parsed.notesToAppend)
       ? parsed.notesToAppend.filter((note): note is string => typeof note === "string" && note.trim().length > 0)
       : [];
@@ -3427,8 +3495,12 @@ Changes described: ${pending.description}`;
       ? parsed.draftChangeSummary.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
       : [];
     const presenceAction = normalizeDanPresenceAction(parsed.presenceAction);
+    const toddHandoffNotesToAppend = Array.isArray(parsed.toddHandoffNotesToAppend)
+      ? parsed.toddHandoffNotesToAppend.filter((note): note is string => typeof note === "string" && note.trim().length > 0)
+      : [];
 
     session.danMemory.notes = mergeTrimmedNotes(session.danMemory.notes, notesToAppend);
+    session.danMemory.toddHandoffNotes = mergeTrimmedNotes(session.danMemory.toddHandoffNotes ?? [], toddHandoffNotesToAppend);
     session.danMemory.draftStatus = conversationStatus;
 
     // Raw memories: link raw user inputs to pillars
@@ -3471,15 +3543,27 @@ Changes described: ${pending.description}`;
       session.danMemory.notes = [];
     }
 
+    // When Dan exits or confirms, package Todd-bound handoff notes for Todd
+    if ((presenceAction === "exit" || conversationStatus === "ready-to-confirm") && (session.danMemory.toddHandoffNotes ?? []).length > 0) {
+      session.toddMemory.pendingHandoff = {
+        summary: session.danMemory.toddHandoffNotes.join("; "),
+        rawInputs: [...session.danMemory.toddHandoffNotes],
+        context: session.danMemory.fullExperienceDescription ?? "Creative session handoff",
+        receivedAt: new Date().toISOString(),
+      };
+      session.danMemory.toddHandoffNotes = [];
+    }
+
     syncAgentMemories(session);
 
+    let hardMemoryApprovalId: string | null = null;
     if (conversationStatus === "ready-to-confirm" && session.danMemory.draftConcept) {
-      this.queueDanDraftApproval(session, parsed);
+      hardMemoryApprovalId = this.queueDanDraftApproval(session, parsed)?.id ?? null;
     } else {
       this.removeDanDraftApprovals(session);
     }
 
-    return presenceAction;
+    return { presenceAction, hardMemoryApprovalId };
   }
 
   private async runSlackDirectorTurn(args: {
@@ -3541,6 +3625,7 @@ Changes described: ${pending.description}`;
     const directorMeta = getDirectorMetadata(directorId);
     const invitedDirector = directorId !== "project-manager";
     const usesLifecycleSequence = invitedDirector && directorId !== "creative-director";
+    let hardMemoryReportMetadata: HardMemoryReportMetadata | null = null;
 
     let responsePlaceholder: SlackChatMessage;
     if (usesLifecycleSequence) {
@@ -3569,6 +3654,7 @@ Changes described: ${pending.description}`;
 
     for (const attemptProvider of attemptPlan.attemptedProviders) {
       try {
+        hardMemoryReportMetadata = null;
         const service = this.aiService(attemptProvider);
         const resolvedModel = attemptProvider === "claude"
           ? overrides?.claudeModel ?? claudeModel
@@ -3589,7 +3675,21 @@ Changes described: ${pending.description}`;
         let danPresenceAction: DanPresenceAction = "exit";
 
         if (directorId === "creative-director") {
-          danPresenceAction = this.applyDanSharedTurnState(session, parsed);
+          const danTurnState = this.applyDanSharedTurnState(session, parsed);
+          danPresenceAction = danTurnState.presenceAction;
+          if (parsed.draftCoreDetails && session.danMemory.draftConcept) {
+            hardMemoryReportMetadata = this.buildHardMemoryReportMetadata({
+              directorId: "creative-director",
+              dataType: "danDraftCoreDetails",
+              approvalId: danTurnState.hardMemoryApprovalId,
+              summary: sanitizeSlackResponseContent(parsed.response, "creative-director"),
+              currentState: normalizeNonEmptyString(parsed.currentState),
+              idealState: normalizeNonEmptyString(parsed.idealState),
+              changeSummary: session.danMemory.draftChangeSummary,
+              draftCoreDetails: session.danMemory.draftConcept,
+              createdAt: responsePlaceholder.createdAt,
+            });
+          }
         } else if (directorId === "programming-director") {
           const status = parsed.status === "blocked" || parsed.status === "unexpected" || parsed.status === "no_changes"
             ? parsed.status as PingRawReportStatus
@@ -3630,6 +3730,16 @@ Changes described: ${pending.description}`;
             : response;
           responsePlaceholder.metadata = buildPingStatusTranslationMetadata(status);
         } else {
+          // Todd soft-memory: process notesToAppend and clear pending handoff
+          if (directorId === "rd-director") {
+            const toddNotesToAppend = Array.isArray(parsed.notesToAppend)
+              ? parsed.notesToAppend.filter((note): note is string => typeof note === "string" && note.trim().length > 0)
+              : [];
+            session.toddMemory.notes = mergeTrimmedNotes(session.toddMemory.notes ?? [], toddNotesToAppend);
+            if (session.toddMemory.pendingHandoff && toddNotesToAppend.length > 0) {
+              session.toddMemory.pendingHandoff = null;
+            }
+          }
           this.applySlackDirectorStateSnapshot(session, directorId, parsed);
         }
 
@@ -3646,7 +3756,7 @@ Changes described: ${pending.description}`;
             status: "assumed",
             order: idx,
           }));
-          this.queueApproval(session, {
+          const approval = this.queueApproval(session, {
             kind: "store-data",
             requestedByDirectorId: directorId,
             targetDirectorId: directorId,
@@ -3657,6 +3767,16 @@ Changes described: ${pending.description}`;
               dataType: "versions",
               versions,
             },
+          });
+          hardMemoryReportMetadata = this.buildHardMemoryReportMetadata({
+            directorId: "rd-director",
+            dataType: "versions",
+            approvalId: approval.id,
+            summary: sanitizeSlackResponseContent(parsed.response, "rd-director"),
+            currentState: normalizeNonEmptyString(parsed.currentState),
+            idealState: normalizeNonEmptyString(parsed.idealState),
+            roadmapVersions: versions,
+            createdAt: responsePlaceholder.createdAt,
           });
         }
 
@@ -3690,7 +3810,23 @@ Changes described: ${pending.description}`;
               skillsNeeded: update.skillsNeeded,
             };
           });
-          this.queueApproval(session, {
+          const reportUpdates = parsed.updates.map((update: {
+            title: string;
+            description: string;
+            versionLabel: string;
+            dependencies: string[];
+            area: string | null;
+            skillsNeeded: string[];
+          }, idx: number) => ({
+            id: updates[idx]?.id ?? randomUUID(),
+            title: update.title,
+            description: update.description,
+            versionLabel: update.versionLabel,
+            dependencies: update.dependencies,
+            area: update.area ?? null,
+            skillsNeeded: update.skillsNeeded,
+          }));
+          const approval = this.queueApproval(session, {
             kind: "store-data",
             requestedByDirectorId: directorId,
             targetDirectorId: directorId,
@@ -3702,6 +3838,17 @@ Changes described: ${pending.description}`;
               updates,
             },
           });
+          hardMemoryReportMetadata = this.buildHardMemoryReportMetadata({
+            directorId: "rd-director",
+            dataType: "versionUpdates",
+            approvalId: approval.id,
+            summary: sanitizeSlackResponseContent(parsed.response, "rd-director"),
+            currentState: normalizeNonEmptyString(parsed.currentState),
+            idealState: normalizeNonEmptyString(parsed.idealState),
+            roadmapVersions,
+            versionUpdates: reportUpdates,
+            createdAt: responsePlaceholder.createdAt,
+          });
         }
 
         if (directorId !== "programming-director") {
@@ -3710,14 +3857,14 @@ Changes described: ${pending.description}`;
         responsePlaceholder.status = "complete";
         responsePlaceholder.metadata = directorId === "programming-director"
           ? responsePlaceholder.metadata
-          : researchMode
-          ? {
-              type: "research-result",
-              researchPrompt: userMessage,
-              generalSummary: typeof parsed.generalSummary === "string" ? parsed.generalSummary : "",
-              projectSummary: typeof parsed.projectSummary === "string" ? parsed.projectSummary : "",
-            }
-          : null;
+          : hardMemoryReportMetadata ?? (researchMode
+            ? {
+                type: "research-result",
+                researchPrompt: userMessage,
+                generalSummary: typeof parsed.generalSummary === "string" ? parsed.generalSummary : "",
+                projectSummary: typeof parsed.projectSummary === "string" ? parsed.projectSummary : "",
+              }
+            : null);
         if (usesLifecycleSequence) {
           this.appendSlackAssistantMessage(session, directorId, directorMeta.outroMessage, {
             status: "complete",
@@ -5087,6 +5234,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     let structuredData: DirectorStructuredData | null = null;
     let internalNotes: string[] | null = null;
     let suggestCreateProject = false;
+    let hardMemoryReportMetadata: HardMemoryReportMetadata | null = null;
 
     // Jeff — routing
     if (input.directorId === "project-manager" && parsed.routeTo) {
@@ -5094,14 +5242,38 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     }
 
     if (input.directorId === "creative-director") {
-      this.applyDanSharedTurnState(session, parsed);
+      const danTurnState = this.applyDanSharedTurnState(session, parsed);
       internalNotes = session.danInternalNotes;
+      if (parsed.draftCoreDetails && session.danMemory.draftConcept) {
+        hardMemoryReportMetadata = this.buildHardMemoryReportMetadata({
+          directorId: "creative-director",
+          dataType: "danDraftCoreDetails",
+          approvalId: danTurnState.hardMemoryApprovalId,
+          summary: sanitizeSlackResponseContent(parsed.response, "creative-director"),
+          currentState: normalizeNonEmptyString(parsed.currentState),
+          idealState: normalizeNonEmptyString(parsed.idealState),
+          changeSummary: session.danMemory.draftChangeSummary,
+          draftCoreDetails: session.danMemory.draftConcept,
+          createdAt: assistantMessage.createdAt,
+        });
+      }
       const handoffTo = normalizeDirectorId(typeof parsed.handoffTo === "string" ? parsed.handoffTo : null);
       if (handoffTo) {
         routeSuggestion = {
           directorId: handoffTo,
           reason: typeof parsed.handoffReason === "string" ? parsed.handoffReason : "",
         };
+      }
+    }
+
+    // Todd soft-memory: process notesToAppend and clear pending handoff
+    if (input.directorId === "rd-director") {
+      const toddNotesToAppend = Array.isArray(parsed.notesToAppend)
+        ? (parsed.notesToAppend as unknown[]).filter((note): note is string => typeof note === "string" && note.trim().length > 0)
+        : [];
+      session.toddMemory.notes = mergeTrimmedNotes(session.toddMemory.notes ?? [], toddNotesToAppend);
+      if (session.toddMemory.pendingHandoff && toddNotesToAppend.length > 0) {
+        session.toddMemory.pendingHandoff = null;
       }
     }
 
@@ -5142,7 +5314,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
         order: idx,
       }));
       structuredData = { type: "versions", versions };
-      this.queueApproval(session, {
+      const approval = this.queueApproval(session, {
         kind: "store-data",
         requestedByDirectorId: input.directorId,
         targetDirectorId: input.directorId,
@@ -5154,10 +5326,28 @@ Your response must be ONLY strict JSON (no markdown fences).`;
           versions,
         },
       });
+      hardMemoryReportMetadata = this.buildHardMemoryReportMetadata({
+        directorId: "rd-director",
+        dataType: "versions",
+        approvalId: approval.id,
+        summary: sanitizeSlackResponseContent(parsed.response, "rd-director"),
+        currentState: normalizeNonEmptyString(parsed.currentState),
+        idealState: normalizeNonEmptyString(parsed.idealState),
+        roadmapVersions: versions,
+        createdAt: assistantMessage.createdAt,
+      });
     }
 
     // Todd — Update Planning mode: updates
     if (input.directorId === "rd-director" && resolvedFocusMode === "update-planning" && parsed.updates) {
+      const roadmapVersions = [
+        session.toddMemory?.versionPlan.v1,
+        session.toddMemory?.versionPlan.v2,
+        session.toddMemory?.versionPlan.v3,
+        ...session.versions,
+      ]
+        .filter((version): version is VersionPlan => Boolean(version))
+        .filter((version, index, array) => array.findIndex((candidate) => candidate.id === version.id) === index);
       const updates: VersionUpdate[] = parsed.updates.map((u: {
         title: string;
         description: string;
@@ -5167,7 +5357,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
         area?: string | null;
         skillsNeeded?: string[];
       }, idx: number) => {
-        const version = session!.versions.find((v) => v.label === u.versionLabel);
+        const version = roadmapVersions.find((v) => v.label === u.versionLabel);
         return {
           id: randomUUID(),
           versionId: version?.id ?? "",
@@ -5176,12 +5366,28 @@ Your response must be ONLY strict JSON (no markdown fences).`;
           order: idx,
           status: "pending" as const,
           dependencies: u.dependencies ?? [],
-          pillarIds: u.pillarIds?.length ? u.pillarIds : resolvePillarIdsFromArea(session!, u.area),
+          pillarIds: u.pillarIds?.length ? u.pillarIds : resolvePillarIdsFromArea(session, u.area),
           skillsNeeded: u.skillsNeeded ?? [],
         };
       });
       structuredData = { type: "versionUpdates", updates };
-      this.queueApproval(session, {
+      const reportUpdates = parsed.updates.map((u: {
+        title: string;
+        description: string;
+        versionLabel: string;
+        dependencies?: string[];
+        area?: string | null;
+        skillsNeeded?: string[];
+      }, idx: number) => ({
+        id: updates[idx]?.id ?? randomUUID(),
+        title: u.title,
+        description: u.description,
+        versionLabel: u.versionLabel,
+        dependencies: u.dependencies ?? [],
+        area: u.area ?? null,
+        skillsNeeded: u.skillsNeeded ?? [],
+      }));
+      const approval = this.queueApproval(session, {
         kind: "store-data",
         requestedByDirectorId: input.directorId,
         targetDirectorId: input.directorId,
@@ -5192,6 +5398,17 @@ Your response must be ONLY strict JSON (no markdown fences).`;
           dataType: "versionUpdates",
           updates,
         },
+      });
+      hardMemoryReportMetadata = this.buildHardMemoryReportMetadata({
+        directorId: "rd-director",
+        dataType: "versionUpdates",
+        approvalId: approval.id,
+        summary: sanitizeSlackResponseContent(parsed.response, "rd-director"),
+        currentState: normalizeNonEmptyString(parsed.currentState),
+        idealState: normalizeNonEmptyString(parsed.idealState),
+        roadmapVersions,
+        versionUpdates: reportUpdates,
+        createdAt: assistantMessage.createdAt,
       });
     }
 
@@ -5276,6 +5493,10 @@ Your response must be ONLY strict JSON (no markdown fences).`;
         summary: parsed.goalSummary,
         pillarIds: parsed.relevantPillarIds ?? [],
       };
+    }
+
+    if (hardMemoryReportMetadata) {
+      assistantMessage.metadata = hardMemoryReportMetadata;
     }
 
     // Derive project category
@@ -5724,6 +5945,15 @@ Be concise and conversational.`;
     if (dataType === "versions" && Array.isArray(payload.versions)) {
       session.versions = payload.versions as VersionPlan[];
       session.toddMemory.versionPlan = buildToddVersionPlan(session.versions);
+      // Move Todd's soft notes to backup on confirmation
+      if ((session.toddMemory.notes ?? []).length > 0) {
+        const timestamp = new Date().toISOString();
+        session.toddMemory.backupNotes = [
+          ...(session.toddMemory.backupNotes ?? []),
+          ...session.toddMemory.notes.map((note) => `[${timestamp}] ${note}`),
+        ];
+        session.toddMemory.notes = [];
+      }
       session.projectCategory = this.deriveProjectCategoryFromSession(session);
       await this.saveAgentSession(session.projectId, session);
       return;
@@ -5731,6 +5961,15 @@ Be concise and conversational.`;
     if (dataType === "versionUpdates" && Array.isArray(payload.updates)) {
       session.toddMemory.futureUpdatePlan = normalizeFutureUpdatePlan(payload.updates as VersionUpdate[]);
       session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
+      // Move Todd's soft notes to backup on confirmation
+      if ((session.toddMemory.notes ?? []).length > 0) {
+        const timestamp = new Date().toISOString();
+        session.toddMemory.backupNotes = [
+          ...(session.toddMemory.backupNotes ?? []),
+          ...session.toddMemory.notes.map((note) => `[${timestamp}] ${note}`),
+        ];
+        session.toddMemory.notes = [];
+      }
       session.projectCategory = this.deriveProjectCategoryFromSession(session);
       await this.saveAgentSession(session.projectId, session);
       return;

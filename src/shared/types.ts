@@ -669,7 +669,34 @@ export interface AgentChatMessage {
   content: string;
   createdAt: string;
   status?: "working" | "complete";
-  metadata?: PingTranslationMetadata | null;
+  metadata?: PingTranslationMetadata | HardMemoryReportMetadata | null;
+}
+
+export type HardMemoryReportDataType = "danDraftCoreDetails" | "versions" | "versionUpdates";
+
+export interface HardMemoryReportUpdate {
+  id: string;
+  title: string;
+  description: string;
+  versionLabel: string;
+  dependencies: string[];
+  area: string | null;
+  skillsNeeded: string[];
+}
+
+export interface HardMemoryReportMetadata {
+  type: "hard-memory-report";
+  dataType: HardMemoryReportDataType;
+  directorId: Extract<DirectorId, "creative-director" | "rd-director">;
+  approvalId: string | null;
+  summary: string;
+  currentState: string | null;
+  idealState: string | null;
+  changeSummary: string[];
+  draftCoreDetails: AgentCoreDetails | null;
+  roadmapVersions: VersionPlan[] | null;
+  versionUpdates: HardMemoryReportUpdate[] | null;
+  createdAt: string;
 }
 
 export type SlackMessageMetadata =
@@ -690,6 +717,7 @@ export type SlackMessageMetadata =
       type: "execution-report";
       report: JeffExecutionReport;
     }
+  | HardMemoryReportMetadata
   | PingTranslationMetadata;
 
 export interface SlackChatMessage {
@@ -997,6 +1025,7 @@ export interface DanMemory {
   rawMemories: DanRawMemory[];
   forgottenMemories: string[];
   creativeHistory: DanHistoryLogEntry[];
+  toddHandoffNotes: string[];
 }
 
 export interface ToddCodebaseIndexedMap {
@@ -1026,6 +1055,13 @@ export interface ToddTroubleLogEntry {
   updateIds: string[];
 }
 
+export interface ToddHandoffPackage {
+  summary: string;
+  rawInputs: string[];
+  context: string;
+  receivedAt: string;
+}
+
 export interface ToddMemory {
   confirmedConcept: AgentCoreDetails | null;
   versionPlan: {
@@ -1037,6 +1073,9 @@ export interface ToddMemory {
   previousUpdateLog: ToddUpdateLogEntry[];
   troubleLog: ToddTroubleLogEntry[];
   codebaseIndexedMap: ToddCodebaseIndexedMap | null;
+  notes: string[];
+  pendingHandoff: ToddHandoffPackage | null;
+  backupNotes: string[];
 }
 
 export type PingRawReportStatus = "success" | "blocked" | "unexpected" | "no_changes";

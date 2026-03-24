@@ -28,6 +28,8 @@ import {
   type AgentCoreDetails,
   type AgentPlannedUpdate,
   type CorePillar,
+  type HardMemoryReportMetadata,
+  type HardMemoryReportUpdate,
   type DirectorChatResponse,
   type DirectorFocusMode,
   type DirectorId,
@@ -2626,7 +2628,7 @@ function App() {
                         setSidebarAgentsOpen((prev) => (selectedDirectorId ? true : !prev));
                       }}
                     >
-                      <span className="sidebarNavButtonLabel">{selectedDirectorId ? DIRECTOR_NAMES[selectedDirectorId] : page.label}</span>
+                      <span className="sidebarNavButtonLabel">{page.label}</span>
                       <span className={sidebarAgentsOpen ? "sidebarNavChevron open" : "sidebarNavChevron"}>
                         <ChevronDownIcon />
                       </span>
@@ -3565,6 +3567,7 @@ function AgentLandingCard({
             type="button"
             className="projectTileOpenArea"
             onClick={onClick}
+            onMouseDown={(event) => event.preventDefault()}
             aria-label={ariaLabel ?? `Open ${name}`}
             aria-pressed={active}
           />
@@ -3575,12 +3578,25 @@ function AgentLandingCard({
               type="button"
               className="projectTileMenuToggle"
               aria-label={`Open ${name} profile`}
+              onMouseDown={(event) => event.preventDefault()}
               onClick={(event) => {
                 event.stopPropagation();
                 onOpenOptions();
               }}
             >
               <MoreIcon />
+            </button>
+          </div>
+        ) : null}
+        {onOpenOptions ? (
+          <div className="projectTileMenu agentLandingMenu agentLandingMenu--bottom">
+            <button
+              type="button"
+              className="projectTileMenuToggle"
+              aria-label={`Alert for ${name}`}
+              onMouseDown={(event) => event.preventDefault()}
+            >
+              <ExclamationIcon />
             </button>
           </div>
         ) : null}
@@ -4175,6 +4191,9 @@ function PendingApprovalsPanel({
         {approvals.map((approval) => {
           const isEditing = editingApprovalId === approval.id;
           const isBusy = busyApprovalId === approval.id;
+          const hardMemoryReport = approval.kind === "store-data"
+            ? buildHardMemoryReportFromApproval(session, approval)
+            : null;
           return (
             <div key={approval.id} className="pendingApprovalCard">
               <div className="pendingApprovalCardHead">
@@ -4241,6 +4260,8 @@ function PendingApprovalsPanel({
                     />
                   </label>
                 </div>
+              ) : hardMemoryReport ? (
+                <HardMemoryReportSections report={hardMemoryReport} />
               ) : approval.draftPayload ? (
                 <pre className="pendingApprovalPayload">{JSON.stringify(approval.draftPayload, null, 2)}</pre>
               ) : null}
@@ -6085,6 +6106,21 @@ function MoreIcon() {
   );
 }
 
+function ExclamationIcon() {
+  return (
+    <svg viewBox="0 0 20 20" aria-hidden="true">
+      <path
+        d="M10 4.25v7.2"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.75"
+        strokeLinecap="round"
+      />
+      <circle cx="10" cy="14.75" r="1.1" fill="currentColor" />
+    </svg>
+  );
+}
+
 function SidebarToggleIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -6337,24 +6373,24 @@ function MermaidChartDiff({
   return <MermaidChart chart={diffChart} flowchartGraph={flowchartGraph} theme={theme} />;
 }
 
-function CoreDetailsContent({
-  agentSession,
+function CoreDetailsReport({
+  coreDetails,
 }: {
-  agentSession: AgentSession | null;
+  coreDetails: AgentCoreDetails | null;
 }) {
-  const coreDetails: AgentCoreDetails = {
-    function: agentSession?.stages.function.confirmed ?? null,
-    thesis: agentSession?.stages.thesis.confirmed ?? null,
-    corePillars: agentSession?.corePillars ?? [],
-    fullFlow: agentSession?.stages.full_flow.confirmed ?? null,
+  const safeCoreDetails: AgentCoreDetails = coreDetails ?? {
+    function: null,
+    thesis: null,
+    corePillars: [],
+    fullFlow: null,
   };
 
-  const functionSummary = coreDetails.function?.summary.trim() ? coreDetails.function.summary : "Not yet defined.";
-  const thesisSummary = coreDetails.thesis?.summary.trim() ? coreDetails.thesis.summary : "Not yet defined.";
-  const fullFlowSummary = coreDetails.fullFlow?.summary.trim() ? coreDetails.fullFlow.summary : "Not yet defined.";
-  const isFunctionAssumed = coreDetails.function?.status === "assumed" || coreDetails.function?.status === "edited";
-  const isThesisAssumed = coreDetails.thesis?.status === "assumed" || coreDetails.thesis?.status === "edited";
-  const isFullFlowAssumed = coreDetails.fullFlow?.status === "assumed" || coreDetails.fullFlow?.status === "edited";
+  const functionSummary = safeCoreDetails.function?.summary.trim() ? safeCoreDetails.function.summary : "Not yet defined.";
+  const thesisSummary = safeCoreDetails.thesis?.summary.trim() ? safeCoreDetails.thesis.summary : "Not yet defined.";
+  const fullFlowSummary = safeCoreDetails.fullFlow?.summary.trim() ? safeCoreDetails.fullFlow.summary : "Not yet defined.";
+  const isFunctionAssumed = safeCoreDetails.function?.status === "assumed" || safeCoreDetails.function?.status === "edited";
+  const isThesisAssumed = safeCoreDetails.thesis?.status === "assumed" || safeCoreDetails.thesis?.status === "edited";
+  const isFullFlowAssumed = safeCoreDetails.fullFlow?.status === "assumed" || safeCoreDetails.fullFlow?.status === "edited";
 
   return (
     <div className="coreDetailsReport">
@@ -6368,39 +6404,39 @@ function CoreDetailsContent({
       </article>
       <article className="coreDetailCard coreDetailsReportSection coreDetailsReportSection-pillars">
         <h4>Core Pillars</h4>
-        {coreDetails.corePillars.length > 0 ? (
-          <ConceptThreadList pillars={coreDetails.corePillars} />
+        {safeCoreDetails.corePillars.length > 0 ? (
+          <ConceptThreadList pillars={safeCoreDetails.corePillars} />
         ) : (
           <p className="coreDetailEmpty">No core pillars have been confirmed yet.</p>
         )}
       </article>
       <article className="coreDetailCard coreDetailsReportSection coreDetailsReportSection-flow">
         <h4>Full flow</h4>
-        {coreDetails.fullFlow ? (
+        {safeCoreDetails.fullFlow ? (
           <>
             <p className={`coreDetailValue${isFullFlowAssumed ? " assumedText" : ""}`}>{fullFlowSummary}</p>
-            {coreDetails.fullFlow.currentState ? (
+            {safeCoreDetails.fullFlow.currentState ? (
               <div className="pillarDetailRow">
                 <span className="pillarDetailLabel">Current state</span>
-                <span className={isFullFlowAssumed ? "assumedText" : ""}>{coreDetails.fullFlow.currentState}</span>
+                <span className={isFullFlowAssumed ? "assumedText" : ""}>{safeCoreDetails.fullFlow.currentState}</span>
               </div>
             ) : null}
-            {coreDetails.fullFlow.finalGoal ? (
+            {safeCoreDetails.fullFlow.finalGoal ? (
               <div className="pillarDetailRow">
                 <span className="pillarDetailLabel">Final goal</span>
-                <span className={isFullFlowAssumed ? "assumedText" : ""}>{coreDetails.fullFlow.finalGoal}</span>
+                <span className={isFullFlowAssumed ? "assumedText" : ""}>{safeCoreDetails.fullFlow.finalGoal}</span>
               </div>
             ) : null}
-            {coreDetails.fullFlow.steps && coreDetails.fullFlow.steps.length > 0 ? (
+            {safeCoreDetails.fullFlow.steps && safeCoreDetails.fullFlow.steps.length > 0 ? (
               <ol className="flowStepList">
-                {coreDetails.fullFlow.steps.map((step) => (
+                {safeCoreDetails.fullFlow.steps.map((step) => (
                   <li key={step.id} className="flowStepItem">
                     <div>
                       <div>{step.description}</div>
                       {step.pillarIds.length > 0 ? (
                         <div className="flowStepPillars">
                           {step.pillarIds.map((pillarId) => {
-                            const pillar = coreDetails.corePillars.find((candidate) => candidate.id === pillarId);
+                            const pillar = safeCoreDetails.corePillars.find((candidate) => candidate.id === pillarId);
                             return pillar ? (
                               <span key={pillarId} className="flowStepPillarTag">
                                 {pillar.name}
@@ -6419,6 +6455,410 @@ function CoreDetailsContent({
           <p className="coreDetailEmpty">Not yet defined.</p>
         )}
       </article>
+    </div>
+  );
+}
+
+function CoreDetailsContent({
+  agentSession,
+}: {
+  agentSession: AgentSession | null;
+}) {
+  const coreDetails: AgentCoreDetails = {
+    function: agentSession?.stages.function.confirmed ?? null,
+    thesis: agentSession?.stages.thesis.confirmed ?? null,
+    corePillars: agentSession?.corePillars ?? [],
+    fullFlow: agentSession?.stages.full_flow.confirmed ?? null,
+  };
+
+  return <CoreDetailsReport coreDetails={coreDetails} />;
+}
+
+const HARD_MEMORY_REPORT_TITLES: Record<HardMemoryReportMetadata["dataType"], string> = {
+  danDraftCoreDetails: "Dan Core-Details Draft",
+  versions: "Todd Roadmap",
+  versionUpdates: "Todd Update Plan",
+};
+
+const getHardMemoryReportDirectorName = (report: HardMemoryReportMetadata): string =>
+  DIRECTOR_NAMES[report.directorId];
+
+const getHardMemoryReportScopeLabel = (report: HardMemoryReportMetadata): string => {
+  switch (report.dataType) {
+    case "danDraftCoreDetails":
+      return "Core Details";
+    case "versions":
+      return "Roadmap";
+    case "versionUpdates":
+      return "Updates";
+  }
+};
+
+const getReportMessages = (session: AgentSession | null): Array<AgentChatMessage | SlackChatMessage> => {
+  if (!session) {
+    return [];
+  }
+
+  return [
+    ...(session.slackMessages ?? []),
+    ...Object.values(session.directorConversations ?? {}).flatMap((conversation) => conversation.messages ?? []),
+    ...(session.unifiedMessages ?? []),
+  ];
+};
+
+const findHardMemoryReportMetadata = (session: AgentSession | null, approvalId: string): HardMemoryReportMetadata | null => {
+  for (const message of [...getReportMessages(session)].reverse()) {
+    const metadata = message.metadata;
+    if (metadata?.type === "hard-memory-report" && metadata.approvalId === approvalId) {
+      return metadata;
+    }
+  }
+
+  return null;
+};
+
+const resolveHardMemoryReportArea = (session: AgentSession | null, pillarIds: string[]): string | null => {
+  if (!session || pillarIds.length === 0) {
+    return null;
+  }
+
+  const names = pillarIds
+    .map((pillarId) => session.corePillars.find((pillar) => pillar.id === pillarId)?.name ?? null)
+    .filter((name): name is string => typeof name === "string" && name.trim().length > 0);
+
+  return names.length > 0 ? names.join(", ") : null;
+};
+
+const collectHardMemoryRoadmapVersions = (session: AgentSession | null): VersionPlan[] => {
+  if (!session) {
+    return [];
+  }
+
+  return [
+    session.toddMemory?.versionPlan.v1,
+    session.toddMemory?.versionPlan.v2,
+    session.toddMemory?.versionPlan.v3,
+    ...session.versions,
+  ]
+    .filter((version): version is VersionPlan => Boolean(version))
+    .filter((version, index, array) => array.findIndex((candidate) => candidate.id === version.id) === index);
+};
+
+const buildHardMemoryReportFromApproval = (
+  session: AgentSession | null,
+  approval: PendingApproval,
+): HardMemoryReportMetadata | null => {
+  const liveReport = findHardMemoryReportMetadata(session, approval.id);
+  if (liveReport) {
+    return liveReport;
+  }
+
+  const payload = approval.draftPayload;
+  if (!payload || payload.action !== "applyStoredData") {
+    return null;
+  }
+
+  const createdAt = approval.updatedAt ?? approval.createdAt;
+
+  if (payload.dataType === "danDraftCoreDetails" && payload.draftCoreDetails) {
+    return {
+      type: "hard-memory-report",
+      dataType: "danDraftCoreDetails",
+      directorId: "creative-director",
+      approvalId: approval.id,
+      summary: approval.draftMessage ?? approval.summary,
+      currentState: typeof payload.currentState === "string" ? payload.currentState : null,
+      idealState: typeof payload.idealState === "string" ? payload.idealState : null,
+      changeSummary: Array.isArray(payload.draftChangeSummary)
+        ? payload.draftChangeSummary.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+        : [],
+      draftCoreDetails: payload.draftCoreDetails as AgentCoreDetails,
+      roadmapVersions: null,
+      versionUpdates: null,
+      createdAt,
+    };
+  }
+
+  if (payload.dataType === "versions" && Array.isArray(payload.versions)) {
+    return {
+      type: "hard-memory-report",
+      dataType: "versions",
+      directorId: "rd-director",
+      approvalId: approval.id,
+      summary: approval.draftMessage ?? approval.summary,
+      currentState: typeof payload.currentState === "string" ? payload.currentState : null,
+      idealState: typeof payload.idealState === "string" ? payload.idealState : null,
+      changeSummary: [],
+      draftCoreDetails: null,
+      roadmapVersions: payload.versions as VersionPlan[],
+      versionUpdates: null,
+      createdAt,
+    };
+  }
+
+  if (payload.dataType === "versionUpdates" && Array.isArray(payload.updates)) {
+    const roadmapVersions = collectHardMemoryRoadmapVersions(session);
+    return {
+      type: "hard-memory-report",
+      dataType: "versionUpdates",
+      directorId: "rd-director",
+      approvalId: approval.id,
+      summary: approval.draftMessage ?? approval.summary,
+      currentState: typeof payload.currentState === "string" ? payload.currentState : null,
+      idealState: typeof payload.idealState === "string" ? payload.idealState : null,
+      changeSummary: [],
+      draftCoreDetails: null,
+      roadmapVersions,
+      versionUpdates: (payload.updates as VersionUpdate[]).map((update) => ({
+        id: update.id,
+        title: update.title,
+        description: update.description,
+        versionLabel: roadmapVersions.find((version) => version.id === update.versionId)?.label ?? "Unassigned",
+        dependencies: Array.isArray(update.dependencies) ? update.dependencies : [],
+        area: resolveHardMemoryReportArea(session, Array.isArray(update.pillarIds) ? update.pillarIds : []),
+        skillsNeeded: Array.isArray(update.skillsNeeded) ? update.skillsNeeded : [],
+      })),
+      createdAt,
+    };
+  }
+
+  return null;
+};
+
+function HardMemoryReportSections({
+  report,
+}: {
+  report: HardMemoryReportMetadata;
+}) {
+  const hasStateInfo = Boolean(report.currentState || report.idealState);
+  const versionGroups = report.dataType === "versionUpdates" && report.versionUpdates
+    ? report.versionUpdates.reduce<Record<string, HardMemoryReportUpdate[]>>((groups, update) => {
+      const label = update.versionLabel || "Unassigned";
+      if (!groups[label]) {
+        groups[label] = [];
+      }
+      groups[label].push(update);
+      return groups;
+    }, {})
+    : null;
+  const orderedGroupLabels = versionGroups && report.roadmapVersions
+    ? [
+      ...report.roadmapVersions.map((version) => version.label),
+      ...Object.keys(versionGroups).filter((label) => !report.roadmapVersions?.some((version) => version.label === label)).sort(),
+    ]
+    : versionGroups
+    ? Object.keys(versionGroups).sort()
+    : [];
+
+  return (
+    <div className="hardMemoryReportSections">
+      {hasStateInfo ? (
+        <div className="pendingProposalCard">
+          <h5>State</h5>
+          {report.currentState ? (
+            <div className="proposalField">
+              <div className="proposalFieldLabel">Current</div>
+              <div className="proposalFieldValue">{report.currentState}</div>
+            </div>
+          ) : null}
+          {report.idealState ? (
+            <div className="proposalField">
+              <div className="proposalFieldLabel">Ideal</div>
+              <div className="proposalFieldValue">{report.idealState}</div>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {report.dataType === "danDraftCoreDetails" ? (
+        <>
+          {report.changeSummary.length > 0 ? (
+            <div className="pendingProposalCard">
+              <h5>Change Summary</h5>
+              <ul className="agentSummaryList">
+                {report.changeSummary.map((item, index) => (
+                  <li key={`${report.approvalId ?? report.createdAt}-change-${index}`}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          <CoreDetailsReport coreDetails={report.draftCoreDetails} />
+        </>
+      ) : null}
+
+      {report.dataType === "versions" ? (
+        <div className="pendingProposalCard">
+          <h5>Roadmap</h5>
+          {report.roadmapVersions && report.roadmapVersions.length > 0 ? (
+            <div className="versionTimeline">
+              {report.roadmapVersions.slice().sort((a, b) => a.order - b.order).map((version) => (
+                <div key={version.id} className="versionCard">
+                  <div className="versionHeader">
+                    <span className={`versionLabel${version.status === "assumed" ? " assumedText" : ""}`}>{version.label}</span>
+                    <StatusChip tone={version.status === "confirmed" ? "confirmed" : version.status === "assumed" ? "action_required" : "info"}>{version.status}</StatusChip>
+                  </div>
+                  <p className={version.status === "assumed" ? "assumedText" : ""}>{version.description}</p>
+                  {version.goals.length > 0 ? (
+                    <ul className="versionGoals">
+                      {version.goals.map((goal, index) => <li key={`${version.id}-goal-${index}`}>{goal}</li>)}
+                    </ul>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <em className="coreDetailEmpty">No roadmap versions have been captured yet.</em>
+          )}
+        </div>
+      ) : null}
+
+      {report.dataType === "versionUpdates" ? (
+        <div className="pendingProposalCard">
+          <h5>Grouped Updates</h5>
+          {report.versionUpdates && report.versionUpdates.length > 0 ? (
+            <div className="updatePlanList">
+              {orderedGroupLabels.map((versionLabel) => {
+                const updates = versionGroups?.[versionLabel] ?? [];
+                return (
+                  <div key={versionLabel} className="updatePlanGroup">
+                    <h6 className="updatePlanGroupLabel">{versionLabel}</h6>
+                    {updates.map((update, index) => (
+                      <div key={update.id} className="agentPlannedUpdateItem">
+                        <span className="orderBadge">{index + 1}</span>
+                        <div className="updateContent">
+                          <div className="updateTitle">{update.title}</div>
+                          <div className="updateDescription">{update.description}</div>
+                          {update.area ? (
+                            <div className="pillarDetailRow" style={{ marginTop: 8 }}>
+                              <span className="pillarDetailLabel">Area</span>
+                              <span>{update.area}</span>
+                            </div>
+                          ) : null}
+                          {update.dependencies.length > 0 ? (
+                            <div className="flowStepPillars" style={{ marginTop: 8 }}>
+                              {update.dependencies.map((dependency) => (
+                                <span key={`${update.id}-${dependency}`} className="flowStepPillarTag">{dependency}</span>
+                              ))}
+                            </div>
+                          ) : null}
+                          {update.skillsNeeded.length > 0 ? (
+                            <div className="flowStepPillars" style={{ marginTop: 8 }}>
+                              {update.skillsNeeded.map((skill) => (
+                                <span key={`${update.id}-${skill}`} className="flowStepPillarTag">{skill}</span>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <em className="coreDetailEmpty">No grouped updates have been captured yet.</em>
+          )}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function HardMemoryReportPanel({
+  report,
+  liveApproval,
+  projectId,
+  onSessionUpdate,
+  onClose,
+  pushToast,
+}: {
+  report: HardMemoryReportMetadata;
+  liveApproval: PendingApproval | null;
+  projectId: string | null;
+  onSessionUpdate: (session: AgentSession) => void;
+  onClose: () => void;
+  pushToast: (message: string, level: "info" | "success" | "error") => void;
+}) {
+  const [busyAction, setBusyAction] = useState<"confirm" | "later" | "dismiss" | null>(null);
+
+  const handleApprovalAction = async (action: "confirm" | "later" | "dismiss") => {
+    if (!projectId || !liveApproval) {
+      return;
+    }
+
+    setBusyAction(action);
+    try {
+      let updatedSession: AgentSession;
+      if (action === "confirm") {
+        updatedSession = await window.programs.approvePendingApproval({
+          projectId,
+          approvalId: liveApproval.id,
+        });
+      } else if (action === "later") {
+        updatedSession = await window.programs.deferPendingApproval({
+          projectId,
+          approvalId: liveApproval.id,
+        });
+      } else {
+        updatedSession = await window.programs.dismissPendingApproval({
+          projectId,
+          approvalId: liveApproval.id,
+        });
+      }
+
+      onSessionUpdate(updatedSession);
+      if (action !== "later" || !updatedSession.pendingApprovals.some((approval) => approval.id === liveApproval.id)) {
+        onClose();
+      }
+      pushToast(
+        action === "confirm"
+          ? "Approval confirmed."
+          : action === "later"
+            ? "Approval saved for later."
+            : "Approval dismissed.",
+        action === "confirm" ? "success" : "info",
+      );
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Could not update the approval.", "error");
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  return (
+    <div className="slackResearchPanel hardMemoryReportPanel">
+      <div className="slackResearchPanelHeader hardMemoryReportPanelHeader">
+        <div className="hardMemoryReportPanelHeaderText">
+          <h3>{HARD_MEMORY_REPORT_TITLES[report.dataType]}</h3>
+          <p>{report.summary}</p>
+          <div className="hardMemoryReportPanelMeta">
+            <span>{getHardMemoryReportDirectorName(report)}</span>
+            <span>{getHardMemoryReportScopeLabel(report)}</span>
+            {liveApproval ? <span>Approval live</span> : <span>Archived</span>}
+          </div>
+        </div>
+        <button className="secondaryButton" style={{ fontSize: "0.75rem", padding: "4px 8px" }} onClick={onClose}>
+          Close
+        </button>
+      </div>
+      <div className="slackResearchPanelBody hardMemoryReportPanelBody">
+        <HardMemoryReportSections report={report} />
+        {liveApproval ? (
+          <div className="proposalActions hardMemoryReportActions">
+            <button className="primaryButton" onClick={() => void handleApprovalAction("confirm")} disabled={busyAction !== null}>
+              Confirm
+            </button>
+            <button className="secondaryButton" onClick={() => void handleApprovalAction("later")} disabled={busyAction !== null}>
+              Later
+            </button>
+            <button className="secondaryButton" onClick={() => void handleApprovalAction("dismiss")} disabled={busyAction !== null}>
+              Dismiss
+            </button>
+          </div>
+        ) : (
+          <p className="hardMemoryReportArchivedCopy">This report is archived. There is no live approval attached anymore.</p>
+        )}
+      </div>
     </div>
   );
 }
@@ -8111,6 +8551,236 @@ function DirectorFunctionsPanel({
   }
 }
 
+function DirectorMemoryPanel({
+  directorId,
+  session,
+}: {
+  directorId: DirectorId;
+  session: AgentSession | null;
+}) {
+  if (!session) return null;
+
+  if (directorId === "creative-director") {
+    const danMemory = session.danMemory;
+    const confirmedConcept = danMemory.confirmedConcept;
+    const hasCreativeNotes = danMemory.notes.length > 0;
+    const hasHandoffNotes = (danMemory.toddHandoffNotes ?? []).length > 0;
+    const hasRawMemories = (danMemory.rawMemories ?? []).length > 0;
+    const hasForgotten = (danMemory.forgottenMemories ?? []).length > 0;
+    return (
+      <div className="agentInfoPanel agentSummaryPanel">
+        <div className="agentSummaryGrid">
+          <section className="agentSummaryCard">
+            <div className="agentSummaryHeader">
+              <span className="agentSummaryEyebrow">Memory</span>
+            </div>
+            <details className="agentSummaryDetails" open>
+              <summary>Soft-Memory</summary>
+              <div className="agentSummaryDetailsBody">
+                {hasCreativeNotes ? (
+                  <div>
+                    <span className="pmStatusLabel">Session Notes</span>
+                    <ul className="agentSummaryList">
+                      {danMemory.notes.map((note, i) => <li key={`dan-soft-${i}`}>{note}</li>)}
+                    </ul>
+                  </div>
+                ) : null}
+                {hasHandoffNotes ? (
+                  <div style={{ marginTop: hasCreativeNotes ? 10 : 0 }}>
+                    <span className="pmStatusLabel">
+                      Todd-Bound Notes <span className="memoryHandoffBadge memoryHandoffBadge--handoff">Handoff</span>
+                    </span>
+                    <ul className="agentSummaryList">
+                      {danMemory.toddHandoffNotes.map((note, i) => <li key={`dan-handoff-${i}`}>{note}</li>)}
+                    </ul>
+                  </div>
+                ) : null}
+                {!hasCreativeNotes && !hasHandoffNotes ? (
+                  <p className="coreDetailEmpty">No active session notes.</p>
+                ) : null}
+              </div>
+            </details>
+            <details className="agentSummaryDetails">
+              <summary>Hard-Memory</summary>
+              <div className="agentSummaryDetailsBody">
+                {confirmedConcept ? (
+                  <div>
+                    {confirmedConcept.function ? (
+                      <div>
+                        <span className="pmStatusLabel">Function</span>
+                        <p className="coreDetailValue">{confirmedConcept.function.summary}</p>
+                      </div>
+                    ) : null}
+                    {confirmedConcept.thesis ? (
+                      <div style={{ marginTop: 6 }}>
+                        <span className="pmStatusLabel">Thesis</span>
+                        <p className="coreDetailValue">{confirmedConcept.thesis.summary}</p>
+                      </div>
+                    ) : null}
+                    <p className="helperText" style={{ marginTop: 6 }}>
+                      {confirmedConcept.corePillars?.length ?? 0} pillar(s) confirmed
+                    </p>
+                  </div>
+                ) : (
+                  <p className="coreDetailEmpty">No confirmed concept yet.</p>
+                )}
+                {danMemory.draftConcept && danMemory.draftConcept !== confirmedConcept ? (
+                  <div style={{ marginTop: 10 }}>
+                    <span className="pmStatusLabel">
+                      Working Draft <span className="memoryHandoffBadge memoryHandoffBadge--handoff">Draft</span>
+                    </span>
+                    {danMemory.draftConcept.function ? (
+                      <p className="coreDetailValue">{danMemory.draftConcept.function.summary}</p>
+                    ) : null}
+                    <p className="helperText">
+                      {danMemory.draftConcept.corePillars?.length ?? 0} pillar(s) in draft
+                    </p>
+                  </div>
+                ) : null}
+              </div>
+            </details>
+            <details className="agentSummaryDetails">
+              <summary>Backup Memory</summary>
+              <div className="agentSummaryDetailsBody">
+                {hasRawMemories ? (
+                  <div>
+                    <span className="pmStatusLabel">Raw Memories ({danMemory.rawMemories.length})</span>
+                    <ul className="agentSummaryList">
+                      {danMemory.rawMemories.slice(-5).map((rm, i) => (
+                        <li key={`dan-raw-${i}`}>{rm.content}</li>
+                      ))}
+                      {danMemory.rawMemories.length > 5 ? (
+                        <li className="helperText">...and {danMemory.rawMemories.length - 5} more</li>
+                      ) : null}
+                    </ul>
+                  </div>
+                ) : null}
+                {hasForgotten ? (
+                  <div style={{ marginTop: hasRawMemories ? 10 : 0 }}>
+                    <span className="pmStatusLabel">Forgotten Memories ({danMemory.forgottenMemories.length})</span>
+                    <ul className="agentSummaryList">
+                      {danMemory.forgottenMemories.slice(-5).map((fm, i) => (
+                        <li key={`dan-forgotten-${i}`}>{fm}</li>
+                      ))}
+                      {danMemory.forgottenMemories.length > 5 ? (
+                        <li className="helperText">...and {danMemory.forgottenMemories.length - 5} more</li>
+                      ) : null}
+                    </ul>
+                  </div>
+                ) : null}
+                {!hasRawMemories && !hasForgotten ? (
+                  <p className="coreDetailEmpty">No backup memory stored.</p>
+                ) : null}
+              </div>
+            </details>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
+  if (directorId === "rd-director") {
+    const toddMemory = session.toddMemory;
+    const hasNotes = (toddMemory.notes ?? []).length > 0;
+    const hasPendingHandoff = Boolean(toddMemory.pendingHandoff);
+    const hasBackup = (toddMemory.backupNotes ?? []).length > 0;
+    const roadmapVersions = [toddMemory.versionPlan.v1, toddMemory.versionPlan.v2, toddMemory.versionPlan.v3].filter(Boolean);
+    return (
+      <div className="agentInfoPanel agentSummaryPanel">
+        <div className="agentSummaryGrid">
+          <section className="agentSummaryCard">
+            <div className="agentSummaryHeader">
+              <span className="agentSummaryEyebrow">Memory</span>
+            </div>
+            <details className="agentSummaryDetails" open>
+              <summary>Soft-Memory</summary>
+              <div className="agentSummaryDetailsBody">
+                {hasPendingHandoff ? (
+                  <div className="memoryPendingHandoffCard">
+                    <span className="pmStatusLabel">
+                      <span className="memoryHandoffBadge memoryHandoffBadge--dan">From Dan</span>
+                    </span>
+                    <p className="coreDetailValue" style={{ marginTop: 4 }}>{toddMemory.pendingHandoff!.summary}</p>
+                    {toddMemory.pendingHandoff!.context ? (
+                      <p className="helperText" style={{ marginTop: 4 }}>{toddMemory.pendingHandoff!.context}</p>
+                    ) : null}
+                    <p className="helperText" style={{ marginTop: 2 }}>
+                      Received {toddMemory.pendingHandoff!.receivedAt.split("T")[0]}
+                    </p>
+                  </div>
+                ) : null}
+                {hasNotes ? (
+                  <div style={{ marginTop: hasPendingHandoff ? 10 : 0 }}>
+                    <span className="pmStatusLabel">Planning Notes</span>
+                    <ul className="agentSummaryList">
+                      {toddMemory.notes.map((note, i) => <li key={`todd-note-${i}`}>{note}</li>)}
+                    </ul>
+                  </div>
+                ) : null}
+                {!hasNotes && !hasPendingHandoff ? (
+                  <p className="coreDetailEmpty">No active planning notes.</p>
+                ) : null}
+              </div>
+            </details>
+            <details className="agentSummaryDetails">
+              <summary>Hard-Memory</summary>
+              <div className="agentSummaryDetailsBody">
+                {toddMemory.confirmedConcept ? (
+                  <div>
+                    <span className="pmStatusLabel">Core-Details</span>
+                    <p className="coreDetailValue">
+                      {toddMemory.confirmedConcept.function?.summary ?? "Function TBD"}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="coreDetailEmpty">Waiting for Dan to lock the concept.</p>
+                )}
+                {roadmapVersions.length > 0 ? (
+                  <div style={{ marginTop: 8 }}>
+                    <span className="pmStatusLabel">Version Roadmap</span>
+                    <div className="flowStepPillars" style={{ marginTop: 4 }}>
+                      {roadmapVersions.map((v) => (
+                        <span key={v!.id} className="flowStepPillarTag">{v!.label}</span>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+                {toddMemory.futureUpdatePlan.length > 0 ? (
+                  <p className="helperText" style={{ marginTop: 6 }}>
+                    {toddMemory.futureUpdatePlan.length} update(s) planned
+                  </p>
+                ) : null}
+              </div>
+            </details>
+            <details className="agentSummaryDetails">
+              <summary>Backup Memory</summary>
+              <div className="agentSummaryDetailsBody">
+                {hasBackup ? (
+                  <div>
+                    <span className="pmStatusLabel">Archived Planning Notes ({toddMemory.backupNotes.length})</span>
+                    <ul className="agentSummaryList">
+                      {toddMemory.backupNotes.slice(-5).map((note, i) => (
+                        <li key={`todd-backup-${i}`}>{note}</li>
+                      ))}
+                      {toddMemory.backupNotes.length > 5 ? (
+                        <li className="helperText">...and {toddMemory.backupNotes.length - 5} more</li>
+                      ) : null}
+                    </ul>
+                  </div>
+                ) : (
+                  <p className="coreDetailEmpty">No backup notes stored.</p>
+                )}
+              </div>
+            </details>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
+  return null;
+}
+
 function DirectorProfilePanel({
   directorId,
   session,
@@ -8174,13 +8844,19 @@ function DirectorProfilePanel({
           pushToast={pushToast}
           onExpandedChange={setHasExpandedSummary}
         />
-        <DirectorFunctionsPanel
-          directorId={directorId}
-          session={session}
-          projectId={projectId}
-          onNavigateToDirector={onNavigateToDirector}
-          onSessionUpdate={onSessionUpdate}
-        />
+        <div className="directorProfileLowerGrid">
+          <DirectorFunctionsPanel
+            directorId={directorId}
+            session={session}
+            projectId={projectId}
+            onNavigateToDirector={onNavigateToDirector}
+            onSessionUpdate={onSessionUpdate}
+          />
+          <DirectorMemoryPanel
+            directorId={directorId}
+            session={session}
+          />
+        </div>
       </div>
     </div>
   );
@@ -8221,7 +8897,9 @@ function AgentsPage({
 }) {
   const [showProgressPanel, setShowProgressPanel] = useState(false);
   const [showAgentStructurePanel, setShowAgentStructurePanel] = useState(false);
+  const [showProjectDetails, setShowProjectDetails] = useState(false);
   const [showDirectorProfile, setShowDirectorProfile] = useState(false);
+  const [hardMemoryReportMessageId, setHardMemoryReportMessageId] = useState<string | null>(null);
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [lastRouteHint, setLastRouteHint] = useState<{ directorId: DirectorId; reason: string } | null>(null);
@@ -8264,12 +8942,22 @@ function AgentsPage({
   const AGENT_LANDING_SECTION_ORDER: AgentDepartment[] = ["Management", "Creative", "R&D", "Programming", "Validation"];
 
   const selectedDirector = DIRECTOR_SECTIONS.find((d) => d.id === selectedDirectorId) ?? null;
+  const selectedProject = useMemo(
+    () => projects.find((project) => project.id === agentSelectedProjectId) ?? null,
+    [agentSelectedProjectId, projects],
+  );
   const showInlineDirectorChat = Boolean(selectedDirectorId && selectedDirector && agentSelectedProjectId);
 
   const persistedDirectorMessages = selectedDirectorId
     ? agentSession?.directorConversations?.[selectedDirectorId]?.messages ?? agentSession?.agentConversations?.[selectedDirectorId]?.messages ?? []
     : [];
   const currentDirectorMessages = [...persistedDirectorMessages, ...optimisticAgentMessages];
+  const hardMemoryReportMessage = useMemo(
+    () => hardMemoryReportMessageId
+      ? currentDirectorMessages.find((message) => message.id === hardMemoryReportMessageId && message.metadata?.type === "hard-memory-report") ?? null
+      : null,
+    [currentDirectorMessages, hardMemoryReportMessageId],
+  );
   const directorConversationSignature = useMemo(
     () => currentDirectorMessages
       .map((message) => [
@@ -8303,8 +8991,22 @@ function AgentsPage({
     setOptimisticAgentMessages([]);
     if (!selectedDirectorId) {
       setShowDirectorProfile(false);
+      setHardMemoryReportMessageId(null);
     }
   }, [selectedDirectorId]);
+
+  useEffect(() => {
+    if (!agentSelectedProjectId) {
+      setShowProjectDetails(false);
+    }
+    setHardMemoryReportMessageId(null);
+  }, [agentSelectedProjectId]);
+
+  useEffect(() => {
+    if (hardMemoryReportMessageId && !hardMemoryReportMessage) {
+      setHardMemoryReportMessageId(null);
+    }
+  }, [hardMemoryReportMessage, hardMemoryReportMessageId]);
 
   const handleSend = async () => {
     if (!inputValue.trim() || !agentSelectedProjectId || !selectedDirectorId) return;
@@ -8358,10 +9060,16 @@ function AgentsPage({
     () => buildSlackConversationRenderItems(currentDirectorSlackMessages),
     [currentDirectorSlackMessages],
   );
+  const hardMemoryReport = hardMemoryReportMessage?.metadata?.type === "hard-memory-report"
+    ? hardMemoryReportMessage.metadata
+    : null;
+  const hardMemoryReportApproval = hardMemoryReport && agentSession
+    ? agentSession.pendingApprovals.find((approval) => approval.id === hardMemoryReport.approvalId) ?? null
+    : null;
 
   return (
     <section className="agentsPage">
-      <div className="agentsTopBar windowNoDrag">
+      <div className="agentsTopBar slackTopBar windowNoDrag">
         <select
           className="plannerSelect"
           value={agentSelectedProjectId ?? ""}
@@ -8392,6 +9100,16 @@ function AgentsPage({
             </button>
           </>
         )}
+        {selectedProject ? <div className="slackTopBarSpacer" aria-hidden="true" /> : null}
+        {selectedProject ? (
+          <button
+            type="button"
+            className="slackTopBarButton slackDetailsButton"
+            onClick={() => setShowProjectDetails(true)}
+          >
+            Project Details
+          </button>
+        ) : null}
       </div>
 
       {agentSelectedProjectId && (agentSession?.pendingApprovals.length ?? 0) > 0 ? (
@@ -8473,7 +9191,7 @@ function AgentsPage({
                         </div>
                       ) : null}
                       <div
-                        className={`agentConvoMessage agentConvoMessage-${msg.role}${msg.status === "working" ? " agentConvoMessage--working" : ""}`}
+                        className={`agentConvoMessage agentConvoMessage-${msg.role}${msg.status === "working" ? " agentConvoMessage--working" : ""}${msg.metadata?.type === "hard-memory-report" ? " agentConvoMessage--hard-memory-report" : ""}`}
                         style={msg.role === "assistant" ? { background: directorColor, color: "#fff" } : undefined}
                       >
                         <div className="agentConvoContent">
@@ -8487,6 +9205,18 @@ function AgentsPage({
                             renderPingAwareMessageContent(msg)
                           )}
                         </div>
+                        {msg.metadata?.type === "hard-memory-report" ? (
+                          <button
+                            type="button"
+                            className="slackViewMoreButton slackViewMoreButton--report"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setHardMemoryReportMessageId(msg.id);
+                            }}
+                          >
+                            View Report
+                          </button>
+                        ) : null}
                         <div className="slackMessageTimestamp">{formatSlackTimestamp(msg.createdAt)}</div>
                       </div>
                     </div>
@@ -8546,8 +9276,32 @@ function AgentsPage({
                 </div>
               </div>
             </div>
+
+            {hardMemoryReport ? (
+              <HardMemoryReportPanel
+                report={hardMemoryReport}
+                liveApproval={hardMemoryReportApproval}
+                projectId={agentSelectedProjectId}
+                onSessionUpdate={onSessionUpdate}
+                onClose={() => setHardMemoryReportMessageId(null)}
+                pushToast={pushToast}
+              />
+            ) : null}
           </div>
         </div>
+      ) : null}
+
+      {showProjectDetails && selectedProject ? (
+        <SlackProjectDetailsModal
+          project={selectedProject}
+          session={agentSession}
+          settings={settings}
+          modelCatalog={modelCatalog}
+          onUpdateAgentDefaults={onUpdateAgentDefaults}
+          onSessionUpdate={onSessionUpdate}
+          pushToast={pushToast}
+          onClose={() => setShowProjectDetails(false)}
+        />
       ) : null}
 
       {showAgentStructurePanel && (
@@ -8736,6 +9490,7 @@ function SlackPage({
   const [showDirectorProfile, setShowDirectorProfile] = useState<DirectorId | null>(null);
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   const [alertedDirectorId, setAlertedDirectorId] = useState<DirectorId | null>(null);
+  const [hardMemoryReportMessageId, setHardMemoryReportMessageId] = useState<string | null>(null);
   const [researchPanelMessage, setResearchPanelMessage] = useState<SlackChatMessage | null>(null);
   const [updatePanelMessage, setUpdatePanelMessage] = useState<SlackChatMessage | null>(null);
   const [executionReportMessage, setExecutionReportMessage] = useState<SlackChatMessage | null>(null);
@@ -8774,6 +9529,18 @@ function SlackPage({
     () => buildSlackConversationRenderItems(displayMessages),
     [displayMessages],
   );
+  const hardMemoryReportMessage = useMemo(
+    () => hardMemoryReportMessageId
+      ? displayMessages.find((message) => message.id === hardMemoryReportMessageId && message.metadata?.type === "hard-memory-report") ?? null
+      : null,
+    [displayMessages, hardMemoryReportMessageId],
+  );
+  const hardMemoryReport = hardMemoryReportMessage?.metadata?.type === "hard-memory-report"
+    ? hardMemoryReportMessage.metadata
+    : null;
+  const hardMemoryReportApproval = hardMemoryReport && slackAgentSession
+    ? slackAgentSession.pendingApprovals.find((approval) => approval.id === hardMemoryReport.approvalId) ?? null
+    : null;
   const slackConversationSignature = useMemo(
     () => displayMessages
       .map((message) => [
@@ -8820,9 +9587,16 @@ function SlackPage({
     setResearchPanelMessage(null);
     setUpdatePanelMessage(null);
     setExecutionReportMessage(null);
+    setHardMemoryReportMessageId(null);
     setDevSelectionMode(false);
     setSelectedDeleteIds(new Set());
   }, [slackSelectedProjectId]);
+
+  useEffect(() => {
+    if (hardMemoryReportMessageId && !hardMemoryReportMessage) {
+      setHardMemoryReportMessageId(null);
+    }
+  }, [hardMemoryReportMessage, hardMemoryReportMessageId]);
 
   useLayoutEffect(() => {
     syncComposerTextareaHeight(composerInputRef.current, { minHeight: SLACK_COMPOSER_MIN_HEIGHT });
@@ -9064,7 +9838,7 @@ function SlackPage({
                               <div className="slackMessageLabel">{DIRECTOR_NAMES[msg.directorId]}</div>
                             )}
                             <div
-                              className={`agentConvoMessage agentConvoMessage-${msg.role}${selectedMessageId === msg.id ? " slackMessageSelected" : ""}${msg.status === "working" ? " agentConvoMessage--working" : ""}${devSelectionMode && selectedDeleteIds.has(msg.id) ? " slackMessageDeleteSelected" : ""}`}
+                              className={`agentConvoMessage agentConvoMessage-${msg.role}${selectedMessageId === msg.id ? " slackMessageSelected" : ""}${msg.status === "working" ? " agentConvoMessage--working" : ""}${msg.metadata?.type === "hard-memory-report" ? " agentConvoMessage--hard-memory-report" : ""}${devSelectionMode && selectedDeleteIds.has(msg.id) ? " slackMessageDeleteSelected" : ""}`}
                               style={msg.role === "assistant" && msg.directorId ? { background: DIRECTOR_COLORS[msg.directorId], color: "#fff" } : undefined}
                               onClick={() => devSelectionMode ? toggleDeleteId(msg.id) : handleMessageClick(msg)}
                             >
@@ -9079,11 +9853,27 @@ function SlackPage({
                                   renderPingAwareMessageContent(msg)
                                 )}
                               </div>
+                              {msg.metadata?.type === "hard-memory-report" ? (
+                                <button
+                                  type="button"
+                                  className="slackViewMoreButton slackViewMoreButton--report"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setResearchPanelMessage(null);
+                                    setUpdatePanelMessage(null);
+                                    setExecutionReportMessage(null);
+                                    setHardMemoryReportMessageId(msg.id);
+                                  }}
+                                >
+                                  View Report
+                                </button>
+                              ) : null}
                               {msg.metadata?.type === "research-result" && (
                                 <button
                                   className="slackViewMoreButton"
                                   onClick={(e) => {
                                     e.stopPropagation();
+                                    setHardMemoryReportMessageId(null);
                                     setResearchPanelMessage(msg);
                                   }}
                                 >
@@ -9095,6 +9885,7 @@ function SlackPage({
                                   className="slackViewMoreButton"
                                   onClick={(e) => {
                                     e.stopPropagation();
+                                    setHardMemoryReportMessageId(null);
                                     setUpdatePanelMessage(msg);
                                   }}
                                 >
@@ -9106,6 +9897,7 @@ function SlackPage({
                                   className="slackViewMoreButton"
                                   onClick={(e) => {
                                     e.stopPropagation();
+                                    setHardMemoryReportMessageId(null);
                                     setExecutionReportMessage(msg);
                                   }}
                                 >
@@ -9170,6 +9962,17 @@ function SlackPage({
                   </div>
                 </div>
               </div>
+
+              {hardMemoryReport ? (
+                <HardMemoryReportPanel
+                  report={hardMemoryReport}
+                  liveApproval={hardMemoryReportApproval}
+                  projectId={slackSelectedProjectId}
+                  onSessionUpdate={onSessionUpdate}
+                  onClose={() => setHardMemoryReportMessageId(null)}
+                  pushToast={pushToast}
+                />
+              ) : null}
 
               {researchPanelMessage?.metadata?.type === "research-result" && (
                 <div className="slackResearchPanel">
@@ -9358,6 +10161,15 @@ function SlackPage({
   );
 }
 
+type DetailsView =
+  | { type: "main" }
+  | { type: "concept" }
+  | { type: "history" }
+  | { type: "history-day"; date: string }
+  | { type: "planned" }
+  | { type: "agents" }
+  | { type: "director"; directorId: DirectorId };
+
 function SlackProjectDetailsModal({
   project,
   session,
@@ -9377,49 +10189,60 @@ function SlackProjectDetailsModal({
   pushToast: (message: string, level: "info" | "success" | "error") => void;
   onClose: () => void;
 }) {
-  const [showCoreDetails, setShowCoreDetails] = useState(false);
-  const [showAgents, setShowAgents] = useState(false);
-  const [selectedDirectorProfile, setSelectedDirectorProfile] = useState<DirectorId | null>(null);
+  const [currentView, setCurrentView] = useState<DetailsView>({ type: "main" });
   const [summaryRange, setSummaryRange] = useState<SlackDetailsRange>("daily");
   const [forecastRange, setForecastRange] = useState<SlackDetailsRange>("daily");
   const description = buildSlackProjectDescription(session);
   const concept = getConfirmedConcept(session);
-  const detailsExpanded = showCoreDetails || showAgents;
-  const agentsSectionId = useId();
-  const activeDirectorProfile = selectedDirectorProfile
-    ? getDirectorProfileMeta(selectedDirectorProfile)
-    : null;
 
-  return (
-    <Modal
-      title={activeDirectorProfile ? "" : `${project.name} Details`}
-      onClose={onClose}
-      fullscreen
-      headerLeading={selectedDirectorProfile ? (
+  const headerLeading = (() => {
+    if (currentView.type === "director") {
+      return (
         <button
           type="button"
           className="textButton"
-          onClick={() => setSelectedDirectorProfile(null)}
+          onClick={() => setCurrentView({ type: "agents" })}
         >
-          Project Details
+          View Agent Team
         </button>
-      ) : undefined}
+      );
+    }
+    if (currentView.type === "history-day") {
+      return (
+        <button
+          type="button"
+          className="textButton"
+          onClick={() => setCurrentView({ type: "history" })}
+        >
+          View History Log
+        </button>
+      );
+    }
+    if (currentView.type !== "main") {
+      return (
+        <button
+          type="button"
+          className="textButton"
+          onClick={() => setCurrentView({ type: "main" })}
+        >
+          View Project Details
+        </button>
+      );
+    }
+    return undefined;
+  })();
+
+  const title = currentView.type === "main" ? `${project.name} Details` : "";
+
+  return (
+    <Modal
+      title={title}
+      onClose={onClose}
+      fullscreen
+      headerLeading={headerLeading}
     >
-      {selectedDirectorProfile ? (
-        <DirectorProfilePanel
-          key={selectedDirectorProfile}
-          directorId={selectedDirectorProfile}
-          session={session}
-          projectId={project.id}
-          settings={settings}
-          modelCatalog={modelCatalog}
-          onNavigateToDirector={setSelectedDirectorProfile}
-          onUpdateAgentDefaults={onUpdateAgentDefaults}
-          onSessionUpdate={onSessionUpdate}
-          pushToast={pushToast}
-        />
-      ) : (
-        <div className={`detailsScrollContent slackDetailsModalContent${detailsExpanded ? "" : " slackDetailsModalContent-static"}`}>
+      {currentView.type === "main" ? (
+        <div className="detailsScrollContent slackDetailsModalContent slackDetailsModalContent-static">
           <section className="slackDetailsSection">
             <div className="slackDetailsSectionHeader">
               <h4>Project Description</h4>
@@ -9429,20 +10252,10 @@ function SlackProjectDetailsModal({
               <button
                 type="button"
                 className="textButton slackDetailsToggle"
-                aria-expanded={showCoreDetails}
-                onClick={() => setShowCoreDetails((current) => !current)}
+                onClick={() => setCurrentView({ type: "concept" })}
               >
-                {showCoreDetails ? "Hide full concept" : "View full concept"}
+                View full concept
               </button>
-              {showCoreDetails ? (
-                <div className="agentCoreDetailsSection slackDetailsCoreGrid">
-                  <ConceptOverview
-                    concept={concept}
-                    emptyLabel="The concept has not been confirmed yet."
-                    experienceDescription={session?.danMemory.fullExperienceDescription}
-                  />
-                </div>
-              ) : null}
             </div>
           </section>
 
@@ -9456,122 +10269,365 @@ function SlackProjectDetailsModal({
                   <h5>Summary</h5>
                   <SlackDetailsRangeToggle value={summaryRange} onChange={setSummaryRange} />
                 </div>
-                <SlackDetailsPlaceholderPanel label="Summary" range={summaryRange} />
+                <div className="slackDetailsProgressCardBody">
+                  <SlackDetailsSummaryPanel session={session} range={summaryRange} />
+                </div>
+                <div className="slackDetailsProgressCardFooter">
+                  <button
+                    type="button"
+                    className="textButton slackDetailsToggle"
+                    onClick={() => setCurrentView({ type: "history" })}
+                  >
+                    View History Log
+                  </button>
+                </div>
               </article>
               <article className="slackDetailsCard slackDetailsProgressCard">
                 <div className="slackDetailsSubsectionHead">
                   <h5>Forecast</h5>
                   <SlackDetailsRangeToggle value={forecastRange} onChange={setForecastRange} />
                 </div>
-                <SlackDetailsPlaceholderPanel label="Forecast" range={forecastRange} />
+                <div className="slackDetailsProgressCardBody">
+                  <SlackDetailsForecastPanel session={session} range={forecastRange} />
+                </div>
+                <div className="slackDetailsProgressCardFooter">
+                  <button
+                    type="button"
+                    className="textButton slackDetailsToggle"
+                    onClick={() => setCurrentView({ type: "planned" })}
+                  >
+                    View Planned Updates
+                  </button>
+                </div>
               </article>
             </div>
           </section>
 
-          <section className="slackDetailsSection">
+          <div style={{ display: "flex", justifyContent: "center", paddingTop: 16 }}>
             <button
               type="button"
-              className="slackDetailsSectionToggle"
-              aria-expanded={showAgents}
-              aria-controls={agentsSectionId}
-              onClick={() => setShowAgents((current) => !current)}
+              className="textButton"
+              onClick={() => setCurrentView({ type: "agents" })}
             >
-              <span className="slackDetailsSectionToggleLabel">Agents</span>
-              <span className="slackDetailsSectionToggleHint">{showAgents ? "Collapse" : "Expand"}</span>
+              View Agents
             </button>
-            <div id={agentsSectionId} hidden={!showAgents}>
-              {showAgents ? (
-                <>
-                  <div className="slackDetailsCard slackDetailsAgentFlow">
-                    {SLACK_DETAILS_DIRECTOR_FLOW.map((directorId, index) => (
-                      <Fragment key={directorId}>
-                        <button
-                          type="button"
-                          className="slackDetailsAgentNode"
-                          style={{ "--slack-agent-color": DIRECTOR_COLORS[directorId] } as CSSProperties}
-                          onClick={() => setSelectedDirectorProfile(directorId)}
-                        >
-                          <span className="slackDetailsAgentRole">{DIRECTOR_LABELS[directorId]}</span>
-                          <span className="slackDetailsAgentName">{DIRECTOR_NAMES[directorId]}</span>
-                        </button>
-                        {index < SLACK_DETAILS_DIRECTOR_FLOW.length - 1 ? (
-                          <div className="slackDetailsAgentArrow" aria-hidden="true" />
-                        ) : null}
-                      </Fragment>
-                    ))}
+          </div>
+        </div>
+      ) : null}
+
+      {currentView.type === "concept" ? (
+        <div className="detailsScrollContent">
+          <div className="conceptDetailsPanel">
+            <ConceptOverview
+              concept={concept}
+              emptyLabel="The concept has not been confirmed yet."
+              experienceDescription={session?.danMemory.fullExperienceDescription}
+            />
+          </div>
+        </div>
+      ) : null}
+
+      {currentView.type === "history" ? (
+        <div className="detailsScrollContent">
+          {(() => {
+            const log = session?.toddMemory?.previousUpdateLog ?? [];
+            if (log.length === 0) {
+              return (
+                <div className="slackDetailsCard">
+                  <p style={{ color: "var(--muted)" }}>No history logs recorded yet.</p>
+                </div>
+              );
+            }
+            const byDate: Record<string, typeof log> = {};
+            for (const entry of log) {
+              const d = entry.createdAt.slice(0, 10);
+              if (!byDate[d]) byDate[d] = [];
+              byDate[d].push(entry);
+            }
+            const dates = Object.keys(byDate).sort((a, b) => b.localeCompare(a));
+            return (
+              <div className="slackDetailsCard" style={{ padding: 0, overflow: "hidden" }}>
+                {dates.map((date, i) => {
+                  const entries = byDate[date];
+                  const label = formatDate(date + "T00:00:00.000Z");
+                  return (
+                    <button
+                      key={date}
+                      type="button"
+                      className="historyLogDayRow"
+                      style={{ borderTop: i === 0 ? "none" : undefined }}
+                      onClick={() => setCurrentView({ type: "history-day", date })}
+                    >
+                      <span className="historyLogDayLabel">{label}</span>
+                      <span className="historyLogDayCount">{entries.length} update{entries.length !== 1 ? "s" : ""}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            );
+          })()}
+        </div>
+      ) : null}
+
+      {currentView.type === "history-day" ? (
+        <div className="detailsScrollContent">
+          {(() => {
+            const date = currentView.date;
+            const allLog = session?.toddMemory?.previousUpdateLog ?? [];
+            const dayEntries = allLog
+              .filter((e) => e.createdAt.slice(0, 10) === date)
+              .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+            const danHistory = (session?.danMemory?.creativeHistory ?? [])
+              .filter((e) => e.createdAt.slice(0, 10) === date)
+              .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+            const firstEntry = dayEntries[0];
+            const lastEntry = dayEntries.length > 1 ? dayEntries[dayEntries.length - 1] : null;
+            return (
+              <>
+                <div className="slackDetailsCard" style={{ marginBottom: 12 }}>
+                  <h5 style={{ margin: "0 0 4px", fontSize: 13 }}>{formatDate(date + "T00:00:00.000Z")}</h5>
+                  <p style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>
+                    {dayEntries.length} update{dayEntries.length !== 1 ? "s" : ""} recorded
+                    {danHistory.length > 0 ? `, ${danHistory.length} creative change${danHistory.length !== 1 ? "s" : ""}` : ""}
+                  </p>
+                </div>
+
+                {firstEntry ? (
+                  <div className="slackDetailsCard" style={{ marginBottom: 12 }}>
+                    <h5 style={{ margin: "0 0 8px", fontSize: 12, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Beginning of Day</h5>
+                    <p style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 600 }}>{firstEntry.goal}</p>
+                    {firstEntry.outcome ? <p style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>{firstEntry.outcome}</p> : null}
                   </div>
+                ) : null}
 
-                  {/* Director State Map */}
-                  {session && Object.keys(session.directorStateMap ?? {}).length > 0 ? (
-                    <div className="slackDetailsCard" style={{ marginTop: 12 }}>
-                      <h5 style={{ marginBottom: 8, fontSize: 13, color: "var(--text)" }}>Director State</h5>
-                      {Object.entries(session.directorStateMap ?? {}).map(([dId, ds]) => {
-                        if (!ds) return null;
-                        const dirId = dId as DirectorId;
-                        return (
-                          <div key={dId} className="directorStateSection">
-                            <div className="directorStateLabel">{DIRECTOR_NAMES[dirId]}</div>
-                            {ds.currentState ? (
-                              <div className="directorStateContent"><strong>Current:</strong> {ds.currentState}</div>
-                            ) : null}
-                            {ds.idealState ? (
-                              <div className="directorStateContent"><strong>Ideal:</strong> {ds.idealState}</div>
-                            ) : null}
-                            {ds.assumptions.length > 0 ? (
-                              <div className="directorStateContent" style={{ color: "var(--muted)" }}>
-                                {ds.assumptions.length} assumption(s)
-                              </div>
-                            ) : null}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ) : null}
+                {lastEntry ? (
+                  <div className="slackDetailsCard" style={{ marginBottom: 12 }}>
+                    <h5 style={{ margin: "0 0 8px", fontSize: 12, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>End of Day</h5>
+                    <p style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 600 }}>{lastEntry.goal}</p>
+                    {lastEntry.outcome ? <p style={{ margin: "0 0 6px", fontSize: 12, color: "var(--muted)" }}>{lastEntry.outcome}</p> : null}
+                    <span className={`validationResultStatus${lastEntry.status === "success" || lastEntry.status === "no_changes" ? " pmStatusDone" : ""}`} style={{ fontSize: 11 }}>
+                      {lastEntry.status.replace("_", " ")}
+                    </span>
+                  </div>
+                ) : null}
 
-                  {/* Sub-Agents from Core Pillars */}
-                  {session && session.dynamicSubAgents.filter((sa) => sa.sourcePillarId).length > 0 ? (
-                    <div className="slackDetailsCard" style={{ marginTop: 12 }}>
-                      <h5 style={{ marginBottom: 8, fontSize: 13, color: "var(--text)" }}>Pillar Sub-Agents</h5>
-                      {session.dynamicSubAgents.filter((sa) => sa.sourcePillarId).map((sa) => (
-                        <div key={sa.id} className="subAgentCard">
-                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                            <span style={{ fontWeight: 600, fontSize: 13 }}>{sa.name}</span>
-                            <span className={`subAgentModelBadge subAgentModelBadge--${sa.modelTier}`}>
-                              {sa.modelTier}
-                            </span>
-                          </div>
-                          <div style={{ fontSize: 12, color: "var(--muted)" }}>{sa.role}</div>
+                {dayEntries.length > 0 ? (
+                  <div className="slackDetailsCard" style={{ marginBottom: 12 }}>
+                    <h5 style={{ margin: "0 0 8px", fontSize: 12, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>All Updates</h5>
+                    <div className="validationResultsList">
+                      {dayEntries.map((entry) => (
+                        <div key={entry.id} className={`validationResultCard validationResultCard--${entry.status === "success" || entry.status === "no_changes" ? "pass" : "fail"}`}>
+                          <span className="validationResultType">{entry.goal}</span>
+                          <span className={`validationResultStatus${entry.status === "success" || entry.status === "no_changes" ? " pmStatusDone" : ""}`}>
+                            {entry.status.replace("_", " ")}
+                          </span>
+                          {entry.outcome ? <p style={{ margin: "4px 0 0", fontSize: 11, color: "var(--muted)", gridColumn: "1 / -1" }}>{entry.outcome}</p> : null}
                         </div>
                       ))}
                     </div>
-                  ) : null}
+                  </div>
+                ) : null}
 
-                  {/* Create Team button */}
-                  {session && session.corePillars.filter((p) => p.pillarType === "core").length > 0 &&
-                   session.dynamicSubAgents.filter((sa) => sa.sourcePillarId).length === 0 ? (
-                    <button
-                      type="button"
-                      className="refreshButton"
-                      style={{ marginTop: 12 }}
-                      onClick={async () => {
-                        try {
-                          const updated = await window.programs.createPillarSubAgents({ projectId: project.id });
-                          onSessionUpdate(updated);
-                          pushToast("Sub-agent team created", "success");
-                        } catch (err) {
-                          pushToast(err instanceof Error ? err.message : "Failed to create team", "error");
-                        }
-                      }}
-                    >
-                      Create Team
-                    </button>
-                  ) : null}
-                </>
-              ) : null}
-            </div>
-          </section>
+                {danHistory.length > 0 ? (
+                  <div className="slackDetailsCard">
+                    <h5 style={{ margin: "0 0 8px", fontSize: 12, color: "var(--muted)", textTransform: "uppercase", letterSpacing: "0.05em" }}>Dan — Creative Activity</h5>
+                    <div className="validationResultsList">
+                      {danHistory.map((entry) => (
+                        <div key={entry.id} className="validationResultCard validationResultCard--pass">
+                          <span className="validationResultType">{entry.action}</span>
+                          {entry.summary ? <p style={{ margin: "4px 0 0", fontSize: 11, color: "var(--muted)", gridColumn: "1 / -1" }}>{entry.summary}</p> : null}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </>
+            );
+          })()}
         </div>
-      )}
+      ) : null}
+
+      {currentView.type === "planned" ? (
+        <div className="detailsScrollContent">
+          {(() => {
+            const versionPlan = session?.toddMemory?.versionPlan;
+            const futureUpdates = session?.toddMemory?.futureUpdatePlan ?? [];
+            const versions = [versionPlan?.v1, versionPlan?.v2, versionPlan?.v3].filter(Boolean) as import("../../shared/types").VersionPlan[];
+            if (versions.length === 0 && futureUpdates.length === 0) {
+              return (
+                <div className="slackDetailsCard">
+                  <p style={{ color: "var(--muted)" }}>No planned updates yet.</p>
+                </div>
+              );
+            }
+            const updatesByVersion: Record<string, import("../../shared/types").VersionUpdate[]> = {};
+            for (const u of futureUpdates) {
+              const key = u.versionId ?? "__unassigned__";
+              if (!updatesByVersion[key]) updatesByVersion[key] = [];
+              updatesByVersion[key].push(u);
+            }
+            return (
+              <>
+                {versions.map((v) => {
+                  const vUpdates = (updatesByVersion[v.id] ?? []).slice().sort((a, b) => a.order - b.order);
+                  return (
+                    <div key={v.id} className="slackDetailsCard" style={{ marginBottom: 12 }}>
+                      <h5 style={{ margin: "0 0 4px", fontSize: 13, fontWeight: 700 }}>{v.label}</h5>
+                      {v.description ? <p style={{ margin: "0 0 8px", fontSize: 12, color: "var(--muted)" }}>{v.description}</p> : null}
+                      {v.goals.length > 0 ? (
+                        <ul style={{ margin: "0 0 10px", paddingLeft: 16 }}>
+                          {v.goals.map((g, gi) => (
+                            <li key={gi} style={{ fontSize: 12, color: "var(--muted)", marginBottom: 2 }}>{g}</li>
+                          ))}
+                        </ul>
+                      ) : null}
+                      {vUpdates.length > 0 ? (
+                        <div className="updatePlanList">
+                          {vUpdates.map((u) => (
+                            <div key={u.id} className="agentPlannedUpdateItem">
+                              <div className="updateContent">
+                                <div className="updateTitle">{u.title}</div>
+                                {u.description ? <div className="updateDescription">{u.description}</div> : null}
+                              </div>
+                              <span className={`subAgentModelBadge subAgentModelBadge--${u.status === "completed" ? "premium" : u.status === "in_progress" ? "standard" : "basic"}`}>
+                                {u.status.replace("_", " ")}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+                {updatesByVersion["__unassigned__"] ? (
+                  <div className="slackDetailsCard">
+                    <h5 style={{ margin: "0 0 8px", fontSize: 13, fontWeight: 700 }}>Unassigned</h5>
+                    <div className="updatePlanList">
+                      {(updatesByVersion["__unassigned__"]).slice().sort((a, b) => a.order - b.order).map((u) => (
+                        <div key={u.id} className="agentPlannedUpdateItem">
+                          <div className="updateContent">
+                            <div className="updateTitle">{u.title}</div>
+                            {u.description ? <div className="updateDescription">{u.description}</div> : null}
+                          </div>
+                          <span className={`subAgentModelBadge subAgentModelBadge--${u.status === "completed" ? "premium" : u.status === "in_progress" ? "standard" : "basic"}`}>
+                            {u.status.replace("_", " ")}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </>
+            );
+          })()}
+        </div>
+      ) : null}
+
+      {currentView.type === "agents" ? (
+        <div className="directorProfilePanel directorProfilePanel--static">
+          <div className="directorProfilePanelContent">
+            <div className="slackDetailsCard slackDetailsAgentFlow">
+              {SLACK_DETAILS_DIRECTOR_FLOW.map((directorId, index) => (
+                <Fragment key={directorId}>
+                  <button
+                    type="button"
+                    className="slackDetailsAgentNode"
+                    style={{ "--slack-agent-color": DIRECTOR_COLORS[directorId] } as CSSProperties}
+                    onClick={() => setCurrentView({ type: "director", directorId })}
+                  >
+                    <span className="slackDetailsAgentRole">{DIRECTOR_LABELS[directorId]}</span>
+                    <span className="slackDetailsAgentName">{DIRECTOR_NAMES[directorId]}</span>
+                  </button>
+                  {index < SLACK_DETAILS_DIRECTOR_FLOW.length - 1 ? (
+                    <div className="slackDetailsAgentArrow" aria-hidden="true" />
+                  ) : null}
+                </Fragment>
+              ))}
+            </div>
+
+            {/* Director State Map */}
+            {session && Object.keys(session.directorStateMap ?? {}).length > 0 ? (
+              <div className="slackDetailsCard" style={{ marginTop: 12 }}>
+                <h5 style={{ marginBottom: 8, fontSize: 13, color: "var(--text)" }}>Director State</h5>
+                {Object.entries(session.directorStateMap ?? {}).map(([dId, ds]) => {
+                  if (!ds) return null;
+                  const dirId = dId as DirectorId;
+                  return (
+                    <div key={dId} className="directorStateSection">
+                      <div className="directorStateLabel">{DIRECTOR_NAMES[dirId]}</div>
+                      {ds.currentState ? (
+                        <div className="directorStateContent"><strong>Current:</strong> {ds.currentState}</div>
+                      ) : null}
+                      {ds.idealState ? (
+                        <div className="directorStateContent"><strong>Ideal:</strong> {ds.idealState}</div>
+                      ) : null}
+                      {ds.assumptions.length > 0 ? (
+                        <div className="directorStateContent" style={{ color: "var(--muted)" }}>
+                          {ds.assumptions.length} assumption(s)
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+
+            {/* Sub-Agents from Core Pillars */}
+            {session && session.dynamicSubAgents.filter((sa) => sa.sourcePillarId).length > 0 ? (
+              <div className="slackDetailsCard" style={{ marginTop: 12 }}>
+                <h5 style={{ marginBottom: 8, fontSize: 13, color: "var(--text)" }}>Pillar Sub-Agents</h5>
+                {session.dynamicSubAgents.filter((sa) => sa.sourcePillarId).map((sa) => (
+                  <div key={sa.id} className="subAgentCard">
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ fontWeight: 600, fontSize: 13 }}>{sa.name}</span>
+                      <span className={`subAgentModelBadge subAgentModelBadge--${sa.modelTier}`}>
+                        {sa.modelTier}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 12, color: "var(--muted)" }}>{sa.role}</div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {/* Create Team button */}
+            {session && session.corePillars.filter((p) => p.pillarType === "core").length > 0 &&
+             session.dynamicSubAgents.filter((sa) => sa.sourcePillarId).length === 0 ? (
+              <button
+                type="button"
+                className="refreshButton"
+                style={{ marginTop: 12 }}
+                onClick={async () => {
+                  try {
+                    const updated = await window.programs.createPillarSubAgents({ projectId: project.id });
+                    onSessionUpdate(updated);
+                    pushToast("Sub-agent team created", "success");
+                  } catch (err) {
+                    pushToast(err instanceof Error ? err.message : "Failed to create team", "error");
+                  }
+                }}
+              >
+                Create Team
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {currentView.type === "director" ? (
+        <DirectorProfilePanel
+          key={currentView.directorId}
+          directorId={currentView.directorId}
+          session={session}
+          projectId={project.id}
+          settings={settings}
+          modelCatalog={modelCatalog}
+          onNavigateToDirector={(id) => setCurrentView({ type: "director", directorId: id })}
+          onUpdateAgentDefaults={onUpdateAgentDefaults}
+          onSessionUpdate={onSessionUpdate}
+          pushToast={pushToast}
+        />
+      ) : null}
     </Modal>
   );
 }
@@ -9616,6 +10672,110 @@ function SlackDetailsPlaceholderPanel({
         <span />
       </div>
       <p className="slackDetailsPlaceholderCopy">{`${rangeLabel} ${label.toLowerCase()} placeholder.`}</p>
+    </div>
+  );
+}
+
+function SlackDetailsSummaryPanel({
+  session,
+  range,
+}: {
+  session: AgentSession | null;
+  range: SlackDetailsRange;
+}) {
+  const log = session?.toddMemory?.previousUpdateLog ?? [];
+  const now = new Date();
+  const cutoff = new Date(now);
+  if (range === "daily") {
+    cutoff.setHours(0, 0, 0, 0);
+  } else if (range === "weekly") {
+    cutoff.setDate(now.getDate() - 7);
+  } else {
+    cutoff.setDate(now.getDate() - 30);
+  }
+  const entries = log.filter((e) => new Date(e.createdAt) >= cutoff);
+
+  if (entries.length === 0) {
+    const label = range === "daily" ? "today" : range === "weekly" ? "the past 7 days" : "the past 30 days";
+    return (
+      <p style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>No activity recorded for {label}.</p>
+    );
+  }
+
+  const succeeded = entries.filter((e) => e.status === "success" || e.status === "no_changes").length;
+  const failed = entries.length - succeeded;
+  const latest = entries.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  const rangeLabel = range === "daily" ? "Today" : range === "weekly" ? "This week" : "This month";
+
+  return (
+    <div style={{ fontSize: 12 }}>
+      <p style={{ margin: "0 0 6px" }}>
+        <strong>{rangeLabel}:</strong> {entries.length} update{entries.length !== 1 ? "s" : ""} run
+        {failed > 0 ? `, ${succeeded} succeeded, ${failed} blocked/failed` : ", all succeeded"}.
+      </p>
+      {latest.outcome ? (
+        <p style={{ margin: 0, color: "var(--muted)" }}>{latest.outcome}</p>
+      ) : null}
+    </div>
+  );
+}
+
+function SlackDetailsForecastPanel({
+  session,
+  range,
+}: {
+  session: AgentSession | null;
+  range: SlackDetailsRange;
+}) {
+  const versionPlan = session?.toddMemory?.versionPlan;
+  const pending = (session?.toddMemory?.futureUpdatePlan ?? [])
+    .filter((u) => u.status === "pending")
+    .slice()
+    .sort((a, b) => a.order - b.order);
+
+  if (range === "daily") {
+    const next = pending[0];
+    if (!next) {
+      return <p style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>No information available yet.</p>;
+    }
+    return (
+      <div style={{ fontSize: 12 }}>
+        <p style={{ margin: "0 0 4px", fontWeight: 600 }}>{next.title}</p>
+        {next.description ? <p style={{ margin: 0, color: "var(--muted)" }}>{next.description}</p> : null}
+      </div>
+    );
+  }
+
+  if (range === "weekly") {
+    const next = pending.slice(0, 3);
+    if (next.length === 0) {
+      return <p style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>No information available yet.</p>;
+    }
+    return (
+      <div style={{ fontSize: 12 }}>
+        {next.map((u) => (
+          <div key={u.id} style={{ marginBottom: 8 }}>
+            <p style={{ margin: "0 0 2px", fontWeight: 600 }}>{u.title}</p>
+            {u.description ? <p style={{ margin: 0, color: "var(--muted)" }}>{u.description}</p> : null}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  // monthly — show version plan overview
+  const versions = [versionPlan?.v1, versionPlan?.v2, versionPlan?.v3].filter(Boolean) as import("../../shared/types").VersionPlan[];
+  if (versions.length === 0) {
+    return <p style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>No information available yet.</p>;
+  }
+  return (
+    <div style={{ fontSize: 12 }}>
+      {versions.map((v) => (
+        <div key={v.id} style={{ marginBottom: 8 }}>
+          <p style={{ margin: "0 0 2px", fontWeight: 600 }}>{v.label}</p>
+          {v.description ? <p style={{ margin: 0, color: "var(--muted)" }}>{v.description}</p> : null}
+        </div>
+      ))}
     </div>
   );
 }

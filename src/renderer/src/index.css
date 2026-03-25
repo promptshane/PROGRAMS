@@ -637,6 +637,23 @@ code {
   margin: 0;
 }
 
+.homepageComposer {
+  padding: var(--page-chrome-divider-offset) 32px 48px;
+  display: grid;
+  gap: 18px;
+  width: 100%;
+}
+
+.homepageComposerContent {
+  display: grid;
+  max-width: 720px;
+}
+
+.homepageComposerShell {
+  width: 100%;
+  min-height: 56px;
+}
+
 .loadingGate,
 .appHeader,
 .heroCard,
@@ -785,6 +802,10 @@ code {
   gap: 0;
   overflow: hidden;
   padding-top: var(--page-chrome-divider-offset);
+}
+
+.projectLayout-detail .pageChromeDivider {
+  margin-bottom: 6px;
 }
 
 .projectDetailWorkspace {
@@ -3358,6 +3379,49 @@ select {
 }
 
 .projectTileMenuToggle svg {
+  width: 10px;
+  height: 10px;
+}
+
+.agentLandingExclamationToggle {
+  width: var(--project-tile-menu-toggle-size);
+  height: var(--project-tile-menu-toggle-size);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  background: rgba(5, 7, 10, 0.22);
+  color: #f8fbfd;
+  cursor: pointer;
+  backdrop-filter: blur(14px);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 10px 20px rgba(0, 0, 0, 0.2);
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.agentLandingExclamationToggle:hover,
+.agentLandingExclamationToggle:focus-visible {
+  background: rgba(12, 16, 20, 0.34);
+  border-color: rgba(255, 255, 255, 0.74);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18), 0 12px 24px rgba(0, 0, 0, 0.24);
+}
+
+.agentLandingExclamationToggle--red {
+  background: rgba(127, 29, 29, 0.82);
+  border-color: rgba(254, 202, 202, 0.72);
+  box-shadow: 0 0 0 1px rgba(254, 202, 202, 0.12), 0 10px 20px rgba(69, 10, 10, 0.34);
+}
+
+.agentLandingExclamationToggle--red:hover,
+.agentLandingExclamationToggle--red:focus-visible {
+  background: rgba(153, 27, 27, 0.92);
+  border-color: rgba(254, 226, 226, 0.88);
+  box-shadow: 0 0 0 1px rgba(254, 226, 226, 0.16), 0 12px 24px rgba(69, 10, 10, 0.4);
+}
+
+.agentLandingExclamationToggle svg {
   width: 10px;
   height: 10px;
 }
@@ -6498,17 +6562,6 @@ select {
   align-items: center;
 }
 
-.agentConvoMessage--hard-memory-report {
-  padding-bottom: 32px;
-}
-
-.agentConvoMessage--hard-memory-report .slackViewMoreButton--report {
-  position: absolute;
-  left: 12px;
-  bottom: 10px;
-  margin-top: 0;
-  z-index: 1;
-}
 @keyframes workingPulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.8; }
@@ -6541,8 +6594,24 @@ select {
 .slackMessageTimestamp {
   font-size: 0.625rem;
   opacity: 0.45;
-  margin-top: 4px;
+  margin-left: auto;
   text-align: right;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+.slackMessageMetaRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.slackMessageMetaActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 
 /* --- Slack Message Sender Label --- */
@@ -7059,10 +7128,11 @@ select {
 
 /* --- Slack View Research Button --- */
 .slackViewMoreButton {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   font-size: 0.65rem;
   padding: 2px 8px;
-  margin-top: 6px;
   border-radius: 4px;
   border: 1px solid rgba(255, 255, 255, 0.3);
   background: rgba(255, 255, 255, 0.1);
@@ -7082,6 +7152,26 @@ select {
 
 .slackViewMoreButton--report:hover {
   background: color-mix(in srgb, #ef4444 26%, transparent);
+}
+
+.slackViewMoreButton--soft-report {
+  background: rgba(156, 163, 175, 0.18);
+  border-color: rgba(156, 163, 175, 0.5);
+  color: #d1d5db;
+}
+
+.slackViewMoreButton--soft-report:hover {
+  background: rgba(156, 163, 175, 0.28);
+}
+
+.slackViewMoreButton--hard-report {
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.5);
+  color: #fff;
+}
+
+.slackViewMoreButton--hard-report:hover {
+  background: rgba(255, 255, 255, 0.24);
 }
 
 /* --- Slack Research Panel --- */

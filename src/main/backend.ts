@@ -80,7 +80,14 @@ import {
   sanitizeSlackPresenceGuestId,
   sanitizeSlackResponseContent,
 } from "@shared/agent-session";
-import { getDirectorRuntimeDefaults, getDirectorMetadata, type DirectorRuntimeDefaults } from "@shared/director-metadata";
+import {
+  getDirectorRuntimeDefaults,
+  getDirectorMetadata,
+  resolveDirectorModelSelection,
+  usesFixedDirectorRuntimePolicy,
+  type DirectorModelUseCase,
+  type DirectorRuntimeDefaults,
+} from "@shared/director-metadata";
 import {
   buildPingLifecycleTranslationMetadata,
   buildPingStatusTranslationMetadata,
@@ -115,6 +122,7 @@ import type {
   AgentChatResponse,
   AgentConfirmStageInput,
   AgentCoreDetails,
+  DirectorChatRuntimeStage,
   AgentExecuteUpdateInput,
   AgentPlannedUpdate,
   AgentProcessTodosInput,
@@ -150,6 +158,7 @@ import type {
   DirectorFocusMode,
   DirectorId,
   DirectorStructuredData,
+  DanDraftOperation,
   DanMemory,
   DanRawMemory,
   DanHistoryLogEntry,
@@ -158,7 +167,6 @@ import type {
   GenerateFlowchartResult,
   GenerateProjectOutlineReportInput,
   GitHubAuthStatus,
-  HomeScratchpadItem,
   JeffExecutionReport,
   ModelCatalog,
   PingMemory,
@@ -205,10 +213,6 @@ import type {
   SavePlannedUpdateInput,
   PendingPlannedUpdate,
   WriteProjectEnvFileInput,
-  UnifiedTodoItem,
-  ListTodosInput,
-  AddTodoInput,
-  UpdateTodosInput,
   GitSyncInput,
   GitSyncResult,
   Skill,
@@ -246,12 +250,65 @@ function resolveDirectorRuntime(
   directorId: DirectorId,
 ): DirectorRuntimeDefaults {
   const base = getDirectorRuntimeDefaults(directorId);
+  if (usesFixedDirectorRuntimePolicy(directorId)) {
+    return base;
+  }
   const overrides = session?.directorSettingsOverrides?.[directorId];
   if (!overrides) return base;
   return {
     reasoningEffort: overrides.reasoningEffort ?? base.reasoningEffort,
     planningMode: overrides.planningMode ?? base.planningMode,
   };
+}
+
+function hasToddVersionRoadmap(session: AgentSession): boolean {
+  return Boolean(
+    session.toddMemory.versionPlan.v1
+    || session.toddMemory.versionPlan.v2
+    || session.toddMemory.versionPlan.v3
+    || session.versions.length > 0,
+  );
+}
+
+function resolveToddMemoryProcessingFocusMode(session: AgentSession): RdFocusMode {
+  return hasToddVersionRoadmap(session) ? "update-planning" : "version-planning";
+}
+
+function resolveDirectorModelUseCase(
+  directorId: DirectorId,
+  focusMode: DirectorFocusMode | SlackDirectorMode | null,
+  runtimeStage: DirectorChatRuntimeStage | undefined,
+): DirectorModelUseCase {
+  if (directorId === "programming-director") {
+    return "execution";
+  }
+  if (directorId === "creative-director") {
+    return runtimeStage === "memory-processing" ? "synthesis" : "conversation";
+  }
+  if (
+    directorId === "rd-director"
+    && (
+      runtimeStage === "memory-processing"
+      || focusMode === "version-planning"
+      || focusMode === "update-planning"
+    )
+  ) {
+    return "synthesis";
+  }
+  return "conversation";
+}
+
+function shouldAllowDanHardMemory(runtimeStage: DirectorChatRuntimeStage | undefined): boolean {
+  return runtimeStage === "memory-processing";
+}
+
+function shouldConsumeToddPendingHandoff(
+  focusMode: DirectorFocusMode | SlackDirectorMode | null,
+  runtimeStage: DirectorChatRuntimeStage | undefined,
+): boolean {
+  return runtimeStage === "memory-processing"
+    || focusMode === "version-planning"
+    || focusMode === "update-planning";
 }
 
 const APP_UPDATE_FRESHNESS_WINDOW_MS = 1000;
@@ -549,11 +606,21 @@ interface DanSlackDraftCoreDetails {
   pillars: DanSlackDraftPillar[];
 }
 
+type DanNormalizedDraftOperation = DanDraftOperation;
+
 type DanPresenceAction = "stay" | "exit";
+
+interface DanDraftPillarNode {
+  pillar: CorePillar;
+  parentName: string | null;
+  connectedNames: string[];
+}
 
 interface DanSharedTurnResult {
   presenceAction: DanPresenceAction;
   hardMemoryApprovalId: string | null;
+  draftUpdated: boolean;
+  consumedToddHandoff: boolean;
 }
 
 const SLACK_HISTORY_LIMIT = 12;
@@ -605,6 +672,9 @@ const DAN_SIDE_NOTE_STOPWORDS = new Set([
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const hasOwn = (value: Record<string, unknown>, key: string): boolean =>
+  Object.prototype.hasOwnProperty.call(value, key);
 
 const normalizeNonEmptyString = (value: unknown): string | null =>
   typeof value === "string" && value.trim() ? value.trim() : null;
@@ -795,6 +865,119 @@ const normalizeDanDraftCoreDetails = (value: unknown): DanSlackDraftCoreDetails 
   };
 };
 
+const normalizeDraftOperationName = (value: unknown): string | null =>
+  typeof value === "string" && value.trim() ? value.trim() : null;
+
+const normalizeOptionalDraftText = (item: Record<string, unknown>, key: string): string | null | undefined => {
+  if (!hasOwn(item, key)) {
+    return undefined;
+  }
+  if (item[key] === null) {
+    return null;
+  }
+  return normalizeNonEmptyString(item[key]);
+};
+
+const normalizeOptionalDraftNumber = (item: Record<string, unknown>, key: string): number | null | undefined => {
+  if (!hasOwn(item, key)) {
+    return undefined;
+  }
+  if (item[key] === null) {
+    return null;
+  }
+  return typeof item[key] === "number" && Number.isFinite(item[key]) ? item[key] : undefined;
+};
+
+const normalizeOptionalConnectedPillarNames = (
+  item: Record<string, unknown>,
+): string[] | null | undefined => {
+  if (!hasOwn(item, "connectedPillarNames")) {
+    return undefined;
+  }
+  if (item.connectedPillarNames === null) {
+    return null;
+  }
+  return Array.isArray(item.connectedPillarNames)
+    ? item.connectedPillarNames
+      .map((entry) => normalizeNonEmptyString(entry))
+      .filter((entry): entry is string => Boolean(entry))
+    : undefined;
+};
+
+const normalizeDanDraftOperations = (value: unknown): DanNormalizedDraftOperation[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const operations: DanNormalizedDraftOperation[] = [];
+  for (const item of value) {
+    if (!isRecord(item) || typeof item.type !== "string") {
+      continue;
+    }
+
+    if (item.type === "set_root_detail") {
+      const target = item.target === "function" || item.target === "thesis" || item.target === "fullFlow"
+        ? item.target
+        : null;
+      if (!target) {
+        continue;
+      }
+      operations.push({
+        type: "set_root_detail",
+        target,
+        value: normalizeOptionalDraftText(item, "value") ?? null,
+      });
+      continue;
+    }
+
+    if (item.type === "delete_pillar") {
+      const name = normalizeDraftOperationName(item.name);
+      if (!name) {
+        continue;
+      }
+      operations.push({
+        type: "delete_pillar",
+        name,
+      });
+      continue;
+    }
+
+    if (item.type === "upsert_pillar") {
+      const name = normalizeDraftOperationName(item.name);
+      if (!name) {
+        continue;
+      }
+      const assumptionSource = hasOwn(item, "assumptionSource")
+        ? item.assumptionSource === "user" || item.assumptionSource === "dan"
+          ? item.assumptionSource
+          : null
+        : undefined;
+      const pillarType = hasOwn(item, "pillarType")
+        ? item.pillarType === null
+          ? null
+          : normalizeDanPillarType(item.pillarType)
+        : undefined;
+      operations.push({
+        type: "upsert_pillar",
+        name,
+        previousName: normalizeOptionalDraftText(item, "previousName"),
+        parentName: normalizeOptionalDraftText(item, "parentName"),
+        pillarType,
+        function: normalizeOptionalDraftText(item, "function"),
+        thesis: normalizeOptionalDraftText(item, "thesis"),
+        fullFlow: normalizeOptionalDraftText(item, "fullFlow"),
+        description: normalizeOptionalDraftText(item, "description"),
+        assumptionText: normalizeOptionalDraftText(item, "assumptionText"),
+        assumptionSource,
+        order: normalizeOptionalDraftNumber(item, "order"),
+        connectedPillarNames: normalizeOptionalConnectedPillarNames(item),
+      });
+    }
+  }
+
+  return operations;
+};
+
 const normalizeRawMemoriesToAppend = (
   value: unknown,
   pillarsByName: Map<string, CorePillar>,
@@ -877,6 +1060,229 @@ const buildConfirmedConceptFromSession = (session: AgentSession): AgentCoreDetai
     : null;
 };
 
+const hasCoreDetailsContent = (concept: AgentCoreDetails | null | undefined): concept is AgentCoreDetails =>
+  Boolean(concept && (concept.function || concept.thesis || concept.corePillars.length > 0 || concept.fullFlow));
+
+const getDanConfirmedConcept = (session: AgentSession): AgentCoreDetails | null =>
+  session.danMemory?.confirmedConcept ?? buildConfirmedConceptFromSession(session);
+
+const getDanDraftSourceConcept = (session: AgentSession): AgentCoreDetails | null =>
+  session.danMemory?.draftConcept
+  ?? session.danDraftCoreDetails
+  ?? getDanConfirmedConcept(session);
+
+const cloneAgentDetail = <T extends { summary: string; status?: string } | null>(
+  detail: T,
+): T => detail ? ({ ...detail, status: detail.status ?? "confirmed" } as T) : detail;
+
+const cloneCorePillarDeep = (pillar: CorePillar): CorePillar => ({
+  ...pillar,
+  function: cloneAgentDetail(pillar.function),
+  thesis: cloneAgentDetail(pillar.thesis),
+  corePillars: pillar.corePillars.map(cloneCorePillarDeep),
+  fullFlow: cloneAgentDetail(pillar.fullFlow),
+  vibes: [...pillar.vibes],
+  connectedPillarIds: [...pillar.connectedPillarIds],
+});
+
+const cloneAgentCoreDetails = (concept: AgentCoreDetails): AgentCoreDetails => ({
+  function: cloneAgentDetail(concept.function),
+  thesis: cloneAgentDetail(concept.thesis),
+  corePillars: concept.corePillars.map(cloneCorePillarDeep),
+  fullFlow: cloneAgentDetail(concept.fullFlow),
+});
+
+const collectPillarNamesById = (
+  pillars: CorePillar[],
+  index = new Map<string, string>(),
+): Map<string, string> => {
+  for (const pillar of pillars) {
+    index.set(pillar.id, pillar.name);
+    collectPillarNamesById(pillar.corePillars, index);
+  }
+  return index;
+};
+
+const collectDanDraftNodes = (
+  pillars: CorePillar[],
+  parentName: string | null,
+  namesById: Map<string, string>,
+  index = new Map<string, DanDraftPillarNode>(),
+): Map<string, DanDraftPillarNode> => {
+  for (const pillar of sortPillarsByOrder(pillars)) {
+    const key = pillar.name.trim().toLowerCase();
+    if (!key || index.has(key)) {
+      continue;
+    }
+
+    const flattened = cloneCorePillarDeep(pillar);
+    flattened.corePillars = [];
+    flattened.connectedPillarIds = [];
+    index.set(key, {
+      pillar: flattened,
+      parentName,
+      connectedNames: pillar.connectedPillarIds
+        .map((pillarId) => namesById.get(pillarId)?.trim().toLowerCase() ?? null)
+        .filter((name): name is string => Boolean(name)),
+    });
+    collectDanDraftNodes(pillar.corePillars, key, namesById, index);
+  }
+
+  return index;
+};
+
+const rebuildDanDraftTree = (
+  draftState: AgentCoreDetails,
+  nodes: Map<string, DanDraftPillarNode>,
+): AgentCoreDetails => {
+  for (const node of nodes.values()) {
+    node.pillar.corePillars = [];
+  }
+
+  const roots: CorePillar[] = [];
+  for (const [key, node] of nodes.entries()) {
+    const parent = node.parentName ? nodes.get(node.parentName) : null;
+    if (parent && parent.pillar.id !== node.pillar.id) {
+      parent.pillar.corePillars.push(node.pillar);
+      continue;
+    }
+    roots.push(node.pillar);
+  }
+
+  for (const node of nodes.values()) {
+    const connectedIds = node.connectedNames
+      .map((name) => nodes.get(name)?.pillar.id ?? null)
+      .filter((id): id is string => Boolean(id) && id !== node.pillar.id);
+    node.pillar.connectedPillarIds = Array.from(new Set(connectedIds));
+  }
+
+  return {
+    function: cloneAgentDetail(draftState.function),
+    thesis: cloneAgentDetail(draftState.thesis),
+    corePillars: sortNestedPillarsByOrder(roots),
+    fullFlow: cloneAgentDetail(draftState.fullFlow),
+  };
+};
+
+const applyDanDraftOperationsState = (
+  session: AgentSession,
+  operations: DanNormalizedDraftOperation[],
+): AgentCoreDetails | null => {
+  if (operations.length === 0) {
+    return hasCoreDetailsContent(session.danMemory?.draftConcept ?? null)
+      ? cloneAgentCoreDetails(session.danMemory!.draftConcept!)
+      : null;
+  }
+
+  const base = getDanDraftSourceConcept(session) ?? {
+    function: null,
+    thesis: null,
+    corePillars: [],
+    fullFlow: null,
+  };
+  const draftState = cloneAgentCoreDetails(base);
+  const nodes = collectDanDraftNodes(
+    draftState.corePillars,
+    null,
+    collectPillarNamesById(draftState.corePillars),
+  );
+
+  for (const operation of operations) {
+    if (operation.type === "set_root_detail") {
+      const nextDetail = operation.value ? { summary: operation.value, status: "edited" as const } : null;
+      if (operation.target === "function") {
+        draftState.function = nextDetail;
+      } else if (operation.target === "thesis") {
+        draftState.thesis = nextDetail;
+      } else {
+        draftState.fullFlow = nextDetail;
+      }
+      continue;
+    }
+
+    if (operation.type === "delete_pillar") {
+      nodes.delete(operation.name.trim().toLowerCase());
+      continue;
+    }
+
+    const targetKey = operation.name.trim().toLowerCase();
+    const previousKey = operation.previousName?.trim().toLowerCase() ?? null;
+    const existing = previousKey
+      ? nodes.get(previousKey) ?? nodes.get(targetKey) ?? null
+      : nodes.get(targetKey) ?? null;
+    const node: DanDraftPillarNode = existing ?? {
+      pillar: {
+        id: randomUUID(),
+        name: operation.name,
+        pillarType: "core",
+        function: null,
+        thesis: null,
+        corePillars: [],
+        fullFlow: null,
+        vibes: [],
+        description: null,
+        connectedPillarIds: [],
+        assumptionText: null,
+        assumptionSource: null,
+        order: nodes.size,
+      },
+      parentName: null,
+      connectedNames: [],
+    };
+
+    if (previousKey && previousKey !== targetKey) {
+      nodes.delete(previousKey);
+      for (const otherNode of nodes.values()) {
+        if (otherNode.parentName === previousKey) {
+          otherNode.parentName = targetKey;
+        }
+        otherNode.connectedNames = otherNode.connectedNames.map((name) => name === previousKey ? targetKey : name);
+      }
+    }
+
+    node.pillar.name = operation.name;
+    if (operation.parentName !== undefined) {
+      node.parentName = operation.parentName ? operation.parentName.trim().toLowerCase() : null;
+    }
+    if (operation.pillarType !== undefined) {
+      node.pillar.pillarType = operation.pillarType ?? "core";
+    }
+    if (operation.function !== undefined) {
+      node.pillar.function = createDraftDetail(operation.function ?? null);
+    }
+    if (operation.thesis !== undefined) {
+      node.pillar.thesis = createDraftDetail(operation.thesis ?? null);
+    }
+    if (operation.fullFlow !== undefined) {
+      node.pillar.fullFlow = createDraftDetail(operation.fullFlow ?? null);
+    }
+    if (operation.description !== undefined) {
+      node.pillar.description = operation.description ?? null;
+    }
+    if (operation.assumptionText !== undefined) {
+      node.pillar.assumptionText = operation.assumptionText ?? null;
+    }
+    if (operation.assumptionSource !== undefined) {
+      node.pillar.assumptionSource = operation.assumptionSource ?? null;
+    }
+    if (operation.order !== undefined) {
+      node.pillar.order = operation.order ?? node.pillar.order ?? nodes.size;
+    } else if (node.pillar.order == null) {
+      node.pillar.order = nodes.size;
+    }
+    if (operation.connectedPillarNames !== undefined) {
+      node.connectedNames = (operation.connectedPillarNames ?? [])
+        .map((name) => name.trim().toLowerCase())
+        .filter(Boolean);
+    }
+
+    nodes.set(targetKey, node);
+  }
+
+  const rebuilt = rebuildDanDraftTree(draftState, nodes);
+  return hasCoreDetailsContent(rebuilt) ? rebuilt : null;
+};
+
 const normalizeFutureUpdatePlan = (updates: VersionUpdate[]): VersionUpdate[] =>
   updates.map((update, index) => ({
     ...update,
@@ -923,7 +1329,7 @@ const syncAgentMemories = (session: AgentSession): AgentSession => {
   const hasToddMemory = Boolean(session.toddMemory);
   const hasPingMemory = Boolean(session.pingMemory);
   const danMemory: DanMemory = {
-    confirmedConcept: session.danMemory?.confirmedConcept ?? confirmedConcept,
+    confirmedConcept: confirmedConcept ?? session.danMemory?.confirmedConcept ?? null,
     draftConcept: hasDanMemory ? session.danMemory!.draftConcept : session.danDraftCoreDetails ?? null,
     notes: hasDanMemory ? [...session.danMemory!.notes] : session.danInternalNotes ?? [],
     sideNotes: hasDanMemory ? [...session.danMemory!.sideNotes] : session.danSideNotes ?? [],
@@ -943,7 +1349,7 @@ const syncAgentMemories = (session: AgentSession): AgentSession => {
   };
 
   const toddMemory: ToddMemory = {
-    confirmedConcept: hasToddMemory ? session.toddMemory!.confirmedConcept ?? danMemory.confirmedConcept : danMemory.confirmedConcept,
+    confirmedConcept: danMemory.confirmedConcept,
     versionPlan: hasToddMemory ? session.toddMemory!.versionPlan : buildToddVersionPlan(session.versions),
     futureUpdatePlan: hasToddMemory
       ? normalizeFutureUpdatePlan(session.toddMemory!.futureUpdatePlan ?? [])
@@ -1024,6 +1430,92 @@ const buildJeffExecutionReport = (input: {
   createdAt: new Date().toISOString(),
 });
 
+const clipMemoryText = (value: string, maxLength: number): string => {
+  const normalized = value.trim().replace(/\s+/g, " ");
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+  return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+};
+
+const buildToddHandoffSummary = (notes: string[]): string => {
+  const normalized = mergeTrimmedNotes(notes);
+  if (normalized.length === 0) {
+    return "Creative handoff from Dan.";
+  }
+
+  const summary = normalized
+    .slice(0, 3)
+    .map((note) => clipMemoryText(note, 120))
+    .join(" | ");
+  return normalized.length > 3 ? `${summary} | +${normalized.length - 3} more` : summary;
+};
+
+const buildToddHandoffPackage = (
+  notes: string[],
+  context: string | null,
+): ToddMemory["pendingHandoff"] | null => {
+  const rawInputs = mergeTrimmedNotes(notes);
+  if (rawInputs.length === 0) {
+    return null;
+  }
+
+  return {
+    summary: buildToddHandoffSummary(rawInputs),
+    rawInputs,
+    context: context ?? "Creative session handoff",
+    receivedAt: new Date().toISOString(),
+  };
+};
+
+const formatToddPendingHandoffPrompt = (
+  pendingHandoff: ToddMemory["pendingHandoff"],
+): string => {
+  if (!pendingHandoff) {
+    return "";
+  }
+
+  const excerpt = pendingHandoff.rawInputs
+    .slice(0, 3)
+    .map((input) => `- ${clipMemoryText(input, 180)}`)
+    .join("\n");
+  const moreCount = pendingHandoff.rawInputs.length - Math.min(pendingHandoff.rawInputs.length, 3);
+  const moreLine = moreCount > 0 ? `\n- ...and ${moreCount} more handoff note(s)` : "";
+
+  return `\nPending Handoff from Dan:\nSummary: ${pendingHandoff.summary}\nContext: ${pendingHandoff.context}\nKey notes:\n${excerpt}${moreLine}\nReceived: ${pendingHandoff.receivedAt}\n\nAcknowledge this handoff once if it matters to the reply. After this response it will move to backup memory automatically.\n`;
+};
+
+const archiveToddPendingHandoff = (
+  session: AgentSession,
+  reason: string,
+): void => {
+  const pendingHandoff = session.toddMemory.pendingHandoff;
+  if (!pendingHandoff) {
+    return;
+  }
+
+  const timestamp = new Date().toISOString();
+  const archivedNotes = [
+    `[${timestamp} | ${reason}] Handoff summary: ${pendingHandoff.summary}`,
+    `[${timestamp} | ${reason}] Handoff context: ${pendingHandoff.context}`,
+    ...pendingHandoff.rawInputs.map((input) => `[${timestamp} | ${reason}] Handoff raw: ${input}`),
+  ];
+  session.toddMemory.backupNotes = mergeTrimmedNotes(session.toddMemory.backupNotes ?? [], archivedNotes);
+};
+
+const consumeToddPendingHandoff = (
+  session: AgentSession,
+  reason: string,
+): boolean => {
+  if (!session.toddMemory.pendingHandoff) {
+    return false;
+  }
+
+  archiveToddPendingHandoff(session, reason);
+  session.toddMemory.pendingHandoff = null;
+  return true;
+};
+
 const summarizeDanDraftIdealState = (
   draftState: AgentCoreDetails,
   explicitIdealState?: string | null,
@@ -1038,8 +1530,9 @@ const buildDanDraftCoreDetailsState = (
   session: AgentSession,
   draft: DanSlackDraftCoreDetails,
 ): AgentCoreDetails => {
-  const seedPillars = session.danDraftCoreDetails?.corePillars?.length
-    ? session.danDraftCoreDetails.corePillars
+  const draftSource = getDanDraftSourceConcept(session);
+  const seedPillars = draftSource?.corePillars?.length
+    ? draftSource.corePillars
     : session.corePillars;
   const existingPillarsByName = collectExistingPillarsByName(seedPillars);
   const pillarsByName = new Map<string, CorePillar>();
@@ -1172,7 +1665,7 @@ function formatScopedCoreDetails(
   const parts: string[] = [];
 
   const concept = includeIdeal
-    ? (session.toddMemory?.confirmedConcept ?? session.danMemory?.confirmedConcept ?? buildConfirmedConceptFromSession(session))
+    ? (session.danMemory?.confirmedConcept ?? buildConfirmedConceptFromSession(session))
     : null;
   const fn = concept?.function ?? session.stages.function.confirmed;
   const th = concept?.thesis ?? session.stages.thesis.confirmed;
@@ -1348,7 +1841,7 @@ function buildDanSharedPrompt(args: {
 }): string {
   const { projectName, session, focusMode, surface, conversationSection, currentMessage } = args;
   const hardMemorySection = formatDanHardMemory(session);
-  const draftContext = formatDanDraftCoreDetails(session.danDraftCoreDetails);
+  const draftContext = formatDanDraftCoreDetails(session.danMemory?.draftConcept ?? session.danDraftCoreDetails);
   const softNotes = session.danMemory?.notes ?? session.danInternalNotes ?? [];
   const softNotesSection = softNotes.length > 0
     ? `Soft Memory (Session Notes):\n${softNotes.map((note) => `- ${note}`).join("\n")}`
@@ -1375,10 +1868,12 @@ Core operating rules:
 - Keep "notesToAppend" lean and durable. These are soft memory notes for this session only — cleared when you leave.
 - Use "rawMemoriesToAppend" to capture important raw user inputs and link them to relevant pillars by name. These persist as back-up memory.
 - Ask questions only when they materially sharpen the concept. Be minimalist and guide where the user is already going.
-- Use "draftCoreDetails" for the private working draft. Do not write draft changes into confirmed project state directly from conversation.
+- While gathering, prefer compact "draftOperations" that update the existing working draft instead of re-sending the full draft snapshot.
+- Use "draftCoreDetails" only when you are ready to confirm the full synthesized draft, or when a full rebuild is genuinely necessary.
+- Do not write draft changes into confirmed project state directly from conversation.
 - Keep assumptions internal while gathering. Do not present them piecemeal. Mark assumptions clearly with assumptionSource and assumptionText.
 - When you reach a natural stopping point and the user has nothing else to add, set "conversationStatus" to "ready-to-confirm".
-- In that ready state, "response" should present the synthesized update, name what changed in concise terms, and ask the user to confirm.
+- In that ready state, include the full "draftCoreDetails". "response" should present the synthesized update, name what changed in concise terms, and ask the user to confirm.
 - Fill "draftChangeSummary" with concise change bullets whenever the working draft changed.
 - Use unique pillar names across the whole draft so they can be reconnected safely.
 - Always set "currentState" to null. You do not track implementation state.
@@ -1806,9 +2301,7 @@ ${buildSlackResponseContract(directorId, mode)}`;
 
   if (directorId === "rd-director") {
     const toddCoreContext = formatScopedCoreDetails(session, { confirmedOnly: true, includeCurrent: true, includeIdeal: true });
-    const toddPendingHandoff = session.toddMemory?.pendingHandoff
-      ? `\nPending Handoff from Dan:\nSummary: ${session.toddMemory.pendingHandoff.summary}\nContext: ${session.toddMemory.pendingHandoff.context}\nRaw inputs:\n${session.toddMemory.pendingHandoff.rawInputs.map((i) => `- ${i}`).join("\n")}\nReceived: ${session.toddMemory.pendingHandoff.receivedAt}\n\nAcknowledge this handoff. Let the user know what Dan passed along and confirm whether it aligns with their planning intent.\n`
-      : "";
+    const toddPendingHandoff = formatToddPendingHandoffPrompt(session.toddMemory?.pendingHandoff ?? null);
     const toddNotesSection = (session.toddMemory?.notes ?? []).length > 0
       ? `\nPlanning Notes (working assumptions):\n${session.toddMemory!.notes.map((note) => `- ${note}`).join("\n")}`
       : "";
@@ -1820,6 +2313,8 @@ You are in a team Slack channel. Your role:
     : "You do not have internet access for this turn. Focus on the repo, confirmed project context, and your codebase understanding. If live external research is needed, say so plainly and explain what should be researched next"}.
 - Assess feasibility and make recommendations
 - You plan from CURRENT confirmed state toward IDEAL confirmed state using the full main timeline flow and branch references as the roadmap skeleton
+- Dan owns conceptual truth. Treat confirmed concept details as read-only source of truth from Dan.
+- If the user changes conceptual goals, asks for creative reinterpretation, or exposes a concept gap, set handoffTo to "creative-director" and explain why.
 - Provide a short conversational response in "response" (what appears in chat)
 - ${allowInternetResearch
     ? 'Provide "generalSummary" and "projectSummary" only as external-research summaries for this turn.'
@@ -1861,6 +2356,10 @@ ${buildSlackResponseContract(directorId, mode)}`;
 You are in a team Slack channel. Your role:
 - Shape the product concept, clarify core details, and manage the pillar structure
 - You track both CURRENT confirmed core-details and IDEAL confirmed core-details
+- While gathering, prefer compact "draftOperations" that update the existing working draft instead of re-sending the full draft snapshot
+- Only include full "draftCoreDetails" when you are ready to confirm the synthesized concept
+- Always keep "currentState" null. You do not own implementation state
+- If the user drifts into sequencing, roadmap, or implementation strategy, capture it with "toddHandoffNotesToAppend" instead of storing it as Dan memory
 - When the user indicates uncertainty about what comes next (e.g. "that's as far as I've thought", "I'm not sure what's next"), you should:
   - Acknowledge the uncertainty
   - Write a thoughtful assumption about what might come next, considering the full project scope including side-pillars and ghost-pillars
@@ -2166,12 +2665,15 @@ ${conversationSection}
 ${buildSlackResponseContract(directorId, mode)}`;
     }
 
+    const toddPendingHandoff = formatToddPendingHandoffPrompt(session.toddMemory?.pendingHandoff ?? null);
     return `You are Todd, the R&D Director for "${projectName}".
 You are in a team Slack channel. Your role:
 - Analyze technical questions, repo architecture, and implementation risks
 - You do not have internet access for this turn. Focus on the repo, confirmed project context, and your codebase understanding. If live external research is needed, say so plainly and explain what should be researched next.
 - Assess feasibility and make recommendations
 - Plan only from confirmed concept details plus your own codebase map and logs
+- Dan owns conceptual truth. Treat confirmed concept details as read-only source of truth from Dan.
+- If the user changes conceptual goals, asks for creative reinterpretation, or exposes a concept gap, set handoffTo to "creative-director" and explain why.
 - Keep "response" conversational and direct
 - Do not use external web research summaries in this mode
 - Set handoffTo to null unless another director needs to act on your findings
@@ -2185,7 +2687,7 @@ Current project status:
 ${statusContext}
 
 ${codebaseSummary}
-${toddCoreContext}
+${toddCoreContext}${toddPendingHandoff}
 ${stateContext}
 ${conversationSection}
 ${buildSlackResponseContract(directorId, mode)}`;
@@ -2366,9 +2868,7 @@ Respond as JSON: {"response": string, "routeTo": string|null, "routeReason": str
     }
 
     case "rd-director": {
-      const toddPendingHandoffDm = session.toddMemory?.pendingHandoff
-        ? `\nPending Handoff from Dan:\nSummary: ${session.toddMemory.pendingHandoff.summary}\nContext: ${session.toddMemory.pendingHandoff.context}\nRaw inputs:\n${session.toddMemory.pendingHandoff.rawInputs.map((i) => `- ${i}`).join("\n")}\nReceived: ${session.toddMemory.pendingHandoff.receivedAt}\n\nAcknowledge this handoff. Let the user know what Dan passed along and confirm whether it aligns with their planning intent.\n`
-        : "";
+      const toddPendingHandoffDm = formatToddPendingHandoffPrompt(session.toddMemory?.pendingHandoff ?? null);
       const toddNotesSectionDm = (session.toddMemory?.notes ?? []).length > 0
         ? `\nPlanning Notes (working assumptions):\n${session.toddMemory!.notes.map((note) => `- ${note}`).join("\n")}`
         : "";
@@ -2383,6 +2883,7 @@ You are in Research mode — researching what is possible given the user's const
 - Recommend stack/technology decisions
 - Lock in exactly what technical bridges/APIs are needed for the total function
 - Plan only from confirmed concept details plus your current codebase map
+- Dan owns the concept. If the user changes conceptual goals, asks for creative reinterpretation, or you hit a concept gap, hand the turn back to Dan.
 - Use "notesToAppend" to store planning notes and working assumptions as soft memory. Use [] when nothing new should be stored.
 
 ${coreContext}
@@ -2391,7 +2892,7 @@ ${feasContext}${toddPendingHandoffDm}${toddNotesSectionDm}
 ${conversationSection}
 When you have feasibility assessments to propose, include them in the feasibilityAssessments array. Each item must include area, assessment, complexity (low/medium/high), stackRecommendation, and costNotes. Use null for stackRecommendation or costNotes when they do not apply. Set feasibilityAssessments to null if just chatting.
 
-Respond as JSON: {"response": string, "feasibilityAssessments": [...]|null, "notesToAppend": [...]}`;
+Respond as JSON: {"response": string, "handoffTo": string|null, "handoffReason": string|null, "currentState": string|null, "idealState": string|null, "feasibilityAssessments": [...]|null, "notesToAppend": [...]}`;
       }
 
       if (focusMode === "version-planning") {
@@ -2407,6 +2908,7 @@ You are in Version Planning mode — outlining the version roadmap. Your role:
 - V2 features a functional user experience
 - V3 features a polished releasable state
 - Use only confirmed concept details plus the codebase map to shape the roadmap order
+- Dan owns the concept. If the user changes conceptual goals, asks for creative reinterpretation, or you hit a concept gap, hand the turn back to Dan.
 - Use "notesToAppend" to store planning notes and working assumptions as soft memory. Use [] when nothing new should be stored.
 
 ${coreContext}
@@ -2416,7 +2918,7 @@ ${versionsContext}${toddPendingHandoffDm}${toddNotesSectionDm}
 ${conversationSection}
 When you have version plans to propose, set confirmationSuggested to true and include them in the versions array. Set versions to null if just chatting.
 
-Respond as JSON: {"response": string, "confirmationSuggested": boolean, "versions": [...]|null, "notesToAppend": [...]}`;
+Respond as JSON: {"response": string, "handoffTo": string|null, "handoffReason": string|null, "currentState": string|null, "idealState": string|null, "confirmationSuggested": boolean, "versions": [...]|null, "notesToAppend": [...]}`;
       }
 
       // Default: update-planning mode
@@ -2432,6 +2934,7 @@ You are in Update Planning mode — specifying core updates from current state t
 - Optimize update order based on what sections the programmer focuses on per update
 - For V1: specific update plans. For V2: more general. For V3: end-state direction.
 - Use only confirmed concept details plus the codebase map to decide the update sequence.
+- Dan owns the concept. If the user changes conceptual goals, asks for creative reinterpretation, or you hit a concept gap, hand the turn back to Dan.
 - Use "notesToAppend" to store planning notes and working assumptions as soft memory. Use [] when nothing new should be stored.
 
 ${coreContext}
@@ -2441,7 +2944,7 @@ ${updatesContext}${toddPendingHandoffDm}${toddNotesSectionDm}
 ${conversationSection}
 When you have updates to propose, set confirmationSuggested to true and include them in the updates array. Each update must include title, description, versionLabel, dependencies, area, and skillsNeeded. Use [] for dependencies when none exist. Use null for area when no area label is useful. Set updates to null if just chatting.
 
-Respond as JSON: {"response": string, "confirmationSuggested": boolean, "updates": [...]|null, "notesToAppend": [...]}`;
+Respond as JSON: {"response": string, "handoffTo": string|null, "handoffReason": string|null, "currentState": string|null, "idealState": string|null, "confirmationSuggested": boolean, "updates": [...]|null, "notesToAppend": [...]}`;
     }
 
     case "programming-director": {
@@ -2560,6 +3063,33 @@ function findPillarById(pillars: AgentSession["corePillars"], id: string): Agent
     if (found) return found;
   }
   return null;
+}
+
+function resolveNextProgrammingUpdate(
+  session: AgentSession,
+  requestedUpdateId: string | null,
+): VersionUpdate | null {
+  const activeUpdateId = session.pingMemory.activeUpdateId;
+  if (activeUpdateId) {
+    const activeUpdate = session.toddMemory.futureUpdatePlan.find((update) => update.id === activeUpdateId) ?? null;
+    if (activeUpdate) {
+      return activeUpdate;
+    }
+  }
+
+  const nextPendingUpdate = session.toddMemory.futureUpdatePlan
+    .filter((update) => update.status === "pending")
+    .slice()
+    .sort((a, b) => a.order - b.order)[0] ?? null;
+  if (nextPendingUpdate) {
+    return nextPendingUpdate;
+  }
+
+  if (!requestedUpdateId) {
+    return null;
+  }
+
+  return session.toddMemory.futureUpdatePlan.find((update) => update.id === requestedUpdateId) ?? null;
 }
 
 export class ProgramsBackend {
@@ -3220,6 +3750,7 @@ Changes described: ${pending.description}`;
     directorId: Extract<DirectorId, "creative-director" | "rd-director">;
     dataType: HardMemoryReportDataType;
     approvalId: string | null;
+    reportStage?: "soft" | "hard";
     summary: string;
     currentState: string | null;
     idealState: string | null;
@@ -3234,6 +3765,7 @@ Changes described: ${pending.description}`;
       dataType: input.dataType,
       directorId: input.directorId,
       approvalId: input.approvalId,
+      reportStage: input.reportStage ?? "hard",
       summary: input.summary,
       currentState: input.currentState,
       idealState: input.idealState,
@@ -3485,12 +4017,15 @@ Changes described: ${pending.description}`;
   private applyDanSharedTurnState(
     session: AgentSession,
     parsed: Record<string, unknown>,
+    options: { allowHardMemoryProcessing?: boolean } = {},
   ): DanSharedTurnResult {
+    const allowHardMemoryProcessing = options.allowHardMemoryProcessing ?? false;
     const notesToAppend = Array.isArray(parsed.notesToAppend)
       ? parsed.notesToAppend.filter((note): note is string => typeof note === "string" && note.trim().length > 0)
       : [];
     const conversationStatus = normalizeDanConversationStatus(parsed.conversationStatus);
     const draftCoreDetails = normalizeDanDraftCoreDetails(parsed.draftCoreDetails);
+    const draftOperations = normalizeDanDraftOperations(parsed.draftOperations);
     const draftChangeSummary = Array.isArray(parsed.draftChangeSummary)
       ? parsed.draftChangeSummary.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
       : [];
@@ -3498,26 +4033,32 @@ Changes described: ${pending.description}`;
     const toddHandoffNotesToAppend = Array.isArray(parsed.toddHandoffNotesToAppend)
       ? parsed.toddHandoffNotesToAppend.filter((note): note is string => typeof note === "string" && note.trim().length > 0)
       : [];
+    const draftUpdated = Boolean(draftCoreDetails) || draftOperations.length > 0;
 
     session.danMemory.notes = mergeTrimmedNotes(session.danMemory.notes, notesToAppend);
     session.danMemory.toddHandoffNotes = mergeTrimmedNotes(session.danMemory.toddHandoffNotes ?? [], toddHandoffNotesToAppend);
     session.danMemory.draftStatus = conversationStatus;
 
-    // Raw memories: link raw user inputs to pillars
-    session.danMemory.rawMemories = session.danMemory.rawMemories ?? [];
-    const seedPillars = session.danDraftCoreDetails?.corePillars?.length
-      ? session.danDraftCoreDetails.corePillars
-      : session.corePillars;
-    const rawMemories = normalizeRawMemoriesToAppend(parsed.rawMemoriesToAppend, collectExistingPillarsByName(seedPillars));
-    if (rawMemories.length > 0) {
-      session.danMemory.rawMemories.push(...rawMemories);
-    }
-
     if (draftCoreDetails) {
-      session.danMemory.draftConcept = buildDanDraftCoreDetailsState(session, draftCoreDetails);
+      const nextDraftConcept = buildDanDraftCoreDetailsState(session, draftCoreDetails);
+      session.danMemory.draftConcept = hasCoreDetailsContent(nextDraftConcept) ? nextDraftConcept : null;
+    } else if (draftOperations.length > 0) {
+      session.danMemory.draftConcept = applyDanDraftOperationsState(session, draftOperations);
     }
     if (draftChangeSummary.length > 0) {
       session.danMemory.draftChangeSummary = mergeTrimmedNotes(draftChangeSummary);
+    }
+
+    // Raw memories: link raw user inputs to the latest draft names when possible.
+    session.danMemory.rawMemories = session.danMemory.rawMemories ?? [];
+    const rawMemorySeedPillars = session.danMemory.draftConcept?.corePillars?.length
+      ? session.danMemory.draftConcept.corePillars
+      : getDanConfirmedConcept(session)?.corePillars?.length
+        ? getDanConfirmedConcept(session)!.corePillars
+        : session.corePillars;
+    const rawMemories = normalizeRawMemoriesToAppend(parsed.rawMemoriesToAppend, collectExistingPillarsByName(rawMemorySeedPillars));
+    if (rawMemories.length > 0) {
+      session.danMemory.rawMemories.push(...rawMemories);
     }
 
     const idealState = session.danMemory.draftConcept
@@ -3544,26 +4085,35 @@ Changes described: ${pending.description}`;
     }
 
     // When Dan exits or confirms, package Todd-bound handoff notes for Todd
-    if ((presenceAction === "exit" || conversationStatus === "ready-to-confirm") && (session.danMemory.toddHandoffNotes ?? []).length > 0) {
-      session.toddMemory.pendingHandoff = {
-        summary: session.danMemory.toddHandoffNotes.join("; "),
-        rawInputs: [...session.danMemory.toddHandoffNotes],
-        context: session.danMemory.fullExperienceDescription ?? "Creative session handoff",
-        receivedAt: new Date().toISOString(),
-      };
+    if (
+      (presenceAction === "exit" || (allowHardMemoryProcessing && conversationStatus === "ready-to-confirm"))
+      && (session.danMemory.toddHandoffNotes ?? []).length > 0
+    ) {
+      session.toddMemory.pendingHandoff = buildToddHandoffPackage(
+        [
+          ...(session.toddMemory.pendingHandoff?.rawInputs ?? []),
+          ...session.danMemory.toddHandoffNotes,
+        ],
+        session.danMemory.fullExperienceDescription ?? session.toddMemory.pendingHandoff?.context ?? "Creative session handoff",
+      );
       session.danMemory.toddHandoffNotes = [];
     }
 
     syncAgentMemories(session);
 
     let hardMemoryApprovalId: string | null = null;
-    if (conversationStatus === "ready-to-confirm" && session.danMemory.draftConcept) {
+    if (allowHardMemoryProcessing && conversationStatus === "ready-to-confirm" && session.danMemory.draftConcept) {
       hardMemoryApprovalId = this.queueDanDraftApproval(session, parsed)?.id ?? null;
     } else {
       this.removeDanDraftApprovals(session);
     }
 
-    return { presenceAction, hardMemoryApprovalId };
+    return {
+      presenceAction,
+      hardMemoryApprovalId,
+      draftUpdated,
+      consumedToddHandoff: false,
+    };
   }
 
   private async runSlackDirectorTurn(args: {
@@ -3605,7 +4155,6 @@ Changes described: ${pending.description}`;
     session.danArchivedNotes = session.danArchivedNotes ?? [];
     syncAgentMemories(session);
 
-    const overrides = session.directorSettingsOverrides[directorId];
     const isTodd = directorId === "rd-director";
     const researchMode = isTodd && mode === "internet-research";
     const versionPlanningMode = isTodd && mode === "version-planning";
@@ -3651,14 +4200,23 @@ Changes described: ${pending.description}`;
     const attemptPlan = buildSlackProviderAttemptPlan(provider, preflightErrors);
     const failures: Array<{ provider: AiProvider; reason: string }> = [];
     const reasoningEffort = resolveDirectorRuntime(session, directorId).reasoningEffort;
+    const allowDanHardMemoryProcessing = false;
+    const consumeToddHandoff = shouldConsumeToddPendingHandoff(mode, undefined);
 
     for (const attemptProvider of attemptPlan.attemptedProviders) {
       try {
         hardMemoryReportMetadata = null;
         const service = this.aiService(attemptProvider);
+        const modelSelection = resolveDirectorModelSelection(
+          directorId,
+          attemptProvider,
+          model,
+          claudeModel,
+          resolveDirectorModelUseCase(directorId, mode, undefined),
+        );
         const resolvedModel = attemptProvider === "claude"
-          ? overrides?.claudeModel ?? claudeModel
-          : overrides?.model ?? model;
+          ? modelSelection.claudeModel
+          : modelSelection.model;
         const toddCodexOpts = researchMode ? { networkAccess: true } : undefined;
         const toddClaudeOpts = researchMode ? { allowedTools: "WebSearch,WebFetch", maxTurns: 10 } : undefined;
         const rawResult = await service.runOneShot(
@@ -3675,18 +4233,22 @@ Changes described: ${pending.description}`;
         let danPresenceAction: DanPresenceAction = "exit";
 
         if (directorId === "creative-director") {
-          const danTurnState = this.applyDanSharedTurnState(session, parsed);
+          const danTurnState = this.applyDanSharedTurnState(session, parsed, {
+            allowHardMemoryProcessing: allowDanHardMemoryProcessing,
+          });
           danPresenceAction = danTurnState.presenceAction;
-          if (parsed.draftCoreDetails && session.danMemory.draftConcept) {
+          if ((danTurnState.draftUpdated || session.danMemory.draftStatus === "ready-to-confirm") && session.danMemory.draftConcept) {
+            const isConfirmed = allowDanHardMemoryProcessing && session.danMemory.draftStatus === "ready-to-confirm";
             hardMemoryReportMetadata = this.buildHardMemoryReportMetadata({
               directorId: "creative-director",
               dataType: "danDraftCoreDetails",
+              reportStage: isConfirmed ? "hard" : "soft",
               approvalId: danTurnState.hardMemoryApprovalId,
               summary: sanitizeSlackResponseContent(parsed.response, "creative-director"),
               currentState: normalizeNonEmptyString(parsed.currentState),
               idealState: normalizeNonEmptyString(parsed.idealState),
               changeSummary: session.danMemory.draftChangeSummary,
-              draftCoreDetails: session.danMemory.draftConcept,
+              draftCoreDetails: isConfirmed ? session.danMemory.draftConcept : null,
               createdAt: responsePlaceholder.createdAt,
             });
           }
@@ -3736,8 +4298,8 @@ Changes described: ${pending.description}`;
               ? parsed.notesToAppend.filter((note): note is string => typeof note === "string" && note.trim().length > 0)
               : [];
             session.toddMemory.notes = mergeTrimmedNotes(session.toddMemory.notes ?? [], toddNotesToAppend);
-            if (session.toddMemory.pendingHandoff && toddNotesToAppend.length > 0) {
-              session.toddMemory.pendingHandoff = null;
+            if (consumeToddHandoff) {
+              consumeToddPendingHandoff(session, "Todd processed Dan handoff");
             }
           }
           this.applySlackDirectorStateSnapshot(session, directorId, parsed);
@@ -3771,6 +4333,7 @@ Changes described: ${pending.description}`;
           hardMemoryReportMetadata = this.buildHardMemoryReportMetadata({
             directorId: "rd-director",
             dataType: "versions",
+            reportStage: "hard",
             approvalId: approval.id,
             summary: sanitizeSlackResponseContent(parsed.response, "rd-director"),
             currentState: normalizeNonEmptyString(parsed.currentState),
@@ -3841,6 +4404,7 @@ Changes described: ${pending.description}`;
           hardMemoryReportMetadata = this.buildHardMemoryReportMetadata({
             directorId: "rd-director",
             dataType: "versionUpdates",
+            reportStage: "hard",
             approvalId: approval.id,
             summary: sanitizeSlackResponseContent(parsed.response, "rd-director"),
             currentState: normalizeNonEmptyString(parsed.currentState),
@@ -4557,8 +5121,8 @@ Instructions:
     const session = await this.store.getAgentSession(input.projectId);
     if (!session) throw new Error("No agent session found for this program.");
 
-    const update = session.toddMemory.futureUpdatePlan.find((u) => u.id === input.updateId);
-    if (!update) throw new Error("Planned update not found.");
+    const update = resolveNextProgrammingUpdate(session, input.updateId);
+    if (!update) throw new Error("No pending programming update found.");
 
     update.status = "in_progress";
     session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
@@ -4582,16 +5146,24 @@ Instructions:
     const prompt = `${confirmedContext.length > 0 ? `Project context:\n${confirmedContext.join("\n")}\n\n` : ""}Update: ${update.title}\n\nDescription: ${update.description}`;
 
     const programmingDefaults = resolveDirectorRuntime(session, "programming-director");
+    const planningMode = options.planningMode ?? programmingDefaults.planningMode;
+    const modelSelection = resolveDirectorModelSelection(
+      "programming-director",
+      input.provider,
+      input.model,
+      input.claudeModel,
+      "execution",
+    );
     const planInput: StartPlanInput = {
       projectId: input.projectId,
       provider: input.provider,
       prompt,
       speed: "normal",
-      model: input.model,
-      claudeModel: input.claudeModel,
+      model: modelSelection.model,
+      claudeModel: modelSelection.claudeModel,
       reasoningEffort: programmingDefaults.reasoningEffort,
-      planningMode: options.planningMode ?? programmingDefaults.planningMode,
-      autoApprove: false,
+      planningMode,
+      autoApprove: planningMode === "auto",
       contextPaths: [],
     };
 
@@ -4599,31 +5171,7 @@ Instructions:
   }
 
   async agentExecuteUpdate(input: AgentExecuteUpdateInput): Promise<{ started: true }> {
-    await this.ensureInitialized();
-    const session = await this.store.getAgentSession(input.projectId);
-    if (!session) throw new Error("No agent session found for this program.");
-
-    const update = session.toddMemory.futureUpdatePlan.find((item) => item.id === input.updateId);
-    if (!update) throw new Error("Planned update not found.");
-
-    const approval = this.queueApproval(session, {
-      kind: "agent-update",
-      requestedByDirectorId: "programming-director",
-      targetDirectorId: "programming-director",
-      summary: this.buildApprovalSummary("Confirm agent update", update.title),
-      draftMessage: update.description,
-      draftPayload: {
-        action: "agentExecuteUpdate",
-        input,
-      },
-    });
-    await this.saveAgentSession(input.projectId, session);
-    this.emit({
-      type: "toast",
-      level: "info",
-      message: `Queued approval: ${approval.summary}`,
-    });
-    return { started: true };
+    return this.agentExecuteUpdateNow(input, { planningMode: "auto" });
   }
 
   async agentResetStage(projectId: string, stage: AgentStage): Promise<AgentSession> {
@@ -5118,12 +5666,14 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     const settings = await this.store.readSettings();
     await this.requireProviderReady(input.provider, settings);
     const project = await this.requireProject(input.projectId);
-    const resolvedFocusMode = resolveDirectorChatFocusMode(input.directorId, input.message, input.focusMode);
 
     let session = await this.store.getAgentSession(input.projectId);
     if (!session) {
       session = this.createEmptyAgentSession(input.projectId, input.provider);
     }
+    const resolvedFocusMode = input.directorId === "rd-director" && input.runtimeStage === "memory-processing"
+      ? resolveToddMemoryProcessingFocusMode(session)
+      : resolveDirectorChatFocusMode(input.directorId, input.message, input.focusMode);
     session.provider = input.provider;
     session.activeDirectorId = input.directorId;
     session.activeAgentId = input.directorId;
@@ -5183,10 +5733,14 @@ Your response must be ONLY strict JSON (no markdown fences).`;
 
     const prompt = buildDirectorPrompt(input.directorId, resolvedFocusMode, project.name, session);
     const service = this.aiService(input.provider);
-    const dirOverrides = session.directorSettingsOverrides?.[input.directorId];
-    const model = input.provider === "claude"
-      ? (dirOverrides?.claudeModel ?? input.claudeModel)
-      : (dirOverrides?.model ?? input.model);
+    const modelSelection = resolveDirectorModelSelection(
+      input.directorId,
+      input.provider,
+      input.model,
+      input.claudeModel,
+      resolveDirectorModelUseCase(input.directorId, resolvedFocusMode, input.runtimeStage),
+    );
+    const model = input.provider === "claude" ? modelSelection.claudeModel : modelSelection.model;
     const schema = getSchemaForDirector(input.directorId, resolvedFocusMode);
 
     // Emit intro message before AI call
@@ -5235,6 +5789,8 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     let internalNotes: string[] | null = null;
     let suggestCreateProject = false;
     let hardMemoryReportMetadata: HardMemoryReportMetadata | null = null;
+    const allowDanHardMemoryProcessing = shouldAllowDanHardMemory(input.runtimeStage);
+    const consumeToddHandoff = shouldConsumeToddPendingHandoff(resolvedFocusMode, input.runtimeStage);
 
     // Jeff — routing
     if (input.directorId === "project-manager" && parsed.routeTo) {
@@ -5242,18 +5798,22 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     }
 
     if (input.directorId === "creative-director") {
-      const danTurnState = this.applyDanSharedTurnState(session, parsed);
+      const danTurnState = this.applyDanSharedTurnState(session, parsed, {
+        allowHardMemoryProcessing: allowDanHardMemoryProcessing,
+      });
       internalNotes = session.danInternalNotes;
-      if (parsed.draftCoreDetails && session.danMemory.draftConcept) {
+      if ((danTurnState.draftUpdated || session.danMemory.draftStatus === "ready-to-confirm") && session.danMemory.draftConcept) {
+        const isConfirmed = allowDanHardMemoryProcessing && session.danMemory.draftStatus === "ready-to-confirm";
         hardMemoryReportMetadata = this.buildHardMemoryReportMetadata({
           directorId: "creative-director",
           dataType: "danDraftCoreDetails",
+          reportStage: isConfirmed ? "hard" : "soft",
           approvalId: danTurnState.hardMemoryApprovalId,
           summary: sanitizeSlackResponseContent(parsed.response, "creative-director"),
           currentState: normalizeNonEmptyString(parsed.currentState),
           idealState: normalizeNonEmptyString(parsed.idealState),
           changeSummary: session.danMemory.draftChangeSummary,
-          draftCoreDetails: session.danMemory.draftConcept,
+          draftCoreDetails: isConfirmed ? session.danMemory.draftConcept : null,
           createdAt: assistantMessage.createdAt,
         });
       }
@@ -5272,8 +5832,16 @@ Your response must be ONLY strict JSON (no markdown fences).`;
         ? (parsed.notesToAppend as unknown[]).filter((note): note is string => typeof note === "string" && note.trim().length > 0)
         : [];
       session.toddMemory.notes = mergeTrimmedNotes(session.toddMemory.notes ?? [], toddNotesToAppend);
-      if (session.toddMemory.pendingHandoff && toddNotesToAppend.length > 0) {
-        session.toddMemory.pendingHandoff = null;
+      const handoffTo = normalizeDirectorId(typeof parsed.handoffTo === "string" ? parsed.handoffTo : null);
+      if (handoffTo) {
+        routeSuggestion = {
+          directorId: handoffTo,
+          reason: typeof parsed.handoffReason === "string" ? parsed.handoffReason : "",
+        };
+      }
+      this.applySlackDirectorStateSnapshot(session, input.directorId, parsed);
+      if (consumeToddHandoff) {
+        consumeToddPendingHandoff(session, "Todd processed Dan handoff");
       }
     }
 
@@ -5329,6 +5897,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       hardMemoryReportMetadata = this.buildHardMemoryReportMetadata({
         directorId: "rd-director",
         dataType: "versions",
+        reportStage: "hard",
         approvalId: approval.id,
         summary: sanitizeSlackResponseContent(parsed.response, "rd-director"),
         currentState: normalizeNonEmptyString(parsed.currentState),
@@ -5402,6 +5971,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       hardMemoryReportMetadata = this.buildHardMemoryReportMetadata({
         directorId: "rd-director",
         dataType: "versionUpdates",
+        reportStage: "hard",
         approvalId: approval.id,
         summary: sanitizeSlackResponseContent(parsed.response, "rd-director"),
         currentState: normalizeNonEmptyString(parsed.currentState),
@@ -6387,8 +6957,8 @@ Be concise and conversational.`;
       throw new Error("Some core pillars are still marked as assumed. Please confirm them with Dan before building. Ask Jeff \"anything for me to confirm?\" to see what needs attention.");
     }
 
-    const update = session.toddMemory.futureUpdatePlan.find((u) => u.id === input.updateId);
-    if (!update) throw new Error("Update not found.");
+    const update = resolveNextProgrammingUpdate(session, input.updateId);
+    if (!update) throw new Error("No pending programming update found.");
 
     update.status = "in_progress";
     session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
@@ -6415,41 +6985,17 @@ Be concise and conversational.`;
     // Bridge to existing execution pipeline
     return this.agentExecuteUpdateNow({
       projectId: input.projectId,
-      updateId: input.updateId,
+      updateId: update.id,
       provider: input.provider,
       model: input.model,
       claudeModel: input.claudeModel,
     }, {
-      planningMode: "none",
+      planningMode: "auto",
     });
   }
 
   async routeUpdateToProgramming(input: RouteUpdateToProgrammingInput): Promise<{ started: true }> {
-    await this.ensureInitialized();
-    const session = await this.store.getAgentSession(input.projectId);
-    if (!session) throw new Error("No agent session found for this program.");
-
-    const update = session.toddMemory.futureUpdatePlan.find((item) => item.id === input.updateId);
-    if (!update) throw new Error("Version update not found.");
-
-    const approval = this.queueApproval(session, {
-      kind: "agent-update",
-      requestedByDirectorId: "rd-director",
-      targetDirectorId: "programming-director",
-      summary: this.buildApprovalSummary("Confirm programming handoff", update.title),
-      draftMessage: update.description,
-      draftPayload: {
-        action: "routeUpdateToProgramming",
-        input,
-      },
-    });
-    await this.saveAgentSession(input.projectId, session);
-    this.emit({
-      type: "toast",
-      level: "info",
-      message: `Queued approval: ${approval.summary}`,
-    });
-    return { started: true };
+    return this.routeUpdateToProgrammingNow(input);
   }
 
   private async runValidationNow(input: RunValidationInput): Promise<ValidationResult> {
@@ -8860,61 +9406,6 @@ Be concise and conversational.`;
     await this.store.updateProject(project);
     this.emit({ type: "project.updated", project });
     return project;
-  }
-
-  // --- Home Scratchpad ---
-
-  async readHomeScratchpad(): Promise<HomeScratchpadItem[]> {
-    await this.ensureInitialized();
-    return this.store.getHomeScratchpad();
-  }
-
-  async updateHomeScratchpad(input: { items: HomeScratchpadItem[] }): Promise<HomeScratchpadItem[]> {
-    await this.ensureInitialized();
-    await this.store.saveHomeScratchpad(input.items);
-    return input.items;
-  }
-
-  // --- Unified To-dos ---
-
-  async listTodos(input: ListTodosInput): Promise<UnifiedTodoItem[]> {
-    await this.ensureInitialized();
-    return this.store.listTodos(input.projectId ?? undefined, input.includeProcessed ?? false);
-  }
-
-  async addTodo(input: AddTodoInput): Promise<UnifiedTodoItem> {
-    await this.ensureInitialized();
-    const item: UnifiedTodoItem = {
-      id: randomUUID(),
-      text: input.text,
-      projectId: input.projectId,
-      completed: false,
-      processedIntoPillar: false,
-      source: input.source ?? "user",
-      createdAt: new Date().toISOString(),
-    };
-    this.store.addTodo(item);
-    this.emit({ type: "app.event", event: "todos.updated" } as AppEvent);
-    return item;
-  }
-
-  async removeTodo(id: string): Promise<void> {
-    await this.ensureInitialized();
-    this.store.removeTodo(id);
-    this.emit({ type: "app.event", event: "todos.updated" } as AppEvent);
-  }
-
-  async updateTodos(input: UpdateTodosInput): Promise<UnifiedTodoItem[]> {
-    await this.ensureInitialized();
-    this.store.saveTodos(input.items);
-    this.emit({ type: "app.event", event: "todos.updated" } as AppEvent);
-    return input.items;
-  }
-
-  async markTodoProcessed(id: string): Promise<void> {
-    await this.ensureInitialized();
-    this.store.markTodoProcessed(id);
-    this.emit({ type: "app.event", event: "todos.updated" } as AppEvent);
   }
 
   // --- Git Sync ---

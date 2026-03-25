@@ -43,6 +43,7 @@ export const DAN_SLACK_RESPONSE_FIELDS = [
   "rawMemoriesToAppend",
   "conversationStatus",
   "draftChangeSummary",
+  "draftOperations",
   "draftCoreDetails",
   "presenceAction",
   "toddHandoffNotesToAppend",
@@ -294,8 +295,10 @@ export const buildSlackResponseContract = (
         return `- "conversationStatus": string. Required for Dan only. Use "gathering" while you still need more discussion, or "ready-to-confirm" when you are done asking questions and want to present a full draft for confirmation.`;
       case "draftChangeSummary":
         return `- "draftChangeSummary": string[]. Required for Dan only. Concise bullet-style change summary for what Dan would present for confirmation. Use [] when no synthesized change summary is ready yet.`;
+      case "draftOperations":
+        return `- "draftOperations": array. Required for Dan only. Use compact draft operations during gathering turns when durable details changed. Use [] when nothing durable changed this turn.`;
       case "draftCoreDetails":
-        return `- "draftCoreDetails": object|null. Required for Dan only. Provide the current working draft whenever durable details changed; use null only when nothing about the draft changed this turn.`;
+        return `- "draftCoreDetails": object|null. Required for Dan only. Use null during gathering unless a full snapshot is explicitly needed. When "conversationStatus" is "ready-to-confirm", this must contain the full working draft.`;
       case "presenceAction":
         return `- "presenceAction": string. Required for Dan only. Use "stay" when Dan should remain present in Slack after replying, or "exit" when Dan is explicitly stepping out.`;
       case "status":
@@ -438,6 +441,13 @@ export const validateSlackTurnParsedResponse = (
     }
     if (!parsed.draftChangeSummary.every((item) => typeof item === "string")) {
       throw new Error(`Slack structured output has an invalid "draftChangeSummary" field for ${DIRECTOR_NAMES[directorId]}.`);
+    }
+
+    if (!hasOwn(parsed, "draftOperations") || !Array.isArray(parsed.draftOperations)) {
+      throw new Error(`Slack structured output is missing a valid "draftOperations" field for ${DIRECTOR_NAMES[directorId]}.`);
+    }
+    if (!parsed.draftOperations.every((item) => isRecord(item) && typeof item.type === "string")) {
+      throw new Error(`Slack structured output has an invalid "draftOperations" field for ${DIRECTOR_NAMES[directorId]}.`);
     }
 
     if (!hasOwn(parsed, "draftCoreDetails")) {

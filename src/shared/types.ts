@@ -526,7 +526,6 @@ export type AppEvent =
   | { type: "project.pendingUpdate"; projectId: string; pending: PendingPlannedUpdate | null }
   | { type: "project.outlineReport"; projectId: string; report: ProjectOutlineReport | null }
   | { type: "agent.session"; projectId: string; session: AgentSession | null }
-  | { type: "app.event"; event: "todos.updated" }
   | { type: "auth.claude.codePrompt"; prompt: string };
 
 export interface StartPlanInput {
@@ -689,6 +688,7 @@ export interface HardMemoryReportMetadata {
   dataType: HardMemoryReportDataType;
   directorId: Extract<DirectorId, "creative-director" | "rd-director">;
   approvalId: string | null;
+  reportStage?: "soft" | "hard";
   summary: string;
   currentState: string | null;
   idealState: string | null;
@@ -698,6 +698,32 @@ export interface HardMemoryReportMetadata {
   versionUpdates: HardMemoryReportUpdate[] | null;
   createdAt: string;
 }
+
+export type DanDraftOperation =
+  | {
+      type: "set_root_detail";
+      target: "function" | "thesis" | "fullFlow";
+      value: string | null;
+    }
+  | {
+      type: "upsert_pillar";
+      name: string;
+      previousName?: string | null;
+      parentName?: string | null;
+      pillarType?: PillarType | null;
+      function?: string | null;
+      thesis?: string | null;
+      fullFlow?: string | null;
+      description?: string | null;
+      assumptionText?: string | null;
+      assumptionSource?: "user" | "dan" | null;
+      order?: number | null;
+      connectedPillarNames?: string[] | null;
+    }
+  | {
+      type: "delete_pillar";
+      name: string;
+    };
 
 export type SlackMessageMetadata =
   | {
@@ -817,6 +843,7 @@ export type CreativeFocusMode = "conversation" | "core-details" | "vibes";
 export type RdFocusMode = "research" | "version-planning" | "update-planning";
 export type ValidationFocusMode = "identify-goal" | "test-current-state" | "compare";
 export type DirectorFocusMode = CreativeFocusMode | RdFocusMode | ValidationFocusMode;
+export type DirectorChatRuntimeStage = "conversation" | "memory-processing";
 export type DanDraftStatus = "gathering" | "ready-to-confirm";
 export type DanPresenceAction = "stay" | "exit";
 
@@ -1325,47 +1352,6 @@ export interface AgentProcessTodosInput {
   newTodos: string[];
 }
 
-// --- Homepage Scratchpad ---
-
-export interface HomeScratchpadItem {
-  id: string;
-  text: string;
-  projectId: string | null;
-  completed: boolean;
-  createdAt: string;
-}
-
-export interface UpdateHomeScratchpadInput {
-  items: HomeScratchpadItem[];
-}
-
-// --- Unified To-do ---
-
-export interface UnifiedTodoItem {
-  id: string;
-  text: string;
-  projectId: string | null;
-  completed: boolean;
-  processedIntoPillar: boolean;
-  source: "user" | "agent";
-  createdAt: string;
-}
-
-export interface ListTodosInput {
-  projectId?: string | null;
-  includeProcessed?: boolean;
-}
-
-export interface AddTodoInput {
-  text: string;
-  projectId: string | null;
-  source?: "user" | "agent";
-}
-
-export interface UpdateTodosInput {
-  items: UnifiedTodoItem[];
-}
-
 // --- Git Sync ---
 
 export interface GitSyncInput {
@@ -1379,10 +1365,6 @@ export interface GitSyncResult {
   commitSha: string | null;
   error: string | null;
 }
-
-// --- Program Update Mode ---
-
-export type ProgramUpdateMode = "talk" | "plan" | "work";
 
 // --- Skills ---
 
@@ -1486,6 +1468,7 @@ export interface DirectorChatInput {
   projectId: string;
   directorId: DirectorId;
   focusMode: DirectorFocusMode | null;
+  runtimeStage?: DirectorChatRuntimeStage;
   provider: AiProvider;
   model: CodexModel;
   claudeModel: ClaudeModel;

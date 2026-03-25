@@ -66,6 +66,7 @@ try {
 
   const now = "2026-03-19T12:00:00.000Z";
   const emptyStage = { messages: [], confirmed: null };
+  const confirmedDetail = (summary) => ({ summary, status: "confirmed" });
   const project = {
     id: "project-1",
     name: "Slack Session Test",
@@ -100,17 +101,33 @@ try {
     currentStage: "function",
     conversationMode: "guided",
     stages: {
-      function: { ...emptyStage },
-      thesis: { ...emptyStage },
-      core_pillars: { ...emptyStage },
-      full_flow: { ...emptyStage },
+      function: { ...emptyStage, confirmed: confirmedDetail("Guide users into the workspace with a confident first-run flow.") },
+      thesis: { ...emptyStage, confirmed: confirmedDetail("Reduce first-run uncertainty by making the workspace feel legible immediately.") },
+      core_pillars: { ...emptyStage, confirmed: confirmedDetail("1 top-level pillar") },
+      full_flow: { ...emptyStage, confirmed: confirmedDetail("User arrives, completes setup, and lands inside a clear workspace baseline.") },
       iterations: { ...emptyStage },
       execution: { ...emptyStage },
     },
     unifiedMessages: [],
     scratchpad: [],
     plannedUpdates: [],
-    corePillars: [],
+    corePillars: [
+      {
+        id: "pillar-1",
+        name: "Onboarding",
+        pillarType: "core",
+        function: confirmedDetail("Orient the user and collect the minimum setup inputs."),
+        thesis: confirmedDetail("The first interaction should feel guided, not overwhelming."),
+        corePillars: [],
+        fullFlow: confirmedDetail("Start with setup, then move into the workspace."),
+        vibes: [],
+        description: "The main first-run sequence.",
+        connectedPillarIds: [],
+        assumptionText: null,
+        assumptionSource: null,
+        order: 1,
+      },
+    ],
     currentCorePillars: [],
     coreDetailsChatHistory: [],
     attachedMaterials: [],
@@ -188,6 +205,22 @@ try {
     pendingApprovals: [],
     directorSettingsOverrides: {},
     directorStateMap: {},
+    toddMemory: {
+      confirmedConcept: {
+        function: confirmedDetail("Stale Todd concept that should be replaced."),
+        thesis: null,
+        corePillars: [],
+        fullFlow: null,
+      },
+      versionPlan: { v1: null, v2: null, v3: null },
+      futureUpdatePlan: [],
+      previousUpdateLog: [],
+      troubleLog: [],
+      codebaseIndexedMap: null,
+      notes: [],
+      pendingHandoff: null,
+      backupNotes: [],
+    },
     agentConversations: {},
     activeAgentId: null,
   };
@@ -207,6 +240,7 @@ try {
     danDraftFunction: reloaded?.danDraftCoreDetails?.function?.summary ?? null,
     danDraftChangeSummary: reloaded?.danDraftChangeSummary ?? [],
     slackPresenceGuestId: reloaded?.slackPresenceGuestId ?? null,
+    toddConfirmedFunction: reloaded?.toddMemory?.confirmedConcept?.function?.summary ?? null,
   }));
 } finally {
   await rm(tempDir, { recursive: true, force: true });
@@ -239,6 +273,7 @@ try {
     assert.equal(result.danDraftFunction, "Guide users into the workspace with a confident first-run flow.");
     assert.deepEqual(result.danDraftChangeSummary, ["Added an onboarding draft function summary."]);
     assert.equal(result.slackPresenceGuestId, "creative-director");
+    assert.equal(result.toddConfirmedFunction, "Guide users into the workspace with a confident first-run flow.");
   } finally {
     await rm(userDataDir, { recursive: true, force: true });
     await rm(projectDir, { recursive: true, force: true });

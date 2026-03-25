@@ -115,6 +115,32 @@ const danDraftCoreDetailsSchema = buildStrictObjectSchema({
   },
 });
 
+const danDraftOperationSchema = {
+  type: "object" as const,
+  additionalProperties: false as const,
+  required: ["type"] as const,
+  properties: {
+    type: { type: "string" },
+    target: { type: ["string", "null"] },
+    value: { type: ["string", "null"] },
+    name: { type: ["string", "null"] },
+    previousName: { type: ["string", "null"] },
+    parentName: { type: ["string", "null"] },
+    pillarType: { type: ["string", "null"] },
+    function: { type: ["string", "null"] },
+    thesis: { type: ["string", "null"] },
+    fullFlow: { type: ["string", "null"] },
+    description: { type: ["string", "null"] },
+    assumptionText: { type: ["string", "null"] },
+    assumptionSource: { type: ["string", "null"] },
+    order: { type: ["number", "null"] },
+    connectedPillarNames: {
+      type: ["array", "null"] as const,
+      items: { type: "string" },
+    },
+  },
+};
+
 export const danSlackSchema = buildStrictObjectSchema({
   response: { type: "string" },
   handoffTo: { type: ["string", "null"] },
@@ -139,6 +165,10 @@ export const danSlackSchema = buildStrictObjectSchema({
   draftChangeSummary: {
     type: "array" as const,
     items: { type: "string" },
+  },
+  draftOperations: {
+    type: "array" as const,
+    items: danDraftOperationSchema,
   },
   draftCoreDetails: {
     ...danDraftCoreDetailsSchema,

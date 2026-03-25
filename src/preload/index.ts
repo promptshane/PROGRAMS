@@ -1,6 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
-  AddTodoInput,
   AgentAttachMaterialsInput,
   AgentAttachMaterialsResult,
   AgentChatInput,
@@ -63,8 +62,6 @@ import type {
   GenerateProjectOutlineReportInput,
   GitSyncInput,
   GitSyncResult,
-  HomeScratchpadItem,
-  ListTodosInput,
   PendingPlannedUpdate,
   PlanningChatInput,
   PlanningChatResponse,
@@ -85,9 +82,7 @@ import type {
   PlaywrightRunInput,
   PlaywrightRunResult,
   StartPlanInput,
-  UnifiedTodoItem,
   UpdateProjectInput,
-  UpdateTodosInput,
   UsageSnapshot,
   WriteProjectEnvFileInput,
 } from "@shared/types";
@@ -252,24 +247,6 @@ const api = {
     ipcRenderer.invoke("agents.runValidation", input),
   setValidationFrequency: (input: SetValidationFrequencyInput): Promise<AgentSession> =>
     ipcRenderer.invoke("agents.setValidationFrequency", input),
-
-  // Home scratchpad (legacy)
-  readHomeScratchpad: (): Promise<HomeScratchpadItem[]> =>
-    ipcRenderer.invoke("home.readScratchpad"),
-  updateHomeScratchpad: (input: { items: HomeScratchpadItem[] }): Promise<HomeScratchpadItem[]> =>
-    ipcRenderer.invoke("home.updateScratchpad", input),
-
-  // Unified To-dos
-  listTodos: (input: ListTodosInput): Promise<UnifiedTodoItem[]> =>
-    ipcRenderer.invoke("todos.list", input),
-  addTodo: (input: AddTodoInput): Promise<UnifiedTodoItem> =>
-    ipcRenderer.invoke("todos.add", input),
-  removeTodo: (id: string): Promise<void> =>
-    ipcRenderer.invoke("todos.remove", id),
-  updateTodos: (input: UpdateTodosInput): Promise<UnifiedTodoItem[]> =>
-    ipcRenderer.invoke("todos.update", input),
-  markTodoProcessed: (id: string): Promise<void> =>
-    ipcRenderer.invoke("todos.markProcessed", id),
 
   // Git sync
   syncProjectToGitHub: (input: GitSyncInput): Promise<GitSyncResult> =>

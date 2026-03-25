@@ -61,27 +61,51 @@ export const directorPmSchema = buildStrictObjectSchema({
 
 export const directorToddResearchSchema = buildStrictObjectSchema({
   response: { type: "string" },
+  handoffTo: { type: ["string", "null"] },
+  handoffReason: { type: ["string", "null"] },
+  currentState: { type: ["string", "null"] },
+  idealState: { type: ["string", "null"] },
   feasibilityAssessments: {
     type: ["array", "null"] as const,
     items: toddFeasibilityAssessmentSchema,
+  },
+  notesToAppend: {
+    type: "array" as const,
+    items: { type: "string" },
   },
 });
 
 export const directorToddVersionSchema = buildStrictObjectSchema({
   response: { type: "string" },
+  handoffTo: { type: ["string", "null"] },
+  handoffReason: { type: ["string", "null"] },
+  currentState: { type: ["string", "null"] },
+  idealState: { type: ["string", "null"] },
   confirmationSuggested: { type: "boolean" },
   versions: {
     type: ["array", "null"] as const,
     items: toddVersionItemSchema,
   },
+  notesToAppend: {
+    type: "array" as const,
+    items: { type: "string" },
+  },
 });
 
 export const directorToddUpdateSchema = buildStrictObjectSchema({
   response: { type: "string" },
+  handoffTo: { type: ["string", "null"] },
+  handoffReason: { type: ["string", "null"] },
+  currentState: { type: ["string", "null"] },
+  idealState: { type: ["string", "null"] },
   confirmationSuggested: { type: "boolean" },
   updates: {
     type: ["array", "null"] as const,
     items: toddUpdateItemSchema,
+  },
+  notesToAppend: {
+    type: "array" as const,
+    items: { type: "string" },
   },
 });
 

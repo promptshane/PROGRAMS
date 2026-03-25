@@ -18,7 +18,6 @@ import type {
   DirectorFocusMode,
   DynamicSubAgent,
   FlowchartGraph,
-  HomeScratchpadItem,
   JeffExecutionReport,
   PendingPlannedUpdate,
   PendingApproval,
@@ -37,7 +36,6 @@ import type {
   SetupState,
   ToddCodebaseIndexedMap,
   ToddMemory,
-  UnifiedTodoItem,
   UpdateRecord,
   ValidationFocusMode,
   VersionPlan,
@@ -103,6 +101,14 @@ const normalizeProvider = (value: string | undefined): Settings["advancedDefault
   return value === "codex" || value === "claude" ? value : DEFAULT_SETTINGS.advancedDefaults.provider;
 };
 
+type LegacyHomeScratchpadItem = {
+  id: string;
+  text: string;
+  projectId: string | null;
+  completed: boolean;
+  createdAt: string;
+};
+
 const buildConfirmedConceptFromLegacy = (session: {
   stages: AgentSession["stages"];
   corePillars: CorePillar[];
@@ -165,7 +171,7 @@ const buildDanMemory = (session: {
   danArchivedNotes: string[];
   deletedNotes: string[];
 }): AgentSession["danMemory"] => {
-  const confirmedConcept = session.danMemory?.confirmedConcept ?? buildConfirmedConceptFromLegacy(session);
+  const confirmedConcept = buildConfirmedConceptFromLegacy(session) ?? session.danMemory?.confirmedConcept ?? null;
   return {
     confirmedConcept,
     draftConcept: session.danMemory?.draftConcept ?? session.danDraftCoreDetails ?? null,
@@ -212,7 +218,7 @@ const buildToddMemory = (session: {
       : [];
 
   return {
-    confirmedConcept: session.toddMemory?.confirmedConcept ?? session.danMemory.confirmedConcept,
+    confirmedConcept: session.danMemory.confirmedConcept,
     versionPlan: {
       v1: session.toddMemory?.versionPlan.v1 ?? findRoadmapVersion(session.versions, "v1"),
       v2: session.toddMemory?.versionPlan.v2 ?? findRoadmapVersion(session.versions, "v2"),
@@ -558,7 +564,7 @@ export class ProjectStore {
     const scratchpadRows = this.getRows<{ items_json: string }>("SELECT items_json FROM home_scratchpad LIMIT 1");
     if (scratchpadRows.length > 0 && scratchpadRows[0].items_json) {
       try {
-        const items = JSON.parse(scratchpadRows[0].items_json) as HomeScratchpadItem[];
+        const items = JSON.parse(scratchpadRows[0].items_json) as LegacyHomeScratchpadItem[];
         for (const item of items) {
           this.db.run(
             "INSERT OR IGNORE INTO unified_todos (id, text, project_id, completed, processed_into_pillar, source, created_at) VALUES (?, ?, ?, ?, 0, 'user', ?)",
@@ -1385,85 +1391,6 @@ export class ProjectStore {
 
   async deleteAgentSession(projectId: string): Promise<void> {
     this.run("DELETE FROM agent_sessions WHERE project_id = ?", [projectId]);
-  }
-
-  // --- Home Scratchpad ---
-
-  async getHomeScratchpad(): Promise<HomeScratchpadItem[]> {
-    const rows = this.getRows<{ items_json: string }>(
-      "SELECT items_json FROM home_scratchpad WHERE id = 'singleton'",
-    );
-    if (rows.length === 0) return [];
-    return JSON.parse(rows[0].items_json);
-  }
-
-  async saveHomeScratchpad(items: HomeScratchpadItem[]): Promise<void> {
-    this.run(
-      `INSERT OR REPLACE INTO home_scratchpad (id, items_json, updated_at) VALUES ('singleton', ?, ?)`,
-      [JSON.stringify(items), new Date().toISOString()],
-    );
-  }
-
-  // --- Unified To-dos ---
-
-  listTodos(projectId?: string | null, includeProcessed = false): UnifiedTodoItem[] {
-    let sql = "SELECT * FROM unified_todos";
-    const params: (string | null)[] = [];
-    const clauses: string[] = [];
-
-    if (projectId !== undefined && projectId !== null) {
-      clauses.push("project_id = ?");
-      params.push(projectId);
-    }
-    if (!includeProcessed) {
-      clauses.push("processed_into_pillar = 0");
-    }
-    if (clauses.length) {
-      sql += ` WHERE ${clauses.join(" AND ")}`;
-    }
-    sql += " ORDER BY created_at ASC";
-
-    const rows = this.getRows<{
-      id: string;
-      text: string;
-      project_id: string | null;
-      completed: number;
-      processed_into_pillar: number;
-      source: string;
-      created_at: string;
-    }>(sql, params);
-
-    return rows.map((row) => ({
-      id: row.id,
-      text: row.text,
-      projectId: row.project_id,
-      completed: row.completed === 1,
-      processedIntoPillar: row.processed_into_pillar === 1,
-      source: (row.source as "user" | "agent") || "user",
-      createdAt: row.created_at,
-    }));
-  }
-
-  addTodo(item: UnifiedTodoItem): void {
-    this.run(
-      "INSERT OR REPLACE INTO unified_todos (id, text, project_id, completed, processed_into_pillar, source, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-      [item.id, item.text, item.projectId, String(item.completed ? 1 : 0), String(item.processedIntoPillar ? 1 : 0), item.source, item.createdAt],
-    );
-  }
-
-  removeTodo(id: string): void {
-    this.run("DELETE FROM unified_todos WHERE id = ?", [id]);
-  }
-
-  markTodoProcessed(id: string): void {
-    this.run("UPDATE unified_todos SET processed_into_pillar = 1 WHERE id = ?", [id]);
-  }
-
-  saveTodos(items: UnifiedTodoItem[]): void {
-    this.db.exec("DELETE FROM unified_todos");
-    for (const item of items) {
-      this.addTodo(item);
-    }
   }
 
   // --- Skills ---

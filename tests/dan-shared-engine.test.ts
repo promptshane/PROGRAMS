@@ -234,6 +234,7 @@ const createDanPayload = (overrides: Record<string, unknown> = {}) => ({
   rawMemoriesToAppend: null,
   conversationStatus: "gathering",
   draftChangeSummary: ["Added an onboarding flow and workspace landing sequence."],
+  draftOperations: [],
   draftCoreDetails: createDanDraft(),
   presenceAction: "stay",
   ...overrides,
@@ -245,6 +246,20 @@ const createDirectorPayload = (overrides: Record<string, unknown> = {}) => ({
   handoffReason: null,
   currentState: "Backend review queued.",
   idealState: null,
+  ...overrides,
+});
+
+const createToddPayload = (overrides: Record<string, unknown> = {}) => ({
+  response: "I can map the technical plan from here.",
+  handoffTo: null,
+  handoffReason: null,
+  currentState: "The technical approach is still being shaped.",
+  idealState: "A clear technical plan grounded in Dan's confirmed concept.",
+  notesToAppend: ["Prefer a phased rollout with the onboarding flow first."],
+  feasibilityAssessments: null,
+  confirmationSuggested: false,
+  versions: null,
+  updates: null,
   ...overrides,
 });
 
@@ -358,6 +373,19 @@ const createFlowDraft = () => ({
 const cloneSession = (session: AgentSession): AgentSession =>
   JSON.parse(JSON.stringify(session)) as AgentSession;
 
+const findPillarByName = (pillars: CorePillar[], name: string): CorePillar | null => {
+  for (const pillar of pillars) {
+    if (pillar.name === name) {
+      return pillar;
+    }
+    const child = findPillarByName(pillar.corePillars, name);
+    if (child) {
+      return child;
+    }
+  }
+  return null;
+};
+
 const collectPillarNames = (
   pillars: NonNullable<AgentSession["danDraftCoreDetails"]>["corePillars"],
   names = new Map<string, string>(),
@@ -411,6 +439,7 @@ const summarizeDanState = (session: AgentSession) => ({
 
 const createBackendHarness = (responses: Array<Record<string, unknown>>) => {
   const prompts: string[] = [];
+  const aiCalls: Array<{ provider: "codex" | "claude"; model: string }> = [];
   let responseIndex = 0;
   let storedSession: AgentSession | null = null;
   const savedSessions: AgentSession[] = [];
@@ -441,8 +470,10 @@ const createBackendHarness = (responses: Array<Record<string, unknown>>) => {
       _project: unknown,
       _settings: unknown,
       prompt: string,
+      model: string,
     ) => {
       prompts.push(prompt);
+      aiCalls.push({ provider: "codex", model });
       const payload = responses[responseIndex] ?? responses[responses.length - 1];
       responseIndex += 1;
       return JSON.stringify(payload);
@@ -450,7 +481,13 @@ const createBackendHarness = (responses: Array<Record<string, unknown>>) => {
   };
   const claude = {
     getAuthStatus: async () => ({ authenticated: true }),
-    runOneShot: async () => {
+    runOneShot: async (
+      _project: unknown,
+      _settings: unknown,
+      _prompt: string,
+      model: string,
+    ) => {
+      aiCalls.push({ provider: "claude", model });
       throw new Error("Claude should not be used in this test.");
     },
   };
@@ -490,6 +527,7 @@ const createBackendHarness = (responses: Array<Record<string, unknown>>) => {
   return {
     backend,
     prompts,
+    aiCalls,
     project,
     settings,
     setStoredSession(session: AgentSession | null) {
@@ -547,6 +585,95 @@ test("Dan gathering turns update draft state and side notes without mutating con
   assert.equal(session.pendingApprovals.length, 0);
   assert.equal(session.slackPresenceGuestId, "creative-director");
   assert.equal(session.slackActiveDirectorId, "creative-director");
+});
+
+test("Dan draft operations update the existing draft without rebuilding the whole concept snapshot", async () => {
+  const session = createSession();
+  session.danMemory.draftConcept = createFlowDraft() as AgentSession["danMemory"]["draftConcept"];
+  session.danDraftCoreDetails = session.danMemory.draftConcept;
+  session.slackMessages.push({
+    id: "user-dan-ops",
+    role: "user",
+    directorId: null,
+    content: "Move the ambient support idea under the workspace, add a post-launch ritual, and drop the hard stop.",
+    createdAt: NOW,
+  });
+
+  const originalAmbient = findPillarByName(session.danMemory.draftConcept!.corePillars, "Ambient Support");
+  const workspace = findPillarByName(session.danMemory.draftConcept!.corePillars, "Workspace");
+  assert.ok(originalAmbient);
+  assert.ok(workspace);
+
+  const harness = createBackendHarness([
+    createDanPayload({
+      response: "I updated the draft structure and kept gathering.",
+      draftCoreDetails: null,
+      draftOperations: [
+        {
+          type: "set_root_detail",
+          target: "function",
+          value: "Guide the user from arrival into a confident working baseline.",
+        },
+        {
+          type: "upsert_pillar",
+          previousName: "Ambient Support",
+          name: "Ambient Guidance",
+          parentName: "Workspace",
+          order: 3,
+        },
+        {
+          type: "upsert_pillar",
+          name: "Post-Launch Ritual",
+          parentName: "Workspace",
+          pillarType: "side",
+          function: "Extend confidence after launch with a light follow-up loop.",
+          thesis: "The product should reinforce the baseline once the main flow ends.",
+          description: "A lightweight follow-up branch after the main launch path.",
+          order: 4,
+          connectedPillarNames: ["Workspace"],
+        },
+        {
+          type: "delete_pillar",
+          name: "Launch Baseline",
+        },
+      ],
+      rawMemoriesToAppend: [
+        {
+          content: "Ambient guidance should stay attached to the workspace once the user lands there.",
+          relatedPillarNames: ["Ambient Guidance"],
+        },
+      ],
+      draftChangeSummary: [
+        "Moved Ambient Support under Workspace and renamed it to Ambient Guidance.",
+        "Added a Post-Launch Ritual side branch.",
+        "Removed the old hard-stop pillar.",
+      ],
+    }),
+  ]);
+
+  await (harness.backend.runSlackDirectorTurn as Function)({
+    session,
+    project: harness.project,
+    settings: harness.settings,
+    provider: "codex",
+    model: "gpt-5.4",
+    claudeModel: "sonnet",
+    directorId: "creative-director",
+    userMessage: "Move the ambient support idea under the workspace, add a post-launch ritual, and drop the hard stop.",
+    mode: "codebase-analysis",
+  });
+
+  const ambientGuidance = findPillarByName(session.danDraftCoreDetails?.corePillars ?? [], "Ambient Guidance");
+  const postLaunchRitual = findPillarByName(session.danDraftCoreDetails?.corePillars ?? [], "Post-Launch Ritual");
+  const updatedWorkspace = findPillarByName(session.danDraftCoreDetails?.corePillars ?? [], "Workspace");
+
+  assert.equal(session.danDraftCoreDetails?.function?.summary, "Guide the user from arrival into a confident working baseline.");
+  assert.equal(ambientGuidance?.id, originalAmbient?.id);
+  assert.equal(updatedWorkspace?.corePillars.some((pillar) => pillar.name === "Ambient Guidance"), true);
+  assert.equal(findPillarByName(session.danDraftCoreDetails?.corePillars ?? [], "Launch Baseline"), null);
+  assert.equal(postLaunchRitual?.pillarType, "side");
+  assert.deepEqual(postLaunchRitual?.connectedPillarIds, workspace ? [workspace.id] : []);
+  assert.equal(session.danMemory.rawMemories[0]?.relatedPillarIds[0], originalAmbient?.id);
 });
 
 test("Dan prompt includes matching back-up memories for explicit recall requests", async () => {
@@ -646,7 +773,7 @@ test("Dan prompt keeps concept structure private and surfaces only concept memor
   assert.doesNotMatch(prompt, /Branch draft:/);
 });
 
-test("Dan ready-to-confirm queues an approval and applying it confirms the draft", async () => {
+test("Dan ready-to-confirm only queues an approval during explicit memory-processing turns", async () => {
   const session = createSession();
   session.danInternalNotes = ["User wants the onboarding to feel decisive."];
   session.slackMessages.push({
@@ -657,6 +784,14 @@ test("Dan ready-to-confirm queues an approval and applying it confirms the draft
     createdAt: NOW,
   });
   const harness = createBackendHarness([
+    createDanPayload({
+      response: "Here is the synthesized draft. Does this look good to you?",
+      conversationStatus: "ready-to-confirm",
+      draftChangeSummary: [
+        "Added onboarding as the first pillar.",
+        "Defined the workspace landing flow after setup.",
+      ],
+    }),
     createDanPayload({
       response: "Here is the synthesized draft. Does this look good to you?",
       conversationStatus: "ready-to-confirm",
@@ -677,6 +812,20 @@ test("Dan ready-to-confirm queues an approval and applying it confirms the draft
     directorId: "creative-director",
     userMessage: "That sounds right. Show me the full draft.",
     mode: "codebase-analysis",
+  });
+
+  assert.equal(session.pendingApprovals.length, 0);
+  harness.setStoredSession(session);
+
+  await (harness.backend.directorChat as Function)({
+    projectId: "project-1",
+    directorId: "creative-director",
+    message: "Process Dan's notes into hard memory.",
+    provider: "codex",
+    model: "gpt-5.4",
+    claudeModel: "sonnet",
+    focusMode: "conversation",
+    runtimeStage: "memory-processing",
   });
 
   assert.equal(session.pendingApprovals.length, 1);
@@ -739,6 +888,7 @@ test("Dan DM ready-to-confirm turns attach hard-memory report metadata and keep 
     model: "gpt-5.4",
     claudeModel: "sonnet",
     focusMode: null,
+    runtimeStage: "memory-processing",
   });
 
   const metadata = result.message.metadata as HardMemoryReportMetadata | null;
@@ -762,6 +912,51 @@ test("Dan DM ready-to-confirm turns attach hard-memory report metadata and keep 
   const persistedMetadata = persistedReport?.metadata as HardMemoryReportMetadata | null;
   assert.equal(persistedMetadata?.type, "hard-memory-report");
   assert.equal(persistedMetadata?.approvalId, metadata?.approvalId ?? null);
+  assert.equal(session.pendingApprovals.length, 0);
+});
+
+test("Dan soft reports keep metadata light and resolve against the live draft", async () => {
+  const session = createSession();
+  session.slackMessages.push({
+    id: "user-dan-soft-memory",
+    role: "user",
+    directorId: null,
+    content: "Keep tightening the onboarding concept.",
+    createdAt: NOW,
+  });
+
+  const harness = createBackendHarness([
+    createDanPayload({
+      response: "I tightened the draft and I am still gathering details.",
+      draftCoreDetails: null,
+      draftOperations: [
+        {
+          type: "set_root_detail",
+          target: "thesis",
+          value: "Reduce first-run uncertainty by making the product feel legible immediately.",
+        },
+      ],
+      draftChangeSummary: ["Clarified the onboarding thesis."],
+    }),
+  ]);
+  harness.setStoredSession(session);
+
+  const result = await (harness.backend.directorChat as Function)({
+    projectId: "project-1",
+    directorId: "creative-director",
+    message: "Keep tightening the onboarding concept.",
+    provider: "codex",
+    model: "gpt-5.4",
+    claudeModel: "sonnet",
+    focusMode: null,
+  });
+
+  const metadata = result.message.metadata as HardMemoryReportMetadata | null;
+  assert.equal(metadata?.type, "hard-memory-report");
+  assert.equal(metadata?.reportStage, "soft");
+  assert.equal(metadata?.draftCoreDetails, null);
+  assert.deepEqual(metadata?.changeSummary, ["Clarified the onboarding thesis."]);
+  assert.equal(session.danMemory.draftConcept?.thesis?.summary, "Reduce first-run uncertainty by making the product feel legible immediately.");
   assert.equal(session.pendingApprovals.length, 0);
 });
 
@@ -832,6 +1027,146 @@ test("Todd DM version-planning turns attach hard-memory report metadata and keep
   assert.equal(persistedMetadata?.type, "hard-memory-report");
   assert.equal(persistedMetadata?.approvalId, metadata?.approvalId ?? null);
   assert.equal(session.pendingApprovals.length, 0);
+});
+
+test("Todd research turns can hand concept questions back to Dan without consuming Dan's pending handoff", async () => {
+  const session = createSession();
+  session.toddMemory.pendingHandoff = {
+    summary: "Dan needs the implementation plan to respect a guided onboarding tone.",
+    rawInputs: [
+      "The onboarding should feel guided, not overwhelming.",
+      "The workspace should feel ready immediately after setup.",
+    ],
+    context: "Creative session handoff",
+    receivedAt: NOW,
+  };
+  session.slackMessages.push({
+    id: "user-todd-handoff",
+    role: "user",
+    directorId: null,
+    content: "What stack should support this? The concept might still be fuzzy.",
+    createdAt: NOW,
+  });
+
+  const harness = createBackendHarness([
+    createToddPayload({
+      response: "I can map the stack once Dan confirms the creative direction around the final workspace behavior.",
+      handoffTo: "creative-director",
+      handoffReason: "Dan needs to lock the conceptual behavior of the workspace before the technical plan can settle.",
+      currentState: "The creative handoff is still a working draft.",
+      idealState: "Dan has confirmed the conceptual behavior and Todd can map the stack cleanly.",
+      notesToAppend: ["Wait for Dan to confirm the final workspace behavior before finalizing the stack."],
+      feasibilityAssessments: null,
+    }),
+  ]);
+  harness.setStoredSession(session);
+
+  const result = await (harness.backend.directorChat as Function)({
+    projectId: "project-1",
+    directorId: "rd-director",
+    message: "What stack should support this? The concept might still be fuzzy.",
+    provider: "codex",
+    model: "gpt-5.4",
+    claudeModel: "sonnet",
+    focusMode: "research",
+  });
+
+  assert.deepEqual(result.routeSuggestion, {
+    directorId: "creative-director",
+    reason: "Dan needs to lock the conceptual behavior of the workspace before the technical plan can settle.",
+  });
+  assert.deepEqual(session.toddMemory.notes, ["Wait for Dan to confirm the final workspace behavior before finalizing the stack."]);
+  assert.deepEqual(session.toddMemory.pendingHandoff, {
+    summary: "Dan needs the implementation plan to respect a guided onboarding tone.",
+    rawInputs: [
+      "The onboarding should feel guided, not overwhelming.",
+      "The workspace should feel ready immediately after setup.",
+    ],
+    context: "Creative session handoff",
+    receivedAt: NOW,
+  });
+  assert.equal((session.toddMemory.backupNotes ?? []).some((note) => note.includes("Handoff summary: Dan needs the implementation plan")), false);
+  assert.deepEqual(session.directorStateMap["rd-director"], {
+    currentState: "The creative handoff is still a working draft.",
+    idealState: "Dan has confirmed the conceptual behavior and Todd can map the stack cleanly.",
+    assumptions: [],
+  });
+});
+
+test("Todd research Slack turns keep Dan handoff context live until a synthesis turn processes it", async () => {
+  const session = createSession();
+  session.toddMemory.pendingHandoff = {
+    summary: "Dan captured rollout-sensitive planning notes.",
+    rawInputs: [
+      "Start with onboarding before extending the workspace.",
+      "Keep the follow-up branch optional after launch.",
+    ],
+    context: "Creative session handoff",
+    receivedAt: NOW,
+  };
+  session.slackMessages.push({
+    id: "user-todd-slack-1",
+    role: "user",
+    directorId: null,
+    content: "Map the technical rollout.",
+    createdAt: NOW,
+  });
+
+  const harness = createBackendHarness([
+    createToddPayload({
+      response: "I see Dan's handoff and can start mapping the rollout.",
+      notesToAppend: [],
+    }),
+    createToddPayload({
+      response: "I am continuing the rollout planning.",
+      notesToAppend: [],
+    }),
+  ]);
+
+  await (harness.backend.runSlackDirectorTurn as Function)({
+    session,
+    project: harness.project,
+    settings: harness.settings,
+    provider: "codex",
+    model: "gpt-5.4",
+    claudeModel: "sonnet",
+    directorId: "rd-director",
+    userMessage: "Map the technical rollout.",
+    mode: "codebase-analysis",
+  });
+
+  session.slackMessages.push({
+    id: "user-todd-slack-2",
+    role: "user",
+    directorId: null,
+    content: "Keep going.",
+    createdAt: NOW,
+  });
+
+  await (harness.backend.runSlackDirectorTurn as Function)({
+    session,
+    project: harness.project,
+    settings: harness.settings,
+    provider: "codex",
+    model: "gpt-5.4",
+    claudeModel: "sonnet",
+    directorId: "rd-director",
+    userMessage: "Keep going.",
+    mode: "codebase-analysis",
+  });
+
+  assert.match(harness.prompts[0] ?? "", /Pending Handoff from Dan/);
+  assert.match(harness.prompts[1] ?? "", /Pending Handoff from Dan/);
+  assert.deepEqual(session.toddMemory.pendingHandoff, {
+    summary: "Dan captured rollout-sensitive planning notes.",
+    rawInputs: [
+      "Start with onboarding before extending the workspace.",
+      "Keep the follow-up branch optional after launch.",
+    ],
+    context: "Creative session handoff",
+    receivedAt: NOW,
+  });
+  assert.equal((session.toddMemory.backupNotes ?? []).some((note) => note.includes("Handoff raw: Start with onboarding before extending the workspace.")), false);
 });
 
 test("Todd Slack update-planning turns attach hard-memory report metadata and keep it after approval", async () => {
@@ -1126,6 +1461,115 @@ test("DM focus mode inference resolves from the message when focusMode is omitte
   });
 });
 
+test("Dan directorChat uses small conversation turns and big memory-processing turns", async () => {
+  const conversationSession = createSession();
+  const conversationHarness = createBackendHarness([createDanPayload()]);
+  conversationHarness.setStoredSession(conversationSession);
+
+  await (conversationHarness.backend.directorChat as Function)({
+    projectId: "project-1",
+    directorId: "creative-director",
+    message: "Capture the onboarding idea.",
+    provider: "codex",
+    model: "gpt-5.4",
+    claudeModel: "sonnet",
+    focusMode: "conversation",
+    runtimeStage: "conversation",
+  });
+
+  assert.equal(conversationHarness.aiCalls[0]?.provider, "codex");
+  assert.equal(conversationHarness.aiCalls[0]?.model, "gpt-5.4-mini");
+
+  const synthesisSession = createSession();
+  const synthesisHarness = createBackendHarness([
+    createDanPayload({
+      response: "I processed the notes into a durable concept draft.",
+      conversationStatus: "ready-to-confirm",
+    }),
+  ]);
+  synthesisHarness.setStoredSession(synthesisSession);
+
+  await (synthesisHarness.backend.directorChat as Function)({
+    projectId: "project-1",
+    directorId: "creative-director",
+    message: "Process Dan's notes into hard memory.",
+    provider: "codex",
+    model: "gpt-5.4-mini",
+    claudeModel: "sonnet",
+    focusMode: "conversation",
+    runtimeStage: "memory-processing",
+  });
+
+  assert.equal(synthesisHarness.aiCalls[0]?.provider, "codex");
+  assert.equal(synthesisHarness.aiCalls[0]?.model, "gpt-5.4");
+});
+
+test("Todd directorChat uses small research turns and big memory-processing turns with roadmap-aware focus modes", async () => {
+  const researchSession = createSession();
+  const researchHarness = createBackendHarness([createToddPayload()]);
+  researchHarness.setStoredSession(researchSession);
+
+  await (researchHarness.backend.directorChat as Function)({
+    projectId: "project-1",
+    directorId: "rd-director",
+    message: "Research the codebase and map the constraints.",
+    provider: "codex",
+    model: "gpt-5.4",
+    claudeModel: "sonnet",
+    focusMode: "research",
+    runtimeStage: "conversation",
+  });
+
+  assert.equal(researchHarness.aiCalls[0]?.provider, "codex");
+  assert.equal(researchHarness.aiCalls[0]?.model, "gpt-5.4-mini");
+
+  const roadmapSession = createSession();
+  const roadmapHarness = createBackendHarness([createToddPayload()]);
+  roadmapHarness.setStoredSession(roadmapSession);
+
+  await (roadmapHarness.backend.directorChat as Function)({
+    projectId: "project-1",
+    directorId: "rd-director",
+    message: "Process the latest Dan handoff into Todd memory.",
+    provider: "codex",
+    model: "gpt-5.4-mini",
+    claudeModel: "sonnet",
+    focusMode: "research",
+    runtimeStage: "memory-processing",
+  });
+
+  assert.equal(roadmapHarness.aiCalls[0]?.provider, "codex");
+  assert.equal(roadmapHarness.aiCalls[0]?.model, "gpt-5.4");
+  assert.equal(roadmapHarness.getSavedSessions()[0]?.directorConversations?.["rd-director"]?.focusMode, "version-planning");
+
+  const updateSession = createSession();
+  updateSession.toddMemory.versionPlan.v1 = {
+    id: "version-1",
+    label: "V1",
+    description: "Ship the onboarding baseline.",
+    goals: ["Land the first confirmed experience."],
+    status: "confirmed",
+    order: 0,
+  };
+  const updateHarness = createBackendHarness([createToddPayload()]);
+  updateHarness.setStoredSession(updateSession);
+
+  await (updateHarness.backend.directorChat as Function)({
+    projectId: "project-1",
+    directorId: "rd-director",
+    message: "Process the latest Todd planning notes.",
+    provider: "codex",
+    model: "gpt-5.4-mini",
+    claudeModel: "sonnet",
+    focusMode: "research",
+    runtimeStage: "memory-processing",
+  });
+
+  assert.equal(updateHarness.aiCalls[0]?.provider, "codex");
+  assert.equal(updateHarness.aiCalls[0]?.model, "gpt-5.4");
+  assert.equal(updateHarness.getSavedSessions()[0]?.directorConversations?.["rd-director"]?.focusMode, "update-planning");
+});
+
 test("Todd DM prompt receives the codebase map and confirmed concept memory without Dan's old flow language", async () => {
   const session = createSession();
   session.corePillars = createFlowPillars();
@@ -1154,11 +1598,22 @@ test("Todd DM prompt receives the codebase map and confirmed concept memory with
   assert.doesNotMatch(prompt, /Current-state main timeline:/);
 });
 
-test("Ping routed Slack updates force direct execution instead of review planning", async () => {
+test("Ping routed Slack updates auto-approve planning for the next pending update", async () => {
   const session = createSession();
   session.toddMemory.futureUpdatePlan = [
     {
       id: "update-1",
+      versionId: "version-1",
+      title: "Ship later update",
+      description: "Apply the later update in Slack.",
+      order: 1,
+      status: "pending",
+      dependencies: [],
+      pillarIds: [],
+      skillsNeeded: [],
+    },
+    {
+      id: "update-0",
       versionId: "version-1",
       title: "Ship Ping update",
       description: "Apply the latest update in Slack.",
@@ -1174,8 +1629,12 @@ test("Ping routed Slack updates force direct execution instead of review plannin
   harness.setStoredSession(session);
 
   let capturedPlanningMode: string | null = null;
-  harness.backend.agentExecuteUpdateNow = async (_input: unknown, options?: { planningMode?: string }) => {
+  let capturedUpdateId: string | null = null;
+  harness.backend.agentExecuteUpdateNow = async (input: { updateId?: string } | unknown, options?: { planningMode?: string }) => {
     capturedPlanningMode = options?.planningMode ?? null;
+    capturedUpdateId = typeof input === "object" && input && "updateId" in input && typeof input.updateId === "string"
+      ? input.updateId
+      : null;
     return { started: true };
   };
 
@@ -1187,13 +1646,15 @@ test("Ping routed Slack updates force direct execution instead of review plannin
     claudeModel: "sonnet",
   });
 
-  assert.equal(capturedPlanningMode, "none");
-  assert.equal(session.pingMemory.activeUpdateId, "update-1");
+  assert.equal(capturedPlanningMode, "auto");
+  assert.equal(capturedUpdateId, "update-0");
+  assert.equal(session.pingMemory.activeUpdateId, "update-0");
   assert.equal(session.pingTaskContext?.currentTask, "Ship Ping update: Apply the latest update in Slack.");
   assert.equal(session.pingMemory.activeTask, "Ship Ping update: Apply the latest update in Slack.");
   assert.equal(session.pingMemory.context, "Apply the latest update in Slack.");
-  assert.equal(session.toddMemory.futureUpdatePlan[0]?.status, "in_progress");
-  assert.equal(session.versionUpdates[0]?.status, "in_progress");
+  assert.equal(session.toddMemory.futureUpdatePlan.find((update) => update.id === "update-0")?.status, "in_progress");
+  assert.equal(session.versionUpdates.find((update) => update.id === "update-0")?.status, "in_progress");
+  assert.equal(session.toddMemory.futureUpdatePlan.find((update) => update.id === "update-1")?.status, "pending");
 });
 
 test("Ping Slack intro, response, and outro bubbles all carry translation metadata", async () => {

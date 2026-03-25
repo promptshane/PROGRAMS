@@ -1,4 +1,4 @@
-import type { DirectorId, PlanningMode, ReasoningEffort } from "./types";
+import type { AiProvider, ClaudeModel, CodexModel, DirectorId, PlanningMode, ReasoningEffort } from "./types";
 
 export type DirectorFlowLink =
   | {
@@ -21,6 +21,7 @@ export interface DirectorMetadata {
   name: string;
   label: string;
   shortDescription: string;
+  modelBehaviorNote: string;
   introMessage: string;
   outroMessage: string;
   runtimeDefaults: DirectorRuntimeDefaults;
@@ -63,6 +64,7 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     name: DIRECTOR_NAMES["project-manager"],
     label: DIRECTOR_LABELS["project-manager"],
     shortDescription: "Coordinates requests, tracks overall project state, and routes work to the right specialist.",
+    modelBehaviorNote: "Uses the selected project provider and model defaults.",
     introMessage: "Let me coordinate on this...",
     outroMessage: "I’ve got the next steps lined up.",
     runtimeDefaults: {
@@ -92,6 +94,7 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     name: DIRECTOR_NAMES["creative-director"],
     label: DIRECTOR_LABELS["creative-director"],
     shortDescription: "Holds the heart of the idea and refines the confirmed concept through conversation.",
+    modelBehaviorNote: "Uses the small model for conversation and soft-memory notes, then the big model for hard-memory synthesis.",
     introMessage: "I’ll think about the creative direction...",
     outroMessage: "I’ve captured the creative thread for now.",
     runtimeDefaults: {
@@ -116,6 +119,7 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     name: DIRECTOR_NAMES["rd-director"],
     label: DIRECTOR_LABELS["rd-director"],
     shortDescription: "Turns Dan's confirmed concept into technical roadmap, future updates, and codebase-aware planning.",
+    modelBehaviorNote: "Uses the small model for conversation and working notes, then the big model for roadmap and update synthesis.",
     introMessage: "Let me research and plan this out...",
     outroMessage: "I’ve mapped the R&D angle for now.",
     runtimeDefaults: {
@@ -140,11 +144,12 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     name: DIRECTOR_NAMES["programming-director"],
     label: DIRECTOR_LABELS["programming-director"],
     shortDescription: "Executes Todd-approved updates, reports the result, and returns to waiting.",
+    modelBehaviorNote: "Uses the big model only for planning, applying, and reporting code updates.",
     introMessage: "I'll look at the implementation...",
     outroMessage: "I’m stepping back out of the code thread.",
     runtimeDefaults: {
       reasoningEffort: "high",
-      planningMode: "review",
+      planningMode: "auto",
     },
     receivesFrom: [
       directorLink("rd-director"),
@@ -164,6 +169,7 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     name: DIRECTOR_NAMES["validation-director"],
     label: DIRECTOR_LABELS["validation-director"],
     shortDescription: "Defines the expected outcome, tests the current state, and compares the build against the intended goal.",
+    modelBehaviorNote: "Uses the selected project provider and model defaults.",
     introMessage: "Let me evaluate this...",
     outroMessage: "I’ve wrapped this validation pass.",
     runtimeDefaults: {
@@ -192,3 +198,67 @@ export const getDirectorMetadata = (directorId: DirectorId): DirectorMetadata =>
 
 export const getDirectorRuntimeDefaults = (directorId: DirectorId): DirectorRuntimeDefaults =>
   DIRECTOR_METADATA[directorId].runtimeDefaults;
+
+export type DirectorModelTier = "small" | "big";
+export type DirectorModelUseCase = "conversation" | "synthesis" | "execution";
+
+export interface DirectorModelSelection {
+  tier: DirectorModelTier | null;
+  provider: AiProvider;
+  model: CodexModel;
+  claudeModel: ClaudeModel;
+  activeModel: string;
+}
+
+export const BIG_CODEX_MODEL: CodexModel = "gpt-5.4";
+export const SMALL_CODEX_MODEL: CodexModel = "gpt-5.4-mini";
+export const BIG_CLAUDE_MODEL: ClaudeModel = "opus";
+export const SMALL_CLAUDE_MODEL: ClaudeModel = "sonnet";
+
+export const usesFixedDirectorRuntimePolicy = (directorId: DirectorId): boolean =>
+  directorId === "creative-director"
+  || directorId === "rd-director"
+  || directorId === "programming-director";
+
+export const resolveDirectorModelTier = (
+  directorId: DirectorId,
+  useCase: DirectorModelUseCase,
+): DirectorModelTier | null => {
+  if (directorId === "creative-director" || directorId === "rd-director") {
+    return useCase === "conversation" ? "small" : "big";
+  }
+  if (directorId === "programming-director") {
+    return "big";
+  }
+  return null;
+};
+
+export const resolveDirectorModelSelection = (
+  directorId: DirectorId,
+  provider: AiProvider,
+  model: CodexModel,
+  claudeModel: ClaudeModel,
+  useCase: DirectorModelUseCase,
+): DirectorModelSelection => {
+  const tier = resolveDirectorModelTier(directorId, useCase);
+  if (!tier) {
+    return {
+      tier: null,
+      provider,
+      model,
+      claudeModel,
+      activeModel: provider === "claude" ? claudeModel : model,
+    };
+  }
+
+  const resolvedModel = tier === "small" ? SMALL_CODEX_MODEL : BIG_CODEX_MODEL;
+  const resolvedClaudeModel = tier === "small" ? SMALL_CLAUDE_MODEL : BIG_CLAUDE_MODEL;
+
+  return {
+    tier,
+    provider,
+    model: resolvedModel,
+    claudeModel: resolvedClaudeModel,
+    activeModel: provider === "claude" ? resolvedClaudeModel : resolvedModel,
+  };
+};

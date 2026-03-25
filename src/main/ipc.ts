@@ -4,7 +4,6 @@ import { isSubPath } from "@main/utils/fs";
 import type { ProgramsBackend } from "@main/backend";
 import { SLACK_CHAT_DISABLED_MESSAGE, SLACK_CHAT_ENABLED } from "@shared/types";
 import type {
-  AddTodoInput,
   AgentAttachMaterialsInput,
   AgentChatInput,
   AgentConfirmStageInput,
@@ -36,7 +35,6 @@ import type {
   GenerateProjectOutlineReportInput,
   GitSyncInput,
   ListPendingApprovalsInput,
-  ListTodosInput,
   PlanningChatInput,
   ProjectAttachInput,
   ProjectCreateInput,
@@ -55,7 +53,6 @@ import type {
   UpdatePendingApprovalStatusInput,
   PlaywrightRunInput,
   UpdateProjectInput,
-  UpdateTodosInput,
   WriteProjectEnvFileInput,
 } from "@shared/types";
 
@@ -214,18 +211,6 @@ export const registerIpc = (backend: ProgramsBackend): void => {
     backend.runValidation(input));
   ipcMain.handle("agents.setValidationFrequency", (_event, input: SetValidationFrequencyInput) =>
     backend.setValidationFrequency(input));
-
-  // Home scratchpad (legacy — delegates to unified todos)
-  ipcMain.handle("home.readScratchpad", () => backend.readHomeScratchpad());
-  ipcMain.handle("home.updateScratchpad", (_event, input: { items: import("@shared/types").HomeScratchpadItem[] }) =>
-    backend.updateHomeScratchpad(input));
-
-  // Unified To-dos
-  ipcMain.handle("todos.list", (_event, input: ListTodosInput) => backend.listTodos(input));
-  ipcMain.handle("todos.add", (_event, input: AddTodoInput) => backend.addTodo(input));
-  ipcMain.handle("todos.remove", (_event, id: string) => backend.removeTodo(id));
-  ipcMain.handle("todos.update", (_event, input: UpdateTodosInput) => backend.updateTodos(input));
-  ipcMain.handle("todos.markProcessed", (_event, id: string) => backend.markTodoProcessed(id));
 
   // Git sync
   ipcMain.handle("projects.syncGitHub", (_event, input: GitSyncInput) => backend.syncProjectToGitHub(input));

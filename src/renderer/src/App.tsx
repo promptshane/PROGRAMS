@@ -30,6 +30,7 @@ import {
   type CorePillar,
   type HardMemoryReportMetadata,
   type HardMemoryReportUpdate,
+  type JeffExecutionReport,
   type DirectorChatResponse,
   type DirectorFocusMode,
   type DirectorId,
@@ -50,7 +51,6 @@ import {
   type FlowchartGraph,
   type GenerateFlowchartResult,
   type GenerateProjectOutlineReportInput,
-  type HomeScratchpadItem,
   type InstallSkillCatalogInput,
   type CascadeProposal,
   type ModelCatalog,
@@ -63,7 +63,6 @@ import {
   type ProjectDetail,
   type ProjectOutlineReport,
   type RuntimeState,
-  type ScratchpadItem,
   type Settings,
   type SetupCheck,
   type SetupSnapshot,
@@ -86,8 +85,6 @@ import {
   type PlanningChatInput,
   type SavePlannedUpdateInput,
   type UpdateStageStatus,
-  type ProgramUpdateMode,
-  type UnifiedTodoItem,
   type DiffStats,
   type GitSyncResult,
   type Skill,
@@ -97,6 +94,12 @@ import {
   type DirectorSettingsOverride,
 } from "@shared/types";
 import { buildSlackConversationRenderItems } from "./lib/slack-message-grouping";
+import { resolveDanHardMemoryReportDraft } from "./lib/hard-memory-report";
+import {
+  getNextPendingProgrammingUpdate,
+  resolveAgentAlertState,
+  type AgentAlertTone,
+} from "./lib/agent-alert-state";
 
 interface ToastItem {
   id: string;
@@ -947,7 +950,7 @@ function App() {
   const [composerOptions, setComposerOptions] = useState<ComposerOptions>(getComposerDefaults(emptySettings));
   const [showSettings, setShowSettings] = useState(false);
   const [showUsageSheet, setShowUsageSheet] = useState(false);
-  const [showProjectSettings, setShowProjectSettings] = useState(false);
+  const [showProjectDetails, setShowProjectDetails] = useState(false);
   const [showAddProjectChooser, setShowAddProjectChooser] = useState(false);
   const [showAddProject, setShowAddProject] = useState(false);
   const [addProjectState, setAddProjectState] = useState<AddProjectFormState>(createEmptyForm());
@@ -976,7 +979,6 @@ function App() {
   slackSelectedProjectIdRef.current = slackSelectedProjectId;
   const selectedProjectIdRef = useRef(selectedProjectId);
   selectedProjectIdRef.current = selectedProjectId;
-  const [programMode, setProgramMode] = useState<ProgramUpdateMode>("talk");
   const [skills, setSkills] = useState<Skill[]>([]);
   const [programAgentSession, setProgramAgentSession] = useState<AgentSession | null>(null);
   const [projectAssumedFlags, setProjectAssumedFlags] = useState<Record<string, boolean>>({});
@@ -1217,7 +1219,7 @@ function App() {
   }, [selectedProjectId]);
 
   useEffect(() => {
-    setShowProjectSettings(false);
+    setShowProjectDetails(false);
   }, [currentPage, selectedProjectId]);
 
   useEffect(() => {
@@ -2292,9 +2294,9 @@ function App() {
         <button
           type="button"
           className="slackTopBarButton slackDetailsButton windowNoDrag"
-          onClick={() => setShowProjectSettings(true)}
+          onClick={() => setShowProjectDetails(true)}
         >
-          Project Settings
+          Project Details
         </button>
       </div>
 
@@ -2307,15 +2309,6 @@ function App() {
               <div className="summaryCopy">
                 <h2>{selectedProject.name}</h2>
                 <p className="summaryTimestamp">Last updated at {formatDate(selectedProject.lastUpdatedAt)}</p>
-                <div className="summaryLinkRow">
-                  <button
-                    className="textButton planButtonWrapper summaryDetailButton"
-                    onClick={() => setProgramDetailsProjectId(selectedProject.id)}
-                  >
-                    System Details
-                    {pendingUpdates[selectedProject.id] ? <span className="notificationBadge" /> : null}
-                  </button>
-                </div>
                 {selectedProject.lastError ? <div className="errorBanner">{selectedProject.lastError}</div> : null}
               </div>
               <div className="summaryActionRail">
@@ -2361,8 +2354,6 @@ function App() {
         </div>
 
         <ProgramModeSwitchRow
-          programMode={programMode}
-          onModeChange={setProgramMode}
           project={selectedProject}
           skills={skills}
           attachedSkillId={selectedProject.runtimeConfig.attachedSkillId ?? null}
@@ -2389,17 +2380,7 @@ function App() {
             })();
           }}
           isSyncing={busyKey === "git.sync"}
-          pushToast={pushToast}
         />
-
-        {(programMode === "talk" || programMode === "plan") ? (
-          <ProgramTodoList
-            projectId={selectedProject.id}
-            mode={programMode}
-            settings={settings}
-            pushToast={pushToast}
-          />
-        ) : null}
 
         {showUpdatePanel ? (
           <div
@@ -2420,7 +2401,7 @@ function App() {
                   onSessionUpdate={setProgramAgentSession}
                   pushToast={pushToast}
                 />
-                {programMode === "work" && showUpdateDock ? (
+                {showUpdateDock ? (
                   <UpdateStagePanel
                     plan={activePlan}
                     canConfirmPlan={canConfirmPlan}
@@ -2467,11 +2448,9 @@ function App() {
                     onChange={(event) => setComposerValue(event.target.value)}
                     className="composerInput"
                     placeholder={
-                      programMode === "talk"
-                        ? "Chat about your project or add to-do items..."
-                        : activePlan?.status === "awaitingApproval"
-                          ? `Ask ${providerLabel(composerOptions.provider)} to revise the current plan.`
-                          : "Describe the next change."
+                      activePlan?.status === "awaitingApproval"
+                        ? `Ask ${providerLabel(composerOptions.provider)} to revise the current plan.`
+                        : "Describe the next change."
                     }
                   />
 
@@ -2507,7 +2486,7 @@ function App() {
                     onAddFiles={() => void handlePickContextPaths()}
                     onSubmit={handlePlanAction}
                     onStop={handleCancelPlan}
-                    submitLabel={programMode === "talk" ? "Send" : activePlan?.status === "awaitingApproval" ? "Revise update" : "Send update"}
+                    submitLabel={activePlan?.status === "awaitingApproval" ? "Revise update" : "Send update"}
                   />
                 </div>
               </div>
@@ -2723,7 +2702,7 @@ function App() {
 
         <main className={`shellContent${useComposerLayout ? " shellContent-composerLayout shellContent-detailLocked" : ""}`}>
           {activePage === "homepage" ? (
-            <HomepageScratchpad projects={projects} />
+            <HomepageComposer />
           ) : activePage === "slack" ? (
             <SlackPage
               projects={projects}
@@ -2882,10 +2861,16 @@ function App() {
         />
       ) : null}
 
-      {showProjectSettings && selectedProject ? (
-        <ProjectSettingsModal
+      {showProjectDetails && selectedProject ? (
+        <SlackProjectDetailsModal
           project={selectedProject}
-          onClose={() => setShowProjectSettings(false)}
+          session={programAgentSession}
+          settings={settings}
+          modelCatalog={modelCatalog}
+          onUpdateAgentDefaults={handleUpdateAgentDefaults}
+          onSessionUpdate={(session) => setProgramAgentSession(session)}
+          pushToast={pushToast}
+          onClose={() => setShowProjectDetails(false)}
         />
       ) : null}
 
@@ -3546,6 +3531,8 @@ function AgentLandingCard({
   disabled = false,
   onClick,
   onOpenOptions,
+  alertTone = null,
+  onExclamationClick,
   ariaLabel,
 }: {
   name: string;
@@ -3556,6 +3543,8 @@ function AgentLandingCard({
   disabled?: boolean;
   onClick?: () => void;
   onOpenOptions?: () => void;
+  alertTone?: AgentAlertTone | null;
+  onExclamationClick?: () => void;
   ariaLabel?: string;
 }) {
   const isInteractive = Boolean(onClick && !disabled);
@@ -3588,13 +3577,17 @@ function AgentLandingCard({
             </button>
           </div>
         ) : null}
-        {onOpenOptions ? (
+        {alertTone && onExclamationClick ? (
           <div className="projectTileMenu agentLandingMenu agentLandingMenu--bottom">
             <button
               type="button"
-              className="projectTileMenuToggle"
+              className={`agentLandingExclamationToggle${alertTone === "red" ? " agentLandingExclamationToggle--red" : ""}`}
               aria-label={`Alert for ${name}`}
               onMouseDown={(event) => event.preventDefault()}
+              onClick={(event) => {
+                event.stopPropagation();
+                onExclamationClick();
+              }}
             >
               <ExclamationIcon />
             </button>
@@ -3613,94 +3606,35 @@ function AgentLandingCard({
 }
 
 
-function HomepageScratchpad({ projects }: { projects: Project[] }) {
-  const [todos, setTodos] = useState<UnifiedTodoItem[]>([]);
-  const [newText, setNewText] = useState("");
-  const [newProjectId, setNewProjectId] = useState<string | null>(null);
-  const [loaded, setLoaded] = useState(false);
-
-  const loadTodos = () => {
-    void window.programs.listTodos({ includeProcessed: false }).then((data) => {
-      setTodos(data);
-      setLoaded(true);
-    });
-  };
+function HomepageComposer() {
+  const [draftValue, setDraftValue] = useState("");
+  const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
-    loadTodos();
-  }, []);
-
-  // Listen for todo updates from other views
-  useEffect(() => {
-    const handler = (event: AppEvent) => {
-      if (event.type === "app.event" && event.event === "todos.updated") {
-        loadTodos();
-      }
-    };
-    const unsubscribe = window.programs.onEvent(handler);
-    return unsubscribe;
-  }, []);
-
-  const handleAdd = () => {
-    if (!newText.trim()) return;
-    void window.programs.addTodo({ text: newText.trim(), projectId: newProjectId, source: "user" }).then(() => {
-      setNewText("");
-      loadTodos();
-    });
-  };
-
-  const handleRemove = (id: string) => {
-    void window.programs.removeTodo(id).then(loadTodos);
-  };
-
-  if (!loaded) return null;
+    syncComposerTextareaHeight(composerInputRef.current, { minHeight: SLACK_COMPOSER_MIN_HEIGHT });
+  }, [draftValue]);
 
   return (
-    <section className="homepageScratchpad">
+    <section className="homepageComposer">
       <div className="chatViewportDivider" aria-hidden="true" />
-      <div className="homepageScratchpadContent">
-        <h2 className="homeScratchpadTitle">To-do</h2>
-
-        <div className="homeScratchpadInputRow">
-          <input
-            type="text"
-            className="homeScratchpadTextInput"
-            value={newText}
-            onChange={(e) => setNewText(e.target.value)}
-            placeholder="Add a to-do..."
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                handleAdd();
-              }
-            }}
+      <div className="homepageComposerContent">
+        <div className="composerShell slackComposerShellCompact homepageComposerShell">
+          <textarea
+            ref={composerInputRef}
+            className="composerInput slackComposerInputCompact"
+            value={draftValue}
+            onChange={(event) => setDraftValue(event.target.value)}
+            placeholder="Describe what you want to work on next..."
           />
-          <select
-            className="homeScratchpadProjectSelect"
-            value={newProjectId ?? ""}
-            onChange={(e) => setNewProjectId(e.target.value || null)}
+          <button
+            type="button"
+            className="primaryButton composerSubmitButton"
+            disabled
+            aria-label="Send"
+            title="Coming soon"
           >
-            <option value="">Unassigned</option>
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>{p.name}</option>
-            ))}
-          </select>
-          <button className="primaryButton" onClick={handleAdd} disabled={!newText.trim()}>
-            Add
+            <ArrowUpIcon />
           </button>
-        </div>
-
-        <div className="homeScratchpadGroups">
-          {todos.map((item) => (
-            <div key={item.id} className="unifiedTodoItem unifiedTodoItem--user">
-              <span className="unifiedTodoBullet">&bull;</span>
-              <span className="unifiedTodoText">{item.text}</span>
-              <button className="deleteBtn" onClick={() => handleRemove(item.id)}>&times;</button>
-            </div>
-          ))}
-          {todos.length === 0 ? (
-            <p className="homeScratchpadEmpty">No to-do items yet. Add bullet points above.</p>
-          ) : null}
         </div>
       </div>
     </section>
@@ -3812,34 +3746,6 @@ function ProjectOptionsSheet({
             Unlink project
           </button>
         </div>
-      </div>
-    </Modal>
-  );
-}
-
-function ProjectSettingsModal({
-  project,
-  onClose,
-}: {
-  project: Project;
-  onClose: () => void;
-}) {
-  return (
-    <Modal title="Project Settings" onClose={onClose} fullscreen>
-      <div className="settingsStack">
-        <section className="settingsSection">
-          <div className="settingsSectionHead">
-            <h4>{project.name}</h4>
-            <span className="usagePreviewLabel">Placeholder</span>
-          </div>
-          <div className="placeholderPanel">
-            <h4>Project-specific settings will live here.</h4>
-            <p>
-              This panel is a placeholder for later work on per-project defaults, workspace behavior, and other
-              options that should stay scoped to the selected project.
-            </p>
-          </div>
-        </section>
       </div>
     </Modal>
   );
@@ -4261,7 +4167,7 @@ function PendingApprovalsPanel({
                   </label>
                 </div>
               ) : hardMemoryReport ? (
-                <HardMemoryReportSections report={hardMemoryReport} />
+                <HardMemoryReportSections report={hardMemoryReport} session={session} />
               ) : approval.draftPayload ? (
                 <pre className="pendingApprovalPayload">{JSON.stringify(approval.draftPayload, null, 2)}</pre>
               ) : null}
@@ -6566,6 +6472,7 @@ const buildHardMemoryReportFromApproval = (
       dataType: "danDraftCoreDetails",
       directorId: "creative-director",
       approvalId: approval.id,
+      reportStage: "hard",
       summary: approval.draftMessage ?? approval.summary,
       currentState: typeof payload.currentState === "string" ? payload.currentState : null,
       idealState: typeof payload.idealState === "string" ? payload.idealState : null,
@@ -6585,6 +6492,7 @@ const buildHardMemoryReportFromApproval = (
       dataType: "versions",
       directorId: "rd-director",
       approvalId: approval.id,
+      reportStage: "hard",
       summary: approval.draftMessage ?? approval.summary,
       currentState: typeof payload.currentState === "string" ? payload.currentState : null,
       idealState: typeof payload.idealState === "string" ? payload.idealState : null,
@@ -6603,6 +6511,7 @@ const buildHardMemoryReportFromApproval = (
       dataType: "versionUpdates",
       directorId: "rd-director",
       approvalId: approval.id,
+      reportStage: "hard",
       summary: approval.draftMessage ?? approval.summary,
       currentState: typeof payload.currentState === "string" ? payload.currentState : null,
       idealState: typeof payload.idealState === "string" ? payload.idealState : null,
@@ -6627,9 +6536,12 @@ const buildHardMemoryReportFromApproval = (
 
 function HardMemoryReportSections({
   report,
+  session,
 }: {
   report: HardMemoryReportMetadata;
+  session: AgentSession | null;
 }) {
+  const danDraftCoreDetails = resolveDanHardMemoryReportDraft(report, session);
   const hasStateInfo = Boolean(report.currentState || report.idealState);
   const versionGroups = report.dataType === "versionUpdates" && report.versionUpdates
     ? report.versionUpdates.reduce<Record<string, HardMemoryReportUpdate[]>>((groups, update) => {
@@ -6682,7 +6594,7 @@ function HardMemoryReportSections({
               </ul>
             </div>
           ) : null}
-          <CoreDetailsReport coreDetails={report.draftCoreDetails} />
+          <CoreDetailsReport coreDetails={danDraftCoreDetails} />
         </>
       ) : null}
 
@@ -6767,6 +6679,7 @@ function HardMemoryReportSections({
 function HardMemoryReportPanel({
   report,
   liveApproval,
+  session,
   projectId,
   onSessionUpdate,
   onClose,
@@ -6774,6 +6687,7 @@ function HardMemoryReportPanel({
 }: {
   report: HardMemoryReportMetadata;
   liveApproval: PendingApproval | null;
+  session: AgentSession | null;
   projectId: string | null;
   onSessionUpdate: (session: AgentSession) => void;
   onClose: () => void;
@@ -6842,7 +6756,7 @@ function HardMemoryReportPanel({
         </button>
       </div>
       <div className="slackResearchPanelBody hardMemoryReportPanelBody">
-        <HardMemoryReportSections report={report} />
+        <HardMemoryReportSections report={report} session={session} />
         {liveApproval ? (
           <div className="proposalActions hardMemoryReportActions">
             <button className="primaryButton" onClick={() => void handleApprovalAction("confirm")} disabled={busyAction !== null}>
@@ -6863,145 +6777,88 @@ function HardMemoryReportPanel({
   );
 }
 
-function TodoNotepad({
-  projectId,
-  agentSession,
-  settings,
+function ExecutionReportPanel({
+  report,
   onClose,
-  onSessionUpdate,
-  pushToast,
 }: {
-  projectId: string;
-  agentSession: AgentSession | null;
-  settings: Settings;
+  report: JeffExecutionReport;
   onClose: () => void;
-  onSessionUpdate: (session: AgentSession | null) => void;
-  pushToast: (message: string, level: "info" | "success" | "error") => void;
 }) {
-  const [inputValue, setInputValue] = useState("");
-  const [isProcessing, setIsProcessing] = useState(false);
-
-  const scratchpad = agentSession?.scratchpad ?? [];
-  const activeTodos = scratchpad.filter((s) => !s.completed);
-  const completedTodos = scratchpad.filter((s) => s.completed);
-
-  const handleAddTodo = () => {
-    if (!inputValue.trim() || !agentSession) return;
-    const newItem: ScratchpadItem = {
-      id: crypto.randomUUID(),
-      text: inputValue.trim(),
-      completed: false,
-      source: "user",
-      createdAt: new Date().toISOString(),
-    };
-    const updated = [...agentSession.scratchpad, newItem];
-    setInputValue("");
-    void window.programs.agentUpdateScratchpad({
-      projectId,
-      scratchpad: updated,
-    });
-  };
-
-  const handleRemoveTodo = (itemId: string) => {
-    if (!agentSession) return;
-    const updated = agentSession.scratchpad.filter((s) => s.id !== itemId);
-    void window.programs.agentUpdateScratchpad({
-      projectId,
-      scratchpad: updated,
-    });
-  };
-
-  const handleProcessTodos = async () => {
-    if (activeTodos.length === 0) return;
-    setIsProcessing(true);
-    try {
-      await window.programs.agentProcessTodosFromProgram({
-        projectId,
-        provider: settings.advancedDefaults.provider,
-        model: settings.advancedDefaults.model,
-        claudeModel: settings.advancedDefaults.claudeModel,
-        newTodos: [],
-      });
-      pushToast("To-dos processed into planned updates.", "success");
-    } catch (error) {
-      pushToast(error instanceof Error ? error.message : "Failed to process to-dos.", "error");
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
   return (
-    <div className="todoNotepadOverlay">
-      <div className="todoNotepadHeader">
-        <span>To-do</span>
-        <button className="deleteBtn" onClick={onClose}>&times;</button>
-      </div>
-      <div className="todoNotepadList">
-        {activeTodos.map((item) => (
-          <div key={item.id} className={`todoItem todoItem--${item.source}`}>
-            <span className="todoItemText">{item.text}</span>
-            <button className="deleteBtn" onClick={() => handleRemoveTodo(item.id)}>&times;</button>
-          </div>
-        ))}
-        {completedTodos.length > 0 ? (
-          <>
-            <div className="todoCompletedDivider">Processed</div>
-            {completedTodos.map((item) => (
-              <div key={item.id} className="todoItem todoItem--completed">
-                <span className="todoItemText">{item.text}</span>
-              </div>
-            ))}
-          </>
-        ) : null}
-      </div>
-      <div className="todoNotepadInput">
-        <input
-          type="text"
-          value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          placeholder="Add a to-do..."
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              handleAddTodo();
-            }
-          }}
-        />
-      </div>
-      {activeTodos.length > 0 ? (
-        <button
-          className="primaryButton"
-          style={{ width: "100%", marginTop: 8 }}
-          onClick={() => void handleProcessTodos()}
-          disabled={isProcessing}
-        >
-          {isProcessing ? "Processing..." : "Process To-dos"}
+    <div className="slackResearchPanel">
+      <div className="slackResearchPanelHeader">
+        <h3>{report.title}</h3>
+        <button className="secondaryButton" style={{ fontSize: "0.75rem", padding: "4px 8px" }} onClick={onClose}>
+          Close
         </button>
-      ) : null}
+      </div>
+      <div className="slackResearchPanelBody">
+        <section>
+          <h4>Summary</h4>
+          <p>{report.summary}</p>
+        </section>
+        <section>
+          <h4>Outcome</h4>
+          <p>{report.outcome}</p>
+        </section>
+        <section>
+          <h4>Ping Raw Report</h4>
+          <p>Status: {report.rawReport.status.replace(/_/g, " ")}</p>
+          <p>{report.rawReport.summary}</p>
+          {report.rawReport.changedFiles.length > 0 ? (
+            <>
+              <h4>Changed Files</h4>
+              <ul className="slackUpdateList">
+                {report.rawReport.changedFiles.map((filePath) => (
+                  <li key={filePath}>{filePath}</li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+          {report.rawReport.blocker ? (
+            <>
+              <h4>Blocker</h4>
+              <p>{report.rawReport.blocker}</p>
+            </>
+          ) : null}
+          {report.rawReport.unexpectedNotes.length > 0 ? (
+            <>
+              <h4>Unexpected Notes</h4>
+              <ul className="slackUpdateList">
+                {report.rawReport.unexpectedNotes.map((item, index) => (
+                  <li key={`${report.id}-unexpected-${index}`}>{item}</li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+        </section>
+        <section>
+          <h4>Todd Follow-Up</h4>
+          <p>
+            {report.toddFollowUpNeeded
+              ? report.toddFollowUpReason ?? "Jeff referred Todd for follow-up planning."
+              : "No Todd follow-up needed."}
+          </p>
+        </section>
+      </div>
     </div>
   );
 }
 
 function ProgramModeSwitchRow({
-  programMode,
-  onModeChange,
   project,
   skills,
   attachedSkillId,
   onAttachSkill,
   onSync,
   isSyncing,
-  pushToast,
 }: {
-  programMode: ProgramUpdateMode;
-  onModeChange: (mode: ProgramUpdateMode) => void;
   project: Project;
   skills: Skill[];
   attachedSkillId: string | null;
   onAttachSkill: (skillId: string | null) => void;
   onSync: () => void;
   isSyncing: boolean;
-  pushToast: (message: string, level: "info" | "success" | "error") => void;
 }) {
   const [diffStats, setDiffStats] = useState<DiffStats | null>(null);
   const [showSkillPicker, setShowSkillPicker] = useState(false);
@@ -7015,18 +6872,6 @@ function ProgramModeSwitchRow({
 
   return (
     <div className="programModeSwitchRow">
-      <div className="programModeSwitch">
-        {(["talk", "plan", "work"] as const).map((mode) => (
-          <button
-            key={mode}
-            className={programMode === mode ? "toggleOption active" : "toggleOption"}
-            onClick={() => onModeChange(mode)}
-          >
-            {mode.charAt(0).toUpperCase() + mode.slice(1)}
-          </button>
-        ))}
-      </div>
-
       <div className="skillAttachmentArea">
         <button
           className="skillAttachButton"
@@ -7088,112 +6933,6 @@ function ProgramModeSwitchRow({
           {isSyncing ? "Syncing..." : "Sync"}
         </button>
       </div>
-    </div>
-  );
-}
-
-function ProgramTodoList({
-  projectId,
-  mode,
-  settings,
-  pushToast,
-}: {
-  projectId: string;
-  mode: "talk" | "plan";
-  settings: Settings;
-  pushToast: (message: string, level: "info" | "success" | "error") => void;
-}) {
-  const [todos, setTodos] = useState<UnifiedTodoItem[]>([]);
-  const [inputValue, setInputValue] = useState("");
-  const [isProcessing, setIsProcessing] = useState(false);
-
-  const loadTodos = () => {
-    void window.programs.listTodos({ projectId, includeProcessed: false }).then(setTodos).catch(() => {});
-  };
-
-  useEffect(() => {
-    loadTodos();
-  }, [projectId]);
-
-  // Listen for todo updates
-  useEffect(() => {
-    const handler = (event: AppEvent) => {
-      if (event.type === "app.event" && event.event === "todos.updated") {
-        loadTodos();
-      }
-    };
-    const unsubscribe = window.programs.onEvent(handler);
-    return unsubscribe;
-  }, [projectId]);
-
-  const handleAdd = () => {
-    if (!inputValue.trim()) return;
-    void window.programs.addTodo({ text: inputValue.trim(), projectId, source: "user" }).then(() => {
-      setInputValue("");
-      loadTodos();
-    });
-  };
-
-  const handleRemove = (id: string) => {
-    void window.programs.removeTodo(id).then(loadTodos);
-  };
-
-  const handleProcessTodos = async () => {
-    if (todos.length === 0) return;
-    setIsProcessing(true);
-    try {
-      await window.programs.agentProcessTodosFromProgram({
-        projectId,
-        provider: settings.advancedDefaults.provider,
-        model: settings.advancedDefaults.model,
-        claudeModel: settings.advancedDefaults.claudeModel,
-        newTodos: [],
-      });
-      pushToast("To-dos processed into planned updates.", "success");
-      loadTodos();
-    } catch (error) {
-      pushToast(error instanceof Error ? error.message : "Failed to process to-dos.", "error");
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  return (
-    <div className="programTodoList">
-      {todos.map((item) => (
-        <div key={item.id} className={`unifiedTodoItem unifiedTodoItem--${item.source}`}>
-          <span className="unifiedTodoBullet">&bull;</span>
-          <span className="unifiedTodoText">{item.text}</span>
-          <button className="deleteBtn" onClick={() => handleRemove(item.id)}>&times;</button>
-        </div>
-      ))}
-      {todos.length === 0 ? (
-        <p className="programTodoEmpty">No to-do items yet.</p>
-      ) : null}
-      <div className="programTodoInputRow">
-        <input
-          type="text"
-          value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          placeholder="Add a to-do..."
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              handleAdd();
-            }
-          }}
-        />
-      </div>
-      {mode === "plan" && todos.length > 0 ? (
-        <button
-          className="primaryButton"
-          style={{ width: "100%", marginTop: 8 }}
-          onClick={() => void handleProcessTodos()}
-          disabled={isProcessing}
-        >
-          {isProcessing ? "Processing..." : "Process into Plan"}
-        </button>
-      ) : null}
     </div>
   );
 }
@@ -8175,10 +7914,10 @@ function DirectorInfoPanel({
 
 function DirectorFunctionsPanel({
   directorId,
-  session,
-  projectId,
+  session: _session,
+  projectId: _projectId,
   onNavigateToDirector,
-  onSessionUpdate,
+  onSessionUpdate: _onSessionUpdate,
 }: {
   directorId: DirectorId;
   session: AgentSession | null;
@@ -8186,377 +7925,93 @@ function DirectorFunctionsPanel({
   onNavigateToDirector: (directorId: DirectorId) => void;
   onSessionUpdate: (session: AgentSession) => void;
 }) {
-  if (!session) return null;
-  const confirmedConcept = getConfirmedConcept(session);
-  const workingConcept = getWorkingConcept(session);
-  const toddMemory = session.toddMemory;
-  const pingMemory = session.pingMemory;
+  const metadata = getDirectorMetadata(directorId);
+  const focusModes = getDirectorFocusModes(directorId);
 
-  switch (directorId) {
-    case "project-manager":
-      return (
-        <div className="agentInfoPanel agentSummaryPanel">
-          <div className="agentSummaryGrid">
-            <section className="agentSummaryCard">
-              <div className="agentSummaryHeader">
-                <span className="agentSummaryEyebrow">Functions</span>
-              </div>
-              <details className="agentSummaryDetails">
-                <summary>Project Status Overview</summary>
-                <div className="agentSummaryDetailsBody">
-                  <div className="pmStatusGrid">
-                    <div className="pmStatusCard">
-                      <span className="pmStatusLabel">Dan — Creative</span>
-                      <span className={`pmStatusValue${confirmedConcept ? " pmStatusDone" : ""}`}>
-                        {confirmedConcept ? "Locked" : "In Progress"}
-                      </span>
-                    </div>
-                    <div className="pmStatusCard">
-                      <span className="pmStatusLabel">Todd — R&D</span>
-                      <span className={`pmStatusValue${toddMemory.futureUpdatePlan.length > 0 ? " pmStatusDone" : ""}`}>
-                        {toddMemory.futureUpdatePlan.length > 0 ? `${toddMemory.futureUpdatePlan.length} updates` : "Pending"}
-                      </span>
-                    </div>
-                    <div className="pmStatusCard">
-                      <span className="pmStatusLabel">Ping — Programming</span>
-                      <span className="pmStatusValue">
-                        {toddMemory.futureUpdatePlan.filter((u) => u.status === "completed").length}/{toddMemory.futureUpdatePlan.length} updates
-                      </span>
-                    </div>
-                    <div className="pmStatusCard">
-                      <span className="pmStatusLabel">Pong — Validation</span>
-                      <span className="pmStatusValue">
-                        {session.validationResults.length > 0 ? `${session.validationResults.length} results` : "None yet"}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </details>
-            </section>
+  return (
+    <div className="agentInfoPanel agentSummaryPanel">
+      <div className="agentSummaryGrid">
+        <section className="agentSummaryCard">
+          <div className="agentSummaryHeader">
+            <span className="agentSummaryEyebrow">Function</span>
+            <strong>{metadata.label}</strong>
           </div>
-        </div>
-      );
+          <p className="agentSummaryDescription">{metadata.shortDescription}</p>
 
-    case "creative-director": {
-      const allVibes = collectConceptVibes(workingConcept?.corePillars ?? []);
-      return (
-        <div className="agentInfoPanel agentSummaryPanel">
-          <div className="agentSummaryGrid">
-            <section className="agentSummaryCard">
-              <div className="agentSummaryHeader">
-                <span className="agentSummaryEyebrow">Functions</span>
-              </div>
-              <details className="agentSummaryDetails">
-                <summary>Concept</summary>
-                <div className="agentSummaryDetailsBody">
-                  <ConceptOverview
-                    concept={workingConcept}
-                    emptyLabel="Dan has not locked in the concept yet."
-                    experienceDescription={session.danMemory.fullExperienceDescription}
-                  />
-                  {session.danMemory.notes.length > 0 ? (
-                    <div className="conceptNotesBlock">
-                      <span className="pmStatusLabel">Conversation Notes</span>
-                      <ul className="agentSummaryList">
-                        {session.danMemory.notes.map((note, index) => (
-                          <li key={`dan-concept-note-${index}`}>{note}</li>
-                        ))}
-                      </ul>
-                    </div>
-                  ) : null}
-                  {confirmedConcept ? (
-                    <button className="primaryButton" style={{ marginTop: 12, fontSize: "0.8rem" }} onClick={() => onNavigateToDirector("rd-director")}>
-                      Proceed to R&D
-                    </button>
-                  ) : null}
-                </div>
-              </details>
-              <details className="agentSummaryDetails">
-                <summary>{`Vibe Gallery (${allVibes.length})`}</summary>
-                <div className="agentSummaryDetailsBody">
-                  {allVibes.length > 0 ? (
-                    <div className="vibeGallery">
-                      {allVibes.map(({ pillarName, vibe }) => (
-                        <div key={vibe.id} className="vibeGalleryItem">
-                          <span className="vibeThumbIcon">{vibe.fileType === "image" ? "\u{1F5BC}" : "\u{1F4C4}"}</span>
-                          <div className="vibeGalleryMeta">
-                            <span className="vibeThumbName">{vibe.fileName}</span>
-                            <span className="vibeGalleryPillar">{pillarName}</span>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="coreDetailEmpty">No vibes attached yet. Attach vibes to the concept threads.</p>
-                  )}
-                </div>
-              </details>
-            </section>
+          <div className="agentInfoPanelSection">
+            <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Model Behavior</h5>
+            <p className="coreDetailValue">{metadata.modelBehaviorNote}</p>
           </div>
-        </div>
-      );
-    }
 
-    case "rd-director": {
-      const roadmapVersions = [toddMemory.versionPlan.v1, toddMemory.versionPlan.v2, toddMemory.versionPlan.v3].filter(
-        (version): version is VersionPlan => Boolean(version),
-      );
-      const groupedByVersion: Record<string, VersionUpdate[]> = {};
-      for (const u of toddMemory.futureUpdatePlan) {
-        const v = [toddMemory.versionPlan.v1, toddMemory.versionPlan.v2, toddMemory.versionPlan.v3]
-          .filter((version): version is VersionPlan => Boolean(version))
-          .find((ver) => ver.id === u.versionId);
-        const label = v?.label ?? "Unassigned";
-        if (!groupedByVersion[label]) groupedByVersion[label] = [];
-        groupedByVersion[label].push(u);
-      }
-      return (
-        <div className="agentInfoPanel agentSummaryPanel">
-          <div className="agentSummaryGrid">
-            <section className="agentSummaryCard">
-              <div className="agentSummaryHeader">
-                <span className="agentSummaryEyebrow">Functions</span>
+          {focusModes.length > 0 ? (
+            <details className="agentSummaryDetails">
+              <summary>Modes</summary>
+              <div className="agentSummaryDetailsBody">
+                <div className="directorModeReferenceGrid">
+                  {focusModes.map((mode) => (
+                    <div key={mode} className="directorModeReferenceItem">
+                      <span className="directorModeReferenceLabel">{formatDirectorFocusModeLabel(mode)}</span>
+                      <span className="directorModeReferenceDescription">{describeDirectorFocusMode(directorId, mode)}</span>
+                    </div>
+                  ))}
+                </div>
               </div>
-              <details className="agentSummaryDetails">
-                <summary>Research</summary>
-                <div className="agentSummaryDetailsBody">
-                  <ConceptOverview
-                    concept={toddMemory.confirmedConcept}
-                    title="Confirmed Concept"
-                    emptyLabel="Todd is waiting for Dan to lock the concept."
-                    experienceDescription={session.danMemory.fullExperienceDescription}
-                  />
-                  <div className="agentInfoPanelSection">
-                    <h5 style={{ margin: "8px 0", fontSize: "0.8rem", color: "var(--text-muted)" }}>Current Codebase Index</h5>
-                    {toddMemory.codebaseIndexedMap ? (
-                      <div className="codebaseIndexPanel">
-                        <p className="coreDetailValue">{toddMemory.codebaseIndexedMap.summary ?? "No codebase summary yet."}</p>
-                        {toddMemory.codebaseIndexedMap.featureAreas.length > 0 ? (
-                          <div className="flowStepPillars">
-                            {toddMemory.codebaseIndexedMap.featureAreas.map((area) => (
-                              <span key={area} className="flowStepPillarTag">{area}</span>
-                            ))}
-                          </div>
-                        ) : null}
-                        {toddMemory.codebaseIndexedMap.repoNotes.length > 0 ? (
-                          <ul className="agentSummaryList">
-                            {toddMemory.codebaseIndexedMap.repoNotes.map((note, index) => (
-                              <li key={`repo-note-${index}`}>{note}</li>
-                            ))}
-                          </ul>
-                        ) : null}
-                        <p className="helperText">Indexed {formatDate(toddMemory.codebaseIndexedMap.indexedAt)}</p>
-                      </div>
-                    ) : (
-                      <em className="coreDetailEmpty">Todd has not indexed the codebase yet.</em>
-                    )}
-                  </div>
-                </div>
-              </details>
-              <details className="agentSummaryDetails">
-                <summary>Roadmap</summary>
-                <div className="agentSummaryDetailsBody">
-                  {roadmapVersions.length > 0 ? (
-                    <div className="versionTimeline">
-                      {roadmapVersions.sort((a, b) => a.order - b.order).map((v) => (
-                        <div key={v.id} className="versionCard">
-                          <div className="versionHeader">
-                            <span className={`versionLabel${v.status === "assumed" ? " assumedText" : ""}`}>{v.label}</span>
-                            <StatusChip tone={v.status === "confirmed" ? "confirmed" : v.status === "assumed" ? "action_required" : "info"}>{v.status}</StatusChip>
-                          </div>
-                          <p className={v.status === "assumed" ? "assumedText" : ""}>{v.description}</p>
-                          <ul className="versionGoals">
-                            {v.goals.map((g, i) => <li key={i}>{g}</li>)}
-                          </ul>
-                        </div>
-                      ))}
-                    </div>
-                  ) : <em className="coreDetailEmpty">Todd has not outlined V1-V3 yet.</em>}
-                </div>
-              </details>
-              <details className="agentSummaryDetails">
-                <summary>Updates</summary>
-                <div className="agentSummaryDetailsBody">
-                  <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Future Update Plan</h5>
-                  {toddMemory.futureUpdatePlan.length > 0 ? (
-                    <div className="updatePlanList">
-                      {Object.entries(groupedByVersion).map(([versionLabel, updates]) => (
-                        <div key={versionLabel} className="updatePlanGroup">
-                          <h6 className="updatePlanGroupLabel">{versionLabel}</h6>
-                          {updates.sort((a, b) => a.order - b.order).map((u, idx) => (
-                            <div key={u.id} className="agentPlannedUpdateItem">
-                              <span className="orderBadge">{idx + 1}</span>
-                              <div className="updateContent">
-                                <div className="updateTitle">{u.title}</div>
-                                <div className="updateDescription">{u.description}</div>
-                                {u.skillsNeeded.length > 0 ? (
-                                  <div className="flowStepPillars" style={{ marginTop: 8 }}>
-                                    {u.skillsNeeded.map((skill) => (
-                                      <span key={`${u.id}-${skill}`} className="flowStepPillarTag">{skill}</span>
-                                    ))}
-                                  </div>
-                                ) : null}
-                              </div>
-                              <StatusChip tone={u.status === "completed" ? "confirmed" : u.status === "failed" ? "action_required" : u.status === "in_progress" ? "info" : "neutral"}>{u.status}</StatusChip>
-                            </div>
-                          ))}
-                        </div>
-                      ))}
-                    </div>
-                  ) : <em className="coreDetailEmpty">No updates planned yet.</em>}
-                  <div className="agentInfoPanelSection">
-                    <h5 style={{ margin: "12px 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Previous Update Log</h5>
-                    {toddMemory.previousUpdateLog.length > 0 ? (
-                      <div className="validationResultsList">
-                        {toddMemory.previousUpdateLog.slice().reverse().map((entry) => (
-                          <div key={entry.id} className={`validationResultCard validationResultCard--${entry.status === "success" || entry.status === "no_changes" ? "pass" : "fail"}`}>
-                            <span className="validationResultType">{entry.goal}</span>
-                            <span className={`validationResultStatus${entry.status === "success" || entry.status === "no_changes" ? " pmStatusDone" : ""}`}>
-                              {entry.status.replace(/_/g, " ")}
-                            </span>
-                            <p>{entry.outcome}</p>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <em className="coreDetailEmpty">No completed execution entries yet.</em>
-                    )}
-                  </div>
-                  <div className="agentInfoPanelSection">
-                    <h5 style={{ margin: "12px 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Trouble Log</h5>
-                    {toddMemory.troubleLog.length > 0 ? (
-                      <div className="validationResultsList">
-                        {toddMemory.troubleLog.map((entry) => (
-                          <div key={entry.id} className="validationResultCard validationResultCard--fail">
-                            <span className="validationResultType">{entry.title}</span>
-                            <span className="validationResultStatus">{entry.priority}</span>
-                            <p>{entry.details}</p>
-                            <p className="helperText">Seen {entry.occurrences} time(s). Last seen {formatDate(entry.lastSeenAt)}</p>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <em className="coreDetailEmpty">No recurring issues logged.</em>
-                    )}
-                  </div>
-                </div>
-              </details>
-            </section>
-          </div>
-        </div>
-      );
-    }
+            </details>
+          ) : null}
 
-    case "programming-director":
-      return (
-        <div className="agentInfoPanel agentSummaryPanel">
-          <div className="agentSummaryGrid">
-            <section className="agentSummaryCard">
-              <div className="agentSummaryHeader">
-                <span className="agentSummaryEyebrow">Functions</span>
+          <details className="agentSummaryDetails">
+            <summary>Information Chain</summary>
+            <div className="agentSummaryDetailsBody">
+              <div className="agentSummaryFlowSection">
+                <span className="pmStatusLabel">Receives From</span>
+                <div className="agentFlowPills">
+                  {metadata.receivesFrom.map((link, index) => (
+                    <DirectorFlowLinkPill
+                      key={`${link.label}-${index}`}
+                      link={link}
+                      onNavigateToDirector={onNavigateToDirector}
+                    />
+                  ))}
+                </div>
               </div>
-              <details className="agentSummaryDetails">
-                <summary>Programming Queue</summary>
-                <div className="agentSummaryDetailsBody">
-                  {toddMemory.futureUpdatePlan.filter((u) => u.status === "pending" || u.status === "in_progress").length > 0 ? (
-                    <div className="programmingQueue">
-                      {toddMemory.futureUpdatePlan.filter((u) => u.status === "pending" || u.status === "in_progress").map((u) => (
-                        <div key={u.id} className="agentPlannedUpdateItem">
-                          <div className="updateContent">
-                            <div className="updateTitle">{u.title}</div>
-                            <div className="updateDescription">{u.description}</div>
-                            {u.skillsNeeded.length > 0 ? (
-                              <div className="flowStepPillars" style={{ marginTop: 8 }}>
-                                {u.skillsNeeded.map((skill) => (
-                                  <span key={`${u.id}-${skill}`} className="flowStepPillarTag">{skill}</span>
-                                ))}
-                              </div>
-                            ) : null}
-                          </div>
-                          <StatusChip tone={u.status === "in_progress" ? "info" : "neutral"}>{u.status}</StatusChip>
-                        </div>
-                      ))}
-                    </div>
-                  ) : <em className="coreDetailEmpty">No updates in the programming queue.</em>}
-                  <p className="coreDetailValue" style={{ marginTop: 12 }}>
-                    {pingMemory.activeTask
-                      ? `Active task: ${pingMemory.activeTask}`
-                      : "Ping is waiting for the next confirmed implementation task."}
-                  </p>
-                  {pingMemory.context ? (
-                    <p className="coreDetailValue" style={{ marginTop: 8 }}>{pingMemory.context}</p>
-                  ) : null}
-                  {pingMemory.codebaseMapSummary ? (
-                    <p className="helperText" style={{ marginTop: 8 }}>{pingMemory.codebaseMapSummary}</p>
-                  ) : null}
-                  {pingMemory.latestRawReport ? (
-                    <div className="validationResultCard validationResultCard--pass" style={{ marginTop: 12 }}>
-                      <span className="validationResultType">Latest execution</span>
-                      <span className="validationResultStatus">{pingMemory.latestRawReport.status.replace(/_/g, " ")}</span>
-                      <p>{pingMemory.latestRawReport.summary}</p>
-                    </div>
-                  ) : null}
-                </div>
-              </details>
-            </section>
-          </div>
-        </div>
-      );
 
-    case "validation-director":
-      return (
-        <div className="agentInfoPanel agentSummaryPanel">
-          <div className="agentSummaryGrid">
-            <section className="agentSummaryCard">
-              <div className="agentSummaryHeader">
-                <span className="agentSummaryEyebrow">Functions</span>
+              <div className="agentSummaryFlowSection">
+                <span className="pmStatusLabel">Sends To</span>
+                <div className="agentFlowPills">
+                  {metadata.sendsTo.map((link, index) => (
+                    <DirectorFlowLinkPill
+                      key={`${link.label}-${index}`}
+                      link={link}
+                      onNavigateToDirector={onNavigateToDirector}
+                    />
+                  ))}
+                </div>
               </div>
-              <details className="agentSummaryDetails">
-                <summary>Validation Results</summary>
-                <div className="agentSummaryDetailsBody">
-                  {projectId ? (
-                    <div className="validationFrequencyRow">
-                      <span className="pillarDetailLabel">Frequency:</span>
-                      <select
-                        className="plannerSelect"
-                        value={session.validationFrequency}
-                        onChange={(e) => void window.programs.setValidationFrequency({ projectId, frequency: e.target.value as "every-update" | "every-version" | "manual" }).then(onSessionUpdate)}
-                      >
-                        <option value="manual">Manual</option>
-                        <option value="every-update">Every Update</option>
-                        <option value="every-version">Every Version</option>
-                      </select>
-                    </div>
-                  ) : null}
-                  {session.validationResults.length > 0 ? (
-                    <div className="validationResultsList">
-                      {session.validationResults.map((r) => (
-                        <div key={r.id} className={`validationResultCard validationResultCard--${r.passed ? "pass" : "fail"}`}>
-                          <span className="validationResultType">{r.validationType}</span>
-                          <span className={`validationResultStatus${r.passed ? " pmStatusDone" : ""}`}>{r.passed ? "PASS" : "FAIL"}</span>
-                          <p>{r.summary}</p>
-                        </div>
-                      ))}
-                    </div>
-                  ) : <em className="coreDetailEmpty">No validation results yet.</em>}
-                </div>
-              </details>
-            </section>
-          </div>
-        </div>
-      );
 
-    default:
-      return null;
-  }
+              <div>
+                <span className="pmStatusLabel">Can Access</span>
+                <ul className="agentSummaryList">
+                  {metadata.accessOverview.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          </details>
+        </section>
+      </div>
+    </div>
+  );
 }
 
 function DirectorMemoryPanel({
   directorId,
   session,
+  onViewExecutionReport,
 }: {
   directorId: DirectorId;
   session: AgentSession | null;
+  onViewExecutionReport?: (report: JeffExecutionReport) => void;
 }) {
   if (!session) return null;
 
@@ -8778,6 +8233,149 @@ function DirectorMemoryPanel({
     );
   }
 
+  if (directorId === "programming-director") {
+    const pingMemory = session.pingMemory;
+    const queuedUpdates = session.toddMemory.futureUpdatePlan.filter((update) => update.status === "pending" || update.status === "in_progress");
+    return (
+      <div className="agentInfoPanel agentSummaryPanel">
+        <div className="agentSummaryGrid">
+          <section className="agentSummaryCard">
+            <div className="agentSummaryHeader">
+              <span className="agentSummaryEyebrow">Memory</span>
+            </div>
+            <details className="agentSummaryDetails" open>
+              <summary>Programming Queue</summary>
+              <div className="agentSummaryDetailsBody">
+                {queuedUpdates.length > 0 ? (
+                  <div className="programmingQueue">
+                    {queuedUpdates.map((update) => (
+                      <div key={update.id} className="agentPlannedUpdateItem">
+                        <div className="updateContent">
+                          <div className="updateTitle">{update.title}</div>
+                          <div className="updateDescription">{update.description}</div>
+                        </div>
+                        <StatusChip tone={update.status === "in_progress" ? "info" : "neutral"}>
+                          {update.status.replace(/_/g, " ")}
+                        </StatusChip>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="coreDetailEmpty">No updates are waiting for Ping.</p>
+                )}
+              </div>
+            </details>
+            <details className="agentSummaryDetails">
+              <summary>Execution Context</summary>
+              <div className="agentSummaryDetailsBody">
+                <p className="coreDetailValue">
+                  {pingMemory.activeTask
+                    ? `Active task: ${pingMemory.activeTask}`
+                    : "Ping is waiting for the next Todd-approved update."}
+                </p>
+                {pingMemory.context ? (
+                  <p className="coreDetailValue" style={{ marginTop: 8 }}>{pingMemory.context}</p>
+                ) : null}
+                {pingMemory.codebaseMapSummary ? (
+                  <p className="helperText" style={{ marginTop: 8 }}>{pingMemory.codebaseMapSummary}</p>
+                ) : null}
+              </div>
+            </details>
+            <details className="agentSummaryDetails">
+              <summary>Latest Update Report</summary>
+              <div className="agentSummaryDetailsBody">
+                {pingMemory.latestRawReport ? (
+                  <div className="validationResultCard validationResultCard--pass">
+                    <span className="validationResultType">Latest execution</span>
+                    <span className="validationResultStatus">{pingMemory.latestRawReport.status.replace(/_/g, " ")}</span>
+                    <p>{pingMemory.latestRawReport.summary}</p>
+                  </div>
+                ) : (
+                  <p className="coreDetailEmpty">No update report recorded yet.</p>
+                )}
+                {pingMemory.latestJeffReport && onViewExecutionReport ? (
+                  <button
+                    type="button"
+                    className="slackViewMoreButton"
+                    style={{ marginTop: 12 }}
+                    onClick={() => onViewExecutionReport(pingMemory.latestJeffReport!)}
+                  >
+                    View Update Report
+                  </button>
+                ) : null}
+              </div>
+            </details>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
+  if (directorId === "validation-director") {
+    return (
+      <div className="agentInfoPanel agentSummaryPanel">
+        <div className="agentSummaryGrid">
+          <section className="agentSummaryCard">
+            <div className="agentSummaryHeader">
+              <span className="agentSummaryEyebrow">Memory</span>
+            </div>
+            <details className="agentSummaryDetails" open>
+              <summary>Validation State</summary>
+              <div className="agentSummaryDetailsBody">
+                <p className="coreDetailValue">Frequency: {session.validationFrequency}</p>
+                {session.validationResults.length > 0 ? (
+                  <div className="validationResultsList" style={{ marginTop: 12 }}>
+                    {session.validationResults.map((result) => (
+                      <div key={result.id} className={`validationResultCard validationResultCard--${result.passed ? "pass" : "fail"}`}>
+                        <span className="validationResultType">{result.validationType}</span>
+                        <span className={`validationResultStatus${result.passed ? " pmStatusDone" : ""}`}>{result.passed ? "PASS" : "FAIL"}</span>
+                        <p>{result.summary}</p>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="coreDetailEmpty">No validation results yet.</p>
+                )}
+              </div>
+            </details>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
+  if (directorId === "project-manager") {
+    const stateEntries = Object.entries(session.directorStateMap ?? {}).filter(([, state]) => Boolean(state));
+    return (
+      <div className="agentInfoPanel agentSummaryPanel">
+        <div className="agentSummaryGrid">
+          <section className="agentSummaryCard">
+            <div className="agentSummaryHeader">
+              <span className="agentSummaryEyebrow">Memory</span>
+            </div>
+            <details className="agentSummaryDetails" open>
+              <summary>Coordination State</summary>
+              <div className="agentSummaryDetailsBody">
+                <p className="coreDetailValue">
+                  {`${session.pendingApprovals.length} pending approval(s) and ${stateEntries.length} tracked director state snapshot(s).`}
+                </p>
+                {stateEntries.length > 0 ? (
+                  <ul className="agentSummaryList" style={{ marginTop: 10 }}>
+                    {stateEntries.map(([id, state]) => (
+                      <li key={id}>
+                        {DIRECTOR_NAMES[id as DirectorId]}: {state?.currentState ?? state?.idealState ?? "State tracked"}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            </details>
+          </section>
+        </div>
+      </div>
+    );
+  }
+
   return null;
 }
 
@@ -8785,12 +8383,12 @@ function DirectorProfilePanel({
   directorId,
   session,
   projectId,
-  settings,
-  modelCatalog,
+  settings: _settings,
+  modelCatalog: _modelCatalog,
   onNavigateToDirector,
-  onUpdateAgentDefaults,
+  onUpdateAgentDefaults: _onUpdateAgentDefaults,
   onSessionUpdate,
-  pushToast,
+  pushToast: _pushToast,
 }: {
   directorId: DirectorId;
   session: AgentSession | null;
@@ -8802,21 +8400,11 @@ function DirectorProfilePanel({
   onSessionUpdate: (session: AgentSession) => void;
   pushToast: (message: string, level: "info" | "success" | "error") => void;
 }) {
-  const profilePanelRef = useRef<HTMLDivElement>(null);
-  const [hasExpandedSummary, setHasExpandedSummary] = useState(false);
   const profile = getDirectorProfileMeta(directorId);
-
-  useLayoutEffect(() => {
-    if (!hasExpandedSummary) {
-      profilePanelRef.current?.scrollTo({ top: 0 });
-    }
-  }, [hasExpandedSummary]);
+  const [executionReport, setExecutionReport] = useState<JeffExecutionReport | null>(null);
 
   return (
-    <div
-      ref={profilePanelRef}
-      className={`directorProfilePanel${hasExpandedSummary ? " directorProfilePanel--scrollable" : " directorProfilePanel--static"}`}
-    >
+    <div className="directorProfilePanel directorProfilePanel--static">
       <div className="directorProfilePanelContent">
         <div
           className="directorProfileCard"
@@ -8832,18 +8420,6 @@ function DirectorProfilePanel({
           </span>
         </div>
 
-        <DirectorSummaryPanel
-          directorId={directorId}
-          session={session}
-          projectId={projectId}
-          settings={settings}
-          modelCatalog={modelCatalog}
-          onNavigateToDirector={onNavigateToDirector}
-          onUpdateAgentDefaults={onUpdateAgentDefaults}
-          onSessionUpdate={onSessionUpdate}
-          pushToast={pushToast}
-          onExpandedChange={setHasExpandedSummary}
-        />
         <div className="directorProfileLowerGrid">
           <DirectorFunctionsPanel
             directorId={directorId}
@@ -8855,8 +8431,15 @@ function DirectorProfilePanel({
           <DirectorMemoryPanel
             directorId={directorId}
             session={session}
+            onViewExecutionReport={setExecutionReport}
           />
         </div>
+        {executionReport ? (
+          <ExecutionReportPanel
+            report={executionReport}
+            onClose={() => setExecutionReport(null)}
+          />
+        ) : null}
       </div>
     </div>
   );
@@ -8904,6 +8487,11 @@ function AgentsPage({
   const [isLoading, setIsLoading] = useState(false);
   const [lastRouteHint, setLastRouteHint] = useState<{ directorId: DirectorId; reason: string } | null>(null);
   const [optimisticAgentMessages, setOptimisticAgentMessages] = useState<AgentChatMessage[]>([]);
+  const [pendingMemoryProcessDirector, setPendingMemoryProcessDirector] = useState<DirectorId | null>(null);
+  const [pendingAgentAlert, setPendingAgentAlert] = useState<{
+    directorId: DirectorId;
+    warningTargetDirectorId: DirectorId;
+  } | null>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const agentRuntimeOptions = useMemo<ComposerOptions>(
@@ -9000,6 +8588,7 @@ function AgentsPage({
       setShowProjectDetails(false);
     }
     setHardMemoryReportMessageId(null);
+    setPendingAgentAlert(null);
   }, [agentSelectedProjectId]);
 
   useEffect(() => {
@@ -9007,6 +8596,105 @@ function AgentsPage({
       setHardMemoryReportMessageId(null);
     }
   }, [hardMemoryReportMessage, hardMemoryReportMessageId]);
+
+  useEffect(() => {
+    if (!pendingMemoryProcessDirector || !agentSelectedProjectId || !showInlineDirectorChat) return;
+    if (selectedDirectorId !== pendingMemoryProcessDirector) return;
+
+    const directorId = pendingMemoryProcessDirector;
+    setPendingMemoryProcessDirector(null);
+
+    const promptMessage = directorId === "creative-director"
+      ? "Let's review and process the notes we've gathered."
+      : "Let's review and process the pending handoff from Dan.";
+
+    const optimisticUserMsg: AgentChatMessage = {
+      id: `opt-${Date.now()}`,
+      role: "user",
+      content: promptMessage,
+      createdAt: new Date().toISOString(),
+    };
+    setOptimisticAgentMessages((prev) => [...prev, optimisticUserMsg]);
+    setIsLoading(true);
+    setLastRouteHint(null);
+
+    (async () => {
+      try {
+        const response = await window.programs.directorChat({
+          projectId: agentSelectedProjectId,
+          directorId,
+          focusMode: null,
+          runtimeStage: "memory-processing",
+          provider: settings.advancedDefaults.provider,
+          model: settings.advancedDefaults.model,
+          claudeModel: settings.advancedDefaults.claudeModel,
+          message: promptMessage,
+        });
+        const refreshed = await window.programs.getAgentSession(agentSelectedProjectId);
+        if (refreshed) onSessionUpdate(refreshed);
+        if (response.routeSuggestion) setLastRouteHint(response.routeSuggestion);
+      } catch (error) {
+        pushToast(error instanceof Error ? error.message : "Something went wrong.", "error");
+      } finally {
+        setIsLoading(false);
+      }
+    })();
+  }, [pendingMemoryProcessDirector, selectedDirectorId, showInlineDirectorChat, agentSelectedProjectId]);
+
+  const runDirectorAlertAction = useCallback(async (directorId: DirectorId) => {
+    if (!agentSelectedProjectId) return;
+
+    setLastRouteHint(null);
+    setHardMemoryReportMessageId(null);
+
+    if (directorId === "programming-director") {
+      const nextUpdate = getNextPendingProgrammingUpdate(agentSession);
+      if (!nextUpdate) return;
+      onSelectDirector(directorId);
+      setIsLoading(true);
+      try {
+        await window.programs.routeUpdateToProgramming({
+          projectId: agentSelectedProjectId,
+          updateId: nextUpdate.id,
+          provider: settings.advancedDefaults.provider,
+          model: settings.advancedDefaults.model,
+          claudeModel: settings.advancedDefaults.claudeModel,
+        });
+        const refreshed = await window.programs.getAgentSession(agentSelectedProjectId);
+        if (refreshed) onSessionUpdate(refreshed);
+      } catch (error) {
+        pushToast(error instanceof Error ? error.message : "Something went wrong.", "error");
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
+    onSelectDirector(directorId);
+    setPendingMemoryProcessDirector(directorId);
+  }, [
+    agentSelectedProjectId,
+    agentSession,
+    onSelectDirector,
+    onSessionUpdate,
+    pushToast,
+    settings.advancedDefaults.provider,
+    settings.advancedDefaults.model,
+    settings.advancedDefaults.claudeModel,
+  ]);
+
+  const handleDirectorAlertClick = useCallback((directorId: DirectorId) => {
+    const alertState = resolveAgentAlertState(directorId, agentSession);
+    if (!alertState) return;
+    if (alertState.warningTargetDirectorId) {
+      setPendingAgentAlert({
+        directorId,
+        warningTargetDirectorId: alertState.warningTargetDirectorId,
+      });
+      return;
+    }
+    void runDirectorAlertAction(directorId);
+  }, [agentSession, runDirectorAlertAction]);
 
   const handleSend = async () => {
     if (!inputValue.trim() || !agentSelectedProjectId || !selectedDirectorId) return;
@@ -9134,6 +8822,8 @@ function AgentsPage({
           const directorName = DIRECTOR_NAMES[director.id];
           const isActive = selectedDirectorId === director.id;
 
+          const alertState = resolveAgentAlertState(director.id, agentSession);
+
           return (
             <section key={department} className="agentDepartmentSection">
               <div className="agentDepartmentContent">
@@ -9154,6 +8844,10 @@ function AgentsPage({
                   onOpenOptions={agentSelectedProjectId ? () => {
                     onSelectDirector(director.id);
                     setShowDirectorProfile(true);
+                  } : undefined}
+                  alertTone={alertState?.tone ?? null}
+                  onExclamationClick={alertState && agentSelectedProjectId ? () => {
+                    handleDirectorAlertClick(director.id);
                   } : undefined}
                   ariaLabel={isActive ? `Close ${directorName} chat` : `Open ${directorName} chat`}
                 />
@@ -9205,19 +8899,26 @@ function AgentsPage({
                             renderPingAwareMessageContent(msg)
                           )}
                         </div>
-                        {msg.metadata?.type === "hard-memory-report" ? (
-                          <button
-                            type="button"
-                            className="slackViewMoreButton slackViewMoreButton--report"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              setHardMemoryReportMessageId(msg.id);
-                            }}
-                          >
-                            View Report
-                          </button>
-                        ) : null}
-                        <div className="slackMessageTimestamp">{formatSlackTimestamp(msg.createdAt)}</div>
+                        <div className="slackMessageMetaRow">
+                          <div className="slackMessageMetaActions">
+                            {msg.metadata?.type === "hard-memory-report" ? (() => {
+                              const stage = (msg.metadata as HardMemoryReportMetadata).reportStage ?? "hard";
+                              return (
+                                <button
+                                  type="button"
+                                  className={`slackViewMoreButton ${stage === "soft" ? "slackViewMoreButton--soft-report" : "slackViewMoreButton--hard-report"}`}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setHardMemoryReportMessageId(msg.id);
+                                  }}
+                                >
+                                  {stage === "soft" ? "View Soft Report" : "View Hard Report"}
+                                </button>
+                              );
+                            })() : null}
+                          </div>
+                          <div className="slackMessageTimestamp">{formatSlackTimestamp(msg.createdAt)}</div>
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -9281,6 +8982,7 @@ function AgentsPage({
               <HardMemoryReportPanel
                 report={hardMemoryReport}
                 liveApproval={hardMemoryReportApproval}
+                session={agentSession}
                 projectId={agentSelectedProjectId}
                 onSessionUpdate={onSessionUpdate}
                 onClose={() => setHardMemoryReportMessageId(null)}
@@ -9326,6 +9028,39 @@ function AgentsPage({
           </div>
         </Modal>
       )}
+
+      {pendingAgentAlert ? (
+        <Modal
+          title="Proceed With Agent Action?"
+          onClose={() => setPendingAgentAlert(null)}
+        >
+          <div className="refreshModal">
+            <p style={{ color: "var(--muted)", fontSize: 13, marginBottom: 16 }}>
+              {`Are you sure you want to run ${DIRECTOR_NAMES[pendingAgentAlert.directorId]} before ${DIRECTOR_NAMES[pendingAgentAlert.warningTargetDirectorId]}?`}
+            </p>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <button
+                type="button"
+                className="secondaryButton"
+                onClick={() => setPendingAgentAlert(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="primaryButton"
+                onClick={() => {
+                  const directorId = pendingAgentAlert.directorId;
+                  setPendingAgentAlert(null);
+                  void runDirectorAlertAction(directorId);
+                }}
+              >
+                Proceed
+              </button>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
 
       {showProgressPanel && agentSession && (
         <Modal title="Project Progress" onClose={() => setShowProgressPanel(false)} fullscreen>
@@ -9373,6 +9108,29 @@ function AgentsPage({
           title=""
           onClose={() => setShowDirectorProfile(false)}
           fullscreen
+          headerLeading={(
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <button
+                type="button"
+                className="textButton"
+                onClick={() => setShowDirectorProfile(false)}
+              >
+                View Agent Team
+              </button>
+              {selectedProject ? (
+                <button
+                  type="button"
+                  className="textButton"
+                  onClick={() => {
+                    setShowDirectorProfile(false);
+                    setShowProjectDetails(true);
+                  }}
+                >
+                  View Project Details
+                </button>
+              ) : null}
+            </div>
+          )}
         >
           <DirectorProfilePanel
             key={selectedDirectorId}
@@ -9853,59 +9611,66 @@ function SlackPage({
                                   renderPingAwareMessageContent(msg)
                                 )}
                               </div>
-                              {msg.metadata?.type === "hard-memory-report" ? (
-                                <button
-                                  type="button"
-                                  className="slackViewMoreButton slackViewMoreButton--report"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setResearchPanelMessage(null);
-                                    setUpdatePanelMessage(null);
-                                    setExecutionReportMessage(null);
-                                    setHardMemoryReportMessageId(msg.id);
-                                  }}
-                                >
-                                  View Report
-                                </button>
-                              ) : null}
-                              {msg.metadata?.type === "research-result" && (
-                                <button
-                                  className="slackViewMoreButton"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setHardMemoryReportMessageId(null);
-                                    setResearchPanelMessage(msg);
-                                  }}
-                                >
-                                  View Research
-                                </button>
-                              )}
-                              {msg.metadata?.type === "refresh-update" && (
-                                <button
-                                  className="slackViewMoreButton"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setHardMemoryReportMessageId(null);
-                                    setUpdatePanelMessage(msg);
-                                  }}
-                                >
-                                  View Update
-                                </button>
-                              )}
-                              {msg.metadata?.type === "execution-report" && (
-                                <button
-                                  className="slackViewMoreButton"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    setHardMemoryReportMessageId(null);
-                                    setExecutionReportMessage(msg);
-                                  }}
-                                >
-                                  View Report
-                                </button>
-                              )}
-                              <div className="slackMessageTimestamp">
-                                {formatSlackTimestamp(msg.createdAt)}
+                              <div className="slackMessageMetaRow">
+                                <div className="slackMessageMetaActions">
+                                  {msg.metadata?.type === "hard-memory-report" ? (() => {
+                                    const stage = (msg.metadata as HardMemoryReportMetadata).reportStage ?? "hard";
+                                    return (
+                                      <button
+                                        type="button"
+                                        className={`slackViewMoreButton ${stage === "soft" ? "slackViewMoreButton--soft-report" : "slackViewMoreButton--hard-report"}`}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setResearchPanelMessage(null);
+                                          setUpdatePanelMessage(null);
+                                          setExecutionReportMessage(null);
+                                          setHardMemoryReportMessageId(msg.id);
+                                        }}
+                                      >
+                                        {stage === "soft" ? "View Soft Report" : "View Hard Report"}
+                                      </button>
+                                    );
+                                  })() : null}
+                                  {msg.metadata?.type === "research-result" && (
+                                    <button
+                                      className="slackViewMoreButton"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setHardMemoryReportMessageId(null);
+                                        setResearchPanelMessage(msg);
+                                      }}
+                                    >
+                                      View Research
+                                    </button>
+                                  )}
+                                  {msg.metadata?.type === "refresh-update" && (
+                                    <button
+                                      className="slackViewMoreButton"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setHardMemoryReportMessageId(null);
+                                        setUpdatePanelMessage(msg);
+                                      }}
+                                    >
+                                      View Update
+                                    </button>
+                                  )}
+                                  {msg.metadata?.type === "execution-report" && (
+                                    <button
+                                      className="slackViewMoreButton"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setHardMemoryReportMessageId(null);
+                                        setExecutionReportMessage(msg);
+                                      }}
+                                    >
+                                      View Update Report
+                                    </button>
+                                  )}
+                                </div>
+                                <div className="slackMessageTimestamp">
+                                  {formatSlackTimestamp(msg.createdAt)}
+                                </div>
                               </div>
                             </div>
                           </>
@@ -9967,6 +9732,7 @@ function SlackPage({
                 <HardMemoryReportPanel
                   report={hardMemoryReport}
                   liveApproval={hardMemoryReportApproval}
+                  session={slackAgentSession}
                   projectId={slackSelectedProjectId}
                   onSessionUpdate={onSessionUpdate}
                   onClose={() => setHardMemoryReportMessageId(null)}
@@ -10032,68 +9798,12 @@ function SlackPage({
                 </div>
               )}
 
-              {executionReportMessage?.metadata?.type === "execution-report" && (
-                (() => {
-                  const report = executionReportMessage.metadata.report;
-                  return (
-                <div className="slackResearchPanel">
-                  <div className="slackResearchPanelHeader">
-                    <h3>{report.title}</h3>
-                    <button className="secondaryButton" style={{ fontSize: "0.75rem", padding: "4px 8px" }} onClick={() => setExecutionReportMessage(null)}>Close</button>
-                  </div>
-                  <div className="slackResearchPanelBody">
-                    <section>
-                      <h4>Summary</h4>
-                      <p>{report.summary}</p>
-                    </section>
-                    <section>
-                      <h4>Outcome</h4>
-                      <p>{report.outcome}</p>
-                    </section>
-                    <section>
-                      <h4>Ping Raw Report</h4>
-                      <p>Status: {report.rawReport.status.replace(/_/g, " ")}</p>
-                      <p>{report.rawReport.summary}</p>
-                      {report.rawReport.changedFiles.length > 0 ? (
-                        <>
-                          <h4>Changed Files</h4>
-                          <ul className="slackUpdateList">
-                            {report.rawReport.changedFiles.map((filePath) => (
-                              <li key={filePath}>{filePath}</li>
-                            ))}
-                          </ul>
-                        </>
-                      ) : null}
-                      {report.rawReport.blocker ? (
-                        <>
-                          <h4>Blocker</h4>
-                          <p>{report.rawReport.blocker}</p>
-                        </>
-                      ) : null}
-                      {report.rawReport.unexpectedNotes.length > 0 ? (
-                        <>
-                          <h4>Unexpected Notes</h4>
-                          <ul className="slackUpdateList">
-                            {report.rawReport.unexpectedNotes.map((item, index) => (
-                              <li key={`${report.id}-unexpected-${index}`}>{item}</li>
-                            ))}
-                          </ul>
-                        </>
-                      ) : null}
-                    </section>
-                    <section>
-                      <h4>Todd Follow-Up</h4>
-                      <p>
-                        {report.toddFollowUpNeeded
-                          ? report.toddFollowUpReason ?? "Jeff referred Todd for follow-up planning."
-                          : "No Todd follow-up needed."}
-                      </p>
-                    </section>
-                  </div>
-                </div>
-                  );
-                })()
-              )}
+              {executionReportMessage?.metadata?.type === "execution-report" ? (
+                <ExecutionReportPanel
+                  report={executionReportMessage.metadata.report}
+                  onClose={() => setExecutionReportMessage(null)}
+                />
+              ) : null}
             </div>
           </div>
         </>

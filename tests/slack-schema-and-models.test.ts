@@ -139,6 +139,7 @@ test("Dan contract includes notes and draft lifecycle fields", () => {
   assert.ok(contract.includes('"rawMemoriesToAppend"'));
   assert.ok(contract.includes('"conversationStatus"'));
   assert.ok(contract.includes('"draftChangeSummary"'));
+  assert.ok(contract.includes('"draftOperations"'));
   assert.ok(contract.includes('"draftCoreDetails"'));
   assert.ok(contract.includes('"presenceAction"'));
 });
@@ -151,6 +152,16 @@ test("Todd planning contracts include confirmation and plan arrays", () => {
   assert.ok(versionContract.includes('"versions"'));
   assert.ok(updateContract.includes('"confirmationSuggested"'));
   assert.ok(updateContract.includes('"updates"'));
+});
+
+test("Todd DM schemas include routing and memory fields across planning modes", () => {
+  for (const schema of [directorToddResearchSchema, directorToddVersionSchema, directorToddUpdateSchema]) {
+    assert.ok(schema.required.includes("handoffTo"));
+    assert.ok(schema.required.includes("handoffReason"));
+    assert.ok(schema.required.includes("currentState"));
+    assert.ok(schema.required.includes("idealState"));
+    assert.ok(schema.required.includes("notesToAppend"));
+  }
 });
 
 test("Codex model selection keeps GPT-5.4 alongside GPT-5.4 Mini", () => {

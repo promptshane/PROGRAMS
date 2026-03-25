@@ -165,6 +165,7 @@ test("Dan Slack responses require draftCoreDetails when ready-to-confirm", () =>
       rawMemoriesToAppend: null,
       conversationStatus: "ready-to-confirm",
       draftChangeSummary: ["Added onboarding as a primary pillar."],
+      draftOperations: [],
       draftCoreDetails: null,
       presenceAction: "stay",
     }, "creative-director", "codebase-analysis"),

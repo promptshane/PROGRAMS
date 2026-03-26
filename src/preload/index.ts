@@ -1,27 +1,9 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
-  AgentAttachMaterialsInput,
-  AgentAttachMaterialsResult,
-  AgentChatInput,
-  AgentChatResponse,
-  AgentConfirmStageInput,
-  AgentCoreDetails,
-  AgentExecuteUpdateInput,
-  AgentProcessTodosInput,
-  AgentReorderUpdatesInput,
   AgentSession,
-  AgentStage,
-  AgentSubmitTodosInput,
-  AgentSubmitTodosResponse,
-  AgentUpdateScratchpadInput,
   AttachSkillInput,
   ConvertSkillInput,
-  CoreDetailsChatInput,
-  CoreDetailsChatResponse,
   ClaudeConnectionTestResult,
-  AgentSuggestUpdateInput,
-  AgentSuggestUpdateResponse,
-  AgentApplyCoreDetailsInput,
   AttachVibeInput,
   ConfirmAgentDataInput,
   DirectorChatInput,
@@ -163,42 +145,6 @@ const api = {
 
   getAgentSession: (projectId: string): Promise<AgentSession | null> =>
     ipcRenderer.invoke("agents.getSession", projectId),
-  agentChat: (input: AgentChatInput): Promise<AgentChatResponse> =>
-    ipcRenderer.invoke("agents.chat", input),
-  agentConfirmStage: (input: AgentConfirmStageInput): Promise<AgentSession> =>
-    ipcRenderer.invoke("agents.confirmStage", input),
-  agentUpdateScratchpad: (input: AgentUpdateScratchpadInput): Promise<AgentSession> =>
-    ipcRenderer.invoke("agents.updateScratchpad", input),
-  agentSubmitTodos: (input: AgentSubmitTodosInput): Promise<AgentSubmitTodosResponse> =>
-    ipcRenderer.invoke("agents.submitTodos", input),
-  agentReorderUpdates: (input: AgentReorderUpdatesInput): Promise<AgentSession> =>
-    ipcRenderer.invoke("agents.reorderUpdates", input),
-  agentExecuteUpdate: (input: AgentExecuteUpdateInput): Promise<{ started: true }> =>
-    ipcRenderer.invoke("agents.executeUpdate", input),
-  agentResetStage: (projectId: string, stage: AgentStage): Promise<AgentSession> =>
-    ipcRenderer.invoke("agents.resetStage", projectId, stage),
-  deleteAgentSession: (projectId: string): Promise<void> =>
-    ipcRenderer.invoke("agents.deleteSession", projectId),
-  agentAttachMaterials: (input: AgentAttachMaterialsInput): Promise<AgentAttachMaterialsResult> =>
-    ipcRenderer.invoke("agents.attachMaterials", input),
-  agentGetCoreDetails: (projectId: string): Promise<AgentCoreDetails> =>
-    ipcRenderer.invoke("agents.getCoreDetails", projectId),
-  agentCoreDetailsChat: (input: CoreDetailsChatInput): Promise<CoreDetailsChatResponse> =>
-    ipcRenderer.invoke("agents.coreDetailsChat", input),
-  agentSuggestUpdate: (input: AgentSuggestUpdateInput): Promise<AgentSuggestUpdateResponse> =>
-    ipcRenderer.invoke("agents.suggestUpdate", input),
-  agentApplyCoreDetails: (input: AgentApplyCoreDetailsInput): Promise<AgentSession> =>
-    ipcRenderer.invoke("agents.applyCoreDetails", input),
-  agentConfirmCoreDetail: (projectId: string, field: AgentStage): Promise<AgentSession> =>
-    ipcRenderer.invoke("agents.confirmCoreDetail", projectId, field),
-  agentProcessTodosFromProgram: (input: AgentProcessTodosInput): Promise<AgentSubmitTodosResponse> =>
-    ipcRenderer.invoke("agents.processTodosFromProgram", input),
-
-  // Cascade
-  agentGenerateCascade: (projectId: string, triggeredByStage: string, provider: string, model: string): Promise<import("@shared/types").CascadeProposal | null> =>
-    ipcRenderer.invoke("agents.generateCascade", projectId, triggeredByStage, provider, model),
-  agentAcceptCascade: (input: import("@shared/types").AgentAcceptCascadeInput): Promise<import("@shared/types").AgentSession> =>
-    ipcRenderer.invoke("agents.acceptCascade", input),
 
   // Director system
   directorChat: (input: DirectorChatInput): Promise<DirectorChatResponse> =>
@@ -230,9 +176,6 @@ const api = {
   deriveProjectCategory: (projectId: string): Promise<ProjectCategory> =>
     ipcRenderer.invoke("projects.deriveCategory", projectId),
 
-  // Legacy multi-agent alias
-  multiAgentChat: (input: DirectorChatInput): Promise<DirectorChatResponse> =>
-    ipcRenderer.invoke("agents.multiChat", input),
   attachVibe: (input: AttachVibeInput): Promise<AgentSession> =>
     ipcRenderer.invoke("agents.attachVibe", input),
   removeVibe: (input: RemoveVibeInput): Promise<AgentSession> =>

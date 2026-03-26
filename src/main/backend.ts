@@ -102,8 +102,6 @@ import {
   DIRECTOR_NAMES,
   DIRECTOR_COLORS,
   normalizeDirectorId,
-  SLACK_CHAT_DISABLED_MESSAGE,
-  SLACK_CHAT_ENABLED,
   type HardMemoryReportDataType,
   type HardMemoryReportMetadata,
   type HardMemoryReportUpdate,
@@ -324,16 +322,10 @@ const APP_UPDATE_SOURCE_FILES = [
   "tsconfig.json",
 ] as const;
 
-const SLACK_DIRECTOR_INTRO_DELAY_MS = 2_000;
-const SLACK_DIRECTOR_POST_INTRO_DELAY_MS = 500;
+const SLACK_DIRECTOR_INTRO_DELAY_MS = 0;
+const SLACK_DIRECTOR_POST_INTRO_DELAY_MS = 0;
 
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-const assertSlackChatEnabled = (): void => {
-  if (!SLACK_CHAT_ENABLED) {
-    throw new Error(SLACK_CHAT_DISABLED_MESSAGE);
-  }
-};
-
 interface AppUpdateWorkspaceInfo {
   workspacePath: string | null;
   workspaceExists: boolean;
@@ -1879,6 +1871,7 @@ Core operating rules:
 - Always set "currentState" to null. You do not track implementation state.
 - "handoffTo" should be null unless another director truly needs to act next.
 - Set "presenceAction" to "stay" unless you are explicitly stepping out.
+- When you reach a natural pause in concept work, end your response with a brief completion line: "[Done: <1-sentence summary of what you explored or settled and any next step>]"
 - Recognize when the user mentions roadmap thinking, build-order logic, implementation sequencing, dependency logic, or "first do X then Y then Z". These belong to Todd's world.
 - Use "toddHandoffNotesToAppend" to capture these Todd-bound planning observations. Do NOT store them in "notesToAppend". They will be packaged and handed to Todd when you exit or confirm.
 - Continue the creative conversation normally — do not ignore Todd-bound information, just route it correctly.
@@ -2536,9 +2529,15 @@ function buildReworkedSlackDirectorPrompt(
         }\n`
       : "";
 
+    const presenceDirector = session.slackPresenceGuestId ? DIRECTOR_NAMES[session.slackPresenceGuestId] : null;
+    const presenceNote = presenceDirector
+      ? `\nCurrent presence: ${presenceDirector} is the active director. If the user's message continues that thread, route to them rather than answering yourself. Only step in when the user explicitly addresses you, the conversation needs redirecting, or no other director is present.\n`
+      : "";
+
     return `You are Jeff, the Project Manager for "${projectName}".
 You are in a team Slack channel with the user and all directors.
-You are the central coordinator. Your role:
+You are the central coordinator.${presenceNote}
+Your role:
 - Handle general user conversation about the project
 - Route specialist work only to Dan, Todd, or Ping in this Slack flow
 - Route creative concept shaping and core-detail clarification to "creative-director" (Dan)
@@ -2554,6 +2553,7 @@ You are the central coordinator. Your role:
 - Be conversational and direct
 - When handing work to Todd, make the handoffReason explicit enough that PROGRAMS can tell whether this is codebase analysis, version planning, update planning, or internet research
 - If the user asks about prior creative iterations or what changed previously, reference Dan's creative update history below
+- When you finish your current function, end your response with a brief completion line: "[Done: <1-sentence summary of what you accomplished and any next step>]"
 
 Valid director IDs for handoff (use the exact ID string, not the name):
 - "creative-director" (Dan)
@@ -2597,6 +2597,7 @@ You are in a team Slack channel. Your role:
 - Keep "response" conversational and direct
 - Provide "generalSummary" and "projectSummary" only as external-research summaries for this turn
 - Set handoffTo to null unless another director needs to act on your findings
+- When you finish your current function, end your response with a brief completion line: "[Done: <1-sentence summary of what you accomplished and any next step>]"
 
 Valid director IDs for handoff (use the exact ID string, not the name):
 - "project-manager" (Jeff)
@@ -2623,6 +2624,7 @@ You are in a team Slack channel. Your role:
 - Use "confirmationSuggested" when the roadmap is ready to be confirmed and stored
 - Put proposed roadmap items in "versions". Use labels like V1, V2, and V3 when they fit. Use null when you are only discussing.
 - Set handoffTo to null unless another director needs to act on your findings
+- When you finish your current function, end your response with a brief completion line: "[Done: <1-sentence summary of what you accomplished and any next step>]"
 
 Valid director IDs for handoff (use the exact ID string, not the name):
 - "project-manager" (Jeff)
@@ -2649,6 +2651,7 @@ You are in a team Slack channel. Your role:
 - Use "confirmationSuggested" when the update plan is ready to be confirmed and stored
 - Put proposed grouped updates in "updates". Each update must include title, description, versionLabel, dependencies, area, and skillsNeeded. Use null when you are only discussing.
 - Set handoffTo to null unless another director needs to act on your findings
+- When you finish your current function, end your response with a brief completion line: "[Done: <1-sentence summary of what you accomplished and any next step>]"
 
 Valid director IDs for handoff (use the exact ID string, not the name):
 - "project-manager" (Jeff)
@@ -2677,6 +2680,7 @@ You are in a team Slack channel. Your role:
 - Keep "response" conversational and direct
 - Do not use external web research summaries in this mode
 - Set handoffTo to null unless another director needs to act on your findings
+- When you finish your current function, end your response with a brief completion line: "[Done: <1-sentence summary of what you accomplished and any next step>]"
 
 Valid director IDs for handoff (use the exact ID string, not the name):
 - "project-manager" (Jeff)
@@ -2736,6 +2740,7 @@ You are in a team Slack channel. Your role:
 - "response" should match the Mandarin line shown in chat first.
 - "rawReport" must stay minimal: summary, changedFiles, blocker, unexpectedNotes.
 - If something feels missing, hand off to Todd or Jeff.
+- When you finish execution, end your response with a brief completion line: "[Done: <1-sentence summary of what you did and any blocker>]"
 
 Valid director IDs for handoff (use the exact ID string, not the name):
 - "project-manager" (Jeff)
@@ -3719,9 +3724,6 @@ Changes described: ${pending.description}`;
         latestRawReport: null,
         latestJeffReport: null,
       },
-      // Deprecated aliases
-      agentConversations: {},
-      activeAgentId: null,
     });
   }
 
@@ -4171,18 +4173,10 @@ Changes described: ${pending.description}`;
         ? researchSlackSchema
         : directorSlackSchema;
     const prompt = buildReworkedSlackDirectorPrompt(directorId, project.name, session, { mode });
-    const directorMeta = getDirectorMetadata(directorId);
-    const invitedDirector = directorId !== "project-manager";
-    const usesLifecycleSequence = invitedDirector && directorId !== "creative-director";
     let hardMemoryReportMetadata: HardMemoryReportMetadata | null = null;
 
-    let responsePlaceholder: SlackChatMessage;
-    if (usesLifecycleSequence) {
-      responsePlaceholder = await this.stageSlackDirectorIntroSequence(session, project.id, directorId);
-    } else {
-      responsePlaceholder = this.appendSlackAssistantMessage(session, directorId, "", { status: "working" });
-      await this.saveAgentSession(project.id, session);
-    }
+    const responsePlaceholder = this.appendSlackAssistantMessage(session, directorId, "", { status: "working" });
+    await this.saveAgentSession(project.id, session);
 
     const cleanJson = (raw: string) => {
       let cleaned = raw.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "");
@@ -4429,20 +4423,16 @@ Changes described: ${pending.description}`;
                 projectSummary: typeof parsed.projectSummary === "string" ? parsed.projectSummary : "",
               }
             : null);
-        if (usesLifecycleSequence) {
-          this.appendSlackAssistantMessage(session, directorId, directorMeta.outroMessage, {
-            status: "complete",
-            metadata: directorId === "programming-director"
-              ? buildPingLifecycleTranslationMetadata("outro", directorMeta.outroMessage)
-              : null,
-          });
-        }
-        if (directorId === "creative-director") {
+        const handoffTarget = normalizeDirectorId(typeof parsed.handoffTo === "string" ? parsed.handoffTo : null);
+        if (handoffTarget) {
+          session.slackPresenceGuestId = handoffTarget === "project-manager" ? null : handoffTarget;
+          session.slackActiveDirectorId = handoffTarget;
+        } else if (directorId === "creative-director") {
           session.slackPresenceGuestId = danPresenceAction === "stay" ? "creative-director" : null;
           session.slackActiveDirectorId = danPresenceAction === "stay" ? "creative-director" : "project-manager";
         } else {
-          session.slackPresenceGuestId = null;
-          session.slackActiveDirectorId = "project-manager";
+          session.slackPresenceGuestId = directorId === "project-manager" ? null : directorId;
+          session.slackActiveDirectorId = directorId;
         }
         await this.saveAgentSession(project.id, session);
         return {
@@ -4477,14 +4467,6 @@ Changes described: ${pending.description}`;
     responsePlaceholder.content = finalError;
     responsePlaceholder.status = "complete";
     responsePlaceholder.metadata = null;
-    if (usesLifecycleSequence) {
-      this.appendSlackAssistantMessage(session, directorId, directorMeta.outroMessage, {
-        status: "complete",
-        metadata: directorId === "programming-director"
-          ? buildPingLifecycleTranslationMetadata("outro", directorMeta.outroMessage)
-          : null,
-      });
-    }
     session.slackPresenceGuestId = null;
     session.slackActiveDirectorId = "project-manager";
     await this.saveAgentSession(project.id, session);
@@ -5676,7 +5658,6 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       : resolveDirectorChatFocusMode(input.directorId, input.message, input.focusMode);
     session.provider = input.provider;
     session.activeDirectorId = input.directorId;
-    session.activeAgentId = input.directorId;
     session.danInternalNotes = session.danInternalNotes ?? [];
     session.danSideNotes = session.danSideNotes ?? [];
     session.danDraftChangeSummary = session.danDraftChangeSummary ?? [];
@@ -5701,9 +5682,6 @@ Your response must be ONLY strict JSON (no markdown fences).`;
         lastActiveAt: null,
       };
     }
-    // Keep agentConversations in sync
-    session.agentConversations = session.directorConversations;
-
     const conv = session.directorConversations[input.directorId];
     conv.focusMode = resolvedFocusMode;
     const userMessage = {
@@ -6094,7 +6072,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
   }
 
   async slackChat(input: SlackChatInput): Promise<SlackChatResponse> {
-    assertSlackChatEnabled();
+
     await this.ensureInitialized();
     const settings = await this.store.readSettings();
     const project = await this.requireProject(input.projectId);
@@ -6120,7 +6098,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     const currentDirectorId: DirectorId =
       input.targetDirectorId && input.targetDirectorId !== "project-manager"
         ? input.targetDirectorId
-        : "project-manager";
+        : session.slackPresenceGuestId ?? "project-manager";
     const initialMode = currentDirectorId === "project-manager"
       ? "codebase-analysis"
       : resolveSlackDirectorMode(currentDirectorId, input.message);
@@ -6165,7 +6143,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
   }
 
   async deleteSlackMessages(input: DeleteSlackMessagesInput): Promise<void> {
-    assertSlackChatEnabled();
+
     await this.ensureInitialized();
     const session = await this.store.getAgentSession(input.projectId);
     if (!session) throw new Error("No agent session found");
@@ -6177,7 +6155,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
   }
 
   async clearSlackMessages(projectId: string): Promise<void> {
-    assertSlackChatEnabled();
+
     await this.ensureInitialized();
     const session = await this.store.getAgentSession(projectId);
     if (!session) throw new Error("No agent session found");
@@ -6310,12 +6288,6 @@ Return your response as a conversational summary of what you found.`;
           summary: scanSummary,
         };
       }
-      this.appendSlackAssistantMessage(
-        session,
-        "rd-director",
-        getDirectorMetadata("rd-director").outroMessage,
-        { status: "complete" },
-      );
       session.slackPresenceGuestId = null;
       await persistSession();
     } catch (error) {
@@ -6327,12 +6299,6 @@ Return your response as a conversational summary of what you found.`;
       } else {
         this.appendSlackAssistantMessage(session, "rd-director", errorMessage, { status: "complete" });
       }
-      this.appendSlackAssistantMessage(
-        session,
-        "rd-director",
-        getDirectorMetadata("rd-director").outroMessage,
-        { status: "complete" },
-      );
       session.slackPresenceGuestId = null;
       await persistSession();
       return;
@@ -6381,7 +6347,7 @@ Be concise and conversational.`;
   }
 
   async refreshProject(input: RefreshProjectInput): Promise<void> {
-    assertSlackChatEnabled();
+
     await this.ensureInitialized();
     await this.refreshProjectNow(input);
   }
@@ -6685,7 +6651,7 @@ Be concise and conversational.`;
   }
 
   private async runSlackDirectorApproval(session: AgentSession, approval: PendingApproval): Promise<void> {
-    assertSlackChatEnabled();
+
     const payload = approval.draftPayload ?? {};
     const directorId = normalizeDirectorId(typeof payload.directorId === "string" ? payload.directorId : null);
     if (!directorId) {

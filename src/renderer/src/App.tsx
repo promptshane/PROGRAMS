@@ -8537,7 +8537,7 @@ function AgentsPage({
   const showInlineDirectorChat = Boolean(selectedDirectorId && selectedDirector && agentSelectedProjectId);
 
   const persistedDirectorMessages = selectedDirectorId
-    ? agentSession?.directorConversations?.[selectedDirectorId]?.messages ?? agentSession?.agentConversations?.[selectedDirectorId]?.messages ?? []
+    ? agentSession?.directorConversations?.[selectedDirectorId]?.messages ?? []
     : [];
   const currentDirectorMessages = [...persistedDirectorMessages, ...optimisticAgentMessages];
   const hardMemoryReportMessage = useMemo(

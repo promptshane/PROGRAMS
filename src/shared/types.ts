@@ -794,9 +794,6 @@ export type DirectorId =
   | "programming-director" // Ping
   | "validation-director"; // Pong
 
-/** @deprecated Use DirectorId */
-export type AgentId = DirectorId;
-
 export const DIRECTOR_NAMES: Record<DirectorId, string> = {
   "project-manager": "Jeff",
   "creative-director": "Dan",
@@ -834,9 +831,6 @@ export function normalizeDirectorId(raw: string | null | undefined): DirectorId 
   return null;
 }
 
-/** @deprecated Use DIRECTOR_LABELS */
-export const AGENT_LABELS: Record<DirectorId, string> = DIRECTOR_LABELS;
-
 // --- Focus Modes ---
 
 export type CreativeFocusMode = "conversation" | "core-details" | "vibes";
@@ -868,9 +862,6 @@ export type ProjectCategory = "program" | "general-project" | "idea-in-progress"
 
 export type PillarType = "core" | "side" | "ghost" | "tbd" | "hard-stop";
 
-export const SLACK_CHAT_ENABLED = true;
-export const SLACK_CHAT_DISABLED_MESSAGE = "Slack chat is temporarily disabled while the DM workflow is being rebuilt.";
-
 export interface VibeAttachment {
   id: string;
   filePath: string;
@@ -886,9 +877,6 @@ export interface DirectorConversation {
   messages: AgentChatMessage[];
   lastActiveAt: string | null;
 }
-
-/** @deprecated Use DirectorConversation */
-export type AgentConversation = DirectorConversation;
 
 export interface FeasibilityAssessment {
   id: string;
@@ -1218,10 +1206,6 @@ export interface AgentSession {
   danMemory: DanMemory;
   toddMemory: ToddMemory;
   pingMemory: PingMemory;
-  /** @deprecated Use directorConversations */
-  agentConversations: Record<string, DirectorConversation>;
-  /** @deprecated Use activeDirectorId */
-  activeAgentId: DirectorId | null;
 }
 
 export interface AgentChatInput {
@@ -1494,13 +1478,6 @@ export type DirectorStructuredData =
   | { type: "validationResult"; result: ValidationResult }
   | { type: "goalSummary"; summary: string; pillarIds: string[] }
   | { type: "comparison"; passed: boolean; improvementAreas: string[]; summary: string };
-
-/** @deprecated Use DirectorChatInput */
-export type MultiAgentChatInput = DirectorChatInput;
-/** @deprecated Use DirectorChatResponse */
-export type MultiAgentChatResponse = DirectorChatResponse;
-/** @deprecated Use DirectorStructuredData */
-export type MultiAgentStructuredData = DirectorStructuredData;
 
 export interface SlackChatInput {
   projectId: string;

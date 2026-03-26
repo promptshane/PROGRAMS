@@ -1,4 +1,5 @@
-import type { AiProvider, ClaudeModel, CodexModel, DirectorId, PlanningMode, ReasoningEffort } from "./types";
+import { DIRECTOR_NAMES, DIRECTOR_LABELS } from "./types.ts";
+import type { AiProvider, ClaudeModel, CodexModel, DirectorId, PlanningMode, ReasoningEffort } from "./types.ts";
 
 export type DirectorFlowLink =
   | {
@@ -36,22 +37,6 @@ const contextLink = (label: string): DirectorFlowLink => ({
   label,
 });
 
-const DIRECTOR_NAMES: Record<DirectorId, string> = {
-  "project-manager": "Jeff",
-  "creative-director": "Dan",
-  "rd-director": "Todd",
-  "programming-director": "Ping",
-  "validation-director": "Pong",
-};
-
-const DIRECTOR_LABELS: Record<DirectorId, string> = {
-  "project-manager": "Project Manager",
-  "creative-director": "Creative Director",
-  "rd-director": "R&D Director",
-  "programming-director": "Programming Director",
-  "validation-director": "Validation Director",
-};
-
 const directorLink = (directorId: DirectorId): DirectorFlowLink => ({
   kind: "director",
   directorId,
@@ -65,8 +50,8 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     label: DIRECTOR_LABELS["project-manager"],
     shortDescription: "Coordinates requests, tracks overall project state, and routes work to the right specialist.",
     modelBehaviorNote: "Uses the selected project provider and model defaults.",
-    introMessage: "Let me coordinate on this...",
-    outroMessage: "I’ve got the next steps lined up.",
+    introMessage: "",
+    outroMessage: "",
     runtimeDefaults: {
       reasoningEffort: "high",
       planningMode: "none",
@@ -95,8 +80,8 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     label: DIRECTOR_LABELS["creative-director"],
     shortDescription: "Holds the heart of the idea and refines the confirmed concept through conversation.",
     modelBehaviorNote: "Uses the small model for conversation and soft-memory notes, then the big model for hard-memory synthesis.",
-    introMessage: "I’ll think about the creative direction...",
-    outroMessage: "I’ve captured the creative thread for now.",
+    introMessage: "",
+    outroMessage: "",
     runtimeDefaults: {
       reasoningEffort: "xhigh",
       planningMode: "none",
@@ -120,8 +105,8 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     label: DIRECTOR_LABELS["rd-director"],
     shortDescription: "Turns Dan's confirmed concept into technical roadmap, future updates, and codebase-aware planning.",
     modelBehaviorNote: "Uses the small model for conversation and working notes, then the big model for roadmap and update synthesis.",
-    introMessage: "Let me research and plan this out...",
-    outroMessage: "I’ve mapped the R&D angle for now.",
+    introMessage: "",
+    outroMessage: "",
     runtimeDefaults: {
       reasoningEffort: "xhigh",
       planningMode: "none",
@@ -145,8 +130,8 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     label: DIRECTOR_LABELS["programming-director"],
     shortDescription: "Executes Todd-approved updates, reports the result, and returns to waiting.",
     modelBehaviorNote: "Uses the big model only for planning, applying, and reporting code updates.",
-    introMessage: "I'll look at the implementation...",
-    outroMessage: "I’m stepping back out of the code thread.",
+    introMessage: "",
+    outroMessage: "",
     runtimeDefaults: {
       reasoningEffort: "high",
       planningMode: "auto",
@@ -170,8 +155,8 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     label: DIRECTOR_LABELS["validation-director"],
     shortDescription: "Defines the expected outcome, tests the current state, and compares the build against the intended goal.",
     modelBehaviorNote: "Uses the selected project provider and model defaults.",
-    introMessage: "Let me evaluate this...",
-    outroMessage: "I’ve wrapped this validation pass.",
+    introMessage: "",
+    outroMessage: "",
     runtimeDefaults: {
       reasoningEffort: "high",
       planningMode: "none",

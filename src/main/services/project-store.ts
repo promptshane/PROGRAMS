@@ -1267,9 +1267,6 @@ export class ProjectStore {
       danMemory: JSON.parse((r.dan_memory_json as string) || "null") as AgentSession["danMemory"] | null,
       toddMemory: JSON.parse((r.todd_memory_json as string) || "null") as ToddMemory | null,
       pingMemory: JSON.parse((r.ping_memory_json as string) || "null") as PingMemory | null,
-      // Deprecated aliases (kept for backward compat)
-      agentConversations: directorConvos,
-      activeAgentId: ((r.active_director_id as string | null) ?? (r.active_agent_id as string | null) ?? null) as DirectorId | null,
     } as AgentSession;
 
     baseSession.danMemory = buildDanMemory(baseSession);

@@ -33,7 +33,7 @@ export interface FlowchartRepoHints {
   actions: FlowchartHintItem[];
 }
 
-export const flowchartGroupJsonSchema = {
+const flowchartGroupJsonSchema = {
   type: "object",
   additionalProperties: false,
   required: ["id", "label", "description"],
@@ -44,7 +44,7 @@ export const flowchartGroupJsonSchema = {
   },
 } as const;
 
-export const flowchartNodeJsonSchema = {
+const flowchartNodeJsonSchema = {
   type: "object",
   additionalProperties: false,
   required: ["id", "label", "kind", "description", "groupId"],
@@ -59,7 +59,7 @@ export const flowchartNodeJsonSchema = {
   },
 } as const;
 
-export const flowchartEdgeJsonSchema = {
+const flowchartEdgeJsonSchema = {
   type: "object",
   additionalProperties: false,
   required: ["from", "to", "label"],
@@ -115,10 +115,6 @@ export const flowchartGraphSchema = z.object({
   groups: z.array(flowchartGroupSchema),
   nodes: z.array(flowchartNodeSchema),
   edges: z.array(flowchartEdgeSchema),
-});
-
-export const flowchartSnapshotSchema = z.object({
-  flowchartGraph: flowchartGraphSchema,
 });
 
 const humanizeSegment = (value: string): string =>
@@ -293,10 +289,10 @@ export const formatFlowchartRepoHints = (hints: FlowchartRepoHints): string => {
   return sections.length ? sections.join("\n") : "No strong local route or navigation hints were detected.";
 };
 
-export const getFlowchartGraphPath = (flowchartPath: string): string =>
+const getFlowchartGraphPath = (flowchartPath: string): string =>
   flowchartPath.endsWith(".mmd") ? `${flowchartPath.slice(0, -4)}.graph.json` : `${flowchartPath}.graph.json`;
 
-export const readFlowchartGraphFile = async (flowchartPath: string): Promise<FlowchartGraph | null> => {
+const readFlowchartGraphFile = async (flowchartPath: string): Promise<FlowchartGraph | null> => {
   const graphPath = getFlowchartGraphPath(flowchartPath);
   if (!(await pathExists(graphPath))) {
     return null;

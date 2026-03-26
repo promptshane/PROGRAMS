@@ -1,12 +1,4 @@
-type JsonSchemaProperty = Record<string, unknown>;
-type JsonSchemaProperties = Record<string, JsonSchemaProperty>;
-
-const buildStrictObjectSchema = <T extends JsonSchemaProperties>(properties: T) => ({
-  type: "object" as const,
-  additionalProperties: false as const,
-  required: Object.keys(properties) as Array<Extract<keyof T, string>>,
-  properties,
-});
+import { buildStrictObjectSchema, toddVersionItemSchema, toddUpdateItemSchema, pingRawReportSchema } from "./shared-schema.ts";
 
 const toddFeasibilityAssessmentSchema = buildStrictObjectSchema({
   area: { type: "string" },
@@ -14,43 +6,6 @@ const toddFeasibilityAssessmentSchema = buildStrictObjectSchema({
   stackRecommendation: { type: ["string", "null"] },
   complexity: { type: "string" },
   costNotes: { type: ["string", "null"] },
-});
-
-const toddVersionItemSchema = buildStrictObjectSchema({
-  label: { type: "string" },
-  description: { type: "string" },
-  goals: {
-    type: "array" as const,
-    items: { type: "string" },
-  },
-});
-
-const toddUpdateItemSchema = buildStrictObjectSchema({
-  title: { type: "string" },
-  description: { type: "string" },
-  versionLabel: { type: "string" },
-  dependencies: {
-    type: "array" as const,
-    items: { type: "string" },
-  },
-  area: { type: ["string", "null"] },
-  skillsNeeded: {
-    type: "array" as const,
-    items: { type: "string" },
-  },
-});
-
-const pingRawReportSchema = buildStrictObjectSchema({
-  summary: { type: "string" },
-  changedFiles: {
-    type: "array" as const,
-    items: { type: "string" },
-  },
-  blocker: { type: ["string", "null"] },
-  unexpectedNotes: {
-    type: "array" as const,
-    items: { type: "string" },
-  },
 });
 
 export const directorPmSchema = buildStrictObjectSchema({

@@ -2,26 +2,13 @@ import { relative } from "node:path";
 import { dialog, ipcMain, shell } from "electron";
 import { isSubPath } from "@main/utils/fs";
 import type { ProgramsBackend } from "@main/backend";
-import { SLACK_CHAT_DISABLED_MESSAGE, SLACK_CHAT_ENABLED } from "@shared/types";
 import type {
-  AgentAttachMaterialsInput,
-  AgentChatInput,
-  AgentConfirmStageInput,
-  AgentExecuteUpdateInput,
-  AgentProcessTodosInput,
-  AgentReorderUpdatesInput,
-  AgentStage,
-  AgentSubmitTodosInput,
-  AgentUpdateScratchpadInput,
   ApprovePlanInput,
   AttachSkillInput,
   AttachVibeInput,
   ApprovePendingApprovalInput,
   ConfirmAgentDataInput,
   ConvertSkillInput,
-  CoreDetailsChatInput,
-  AgentSuggestUpdateInput,
-  AgentApplyCoreDetailsInput,
   DirectorChatInput,
   DirectorFocusMode,
   DirectorId,
@@ -126,48 +113,12 @@ export const registerIpc = (backend: ProgramsBackend): void => {
 
   ipcMain.handle("agents.getSession", (_event, projectId: string) =>
     backend.getAgentSession(projectId));
-  ipcMain.handle("agents.chat", (_event, input: AgentChatInput) =>
-    backend.agentChat(input));
-  ipcMain.handle("agents.confirmStage", (_event, input: AgentConfirmStageInput) =>
-    backend.agentConfirmStage(input));
-  ipcMain.handle("agents.updateScratchpad", (_event, input: AgentUpdateScratchpadInput) =>
-    backend.agentUpdateScratchpad(input));
-  ipcMain.handle("agents.submitTodos", (_event, input: AgentSubmitTodosInput) =>
-    backend.agentSubmitTodos(input));
-  ipcMain.handle("agents.reorderUpdates", (_event, input: AgentReorderUpdatesInput) =>
-    backend.agentReorderUpdates(input));
-  ipcMain.handle("agents.executeUpdate", (_event, input: AgentExecuteUpdateInput) =>
-    backend.agentExecuteUpdate(input));
-  ipcMain.handle("agents.resetStage", (_event, projectId: string, stage: AgentStage) =>
-    backend.agentResetStage(projectId, stage));
-  ipcMain.handle("agents.deleteSession", (_event, projectId: string) =>
-    backend.deleteAgentSession(projectId));
-  ipcMain.handle("agents.attachMaterials", (_event, input: AgentAttachMaterialsInput) =>
-    backend.agentAttachMaterials(input));
-  ipcMain.handle("agents.getCoreDetails", (_event, projectId: string) =>
-    backend.agentGetCoreDetails(projectId));
-  ipcMain.handle("agents.coreDetailsChat", (_event, input: CoreDetailsChatInput) =>
-    backend.agentCoreDetailsChat(input));
-  ipcMain.handle("agents.suggestUpdate", (_event, input: AgentSuggestUpdateInput) =>
-    backend.agentSuggestUpdate(input));
-  ipcMain.handle("agents.applyCoreDetails", (_event, input: AgentApplyCoreDetailsInput) =>
-    backend.agentApplyCoreDetails(input));
-  ipcMain.handle("agents.confirmCoreDetail", (_event, projectId: string, field: "function" | "thesis" | "core_pillars" | "full_flow") =>
-    backend.confirmCoreDetail(projectId, field));
-  ipcMain.handle("agents.processTodosFromProgram", (_event, input: AgentProcessTodosInput) =>
-    backend.agentProcessTodosFromProgram(input));
-
-  // Cascade
-  ipcMain.handle("agents.generateCascade", (_event, projectId: string, triggeredByStage: string, provider: string, model: string) =>
-    backend.agentGenerateCascade(projectId, triggeredByStage as import("@shared/types").AgentStage, provider as import("@shared/types").AiProvider, model));
-  ipcMain.handle("agents.acceptCascade", (_event, input: import("@shared/types").AgentAcceptCascadeInput) =>
-    backend.agentAcceptCascade(input));
 
   // Director system
   ipcMain.handle("directors.chat", (_event, input: DirectorChatInput) =>
     backend.directorChat(input));
   ipcMain.handle("slack.chat", (_event, input: SlackChatInput) =>
-    SLACK_CHAT_ENABLED ? backend.slackChat(input) : Promise.reject(new Error(SLACK_CHAT_DISABLED_MESSAGE)));
+    backend.slackChat(input));
   ipcMain.handle("approvals.list", (_event, input: ListPendingApprovalsInput) =>
     backend.listPendingApprovals(input));
   ipcMain.handle("approvals.approve", (_event, input: ApprovePendingApprovalInput) =>
@@ -179,11 +130,11 @@ export const registerIpc = (backend: ProgramsBackend): void => {
   ipcMain.handle("approvals.dismiss", (_event, input: UpdatePendingApprovalStatusInput) =>
     backend.dismissPendingApproval(input));
   ipcMain.handle("slack.deleteMessages", (_event, input: DeleteSlackMessagesInput) =>
-    SLACK_CHAT_ENABLED ? backend.deleteSlackMessages(input) : Promise.reject(new Error(SLACK_CHAT_DISABLED_MESSAGE)));
+    backend.deleteSlackMessages(input));
   ipcMain.handle("slack.clearAll", (_event, projectId: string) =>
-    SLACK_CHAT_ENABLED ? backend.clearSlackMessages(projectId) : Promise.reject(new Error(SLACK_CHAT_DISABLED_MESSAGE)));
+    backend.clearSlackMessages(projectId));
   ipcMain.handle("slack.refreshProject", (_event, input: import("@shared/types").RefreshProjectInput) =>
-    SLACK_CHAT_ENABLED ? backend.refreshProject(input) : Promise.reject(new Error(SLACK_CHAT_DISABLED_MESSAGE)));
+    backend.refreshProject(input));
   ipcMain.handle("directors.setFocusMode", (_event, projectId: string, directorId: DirectorId, focusMode: DirectorFocusMode) =>
     backend.setDirectorFocusMode(projectId, directorId, focusMode));
   ipcMain.handle("directors.updateSettings", (_event, projectId: string, directorId: DirectorId, overrides: DirectorSettingsOverride) =>
@@ -194,9 +145,6 @@ export const registerIpc = (backend: ProgramsBackend): void => {
     backend.deriveProjectCategory(projectId));
   ipcMain.handle("projects.deriveCategory", (_event, projectId: string) =>
     backend.deriveProjectCategory(projectId));
-  // Legacy multi-agent alias
-  ipcMain.handle("agents.multiChat", (_event, input: DirectorChatInput) =>
-    backend.directorChat(input));
   ipcMain.handle("agents.attachVibe", (_event, input: AttachVibeInput) =>
     backend.attachVibeToCorePillar(input));
   ipcMain.handle("agents.removeVibe", (_event, input: RemoveVibeInput) =>

@@ -1,12 +1,4 @@
-type JsonSchemaProperty = Record<string, unknown>;
-type JsonSchemaProperties = Record<string, JsonSchemaProperty>;
-
-const buildStrictObjectSchema = <T extends JsonSchemaProperties>(properties: T) => ({
-  type: "object" as const,
-  additionalProperties: false as const,
-  required: Object.keys(properties) as Array<Extract<keyof T, string>>,
-  properties,
-});
+import { buildStrictObjectSchema, toddVersionItemSchema, toddUpdateItemSchema, pingRawReportSchema } from "./shared-schema.ts";
 
 export const directorSlackSchema = buildStrictObjectSchema({
   response: { type: "string" },
@@ -30,15 +22,6 @@ export const researchSlackSchema = buildStrictObjectSchema({
   },
 });
 
-const toddVersionItemSchema = buildStrictObjectSchema({
-  label: { type: "string" },
-  description: { type: "string" },
-  goals: {
-    type: "array" as const,
-    items: { type: "string" },
-  },
-});
-
 export const toddVersionSlackSchema = buildStrictObjectSchema({
   response: { type: "string" },
   handoffTo: { type: ["string", "null"] },
@@ -51,21 +34,6 @@ export const toddVersionSlackSchema = buildStrictObjectSchema({
     items: toddVersionItemSchema,
   },
   notesToAppend: {
-    type: "array" as const,
-    items: { type: "string" },
-  },
-});
-
-const toddUpdateItemSchema = buildStrictObjectSchema({
-  title: { type: "string" },
-  description: { type: "string" },
-  versionLabel: { type: "string" },
-  dependencies: {
-    type: "array" as const,
-    items: { type: "string" },
-  },
-  area: { type: ["string", "null"] },
-  skillsNeeded: {
     type: "array" as const,
     items: { type: "string" },
   },
@@ -176,19 +144,6 @@ export const danSlackSchema = buildStrictObjectSchema({
   },
   presenceAction: { type: "string" },
   toddHandoffNotesToAppend: {
-    type: "array" as const,
-    items: { type: "string" },
-  },
-});
-
-const pingRawReportSchema = buildStrictObjectSchema({
-  summary: { type: "string" },
-  changedFiles: {
-    type: "array" as const,
-    items: { type: "string" },
-  },
-  blocker: { type: ["string", "null"] },
-  unexpectedNotes: {
     type: "array" as const,
     items: { type: "string" },
   },

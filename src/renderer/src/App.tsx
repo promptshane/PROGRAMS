@@ -78,7 +78,6 @@ import {
   type ValidationResult,
   type VersionPlan,
   type VersionUpdate,
-  type VibeAttachment,
   type PlanningMode,
   type UpdateStageStatus,
   type DiffStats,
@@ -288,6 +287,7 @@ const buildLegacyConcept = (session: AgentSession | null): AgentCoreDetails | nu
     thesis: session.stages.thesis.confirmed,
     corePillars: session.corePillars,
     fullFlow: session.stages.full_flow.confirmed,
+    threads: [],
   };
 };
 
@@ -343,7 +343,7 @@ const getDirectorProfileMeta = (directorId: DirectorId) => ({
 const getDirectorFocusModes = (directorId: DirectorId): DirectorFocusMode[] => {
   switch (directorId) {
     case "creative-director":
-      return ["conversation", "core-details", "vibes"];
+      return [];
     case "rd-director":
       return ["research", "version-planning", "update-planning"];
     case "validation-director":
@@ -373,15 +373,7 @@ const formatDirectorFocusModeLabel = (mode: DirectorFocusMode): string => {
 const describeDirectorFocusMode = (directorId: DirectorId, mode: DirectorFocusMode): string => {
   switch (directorId) {
     case "creative-director":
-      switch (mode) {
-        case "conversation":
-          return "Brainstorm freely and keep the idea thread open.";
-        case "core-details":
-          return "Lock the concept, structure, and full experience.";
-        case "vibes":
-          return "Collect mood, style, and reference material.";
-      }
-      break;
+      return "Lock the concept, structure, and full experience.";
     case "rd-director":
       switch (mode) {
         case "research":
@@ -913,6 +905,7 @@ function App() {
   const [launchingProjects, setLaunchingProjects] = useState<Record<string, boolean>>({});
   const [currentPage, setCurrentPage] = useState<AppPage>("projects");
   const [projectCategories, setProjectCategories] = useState<Record<string, ProjectCategory>>({});
+  const [automationPriorityProjectIds, setAutomationPriorityProjectIds] = useState<Record<string, boolean>>({});
   const [showSidebar, setShowSidebar] = useState(false);
   const [sidebarProjectsOpen, setSidebarProjectsOpen] = useState(false);
   const [sidebarAgentsOpen, setSidebarAgentsOpen] = useState(false);
@@ -930,6 +923,7 @@ function App() {
   const [composerOptions, setComposerOptions] = useState<ComposerOptions>(getComposerDefaults(emptySettings));
   const [showSettings, setShowSettings] = useState(false);
   const [showUsageSheet, setShowUsageSheet] = useState(false);
+  const [showAutomationPanel, setShowAutomationPanel] = useState(false);
   const [showProjectDetails, setShowProjectDetails] = useState(false);
   const [showAddProjectChooser, setShowAddProjectChooser] = useState(false);
   const [showAddProject, setShowAddProject] = useState(false);
@@ -1237,6 +1231,7 @@ function App() {
     }
     if (activePage !== "projects") {
       setShowUsageSheet(false);
+      setShowAutomationPanel(false);
     }
   }, [activePage, currentPage]);
 
@@ -1705,12 +1700,21 @@ function App() {
   };
 
   const toggleUsageSheet = () => {
+    setShowAutomationPanel(false);
+    setShowSettings(false);
     setShowUsageSheet((current) => !current);
   };
 
   const openSettingsModal = () => {
     setShowUsageSheet(false);
+    setShowAutomationPanel(false);
     setShowSettings(true);
+  };
+
+  const toggleAutomationPanel = () => {
+    setShowSettings(false);
+    setShowUsageSheet(false);
+    setShowAutomationPanel((current) => !current);
   };
 
   const handleCloseSettings = () => {
@@ -2130,6 +2134,18 @@ function App() {
     });
   };
 
+  const handleToggleAutomationPriority = (projectId: string) => {
+    setAutomationPriorityProjectIds((current) => {
+      const next = { ...current };
+      if (next[projectId]) {
+        delete next[projectId];
+      } else {
+        next[projectId] = true;
+      }
+      return next;
+    });
+  };
+
   const handleSaveEnvFile = async (projectId: string, entries: EnvVariableEntry[]) => {
     await withBusy(`env.save.${projectId}`, async () => {
       const snapshot = await window.programs.writeEnvFile({ projectId, entries });
@@ -2198,9 +2214,11 @@ function App() {
         runtime={projectRuntimes[project.id] ?? null}
         isLaunching={Boolean(launchingProjects[project.id])}
         hasAssumedDetails={Boolean(projectAssumedFlags[project.id])}
+        isAutomationPriority={Boolean(automationPriorityProjectIds[project.id])}
         onOpen={() => selectProject(project.id)}
         onQuickAction={() => void handleHomeTileQuickAction(project)}
         onOpenOptions={() => openProjectOptions(project.id)}
+        onToggleAutomationPriority={handleToggleAutomationPriority}
       />
     ));
 
@@ -2338,6 +2356,17 @@ function App() {
             aria-expanded={showSidebar}
           >
             <SidebarToggleIcon />
+          </button>
+          <button
+            type="button"
+            className={showAutomationPanel ? "sidebarToggleButton active windowNoDrag" : "sidebarToggleButton windowNoDrag"}
+            onClick={toggleAutomationPanel}
+            aria-label="Automation"
+            title="Automation"
+            aria-haspopup="dialog"
+            aria-expanded={showAutomationPanel}
+          >
+            <AutomationIcon />
           </button>
         </div>
 
@@ -2739,8 +2768,17 @@ function App() {
           onClose={() => setShowUsageSheet(false)}
           onOpenSettings={() => {
             setShowUsageSheet(false);
+            setShowAutomationPanel(false);
             setShowSettings(true);
           }}
+        />
+      ) : null}
+
+      {showAutomationPanel ? (
+        <AutomationPanel
+          projects={projects}
+          automationPriorityProjectIds={automationPriorityProjectIds}
+          onClose={() => setShowAutomationPanel(false)}
         />
       ) : null}
 
@@ -3225,21 +3263,28 @@ function HomeProjectTile({
   runtime,
   isLaunching,
   hasAssumedDetails,
+  isAutomationPriority,
   onOpen,
   onQuickAction,
   onOpenOptions,
+  onToggleAutomationPriority,
 }: {
   project: Project;
   runtime: RuntimeState | null;
   isLaunching: boolean;
   hasAssumedDetails?: boolean;
+  isAutomationPriority: boolean;
   onOpen: () => void;
   onQuickAction: () => void;
   onOpenOptions: () => void;
+  onToggleAutomationPriority: (projectId: string) => void;
 }) {
   const dotState = getHomeTileDotState(project, runtime, isLaunching);
   const isRunning = Boolean(runtime?.running);
   const canStopFromDot = isRunning && !isLaunching;
+  const automationPriorityLabel = isAutomationPriority
+    ? `Remove automation priority from ${project.name}`
+    : `Prioritize ${project.name} for automation`;
   const quickActionLabel =
     isLaunching
       ? `Launching ${project.name}`
@@ -3252,6 +3297,20 @@ function HomeProjectTile({
   return (
     <article className="projectTile projectTileGradient" style={createProjectTileStyle(project.iconColor)}>
       <button className="projectTileOpenArea" onClick={onOpen} aria-label={`Open ${project.name}`} />
+      <button
+        type="button"
+        className={isAutomationPriority ? "projectTilePriorityToggle active" : "projectTilePriorityToggle"}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={(event) => {
+          onToggleAutomationPriority(project.id);
+          event.currentTarget.blur();
+        }}
+        aria-label={automationPriorityLabel}
+        title={automationPriorityLabel}
+        aria-pressed={isAutomationPriority}
+      >
+        <AutomationStarIcon filled={isAutomationPriority} />
+      </button>
       <div className="projectTileChrome">
         <div className="projectTileTopRow">
           <div className="projectTileMenu">
@@ -3627,6 +3686,49 @@ function UsageOverviewSheet({
           </button>
         </div>
       )}
+    </Modal>
+  );
+}
+
+function AutomationPanel({
+  projects,
+  automationPriorityProjectIds,
+  onClose,
+}: {
+  projects: Project[];
+  automationPriorityProjectIds: Record<string, boolean>;
+  onClose: () => void;
+}) {
+  const prioritizedProjects = projects.filter((project) => automationPriorityProjectIds[project.id]);
+
+  return (
+    <Modal title="Automation" onClose={onClose} fullscreen>
+      <div className="settingsStack">
+        <section className="pendingProposalCard">
+          <h5>Priority projects</h5>
+          {prioritizedProjects.length > 0 ? (
+            <ul className="agentSummaryList">
+              {prioritizedProjects.map((project) => (
+                <li key={project.id}>{project.name}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="coreDetailEmpty">Star projects on the Projects page to pin them here.</p>
+          )}
+        </section>
+
+        <section className="pendingProposalCard">
+          <h5>Automation workspace</h5>
+          <p className="coreDetailEmpty">
+            Placeholder UI for the future automation picker, scheduling, and project routing controls.
+          </p>
+        </section>
+
+        <section className="pendingProposalCard">
+          <h5>Next step</h5>
+          <p className="coreDetailEmpty">Use the star icon on each project tile to mark projects for automation.</p>
+        </section>
+      </div>
     </Modal>
   );
 }
@@ -5235,6 +5337,59 @@ function SidebarToggleIcon() {
   );
 }
 
+function AutomationIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M7 7.5h7.8a3.7 3.7 0 0 1 3.7 3.7V12"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="m16.5 7.5 2 3-3 2"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M17 16.5H9.2a3.7 3.7 0 0 1-3.7-3.7V12"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="m7.5 16.5-2-3 3-2"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function AutomationStarIcon({ filled = false }: { filled?: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M11.5 3.1c.15-.46.8-.46.95 0l1.53 4.72c.11.34.42.57.78.57h4.97c.49 0 .69.63.29.92l-4.02 2.92a.82.82 0 0 0-.3.91l1.53 4.72c.15.46-.38.84-.78.55l-4.02-2.92a.82.82 0 0 0-.97 0l-4.02 2.92c-.4.29-.93-.09-.78-.55l1.53-4.72a.82.82 0 0 0-.3-.91L2.98 9.31c-.4-.29-.2-.92.29-.92h4.97c.36 0 .67-.23.78-.57L10.55 3.1Z"
+        fill={filled ? "currentColor" : "none"}
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function ChevronDownIcon() {
   return (
     <svg viewBox="0 0 20 20" aria-hidden="true">
@@ -5419,6 +5574,7 @@ function CoreDetailsReport({
     thesis: null,
     corePillars: [],
     fullFlow: null,
+    threads: [],
   };
 
   const functionSummary = safeCoreDetails.function?.summary.trim() ? safeCoreDetails.function.summary : "Not yet defined.";
@@ -5505,6 +5661,7 @@ function CoreDetailsContent({
     thesis: agentSession?.stages.thesis.confirmed ?? null,
     corePillars: agentSession?.corePillars ?? [],
     fullFlow: agentSession?.stages.full_flow.confirmed ?? null,
+    threads: [],
   };
 
   return <CoreDetailsReport coreDetails={coreDetails} />;
@@ -6538,17 +6695,6 @@ function CascadeCard({
   );
 }
 
-const collectConceptVibes = (pillars: CorePillar[], prefix = ""): { pillarName: string; vibe: VibeAttachment }[] => {
-  const items: { pillarName: string; vibe: VibeAttachment }[] = [];
-  for (const pillar of pillars) {
-    const name = prefix ? `${prefix} > ${pillar.name}` : pillar.name;
-    for (const vibe of pillar.vibes ?? []) {
-      items.push({ pillarName: name, vibe });
-    }
-    items.push(...collectConceptVibes(pillar.corePillars, name));
-  }
-  return items;
-};
 
 function ConceptThreadItem({ pillar, depth }: { pillar: CorePillar; depth: number }) {
   const [expanded, setExpanded] = useState(false);
@@ -7094,50 +7240,6 @@ function DirectorInfoPanel({
       );
 
     case "creative-director": {
-      // Dan: mode-dependent panel
-      if (focusMode === "conversation") {
-        return (
-          <>
-            {summaryPanel}
-            <div className="agentInfoPanel">
-              <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Conversation Mode</h5>
-              {session.danMemory.notes.length > 0 ? (
-                <p className="danNotesIndicator">{session.danMemory.notes.length} conversation note{session.danMemory.notes.length !== 1 ? "s" : ""} recorded</p>
-              ) : null}
-              <p className="coreDetailValue">Brainstorm freely. Dan is focused on the idea and keeps only concept notes from this conversation.</p>
-            </div>
-          </>
-        );
-      }
-
-      if (focusMode === "vibes") {
-        const allVibes = collectConceptVibes(workingConcept?.corePillars ?? []);
-        return (
-          <>
-            {summaryPanel}
-            <div className="agentInfoPanel">
-              <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Vibe Gallery ({allVibes.length} references)</h5>
-              {allVibes.length > 0 ? (
-                <div className="vibeGallery">
-                  {allVibes.map(({ pillarName, vibe }) => (
-                    <div key={vibe.id} className="vibeGalleryItem">
-                      <span className="vibeThumbIcon">{vibe.fileType === "image" ? "\u{1F5BC}" : "\u{1F4C4}"}</span>
-                      <div className="vibeGalleryMeta">
-                        <span className="vibeThumbName">{vibe.fileName}</span>
-                        <span className="vibeGalleryPillar">{pillarName}</span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <p className="coreDetailEmpty">No vibes attached yet. Attach vibes to the core-pillars.</p>
-              )}
-            </div>
-          </>
-        );
-      }
-
-      // Default: concept mode
       return (
         <>
           {summaryPanel}

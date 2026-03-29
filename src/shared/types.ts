@@ -559,9 +559,21 @@ export type DanDraftOperation =
       assumptionSource?: "user" | "dan" | null;
       order?: number | null;
       connectedPillarNames?: string[] | null;
+      threadMemberships?: { threadName: string; role: string | null }[] | null;
+      endState?: PillarEndState | null;
     }
   | {
       type: "delete_pillar";
+      name: string;
+    }
+  | {
+      type: "upsert_thread";
+      name: string;
+      previousName?: string | null;
+      description?: string | null;
+    }
+  | {
+      type: "delete_thread";
       name: string;
     };
 
@@ -687,7 +699,7 @@ export function normalizeDirectorId(raw: string | null | undefined): DirectorId 
 
 // --- Focus Modes ---
 
-export type CreativeFocusMode = "conversation" | "core-details" | "vibes";
+export type CreativeFocusMode = "core-details";
 export type RdFocusMode = "research" | "version-planning" | "update-planning";
 export type ValidationFocusMode = "identify-goal" | "test-current-state" | "compare";
 export type DirectorFocusMode = CreativeFocusMode | RdFocusMode | ValidationFocusMode;
@@ -716,13 +728,18 @@ export type ProjectCategory = "program" | "general-project" | "idea-in-progress"
 
 export type PillarType = "core" | "side" | "ghost" | "tbd" | "hard-stop";
 
-export interface VibeAttachment {
+export type PillarEndState = "end" | "tbd";
+
+export interface PillarThread {
   id: string;
-  filePath: string;
-  fileName: string;
+  name: string;
   description: string | null;
-  fileType: "image" | "text" | "screenshot" | "note" | "other";
-  createdAt: string;
+}
+
+export interface PillarThreadRole {
+  threadId: string;
+  threadName: string;
+  role: string | null;
 }
 
 export interface DirectorConversation {
@@ -853,12 +870,13 @@ export interface CorePillar {
   thesis: CorePillarDetail | null;
   corePillars: CorePillar[];
   fullFlow: CorePillarDetail | null;
-  vibes: VibeAttachment[];
   description: string | null;
   connectedPillarIds: string[];
   assumptionText: string | null;
   assumptionSource: "user" | "dan" | null;
   order: number;
+  threadMemberships: PillarThreadRole[];
+  endState: PillarEndState | null;
 }
 
 export interface FlowStep {
@@ -995,6 +1013,7 @@ export interface DanMemory {
   forgottenMemories: string[];
   creativeHistory: DanHistoryLogEntry[];
   toddHandoffNotes: TaggedNote[];
+  threads: PillarThread[];
 }
 
 export interface ToddCodebaseIndexedMap {
@@ -1320,6 +1339,7 @@ export interface AgentCoreDetails {
   thesis: AgentStageConfirmation | null;
   corePillars: CorePillar[];
   fullFlow: AgentStageConfirmation | null;
+  threads: PillarThread[];
 }
 
 export interface CoreDetailsProposal {
@@ -1538,19 +1558,6 @@ export interface UpdatePendingApprovalStatusInput {
 export interface DeleteSlackMessagesInput {
   projectId: string;
   messageIds: string[];
-}
-
-export interface AttachVibeInput {
-  projectId: string;
-  pillarId: string;
-  filePaths: string[];
-  descriptions?: (string | null)[];
-}
-
-export interface RemoveVibeInput {
-  projectId: string;
-  pillarId: string;
-  vibeId: string;
 }
 
 export interface ConfirmAgentDataInput {

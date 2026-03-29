@@ -118,7 +118,6 @@ import type {
   AgentSubmitTodosInput,
   AgentSubmitTodosResponse,
   AgentUpdateScratchpadInput,
-  AttachVibeInput,
   ConfirmAgentDataInput,
   CoreDetailsChatInput,
   CoreDetailsChatResponse,
@@ -162,6 +161,7 @@ import type {
   GenerateProjectOutlineReportInput,
   JeffExecutionReport,
   ModelCatalog,
+  PillarThread,
   PingMemory,
   PingExecutionReportSnapshot,
   PingPlanSnapshot,
@@ -181,7 +181,6 @@ import type {
   ProjectCreateInput,
   ProjectDetail,
   ProjectOutlineReport,
-  RemoveVibeInput,
   RenameProjectInput,
   RouteUpdateToProgrammingInput,
   RunValidationInput,
@@ -201,7 +200,6 @@ import type {
   ToddMemory,
   VersionPlan,
   VersionUpdate,
-  VibeAttachment,
   PlanningMode,
   WriteProjectEnvFileInput,
   ListPendingApprovalsInput,
@@ -1041,6 +1039,7 @@ const buildConfirmedConceptFromSession = (session: AgentSession): AgentCoreDetai
     thesis: session.stages.thesis.confirmed ?? null,
     corePillars: session.corePillars,
     fullFlow: session.stages.full_flow.confirmed ?? null,
+    threads: session.danMemory?.threads ?? [],
   };
 
   return confirmedConcept.function || confirmedConcept.thesis || confirmedConcept.corePillars.length > 0 || confirmedConcept.fullFlow
@@ -1069,8 +1068,9 @@ const cloneCorePillarDeep = (pillar: CorePillar): CorePillar => ({
   thesis: cloneAgentDetail(pillar.thesis),
   corePillars: pillar.corePillars.map(cloneCorePillarDeep),
   fullFlow: cloneAgentDetail(pillar.fullFlow),
-  vibes: [...pillar.vibes],
   connectedPillarIds: [...pillar.connectedPillarIds],
+  threadMemberships: [...(pillar.threadMemberships ?? [])],
+  endState: pillar.endState ?? null,
 });
 
 const cloneAgentCoreDetails = (concept: AgentCoreDetails): AgentCoreDetails => ({
@@ -1078,6 +1078,7 @@ const cloneAgentCoreDetails = (concept: AgentCoreDetails): AgentCoreDetails => (
   thesis: cloneAgentDetail(concept.thesis),
   corePillars: concept.corePillars.map(cloneCorePillarDeep),
   fullFlow: cloneAgentDetail(concept.fullFlow),
+  threads: [...(concept.threads ?? [])],
 });
 
 const collectPillarNamesById = (
@@ -1149,6 +1150,7 @@ const rebuildDanDraftTree = (
     thesis: cloneAgentDetail(draftState.thesis),
     corePillars: sortNestedPillarsByOrder(roots),
     fullFlow: cloneAgentDetail(draftState.fullFlow),
+    threads: [...(draftState.threads ?? [])],
   };
 };
 
@@ -1167,6 +1169,7 @@ const applyDanDraftOperationsState = (
     thesis: null,
     corePillars: [],
     fullFlow: null,
+    threads: [],
   };
   const draftState = cloneAgentCoreDetails(base);
   const nodes = collectDanDraftNodes(
@@ -1185,6 +1188,32 @@ const applyDanDraftOperationsState = (
       } else {
         draftState.fullFlow = nextDetail;
       }
+      continue;
+    }
+
+    if (operation.type === "upsert_thread") {
+      const threadName = operation.name.trim();
+      const prevName = operation.previousName?.trim() ?? null;
+      const existingIdx = prevName
+        ? draftState.threads.findIndex((t) => t.name === prevName)
+        : draftState.threads.findIndex((t) => t.name === threadName);
+      if (existingIdx >= 0) {
+        draftState.threads[existingIdx].name = threadName;
+        if (operation.description !== undefined) {
+          draftState.threads[existingIdx].description = operation.description ?? null;
+        }
+      } else {
+        draftState.threads.push({
+          id: randomUUID(),
+          name: threadName,
+          description: operation.description ?? null,
+        });
+      }
+      continue;
+    }
+
+    if (operation.type === "delete_thread") {
+      draftState.threads = draftState.threads.filter((t) => t.name !== operation.name.trim());
       continue;
     }
 
@@ -1207,12 +1236,13 @@ const applyDanDraftOperationsState = (
         thesis: null,
         corePillars: [],
         fullFlow: null,
-        vibes: [],
         description: null,
         connectedPillarIds: [],
         assumptionText: null,
         assumptionSource: null,
         order: nodes.size,
+        threadMemberships: [],
+        endState: null,
       },
       parentName: null,
       connectedNames: [],
@@ -1262,6 +1292,16 @@ const applyDanDraftOperationsState = (
       node.connectedNames = (operation.connectedPillarNames ?? [])
         .map((name) => name.trim().toLowerCase())
         .filter(Boolean);
+    }
+    if (operation.threadMemberships !== undefined) {
+      node.pillar.threadMemberships = (operation.threadMemberships ?? []).map((tm) => ({
+        threadId: "",
+        threadName: tm.threadName,
+        role: tm.role ?? null,
+      }));
+    }
+    if (operation.endState !== undefined) {
+      node.pillar.endState = operation.endState ?? null;
     }
 
     nodes.set(targetKey, node);
@@ -1368,6 +1408,7 @@ const syncAgentMemories = (session: AgentSession): AgentSession => {
       : [...(session.danSideNotes ?? []), ...(session.deletedNotes ?? [])],
     creativeHistory: hasDanMemory ? [...(session.danMemory!.creativeHistory ?? [])] : [],
     toddHandoffNotes: migrateToTaggedNotes(hasDanMemory ? [...(session.danMemory!.toddHandoffNotes ?? [])] : [], "handoff-to-todd"),
+    threads: hasDanMemory ? [...(session.danMemory!.threads ?? [])] : [],
   };
 
   const toddMemory: ToddMemory = {
@@ -1898,12 +1939,13 @@ const buildDanDraftCoreDetailsState = (
       thesis: createDraftDetail(draftPillar.thesis),
       corePillars: [],
       fullFlow: createDraftDetail(draftPillar.fullFlow),
-      vibes: existing?.vibes ?? [],
       description: draftPillar.description ?? existing?.description ?? null,
       connectedPillarIds: [],
       assumptionText: draftPillar.assumptionText,
       assumptionSource: draftPillar.assumptionSource,
       order: draftPillar.order,
+      threadMemberships: (draftPillar as unknown as Record<string, unknown>).threadMemberships as CorePillar["threadMemberships"] ?? existing?.threadMemberships ?? [],
+      endState: (draftPillar as unknown as Record<string, unknown>).endState as CorePillar["endState"] ?? existing?.endState ?? null,
     });
     parentByName.set(
       key,
@@ -1939,6 +1981,7 @@ const buildDanDraftCoreDetailsState = (
     thesis: draft.thesis ? { summary: draft.thesis, status: "edited" } : null,
     corePillars: sortedRoots,
     fullFlow: draft.fullFlow ? { summary: draft.fullFlow, status: "edited" } : null,
+    threads: ((draft as unknown as Record<string, unknown>).threads as PillarThread[]) ?? draftSource?.threads ?? [],
   };
 };
 
@@ -2056,6 +2099,12 @@ function formatConceptItems(pillars: CorePillar[], depth = 0): string[] {
   return lines;
 }
 
+function computePillarEndStateLabel(pillar: CorePillar): string {
+  if (pillar.corePillars.length > 0) return "NESTED";
+  if (pillar.endState === "end") return "END";
+  return "TBD";
+}
+
 function formatDanHardMemoryPillarTree(pillars: CorePillar[], depth = 0): string[] {
   const lines: string[] = [];
   for (const pillar of sortPillarsByOrder(pillars)) {
@@ -2064,10 +2113,18 @@ function formatDanHardMemoryPillarTree(pillars: CorePillar[], depth = 0): string
       : pillar.pillarType === "ghost" ? " [ghost]"
       : "";
     const assumptionFlag = pillar.assumptionSource === "dan" ? " (assumption)" : "";
-    lines.push(`${indent}- ${pillar.name}${typeLabel}${assumptionFlag}`);
+    const endLabel = ` [${computePillarEndStateLabel(pillar)}]`;
+    const threadNames = (pillar.threadMemberships ?? []).map((tm) => tm.threadName);
+    const threadLabel = threadNames.length > 0 ? ` [threads: ${threadNames.join(", ")}]` : "";
+    lines.push(`${indent}- ${pillar.name}${typeLabel}${endLabel}${threadLabel}${assumptionFlag}`);
     if (pillar.function?.summary) lines.push(`${indent}  Function: ${pillar.function.summary}`);
     if (pillar.thesis?.summary) lines.push(`${indent}  Thesis: ${pillar.thesis.summary}`);
     if (pillar.description) lines.push(`${indent}  Notes: ${pillar.description}`);
+    if (threadNames.length > 0) {
+      for (const tm of pillar.threadMemberships ?? []) {
+        if (tm.role) lines.push(`${indent}  Thread "${tm.threadName}" role: ${tm.role}`);
+      }
+    }
     if (pillar.corePillars.length > 0) {
       lines.push(...formatDanHardMemoryPillarTree(pillar.corePillars, depth + 1));
     }
@@ -2085,6 +2142,14 @@ function formatDanHardMemory(session: AgentSession): string {
   if (concept?.corePillars?.length) {
     parts.push("Core Pillar Tree:");
     parts.push(...formatDanHardMemoryPillarTree(concept.corePillars));
+  }
+
+  const threads = concept?.threads ?? session.danMemory?.threads ?? [];
+  if (threads.length > 0) {
+    parts.push("Threads:");
+    for (const thread of threads) {
+      parts.push(`- ${thread.name}${thread.description ? `: ${thread.description}` : ""}`);
+    }
   }
 
   if (concept?.fullFlow?.summary) {
@@ -2115,33 +2180,8 @@ function formatDanDraftCoreDetails(draft: AgentCoreDetails | null): string {
   return parts.length > 0 ? `Dan's working draft:\n${parts.join("\n")}` : "Dan's working draft:\n- None yet.";
 }
 
-function formatDanVibeSummary(session: AgentSession): string {
-  const lines: string[] = [];
-
-  const visit = (pillars: CorePillar[], trail = "") => {
-    for (const pillar of pillars) {
-      const label = trail ? `${trail} > ${pillar.name}` : pillar.name;
-      if ((pillar.vibes?.length ?? 0) > 0) {
-        lines.push(`- ${label}: ${pillar.vibes.length} vibe attachment(s)`);
-      }
-      visit(pillar.corePillars, label);
-    }
-  };
-
-  visit(session.corePillars);
-  return lines.length > 0 ? `Attached vibes:\n${lines.join("\n")}` : "Attached vibes:\n- None yet.";
-}
-
-function buildDanFocusHint(focusMode: DirectorFocusMode | null): string {
-  switch (focusMode) {
-    case "conversation":
-      return "Focus hint: the user is brainstorming. Synthesize proactively, keep taking notes, and follow the user's jumps between parts of the idea without losing the earlier thread.";
-    case "vibes":
-      return "Focus hint: the user is discussing inspiration, mood, or attachments. Map vibe details back into the relevant concept areas without changing your core role.";
-    case "core-details":
-    default:
-      return "Focus hint: the user wants the concept clarified. Lock the function, thesis, concept areas, and full experience first, then refine any unresolved parts of the idea.";
-  }
+function buildDanFocusHint(): string {
+  return "Synthesize proactively — follow the user's flow, lock concept details when they emerge, and brainstorm freely when the user is exploring.";
 }
 
 function formatDanBackupMemoryForRecall(currentMessage: string, session: AgentSession): string {
@@ -2230,11 +2270,53 @@ Core operating rules:
 
 Creative hierarchy management:
 - You can restructure the hierarchy at any time: move, merge, split, retitle, or reword pillars.
-- Refine parent pillar function and thesis as child pillars evolve, so each branch has a coherent overall function/thesis.
-- Core Pillars form the main timeline of the project.
+- Core Pillars form the main timeline (the one experienced sequence — the linear flow).
 - Side Pillars are ideas likely to be added but with uncertain placement. They can optionally be bounded between two main timeline points.
 - Ghost Pillars are ideas worth keeping but would cause major ripple effects if integrated into the main timeline.
 - Full-Flow is simply the full core-pillar tree described plainly in words from beginning to end. It is derived from the pillar structure, not a separate creative system.
+- Each pillar appears in the linear flow where the user/audience encounters it, placed in order once within that sequence.
+
+Pillar split logic:
+- A pillar stays single when it behaves like one fused discussable unit and splitting would not improve clarity.
+- Split into sub-pillars when the parts need separate reasoning because they have their own: function, thesis, thread membership, future changes, dependencies, or need for independent discussion.
+- Bias toward clarity and modularity, not arbitrary splitting.
+- When splitting, the parent retains a coherent function/thesis that encompasses all children.
+
+Upward parent propagation:
+- Whenever a nested pillar is added or updated, check whether that information is properly represented in every parent above it.
+- The direct parent gets the most noticeable refinement.
+- Each parent above gets a subtler refinement.
+- All the way up to the root parent pillar.
+- The deeper detail must not stay isolated — it should slightly reshape the wording/meaning of the larger parents while preserving the consistent higher-level thesis.
+- Keep the whole conceptual chain reactive and coherent upward.
+
+Thread management:
+- Classify each pillar into one or more threads. Threads are recurring grouped logic distributed across the linear flow, escalating and building over time.
+- One pillar can belong to multiple threads.
+- Use "upsert_thread" to create or rename threads. Use "delete_thread" to remove them.
+- When upserting a pillar, include "threadMemberships" to assign thread roles (threadName + the pillar's role within that thread).
+- Maintain thread coherence: each thread should have a clear escalation arc across its member pillars.
+
+End-state classification:
+- Each pillar is classified as NESTED (has sub-pillars — automatic), END (user confirms nothing more needed), or TBD (more specificity needed later).
+- You only set "end" or "tbd" via endState in upsert_pillar. NESTED is automatic when children exist.
+- Estimate closure internally from 0 to 1. At low closure, ask the single highest-value narrowing question. Near 1, ask: "Anything else beyond this point?"
+- The user confirms whether a pillar becomes END or stays TBD. Do not silently finalize important pillars.
+
+Multi-level meaning:
+- Each pillar stores: local function, local thesis, place in linear flow, thread membership, and role within each thread.
+- Maintain series-level meaning at higher levels: pillar-level function/thesis, parent-pillar / nested-series function/thesis, thread-series function/thesis, and the larger project-role of those series.
+- Keep the whole conceptual system coherent across all levels.
+
+Every time you update hard memory:
+1. Store the new or revised pillar info
+2. Determine whether the pillar should remain single or split into sub-pillars
+3. Classify the pillar into thread(s)
+4. Update linear-flow placement if needed
+5. Update local function and thesis
+6. Update thread role(s)
+7. Propagate necessary function/thesis refinements upward through all parent pillars
+8. Classify the pillar ending as END, TBD, or automatically NESTED if children exist
 
 Memory retrieval priority (when the user asks "do you remember..."):
 1. Hard Memory first (confirmed pillar tree below)
@@ -2243,12 +2325,12 @@ Memory retrieval priority (when the user asks "do you remember..."):
 4. If nothing found in any layer, say it was not discussed
 
 ${surfaceHint}
-${buildDanFocusHint(focusMode)}
+${buildDanFocusHint()}
 
 ${hardMemorySection}
 ${draftContext}
 ${softNotesSection}${toddHandoffSection}
-${formatDanVibeSummary(session)}${backupSection}
+${backupSection}
 ${conversationSection}
 ${buildSlackResponseContract("creative-director", "codebase-analysis")}`.trim();
 }
@@ -3353,8 +3435,8 @@ Respond as JSON:
 
       if (focusMode === "identify-goal") {
         return `You are Pong, the Validation Director for "${projectName}".
-You are in Identify Goal mode — reviewing confirmed core-details and vibes for the pillars being validated. Your role:
-- Review the confirmed core-details of the project, including any attached vibes
+You are in Identify Goal mode — reviewing confirmed core-details for the pillars being validated. Your role:
+- Review the confirmed core-details of the project
 - Identify what the expected state should be after the most recent updates
 - Summarize the goal clearly
 - Always answer first in concise Mandarin, then provide a simple literal English translation
@@ -3362,9 +3444,8 @@ You are in Identify Goal mode — reviewing confirmed core-details and vibes for
 
 ${pongScopedContext}
 ${pongTaskSection}${jeffInstructionSection}
-${session.corePillars.length > 0 ? `Pillars with vibes:\n${session.corePillars.map((p) => {
-  const vibeInfo = p.vibes?.length ? ` (${p.vibes.length} vibes)` : "";
-  return `- ${p.name} [${p.pillarType}]${vibeInfo}${p.description ? `: ${p.description}` : ""}`;
+${session.corePillars.length > 0 ? `Pillars:\n${session.corePillars.map((p) => {
+  return `- ${p.name} [${p.pillarType}]${p.description ? `: ${p.description}` : ""}`;
 }).join("\n")}` : ""}
 ${conversationSection}
 Include goalSummary with a clear summary of the expected state. Include relevantPillarIds with the IDs of pillars relevant to this goal.
@@ -3906,6 +3987,7 @@ export class ProgramsBackend {
         forgottenMemories: [],
         creativeHistory: [],
         toddHandoffNotes: [],
+        threads: [],
       },
       toddMemory: {
         confirmedConcept: null,
@@ -4954,12 +5036,13 @@ Your final answer must be ONLY strict JSON (no markdown fences) matching:
       thesis: { summary: p.thesis, status: "assumed" as const },
       corePillars: [],
       fullFlow: null,
-      vibes: [],
       description: null,
       connectedPillarIds: [],
       assumptionText: null,
       assumptionSource: null,
       order: idx,
+      threadMemberships: [],
+      endState: null,
     }));
     session.updatedAt = new Date().toISOString();
 
@@ -5221,14 +5304,12 @@ Your response must be ONLY strict JSON (no markdown fences):
                 thesis: { summary: c.thesis, status: "assumed" as const },
                 corePillars: [],
                 fullFlow: null,
-                vibes: [],
                 description: null,
                 connectedPillarIds: [],
                 assumptionText: null,
                 assumptionSource: null,
               })),
               fullFlow: null,
-              vibes: [],
               description: null,
               connectedPillarIds: [],
               assumptionText: null,
@@ -5691,6 +5772,7 @@ Instructions:
       thesis: session?.stages.thesis.confirmed ?? null,
       corePillars: session?.corePillars ?? [],
       fullFlow: session?.stages.full_flow.confirmed ?? null,
+      threads: [],
     };
   }
 
@@ -5788,12 +5870,13 @@ Your response must be ONLY strict JSON (no markdown fences):
               thesis: updatedPillar.thesis ? { summary: updatedPillar.thesis, status: "edited" } : null,
               corePillars: [],
               fullFlow: null,
-              vibes: [],
               description: null,
               connectedPillarIds: [],
               assumptionText: null,
               assumptionSource: null,
               order: session.corePillars.length,
+              threadMemberships: [],
+              endState: null,
             });
           }
         }
@@ -5808,6 +5891,7 @@ Your response must be ONLY strict JSON (no markdown fences):
         thesis: session.stages.thesis.confirmed ?? null,
         corePillars: session.corePillars,
         fullFlow: session.stages.full_flow.confirmed ?? null,
+        threads: [],
       };
     }
 
@@ -5955,12 +6039,13 @@ Response must be strict JSON only (no markdown fences).`;
             thesis: up.thesisSummary ? { summary: up.thesisSummary, status: "edited" } : null,
             corePillars: [],
             fullFlow: null,
-            vibes: [],
             description: null,
             connectedPillarIds: [],
             assumptionText: null,
             assumptionSource: null,
             order: session.corePillars.length,
+            threadMemberships: [],
+            endState: null,
           });
         }
       }
@@ -7820,57 +7905,6 @@ Be concise and conversational.`;
     session.updatedAt = new Date().toISOString();
     await this.store.saveAgentSession(session);
     this.emit({ type: "agent.session", projectId, session });
-    return session;
-  }
-
-  async attachVibeToCorePillar(input: AttachVibeInput): Promise<AgentSession> {
-    await this.ensureInitialized();
-    let session = await this.store.getAgentSession(input.projectId);
-    if (!session) throw new Error("No agent session found for this program.");
-
-    const pillar = findPillarById(session.corePillars, input.pillarId);
-    if (!pillar) throw new Error("Core pillar not found.");
-
-    if (!pillar.vibes) pillar.vibes = [];
-
-    for (let i = 0; i < input.filePaths.length; i++) {
-      const filePath = input.filePaths[i];
-      const fileName = filePath.split("/").pop() ?? filePath;
-      const ext = fileName.split(".").pop()?.toLowerCase() ?? "";
-      let fileType: VibeAttachment["fileType"] = "other";
-      if (["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp"].includes(ext)) fileType = "image";
-      else if (["txt", "md"].includes(ext)) fileType = "text";
-      else if (ext === "note") fileType = "note";
-
-      pillar.vibes.push({
-        id: randomUUID(),
-        filePath,
-        fileName,
-        description: input.descriptions?.[i] ?? null,
-        fileType,
-        createdAt: new Date().toISOString(),
-      });
-    }
-
-    session.updatedAt = new Date().toISOString();
-    await this.store.saveAgentSession(session);
-    this.emit({ type: "agent.session", projectId: input.projectId, session });
-    return session;
-  }
-
-  async removeVibeFromCorePillar(input: RemoveVibeInput): Promise<AgentSession> {
-    await this.ensureInitialized();
-    const session = await this.store.getAgentSession(input.projectId);
-    if (!session) throw new Error("No agent session found for this program.");
-
-    const pillar = findPillarById(session.corePillars, input.pillarId);
-    if (!pillar) throw new Error("Core pillar not found.");
-
-    pillar.vibes = (pillar.vibes ?? []).filter((v) => v.id !== input.vibeId);
-
-    session.updatedAt = new Date().toISOString();
-    await this.store.saveAgentSession(session);
-    this.emit({ type: "agent.session", projectId: input.projectId, session });
     return session;
   }
 

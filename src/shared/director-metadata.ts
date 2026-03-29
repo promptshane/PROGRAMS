@@ -89,7 +89,7 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     receivesFrom: [
       contextLink("User"),
       directorLink("project-manager"),
-      contextLink("Core details and vibes"),
+      contextLink("Core details"),
     ],
     sendsTo: [directorLink("rd-director")],
     accessOverview: [

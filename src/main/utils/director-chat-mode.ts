@@ -1,5 +1,4 @@
 import type {
-  CreativeFocusMode,
   DirectorFocusMode,
   DirectorId,
   RdFocusMode,
@@ -9,35 +8,6 @@ import { resolveSlackDirectorMode } from "./slack-flow.ts";
 
 const matchesAny = (text: string, patterns: readonly RegExp[]): boolean =>
   patterns.some((pattern) => pattern.test(text));
-
-const CREATIVE_VIBES_PATTERNS = [
-  /\bvibe(s)?\b/i,
-  /\bmood\b/i,
-  /\baesthetic(s)?\b/i,
-  /\bvisual\b/i,
-  /\bpalette\b/i,
-  /\bcolor(s)?\b/i,
-  /\bstyle\b/i,
-  /\blook and feel\b/i,
-  /\binspiration\b/i,
-  /\breference(s)?\b/i,
-  /\bimage(s)?\b/i,
-  /\bscreenshot(s)?\b/i,
-  /\bart\b/i,
-] as const;
-
-const CREATIVE_CONVERSATION_PATTERNS = [
-  /\bbrainstorm(ing)?\b/i,
-  /\bexplore\b/i,
-  /\bdiscuss(ion)?\b/i,
-  /\bchat\b/i,
-  /\btalk\b/i,
-  /\bwhat if\b/i,
-  /\bidea(s)?\b/i,
-  /\bthink through\b/i,
-  /\bimagine\b/i,
-  /\bmaybe\b/i,
-] as const;
 
 const VALIDATION_TEST_PATTERNS = [
   /\btest(ing)?\b/i,
@@ -76,17 +46,6 @@ const VALIDATION_GOAL_PATTERNS = [
   /\bdefine\b/i,
 ] as const;
 
-const resolveCreativeDirectorFocusMode = (message: string): CreativeFocusMode => {
-  const normalized = message.trim();
-  if (matchesAny(normalized, CREATIVE_VIBES_PATTERNS)) {
-    return "vibes";
-  }
-  if (matchesAny(normalized, CREATIVE_CONVERSATION_PATTERNS)) {
-    return "conversation";
-  }
-  return "core-details";
-};
-
 const resolveRdDirectorFocusMode = (message: string): RdFocusMode => {
   const slackMode = resolveSlackDirectorMode("rd-director", message);
   if (slackMode === "version-planning") {
@@ -123,7 +82,7 @@ export const resolveDirectorChatFocusMode = (
 
   switch (directorId) {
     case "creative-director":
-      return resolveCreativeDirectorFocusMode(message);
+      return "core-details";
     case "rd-director":
       return resolveRdDirectorFocusMode(message);
     case "validation-director":

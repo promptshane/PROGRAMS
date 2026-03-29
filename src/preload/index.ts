@@ -2,7 +2,6 @@ import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
   AgentSession,
   ClaudeConnectionTestResult,
-  AttachVibeInput,
   ConfirmAgentDataInput,
   DirectorChatInput,
   DirectorChatResponse,
@@ -17,7 +16,6 @@ import type {
   DeleteSlackMessagesInput,
   DirectorSettingsOverride,
   ProjectCategory,
-  RemoveVibeInput,
   RouteUpdateToProgrammingInput,
   RunValidationInput,
   SetValidationFrequencyInput,
@@ -165,10 +163,6 @@ const api = {
   deriveProjectCategory: (projectId: string): Promise<ProjectCategory> =>
     ipcRenderer.invoke("projects.deriveCategory", projectId),
 
-  attachVibe: (input: AttachVibeInput): Promise<AgentSession> =>
-    ipcRenderer.invoke("agents.attachVibe", input),
-  removeVibe: (input: RemoveVibeInput): Promise<AgentSession> =>
-    ipcRenderer.invoke("agents.removeVibe", input),
   confirmAgentData: (input: ConfirmAgentDataInput): Promise<AgentSession> =>
     ipcRenderer.invoke("agents.confirmData", input),
   routeUpdateToProgramming: (input: RouteUpdateToProgrammingInput): Promise<{ started: true }> =>

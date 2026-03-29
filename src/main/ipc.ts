@@ -5,7 +5,6 @@ import type { ProgramsBackend } from "@main/backend";
 import type {
   ConfirmAutomationFailureRecoveryInput,
   ApprovePlanInput,
-  AttachVibeInput,
   ApprovePendingApprovalInput,
   ConfirmAgentDataInput,
   DirectorChatInput,
@@ -22,7 +21,6 @@ import type {
   ProjectAttachInput,
   ProjectCreateInput,
   RequestAutomationFailureRecoveryInput,
-  RemoveVibeInput,
   RenameProjectInput,
   RevisePendingApprovalInput,
   ResolveDroppedContextPathsInput,
@@ -139,10 +137,6 @@ export const registerIpc = (backend: ProgramsBackend): void => {
     backend.deriveProjectCategory(projectId));
   ipcMain.handle("projects.deriveCategory", (_event, projectId: string) =>
     backend.deriveProjectCategory(projectId));
-  ipcMain.handle("agents.attachVibe", (_event, input: AttachVibeInput) =>
-    backend.attachVibeToCorePillar(input));
-  ipcMain.handle("agents.removeVibe", (_event, input: RemoveVibeInput) =>
-    backend.removeVibeFromCorePillar(input));
   ipcMain.handle("agents.confirmData", (_event, input: ConfirmAgentDataInput) =>
     backend.confirmAgentData(input));
   ipcMain.handle("agents.routeUpdate", (_event, input: RouteUpdateToProgrammingInput) =>

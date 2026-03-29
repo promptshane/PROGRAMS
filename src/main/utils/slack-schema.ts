@@ -71,6 +71,14 @@ const danDraftPillarSchema = buildStrictObjectSchema({
     type: "array" as const,
     items: { type: "string" },
   },
+  threadMemberships: {
+    type: ["array", "null"] as const,
+    items: buildStrictObjectSchema({
+      threadName: { type: "string" },
+      role: { type: ["string", "null"] },
+    }),
+  },
+  endState: { type: ["string", "null"] },
 });
 
 const danDraftCoreDetailsSchema = buildStrictObjectSchema({
@@ -80,6 +88,13 @@ const danDraftCoreDetailsSchema = buildStrictObjectSchema({
   pillars: {
     type: "array" as const,
     items: danDraftPillarSchema,
+  },
+  threads: {
+    type: ["array", "null"] as const,
+    items: buildStrictObjectSchema({
+      name: { type: "string" },
+      description: { type: ["string", "null"] },
+    }),
   },
 });
 
@@ -106,6 +121,19 @@ const danDraftOperationSchema = {
       type: ["array", "null"] as const,
       items: { type: "string" },
     },
+    threadMemberships: {
+      type: ["array", "null"] as const,
+      items: {
+        type: "object" as const,
+        additionalProperties: false as const,
+        required: ["threadName"] as const,
+        properties: {
+          threadName: { type: "string" },
+          role: { type: ["string", "null"] },
+        },
+      },
+    },
+    endState: { type: ["string", "null"] },
   },
 };
 

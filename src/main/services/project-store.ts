@@ -113,6 +113,7 @@ const buildConfirmedConceptFromLegacy = (session: {
     thesis: session.stages.thesis.confirmed ?? null,
     corePillars: session.corePillars,
     fullFlow: session.stages.full_flow.confirmed ?? null,
+    threads: [],
   };
 
   return confirmedConcept.function || confirmedConcept.thesis || confirmedConcept.corePillars.length > 0 || confirmedConcept.fullFlow
@@ -183,6 +184,7 @@ const buildDanMemory = (session: {
     forgottenMemories: session.danMemory?.forgottenMemories ?? [],
     creativeHistory: session.danMemory?.creativeHistory ?? [],
     toddHandoffNotes: session.danMemory?.toddHandoffNotes ?? [] as TaggedNote[],
+    threads: [],
   };
 };
 

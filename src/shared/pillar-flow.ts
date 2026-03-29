@@ -61,11 +61,20 @@ export const collectPillarFlowLines = (
   return lines;
 };
 
+const computeEndStateLabel = (pillar: CorePillar): string => {
+  if (pillar.corePillars.length > 0) return "NESTED";
+  if (pillar.endState === "end") return "END";
+  return "TBD";
+};
+
 const formatPillarDetailLines = (pillar: CorePillar, indent: string): string[] => {
   const lines: string[] = [];
   if (pillar.function?.summary) lines.push(`${indent}  Function: ${pillar.function.summary}`);
   if (pillar.thesis?.summary) lines.push(`${indent}  Thesis: ${pillar.thesis.summary}`);
   if (pillar.fullFlow?.summary) lines.push(`${indent}  Flow: ${pillar.fullFlow.summary}`);
+  const threadNames = (pillar.threadMemberships ?? []).map((tm) => tm.threadName);
+  if (threadNames.length > 0) lines.push(`${indent}  Threads: ${threadNames.join(", ")}`);
+  lines.push(`${indent}  State: ${computeEndStateLabel(pillar)}`);
   if (pillar.assumptionText) {
     lines.push(
       `${indent}  Assumption: ${pillar.assumptionSource === "dan" ? "Dan assumes" : "Direction"} ${pillar.assumptionText}`,

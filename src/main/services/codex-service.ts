@@ -4,15 +4,6 @@ import { access } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { shell } from "electron";
 import { z } from "zod";
-import {
-  FLOWCHART_OUTPUT_CONTRACT,
-  FLOWCHART_PROMPT_RULES,
-  collectFlowchartRepoHints,
-  flowchartGraphJsonSchema,
-  formatFlowchartRepoHints,
-  flowchartGraphSchema,
-  materializeFlowchartSnapshot,
-} from "../utils/flowchart.ts";
 import { resolveOneShotReasoningEffort } from "../utils/one-shot-runtime.ts";
 import { selectPreferredCodexModels } from "../utils/codex-model-catalog.ts";
 import { isSubPath } from "../utils/fs.ts";
@@ -20,7 +11,6 @@ import { execCommand, getCommandEnv } from "../utils/process.ts";
 import { DEFAULT_MODEL_CATALOG, type ModelOption } from "../../shared/types.ts";
 import type {
   CodexAuthStatus,
-  FlowchartGraph,
   PlanDraft,
   PlanStep,
   ProviderUsage,
@@ -91,8 +81,6 @@ interface ExecutionPayload {
   draft: PlanDraft;
   summary: string;
   description: string;
-  flowchart: string;
-  flowchartGraph: FlowchartGraph | null;
   commitMessage: string;
 }
 
@@ -117,22 +105,20 @@ interface CodexRateLimitSnapshot {
 const planOutputSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["summary", "impact", "flowchartChanges"],
+  required: ["summary", "impact"],
   properties: {
     summary: { type: "string" },
     impact: { type: "string" },
-    flowchartChanges: { type: "string" },
   },
 };
 
 const executionOutputSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["summary", "description", "flowchartGraph", "commitMessage"],
+  required: ["summary", "description", "commitMessage"],
   properties: {
     summary: { type: "string" },
     description: { type: "string" },
-    flowchartGraph: flowchartGraphJsonSchema,
     commitMessage: { type: "string" },
   },
 };
@@ -140,13 +126,11 @@ const executionOutputSchema = {
 const planResultSchema = z.object({
   summary: z.string(),
   impact: z.string(),
-  flowchartChanges: z.string(),
 });
 
 const executionResultSchema = z.object({
   summary: z.string(),
   description: z.string(),
-  flowchartGraph: flowchartGraphSchema,
   commitMessage: z.string(),
 });
 
@@ -226,7 +210,6 @@ Rules:
 - Respect the project root as the only writable code area.
 - When asked to plan, do not make file changes or request write approval.
 - When asked to execute, make the requested code changes directly in the project.
-- Keep .programs/system-flow.mmd up to date as a Mermaid flowchart focused on user flow and major system responsibilities, not line-level code.
 - Produce brief, clear summaries that non-technical users can understand.
 `.trim();
 
@@ -256,13 +239,10 @@ Instructions:
 - Do not change any files.
 - Produce a concise implementation plan.
 - Include the expected user-visible impact.
-- Describe how the system flowchart should change.
 - Your final answer must be strict JSON matching the requested schema.
 `.trim();
 
-const buildExecutionPrompt = async (project: Project, draft: PlanDraft): Promise<string> => {
-  const repoHints = await collectFlowchartRepoHints(project.localPath);
-  return `
+const buildExecutionPrompt = async (project: Project, draft: PlanDraft): Promise<string> => `
 Implement the approved update for "${project.name}".
 
 ${formatSkillInstructions(draft.skillInstructions)}
@@ -278,20 +258,13 @@ ${draft.steps.map((step) => `- ${step.step}`).join("\n") || "- Use the approved 
 
 ${formatContextPaths(draft.contextPaths)}
 
-${formatFlowchartRepoHints(repoHints)}
-
 ${draft.coreDetailsContext ? `${draft.coreDetailsContext}\n\n` : ""}Requirements:
 - Make the code changes now.
-- Return an updated structured system flowchart that matches the final user-visible flow after your code changes.
 - Keep the project description current and user-facing.
-- Use these flowchart rules:
-${FLOWCHART_PROMPT_RULES}
 - Your final answer must be strict JSON matching the requested schema.
-- ${FLOWCHART_OUTPUT_CONTRACT}
 - The summary must be one or two short sentences for the update history.
 - The commitMessage must be short and action-oriented.
 `.trim();
-};
 
 const parseUnifiedDiffStats = (diff: string | null): PlanDraft["diffStats"] => {
   if (!diff) {
@@ -363,6 +336,7 @@ export class CodexService {
       contextPaths: [...input.contextPaths],
       skillInstructions: input.skillInstructions ?? null,
       coreDetailsContext: input.coreDetailsContext ?? null,
+      pingTaskSnapshot: input.pingTaskSnapshot ?? null,
       status: "executing",
       thinkingStatus: "in_progress",
       planningStatus: "skipped",
@@ -372,7 +346,6 @@ export class CodexService {
       steps: [],
       summary: null,
       impact: null,
-      flowchartChanges: null,
       diff: null,
       diffStats: null,
       finalText: null,
@@ -630,6 +603,9 @@ export class CodexService {
       throw new Error("Codex did not return a valid project thread.");
     }
 
+    // Persist in-place so callers reuse the correct threadId on subsequent calls.
+    project.threadId = threadId;
+
     return { threadId, isNew: true };
   }
 
@@ -642,14 +618,14 @@ export class CodexService {
     reasoningEffortOverride?: ReasoningEffort,
     options?: { networkAccess?: boolean },
   ): Promise<string> {
-    const { threadId } = await this.ensureThread(project, settings, "normal", model);
+    let threadId = (await this.ensureThread(project, settings, "normal", model)).threadId;
     const reasoningEffort = resolveOneShotReasoningEffort(
       settings.advancedDefaults.reasoningEffort,
       reasoningEffortOverride,
     );
 
-    const result = (await this.sendRequest("turn/start", {
-      threadId,
+    const buildTurnParams = (tid: string) => ({
+      threadId: tid,
       cwd: project.localPath,
       input: [{ type: "text", text: prompt }],
       effort: reasoningEffort,
@@ -662,7 +638,21 @@ export class CodexService {
         networkAccess: options?.networkAccess ?? false,
       },
       summary: "auto",
-    })) as { turn?: { id?: string } };
+    });
+
+    let result: { turn?: { id?: string } };
+    try {
+      result = (await this.sendRequest("turn/start", buildTurnParams(threadId))) as { turn?: { id?: string } };
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("thread not found")) {
+        // Thread became stale between ensureThread and turn/start — recreate and retry once.
+        project.threadId = null;
+        threadId = (await this.ensureThread(project, settings, "normal", model)).threadId;
+        result = (await this.sendRequest("turn/start", buildTurnParams(threadId))) as { turn?: { id?: string } };
+      } else {
+        throw err;
+      }
+    }
 
     // Wait for the turn to complete via notification handling
     return new Promise<string>((resolve, reject) => {
@@ -680,6 +670,16 @@ export class CodexService {
         reject,
       });
     });
+  }
+
+  previewPlanningPrompt(project: Project, input: StartPlanInput): string {
+    return buildPlanningPrompt(
+      project,
+      input.prompt,
+      input.contextPaths,
+      input.skillInstructions ?? null,
+      input.coreDetailsContext ?? null,
+    );
   }
 
   async startPlanningTurn(project: Project, settings: Settings, input: StartPlanInput): Promise<PlanDraft> {
@@ -701,6 +701,7 @@ export class CodexService {
       contextPaths: [...input.contextPaths],
       skillInstructions: input.skillInstructions ?? null,
       coreDetailsContext: input.coreDetailsContext ?? null,
+      pingTaskSnapshot: input.pingTaskSnapshot ?? null,
       status: "planning",
         thinkingStatus: "in_progress",
         planningStatus: "in_progress",
@@ -710,7 +711,6 @@ export class CodexService {
         steps: [],
         summary: null,
         impact: null,
-        flowchartChanges: null,
         diff: null,
         diffStats: null,
         finalText: null,
@@ -722,27 +722,33 @@ export class CodexService {
       this.syncDraft(draft);
 
       try {
-        const result = (await this.sendRequest("turn/start", {
-          threadId,
-          cwd: project.localPath,
-          input: [{ type: "text", text: buildPlanningPrompt(project, input.prompt, input.contextPaths, input.skillInstructions ?? null, input.coreDetailsContext ?? null) }],
-          effort: input.reasoningEffort,
-          model: input.model,
-          outputSchema: planOutputSchema,
-          personality: "pragmatic",
-          approvalPolicy: "never",
-          sandboxPolicy: {
-            type: "readOnly",
-            networkAccess: false,
-          },
-          summary: "auto",
-        })) as { turn?: { id?: string } };
+        const { result, threadId: resolvedThreadId } = await this.startTurnWithThreadRetry(
+          project,
+          settings,
+          input.speed,
+          input.model,
+          (activeThreadId) => ({
+            threadId: activeThreadId,
+            cwd: project.localPath,
+            input: [{ type: "text", text: this.previewPlanningPrompt(project, input) }],
+            effort: input.reasoningEffort,
+            model: input.model,
+            outputSchema: planOutputSchema,
+            personality: "pragmatic",
+            approvalPolicy: "never",
+            sandboxPolicy: {
+              type: "readOnly",
+              networkAccess: false,
+            },
+            summary: "auto",
+          }),
+        );
 
         const turnId = result.turn?.id ?? null;
         const activeTurn: ActiveTurn = {
           projectId: project.id,
           projectPath: project.localPath,
-          threadId,
+          threadId: resolvedThreadId,
           turnId,
           phase: "plan",
           prompt: input.prompt,
@@ -755,6 +761,7 @@ export class CodexService {
           reject,
         };
 
+        draft.threadId = resolvedThreadId;
         draft.turnId = turnId;
         this.activeTurns.set(project.id, activeTurn);
         this.syncDraft(draft);
@@ -776,23 +783,30 @@ export class CodexService {
     return new Promise<ExecutionPayload>(async (resolve, reject) => {
       try {
         const executionPrompt = await buildExecutionPrompt(project, draft);
-        const result = (await this.sendRequest("turn/start", {
-          threadId,
-          cwd: project.localPath,
-          input: [{ type: "text", text: executionPrompt }],
-          effort: draft.reasoningEffort,
-          model: draft.model,
-          outputSchema: executionOutputSchema,
-          personality: "pragmatic",
-          approvalPolicy: "on-request",
-          sandboxPolicy: {
-            type: "workspaceWrite",
-            writableRoots: [project.localPath],
-            networkAccess: false,
-          },
-          summary: "auto",
-        })) as { turn?: { id?: string } };
+        const { result, threadId: resolvedThreadId } = await this.startTurnWithThreadRetry(
+          project,
+          settings,
+          draft.speed,
+          draft.model,
+          (activeThreadId) => ({
+            threadId: activeThreadId,
+            cwd: project.localPath,
+            input: [{ type: "text", text: executionPrompt }],
+            effort: draft.reasoningEffort,
+            model: draft.model,
+            outputSchema: executionOutputSchema,
+            personality: "pragmatic",
+            approvalPolicy: "on-request",
+            sandboxPolicy: {
+              type: "workspaceWrite",
+              writableRoots: [project.localPath],
+              networkAccess: false,
+            },
+            summary: "auto",
+          }),
+        );
 
+        draft.threadId = resolvedThreadId;
         draft.turnId = result.turn?.id ?? null;
         draft.status = "executing";
         if (draft.planningMode === "none") {
@@ -811,7 +825,7 @@ export class CodexService {
         this.activeTurns.set(project.id, {
           projectId: project.id,
           projectPath: project.localPath,
-          threadId,
+          threadId: resolvedThreadId,
           turnId: draft.turnId,
           phase: "execute",
           prompt: draft.prompt,
@@ -834,6 +848,43 @@ export class CodexService {
         reject(error instanceof Error ? error : new Error("Execution failed."));
       }
     });
+  }
+
+  private isThreadNotFoundError(error: unknown): boolean {
+    return error instanceof Error && error.message.includes("thread not found");
+  }
+
+  private asTurnStartFailure(error: unknown): Error & { startupFailed: true } {
+    const normalized = error instanceof Error ? error : new Error("Codex could not start the turn.");
+    return Object.assign(normalized, { startupFailed: true as const });
+  }
+
+  private async startTurnWithThreadRetry(
+    project: Project,
+    settings: Settings,
+    speed: SpeedMode,
+    model: StartPlanInput["model"],
+    buildParams: (threadId: string) => Record<string, unknown>,
+  ): Promise<{ result: { turn?: { id?: string } }; threadId: string }> {
+    let threadId = (await this.ensureThread(project, settings, speed, model)).threadId;
+
+    try {
+      const result = (await this.sendRequest("turn/start", buildParams(threadId))) as { turn?: { id?: string } };
+      return { result, threadId };
+    } catch (error) {
+      if (!this.isThreadNotFoundError(error)) {
+        throw this.asTurnStartFailure(error);
+      }
+    }
+
+    project.threadId = null;
+    threadId = (await this.ensureThread(project, settings, speed, model)).threadId;
+    try {
+      const result = (await this.sendRequest("turn/start", buildParams(threadId))) as { turn?: { id?: string } };
+      return { result, threadId };
+    } catch (error) {
+      throw this.asTurnStartFailure(error);
+    }
   }
 
   async interruptPlan(projectId: string): Promise<void> {
@@ -1227,7 +1278,6 @@ export class CodexService {
         turn.draft.planningStatus = "completed";
         turn.draft.summary = parsed.summary;
         turn.draft.impact = parsed.impact;
-        turn.draft.flowchartChanges = parsed.flowchartChanges;
         turn.draft.errorMessage = null;
         this.syncDraft(turn.draft);
         turn.resolve({ ...turn.draft });
@@ -1235,7 +1285,6 @@ export class CodexService {
       }
 
       const parsed = executionResultSchema.parse(parseJsonFromText(finalText));
-      const flowchartSnapshot = materializeFlowchartSnapshot(parsed.flowchartGraph);
       turn.draft.status = "executing";
       if (turn.draft.planningMode === "none") {
         turn.draft.thinkingStatus = "completed";
@@ -1251,8 +1300,6 @@ export class CodexService {
         draft: { ...turn.draft },
         summary: parsed.summary,
         description: parsed.description,
-        flowchart: flowchartSnapshot.flowchart,
-        flowchartGraph: flowchartSnapshot.flowchartGraph,
         commitMessage: parsed.commitMessage,
       });
     } catch (error) {

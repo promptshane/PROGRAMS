@@ -21,10 +21,6 @@ const shell = { openExternal: async () => {}, showItemInFolder: async () => {}, 
     ],
     ['import { ClaudeService } from "@main/services/claude-service";', "class ClaudeService {}"],
     ['import { CodexService } from "@main/services/codex-service";', "class CodexService {}"],
-    [
-      'import { GitHubService, type GitHubClientConfig } from "@main/services/github-service";',
-      "class GitHubService {}\ntype GitHubClientConfig = Record<string, unknown> | null;",
-    ],
     ['import { GitService } from "@main/services/git-service";', "class GitService {}"],
     ['import { PlaywrightService } from "@main/services/playwright-service";', "class PlaywrightService {}"],
     ['import { ProjectStore } from "@main/services/project-store";', "class ProjectStore {}"],
@@ -33,7 +29,6 @@ const shell = { openExternal: async () => {}, showItemInFolder: async () => {}, 
       `  constructor(
     private readonly store: ProjectStore,
     private readonly git: GitService,
-    private readonly github: GitHubService,
     private readonly runner: RunnerService,
     private readonly playwright: PlaywrightService,
     private readonly codex: CodexService,
@@ -43,7 +38,6 @@ const shell = { openExternal: async () => {}, showItemInFolder: async () => {}, 
       `  constructor(
     store: ProjectStore,
     git: GitService,
-    github: GitHubService,
     runner: RunnerService,
     playwright: PlaywrightService,
     codex: CodexService,
@@ -52,7 +46,6 @@ const shell = { openExternal: async () => {}, showItemInFolder: async () => {}, 
   ) {
     this.store = store;
     this.git = git;
-    this.github = github;
     this.runner = runner;
     this.playwright = playwright;
     this.codex = codex;
@@ -113,9 +106,9 @@ const createBackend = () => {
     stub as never,
     stub as never,
     stub as never,
-    stub as never,
     () => {},
   );
+  (backend as Record<string, unknown>).getSlackProviderPreflightErrors = async () => ({ codex: null, claude: null });
 
   return backend;
 };
@@ -130,8 +123,8 @@ test("Slack chat no longer fails fast behind the quarantine gate", async () => {
   (backend.ensureInitialized as Function) = async () => {};
   (backend.requireProject as Function) = async () => ({ id: "project-1", name: "Slack Enabled Project" });
   (backend.getOrCreateAgentSession as Function) = async () => (backend.createEmptyAgentSession as Function)("project-1", "codex");
-  (backend.runSlackDirectorChain as Function) = async () => ({
-    message: {
+  (backend.runSlackDirectorTurn as Function) = async () => ({
+    assistantMessage: {
       id: "assistant-1",
       role: "assistant",
       directorId: "project-manager",
@@ -139,9 +132,10 @@ test("Slack chat no longer fails fast behind the quarantine gate", async () => {
       createdAt: new Date().toISOString(),
       status: "complete",
     },
-    handoffTo: null,
-    handoffReason: null,
-    chainedMessages: [],
+    parsed: {
+      handoffTo: null,
+      handoffReason: null,
+    },
   });
 
   const response = await (backend.slackChat as Function)({
@@ -281,16 +275,16 @@ test("Slack Ping falls back to the normal chat turn when the active update is st
   session.toddMemory.futureUpdatePlan = [];
 
   let routedCalled = false;
-  let chainCalled = false;
+  let turnCalled = false;
   (backend.getOrCreateAgentSession as Function) = async () => session;
   (backend.routeUpdateToProgrammingNow as Function) = async () => {
     routedCalled = true;
     return { started: true };
   };
-  (backend.runSlackDirectorChain as Function) = async () => {
-    chainCalled = true;
+  (backend.runSlackDirectorTurn as Function) = async () => {
+    turnCalled = true;
     return {
-      message: {
+      assistantMessage: {
         id: "assistant-1",
         role: "assistant",
         directorId: "programming-director",
@@ -298,9 +292,10 @@ test("Slack Ping falls back to the normal chat turn when the active update is st
         createdAt: new Date().toISOString(),
         status: "complete",
       },
-      handoffTo: null,
-      handoffReason: null,
-      chainedMessages: [],
+      parsed: {
+        handoffTo: null,
+        handoffReason: null,
+      },
     };
   };
 
@@ -314,7 +309,7 @@ test("Slack Ping falls back to the normal chat turn when the active update is st
   });
 
   assert.equal(routedCalled, false);
-  assert.equal(chainCalled, true);
+  assert.equal(turnCalled, true);
   assert.equal(response.directorId, "programming-director");
   assert.equal(response.message.content, "I'll look at the implementation...");
   assert.equal(session.slackMessages.some((msg) => msg.content === "Handing this to Ping to update the code now."), false);

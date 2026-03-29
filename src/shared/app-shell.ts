@@ -1,4 +1,4 @@
-export type AppPage = "homepage" | "projects" | "slack" | "agents" | "skills";
+export type AppPage = "homepage" | "projects" | "slack" | "agents";
 
 export interface AppPageDefinition {
   id: AppPage;
@@ -10,7 +10,6 @@ export const APP_PAGE_OPTIONS: AppPageDefinition[] = [
   { id: "projects", label: "Projects" },
   { id: "agents", label: "Agents" },
   { id: "slack", label: "Slack" },
-  { id: "skills", label: "Skills" },
 ];
 
 export const getVisibleAppPageOptions = (): AppPageDefinition[] => APP_PAGE_OPTIONS;

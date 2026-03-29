@@ -19,7 +19,7 @@ test("agent session save statement keeps columns and placeholders aligned", asyn
   const placeholders = match[2]!.split(",").map((value) => value.trim()).filter(Boolean);
 
   assert.equal(columns.length, placeholders.length);
-  assert.equal(columns.length, 50);
+  assert.equal(columns.length, 48);
   assert.ok(columns.includes("dan_side_notes_json"));
   assert.ok(columns.includes("dan_draft_core_details_json"));
   assert.ok(columns.includes("dan_draft_change_summary_json"));
@@ -27,6 +27,9 @@ test("agent session save statement keeps columns and placeholders aligned", asyn
   assert.ok(columns.includes("dan_memory_json"));
   assert.ok(columns.includes("todd_memory_json"));
   assert.ok(columns.includes("ping_memory_json"));
+  assert.ok(columns.includes("automation_json"));
+  assert.equal(columns.includes("agent_conversations_json"), false);
+  assert.equal(columns.includes("active_agent_id"), false);
 });
 
 test("ProjectStore round-trips agent sessions with a first Slack message and new Slack fields", async () => {
@@ -73,23 +76,19 @@ try {
     iconColor: "#0EA5E9",
     description: "Regression coverage for the first Slack save path.",
     localPath: process.env.PROGRAMS_TEST_PROJECT_DIR,
-    remoteUrl: null,
-    defaultBranch: "main",
     threadId: null,
-    flowchartPath: path.join(process.env.PROGRAMS_TEST_PROJECT_DIR, "flowchart.mmd"),
     lastUpdatedAt: null,
     status: "idle",
     createdAt: now,
     updatedAt: now,
-    runtimeConfig: {
-      packageManager: "npm",
-      installCommand: null,
-      runCommand: null,
-      openUrl: null,
-      lastRunUrl: null,
-      initialIdea: null,
-      githubRepoName: null,
-    },
+      runtimeConfig: {
+        packageManager: "npm",
+        installCommand: null,
+        runCommand: null,
+        openUrl: null,
+        lastRunUrl: null,
+        initialIdea: null,
+      },
     lastError: null,
   };
 
@@ -166,9 +165,42 @@ try {
     danArchivedNotes: ["[2026-03-19T12:00:00.000Z | slack draft processed] captured note"],
     deletedNotes: [],
     pingTaskContext: null,
+    pingMemory: {
+      activeUpdateId: null,
+      activeTask: "Direct Ping request",
+      context: "Add a clearer onboarding checkpoint.",
+      codebaseMapSummary: "The repo already has an onboarding flow and a home shell.",
+      latestRawReport: null,
+      latestJeffReport: null,
+      currentRun: {
+        task: {
+          source: "direct-ping-request",
+          projectId: project.id,
+          updateId: null,
+          updateTitle: null,
+          updateDescription: null,
+          originalUserRequest: "Add a clearer onboarding checkpoint.",
+          toddExplanation: null,
+          relevantPillarIds: [],
+          toddCodebaseMapSummary: "The repo already has an onboarding flow and a home shell.",
+          coreDetailsContext: "Function: Guide users into the workspace.",
+          runtime: {
+            provider: "codex",
+            model: "gpt-5.4",
+            claudeModel: "opus",
+            reasoningEffort: "high",
+            planningMode: "auto",
+            contextPaths: ["src/app/onboarding.tsx"],
+          },
+          planPrompt: "Implement the onboarding checkpoint change.",
+          createdAt: now,
+        },
+        plan: null,
+        report: null,
+      },
+    },
     pongTaskContext: null,
     projectCategory: "general-project",
-    dynamicSubAgents: [],
     slackMessages: [
       {
         id: "slack-1",
@@ -221,15 +253,16 @@ try {
       pendingHandoff: null,
       backupNotes: [],
     },
-    agentConversations: {},
-    activeAgentId: null,
   };
 
   await store.saveAgentSession(session);
   const reloaded = await store.getAgentSession(project.id);
+  const reloadedProject = await store.readProject(project.id);
 
   console.log(JSON.stringify({
     projectId: reloaded?.projectId ?? null,
+    hasRemoteUrl: Boolean(reloadedProject && "remoteUrl" in reloadedProject),
+    hasDefaultBranch: Boolean(reloadedProject && "defaultBranch" in reloadedProject),
     slackMessageCount: reloaded?.slackMessages.length ?? 0,
     firstSlackContent: reloaded?.slackMessages[0]?.content ?? null,
     secondSlackMetadataType: reloaded?.slackMessages[1]?.metadata?.type ?? null,
@@ -241,6 +274,7 @@ try {
     danDraftChangeSummary: reloaded?.danDraftChangeSummary ?? [],
     slackPresenceGuestId: reloaded?.slackPresenceGuestId ?? null,
     toddConfirmedFunction: reloaded?.toddMemory?.confirmedConcept?.function?.summary ?? null,
+    pingCurrentRunPrompt: reloaded?.pingMemory?.currentRun?.task.planPrompt ?? null,
   }));
 } finally {
   await rm(tempDir, { recursive: true, force: true });
@@ -263,6 +297,8 @@ try {
 
     const result = JSON.parse(stdout.trim().split("\n").at(-1) ?? "{}");
     assert.equal(result.projectId, "project-1");
+    assert.equal(result.hasRemoteUrl, false);
+    assert.equal(result.hasDefaultBranch, false);
     assert.equal(result.slackMessageCount, 2);
     assert.equal(result.firstSlackContent, "Hello team");
     assert.equal(result.secondSlackMetadataType, "hard-memory-report");
@@ -274,6 +310,7 @@ try {
     assert.deepEqual(result.danDraftChangeSummary, ["Added an onboarding draft function summary."]);
     assert.equal(result.slackPresenceGuestId, "creative-director");
     assert.equal(result.toddConfirmedFunction, "Guide users into the workspace with a confident first-run flow.");
+    assert.equal(result.pingCurrentRunPrompt, "Implement the onboarding checkpoint change.");
   } finally {
     await rm(userDataDir, { recursive: true, force: true });
     await rm(projectDir, { recursive: true, force: true });

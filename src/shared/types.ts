@@ -1,7 +1,6 @@
 export type UiMode = "simple" | "advanced";
 export type SpeedMode = "normal" | "fast";
 export type Theme = "dark" | "light";
-export type RepoVisibility = "private" | "public";
 export type AiProvider = "codex" | "claude";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type PlanningMode = "review" | "auto" | "none";
@@ -61,7 +60,6 @@ export type ProjectStatus =
   | "planning"
   | "awaitingApproval"
   | "executing"
-  | "syncing"
   | "running"
   | "error";
 export type UpdateKind = "update" | "undo";
@@ -69,7 +67,6 @@ export type UpdateStatus =
   | "planned"
   | "executing"
   | "saved"
-  | "pendingSync"
   | "reverted"
   | "failed";
 export type ToastLevel = "info" | "success" | "error";
@@ -83,7 +80,6 @@ export type SetupActionKind =
   | "setupClaude"
   | "codexLogin"
   | "claudeLogin"
-  | "githubLogin"
   | "installGit"
   | "refresh"
   | "none";
@@ -97,6 +93,8 @@ export interface DirectorSettingsOverride {
   planningMode?: PlanningMode;
 }
 
+export type PingDirectRunMode = "auto" | "manual";
+
 export interface AdvancedDefaults {
   provider: AiProvider;
   model: CodexModel;
@@ -104,7 +102,6 @@ export interface AdvancedDefaults {
   reasoningEffort: ReasoningEffort;
   serviceTier: "flex" | "fast";
   customInstructions: string;
-  repoVisibility: RepoVisibility;
 }
 
 export interface Settings {
@@ -116,7 +113,6 @@ export interface Settings {
   appSourcePath: string | null;
   codexBinaryPath: string | null;
   claudeBinaryPath: string | null;
-  githubClientIdOverride: string | null;
 }
 
 export interface SetupState {
@@ -124,7 +120,7 @@ export interface SetupState {
 }
 
 export interface SetupCheck {
-  id: "codexInstall" | "gitInstall" | "codexLogin" | "claudeInstall" | "claudeLogin" | "githubConnect";
+  id: "codexInstall" | "gitInstall" | "codexLogin" | "claudeInstall" | "claudeLogin";
   section: SetupSection;
   label: string;
   status: SetupCheckStatus;
@@ -146,7 +142,6 @@ export interface SetupSnapshot {
   showSetupOnLaunch: boolean;
   currentCheckId: SetupCheck["id"] | null;
   isPackagedBuild: boolean;
-  githubConfigured: boolean;
 }
 
 export interface ProjectRuntimeConfig {
@@ -156,44 +151,6 @@ export interface ProjectRuntimeConfig {
   openUrl: string | null;
   lastRunUrl: string | null;
   initialIdea: string | null;
-  githubRepoName: string | null;
-  attachedSkillId?: string | null;
-}
-
-export type FlowchartDirection = "TD" | "LR";
-export type FlowchartNodeKind = "entry" | "page" | "action" | "system";
-
-export interface FlowchartGroup {
-  id: string;
-  label: string;
-  description: string;
-}
-
-export interface FlowchartNode {
-  id: string;
-  label: string;
-  kind: FlowchartNodeKind;
-  description: string;
-  groupId: string | null;
-}
-
-export interface FlowchartEdge {
-  from: string;
-  to: string;
-  label: string | null;
-}
-
-export interface FlowchartGraph {
-  version: 1;
-  direction: FlowchartDirection;
-  groups: FlowchartGroup[];
-  nodes: FlowchartNode[];
-  edges: FlowchartEdge[];
-}
-
-export interface FlowchartSnapshot {
-  flowchart: string;
-  flowchartGraph: FlowchartGraph | null;
 }
 
 export interface Project {
@@ -202,10 +159,7 @@ export interface Project {
   iconColor: string;
   description: string;
   localPath: string;
-  remoteUrl: string | null;
-  defaultBranch: string;
   threadId: string | null;
-  flowchartPath: string;
   lastUpdatedAt: string | null;
   status: ProjectStatus;
   createdAt: string;
@@ -220,8 +174,6 @@ export interface UpdateRecord {
   prompt: string;
   summary: string;
   commitSha: string | null;
-  flowchart: string;
-  flowchartGraph: FlowchartGraph | null;
   createdAt: string;
   kind: UpdateKind;
   status: UpdateStatus;
@@ -264,6 +216,7 @@ export interface PlanDraft {
   contextPaths: string[];
   skillInstructions: string | null;
   coreDetailsContext: string | null;
+  pingTaskSnapshot: PingTaskSnapshot | null;
   status: "planning" | "awaitingApproval" | "executing" | "completed" | "failed";
   thinkingStatus: UpdateStageStatus;
   planningStatus: UpdateStageStatus;
@@ -273,7 +226,6 @@ export interface PlanDraft {
   steps: PlanStep[];
   summary: string | null;
   impact: string | null;
-  flowchartChanges: string | null;
   diff: string | null;
   diffStats: DiffStats | null;
   finalText: string | null;
@@ -285,8 +237,6 @@ export interface PlanDraft {
 export interface ProjectDetail {
   project: Project;
   updates: UpdateRecord[];
-  flowchart: string;
-  flowchartGraph: FlowchartGraph | null;
   runtime: RuntimeState;
   activePlan: PlanDraft | null;
 }
@@ -336,20 +286,11 @@ export interface ProjectCreateInput {
   iconColor: string;
   parentDirectory: string;
   initialIdea: string;
-  createRemote: boolean;
-  visibility: RepoVisibility;
 }
 
 export interface ProjectAttachInput {
   localPath: string;
   iconColor: string;
-  createRemote: boolean;
-  visibility: RepoVisibility;
-}
-
-export interface ProjectEnableSyncInput {
-  projectId: string;
-  visibility: RepoVisibility;
 }
 
 export interface AttachPathInspection {
@@ -357,8 +298,6 @@ export interface AttachPathInspection {
   name: string | null;
   exists: boolean;
   isRepo: boolean;
-  remoteUrl: string | null;
-  defaultBranch: string | null;
 }
 
 export interface ContextPathPickResult {
@@ -385,7 +324,6 @@ export interface SettingsUpdateInput {
   appSourcePath?: string | null;
   codexBinaryPath?: string | null;
   claudeBinaryPath?: string | null;
-  githubClientIdOverride?: string | null;
 }
 
 export interface CodexAuthStatus {
@@ -414,29 +352,6 @@ export interface ClaudeAuthStatus {
   connectErrorMessage: string | null;
 }
 
-export type GitHubClientIdSource = "bundled" | "override" | null;
-
-export interface GitHubAuthStatus {
-  configured: boolean;
-  canConnect: boolean;
-  clientIdSource: GitHubClientIdSource;
-  hasStoredToken: boolean;
-  loggedIn: boolean;
-  verified: boolean;
-  login: string | null;
-  avatarUrl: string | null;
-  expiresAt: string | null;
-  errorMessage: string | null;
-  loginPrompt: GitHubLoginPrompt | null;
-}
-
-export interface GitHubLoginPrompt {
-  userCode: string;
-  verificationUri: string;
-  expiresAt: string;
-  interval: number;
-}
-
 export interface AddProjectDefaultState {
   iconColor: string;
   parentDirectory: string;
@@ -450,7 +365,6 @@ export interface DirectoryPickResult {
 export interface AuthSnapshot {
   codex: CodexAuthStatus;
   claude: ClaudeAuthStatus;
-  github: GitHubAuthStatus;
 }
 
 export type ProviderUsageStatus = "ready" | "requiresInstall" | "requiresLogin" | "unsupported";
@@ -507,14 +421,12 @@ export interface BootstrapPayload {
   setup: SetupSnapshot;
   appUpdate: AppUpdateStatus;
   modelCatalog: ModelCatalog;
-  skills: Skill[];
 }
 
 export type AppEvent =
   | { type: "toast"; level: ToastLevel; message: string }
   | { type: "auth.codex"; status: CodexAuthStatus }
   | { type: "auth.claude"; status: ClaudeAuthStatus }
-  | { type: "auth.github"; status: GitHubAuthStatus }
   | { type: "modelCatalog.updated"; catalog: ModelCatalog }
   | { type: "setup.updated"; setup: SetupSnapshot }
   | { type: "appUpdate.status"; status: AppUpdateStatus }
@@ -523,7 +435,6 @@ export type AppEvent =
   | { type: "project.runtime"; projectId: string; runtime: RuntimeState }
   | { type: "project.plan"; projectId: string; plan: PlanDraft | null }
   | { type: "project.history"; projectId: string; updates: UpdateRecord[] }
-  | { type: "project.pendingUpdate"; projectId: string; pending: PendingPlannedUpdate | null }
   | { type: "project.outlineReport"; projectId: string; report: ProjectOutlineReport | null }
   | { type: "agent.session"; projectId: string; session: AgentSession | null }
   | { type: "auth.claude.codePrompt"; prompt: string };
@@ -541,6 +452,7 @@ export interface StartPlanInput {
   contextPaths: string[];
   skillInstructions?: string | null;
   coreDetailsContext?: string | null;
+  pingTaskSnapshot?: PingTaskSnapshot | null;
 }
 
 export interface ApprovePlanInput {
@@ -563,83 +475,11 @@ export interface UpdateProjectInput {
   iconColor: string;
 }
 
-export interface RetrySyncInput {
-  projectId: string;
-  updateId: string;
-}
-
-export interface PlanningChatMessage {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  flowchart: string | null;
-  flowchartGraph: FlowchartGraph | null;
-  createdAt: string;
-}
-
-export interface PlanningSession {
-  id: string;
-  projectId: string;
-  provider: AiProvider;
-  messages: PlanningChatMessage[];
-  currentFlowchart: string;
-  currentFlowchartGraph: FlowchartGraph | null;
-  previousFlowchart: string;
-  previousFlowchartGraph: FlowchartGraph | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface PendingPlannedUpdate {
-  id: string;
-  projectId: string;
-  flowchart: string;
-  flowchartGraph: FlowchartGraph | null;
-  previousFlowchart: string;
-  previousFlowchartGraph: FlowchartGraph | null;
-  description: string;
-  createdAt: string;
-}
-
-export interface GenerateFlowchartInput {
-  projectId: string;
-  provider: AiProvider;
-  model: CodexModel;
-  claudeModel: ClaudeModel;
-}
-
-export interface GenerateFlowchartResult extends FlowchartSnapshot {}
-
 export interface GenerateProjectOutlineReportInput {
   projectId: string;
   provider?: AiProvider;
   model?: CodexModel;
   claudeModel?: ClaudeModel;
-}
-
-export interface PlanningChatInput {
-  projectId: string;
-  provider: AiProvider;
-  model: CodexModel;
-  claudeModel: ClaudeModel;
-  message: string;
-  sessionId: string | null;
-}
-
-export interface PlanningChatResponse {
-  sessionId: string;
-  message: PlanningChatMessage;
-  updatedFlowchart: string | null;
-  updatedFlowchartGraph: FlowchartGraph | null;
-}
-
-export interface SavePlannedUpdateInput {
-  projectId: string;
-  flowchart: string;
-  flowchartGraph: FlowchartGraph | null;
-  previousFlowchart: string;
-  previousFlowchartGraph: FlowchartGraph | null;
-  description: string;
 }
 
 export interface WriteProjectEnvFileInput {
@@ -668,7 +508,7 @@ export interface AgentChatMessage {
   content: string;
   createdAt: string;
   status?: "working" | "complete";
-  metadata?: PingTranslationMetadata | HardMemoryReportMetadata | null;
+  metadata?: SlackMessageMetadata | null;
 }
 
 export type HardMemoryReportDataType = "danDraftCoreDetails" | "versions" | "versionUpdates";
@@ -740,8 +580,22 @@ export type SlackMessageMetadata =
       summary: string;
     }
   | {
+      type: "ping-task";
+      task: PingTaskSnapshot;
+    }
+  | {
       type: "execution-report";
       report: JeffExecutionReport;
+    }
+  | {
+      type: "ping-plan-summary";
+      summary: string;
+      plan?: PingPlanSnapshot | null;
+    }
+  | {
+      type: "ping-update-report";
+      rawReport: PingRawReport;
+      report?: PingExecutionReportSnapshot | null;
     }
   | HardMemoryReportMetadata
   | PingTranslationMetadata;
@@ -922,6 +776,70 @@ export interface ValidationResult {
 
 export type ValidationFrequency = "every-update" | "every-version" | "manual";
 
+export interface AutomationAllowedHours {
+  startHour: number;
+  endHour: number;
+}
+
+export interface AutomationConstraints {
+  allowedHours: AutomationAllowedHours | null;
+  codexMaxUsedPercent: number | null;
+  claudeMaxUsedPercent: number | null;
+}
+
+export type AutomationRunStatus = "idle" | "running" | "paused" | "stopped" | "completed";
+
+export type AutomationStopReason =
+  | "manual-pause"
+  | "manual-stop"
+  | "target-completed"
+  | "outside-work-hours"
+  | "codex-usage-limit"
+  | "claude-usage-limit"
+  | "partially-successful"
+  | "failure"
+  | "no-confirmed-plan"
+  | "no-target"
+  | "no-next-update"
+  | "awaiting-user"
+  | "restart-resume-required";
+
+export interface AutomationTargetCandidate {
+  updateId: string;
+  versionId: string | null;
+  versionLabel: string;
+  title: string;
+  description: string;
+  order: number;
+  status: VersionUpdate["status"];
+  available: boolean;
+  draft: boolean;
+  blockedReason: string | null;
+  pathUpdateIds: string[];
+}
+
+export interface AutomationRunState {
+  status: AutomationRunStatus;
+  selectedTargetUpdateId: string | null;
+  selectedTargetVersionId: string | null;
+  inScopeUpdateIds: string[];
+  constraints: AutomationConstraints;
+  stopReason: AutomationStopReason | null;
+  stopSummary: string | null;
+  currentStep: "idle" | "jeff" | "todd" | "ping" | "pong" | "awaiting-report" | "awaiting-user";
+  startedAt: string | null;
+  lastResumedAt: string | null;
+  updatedAt: string | null;
+  completedAt: string | null;
+  resumeRequired: boolean;
+  nextUpdateId: string | null;
+  lastSuccessfulUpdateId: string | null;
+  lastSuccessfulHistoryUpdateId: string | null;
+  pendingRevertReportId: string | null;
+  pendingRevertHistoryUpdateId: string | null;
+  pendingRevertCommitSha: string | null;
+}
+
 export interface CorePillarDetail {
   summary: string;
   status: DetailStatus;
@@ -975,16 +893,52 @@ export interface CascadeProposal {
   createdAt: string;
 }
 
-export interface DynamicSubAgent {
+export type SoftMemoryTag =
+  | "likely-hard"
+  | "likely-backup"
+  | "handoff-to-dan"
+  | "handoff-to-todd"
+  | "handoff-to-ping"
+  | "handoff-to-pong"
+  | "handoff-to-jeff"
+  | "general";
+
+export interface TaggedNote {
   id: string;
-  skillId: string;
-  name: string;
-  role: string;
-  assignedUpdates: string[];
-  conversation: AgentChatMessage[];
-  sourcePillarId: string | null;
-  departmentDirectorId: DirectorId | null;
-  modelTier: "mini" | "large";
+  content: string;
+  tag: SoftMemoryTag;
+  createdAt: string;
+}
+
+export type JeffOutcomeDecision = "successful" | "partially-successful" | "failure";
+
+export interface JeffOutcomeEntry {
+  id: string;
+  updateId: string | null;
+  reportId: string;
+  decision: JeffOutcomeDecision;
+  summary: string;
+  revertTriggered: boolean;
+  createdAt: string;
+}
+
+export interface PongValidationReport {
+  id: string;
+  updateId: string | null;
+  historyUpdateId: string | null;
+  summary: string;
+  passed: boolean | null;
+  details: string | null;
+  screenshotPaths: string[];
+  createdAt: string;
+}
+
+export interface HandoffPayload {
+  sourceDirectorId: DirectorId;
+  targetDirectorId: DirectorId;
+  summary: string;
+  rawUserText: string | null;
+  contextNotes: string[];
 }
 
 export type PendingApprovalKind =
@@ -993,9 +947,9 @@ export type PendingApprovalKind =
   | "codebase-scan"
   | "store-data"
   | "plan"
-  | "apply-pending-update"
   | "agent-update"
-  | "validation";
+  | "validation"
+  | "outcome-decision";
 
 export type PendingApprovalStatus = "pending" | "later";
 
@@ -1030,7 +984,7 @@ export interface DanHistoryLogEntry {
 export interface DanMemory {
   confirmedConcept: AgentCoreDetails | null;
   draftConcept: AgentCoreDetails | null;
-  notes: string[];
+  notes: TaggedNote[];
   sideNotes: string[];
   draftChangeSummary: string[];
   draftStatus: DanDraftStatus | null;
@@ -1040,7 +994,7 @@ export interface DanMemory {
   rawMemories: DanRawMemory[];
   forgottenMemories: string[];
   creativeHistory: DanHistoryLogEntry[];
-  toddHandoffNotes: string[];
+  toddHandoffNotes: TaggedNote[];
 }
 
 export interface ToddCodebaseIndexedMap {
@@ -1057,6 +1011,8 @@ export interface ToddUpdateLogEntry {
   outcome: string;
   status: PingRawReportStatus;
   reportId: string | null;
+  historyUpdateId: string | null;
+  commitSha: string | null;
   createdAt: string;
 }
 
@@ -1088,9 +1044,9 @@ export interface ToddMemory {
   previousUpdateLog: ToddUpdateLogEntry[];
   troubleLog: ToddTroubleLogEntry[];
   codebaseIndexedMap: ToddCodebaseIndexedMap | null;
-  notes: string[];
+  notes: TaggedNote[];
   pendingHandoff: ToddHandoffPackage | null;
-  backupNotes: string[];
+  backupNotes: TaggedNote[];
 }
 
 export type PingRawReportStatus = "success" | "blocked" | "unexpected" | "no_changes";
@@ -1135,9 +1091,38 @@ export interface PingRawReport {
   createdAt: string;
 }
 
+export type PingTaskSource = "todd-approved-update" | "direct-ping-request";
+
+export interface PingRuntimeSnapshot {
+  provider: AiProvider;
+  model: CodexModel;
+  claudeModel: ClaudeModel;
+  reasoningEffort: AdvancedDefaults["reasoningEffort"];
+  planningMode: PlanningMode;
+  contextPaths: string[];
+}
+
+export interface PingTaskSnapshot {
+  source: PingTaskSource;
+  projectId: string;
+  updateId: string | null;
+  updateTitle: string | null;
+  updateDescription: string | null;
+  originalUserRequest: string;
+  toddExplanation: string | null;
+  relevantPillarIds: string[];
+  toddCodebaseMapSummary: string | null;
+  coreDetailsContext: string | null;
+  runtime: PingRuntimeSnapshot;
+  planPrompt: string;
+  createdAt: string;
+}
+
 export interface JeffExecutionReport {
   id: string;
   updateId: string | null;
+  historyUpdateId: string | null;
+  commitSha: string | null;
   title: string;
   summary: string;
   outcome: string;
@@ -1147,6 +1132,45 @@ export interface JeffExecutionReport {
   createdAt: string;
 }
 
+export interface PingPlanSnapshot {
+  task: PingTaskSnapshot;
+  provider: AiProvider;
+  model: CodexModel;
+  claudeModel: ClaudeModel;
+  reasoningEffort: AdvancedDefaults["reasoningEffort"];
+  planningMode: PlanningMode;
+  threadId: string | null;
+  turnId: string | null;
+  status: PlanDraft["status"];
+  thinkingStatus: UpdateStageStatus;
+  planningStatus: UpdateStageStatus;
+  buildingStatus: UpdateStageStatus;
+  verifyingStatus: UpdateStageStatus;
+  explanation: string;
+  steps: PlanStep[];
+  summary: string | null;
+  impact: string | null;
+  contextPaths: string[];
+  lastUpdatedAt: string;
+}
+
+export interface PingExecutionReportSnapshot {
+  task: PingTaskSnapshot;
+  plan: PingPlanSnapshot | null;
+  rawReport: PingRawReport;
+  historyUpdateId: string | null;
+  commitSha: string | null;
+  jeffReportId: string | null;
+  jeffSummary: string | null;
+  createdAt: string;
+}
+
+export interface PingRunSnapshot {
+  task: PingTaskSnapshot;
+  plan: PingPlanSnapshot | null;
+  report: PingExecutionReportSnapshot | null;
+}
+
 export interface PingMemory {
   activeUpdateId: string | null;
   activeTask: string | null;
@@ -1154,6 +1178,22 @@ export interface PingMemory {
   codebaseMapSummary: string | null;
   latestRawReport: PingRawReport | null;
   latestJeffReport: JeffExecutionReport | null;
+  currentRun: PingRunSnapshot | null;
+}
+
+export interface JeffMemory {
+  pendingReports: JeffExecutionReport[];
+  pendingValidations: PongValidationReport[];
+  outcomeLog: JeffOutcomeEntry[];
+  notes: TaggedNote[];
+  backupNotes: TaggedNote[];
+}
+
+export interface PongMemory {
+  jeffInstruction: string | null;
+  previousValidationReports: PongValidationReport[];
+  latestValidationReport: PongValidationReport | null;
+  screenshotPaths: string[];
 }
 
 export interface AgentSession {
@@ -1196,7 +1236,6 @@ export interface AgentSession {
   pingTaskContext: ShortHorizonContext | null;
   pongTaskContext: ShortHorizonContext | null;
   projectCategory: ProjectCategory;
-  dynamicSubAgents: DynamicSubAgent[];
   slackMessages: SlackChatMessage[];
   slackActiveDirectorId: DirectorId;
   slackPresenceGuestId: DirectorId | null;
@@ -1206,6 +1245,9 @@ export interface AgentSession {
   danMemory: DanMemory;
   toddMemory: ToddMemory;
   pingMemory: PingMemory;
+  jeffMemory: JeffMemory;
+  pongMemory: PongMemory;
+  automation: AutomationRunState;
 }
 
 export interface AgentChatInput {
@@ -1336,61 +1378,6 @@ export interface AgentProcessTodosInput {
   newTodos: string[];
 }
 
-// --- Git Sync ---
-
-export interface GitSyncInput {
-  projectId: string;
-  commitMessage?: string;
-}
-
-export interface GitSyncResult {
-  committed: boolean;
-  pushed: boolean;
-  commitSha: string | null;
-  error: string | null;
-}
-
-// --- Skills ---
-
-export type SkillSourceType = "skill" | "plugin";
-export type SkillInstallStatus = "ready" | "installing" | "error";
-export type SkillProviderCompatibility = "claude" | "codex" | "universal";
-
-export interface Skill {
-  id: string;
-  name: string;
-  description: string;
-  sourceProvider: SkillProviderCompatibility;
-  sourceType: SkillSourceType;
-  instructions: string;
-  originalFilePath: string | null;
-  isUniversal: boolean;
-  installStatus: SkillInstallStatus;
-  installSlug: string | null;
-  installPath: string | null;
-  lastError: string | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface DownloadSkillInput {
-  filePath: string;
-  name?: string;
-}
-
-export interface InstallSkillCatalogInput {
-  catalogId: "frontend-design-universal" | "user-testing-universal";
-}
-
-export interface ConvertSkillInput {
-  skillId: string;
-}
-
-export interface AttachSkillInput {
-  projectId: string;
-  skillId: string | null;
-}
-
 export type PlaywrightAction =
   | {
       type: "wait";
@@ -1467,6 +1454,18 @@ export interface DirectorChatResponse {
   structuredData: DirectorStructuredData | null;
   internalNotes: string[] | null;
   suggestCreateProject: boolean;
+}
+
+export interface StartPingDirectUpdateInput {
+  projectId: string;
+  message: string;
+  runMode: PingDirectRunMode;
+  provider?: AiProvider;
+  model?: CodexModel;
+  claudeModel?: ClaudeModel;
+  reasoningEffort?: ReasoningEffort;
+  planningMode?: PlanningMode;
+  contextPaths?: string[];
 }
 
 export type DirectorStructuredData =
@@ -1591,8 +1590,38 @@ export interface RefreshProjectInput {
   claudeModel: ClaudeModel;
 }
 
-// --- Pillar Sub-Agents ---
+export interface ListAutomationTargetsInput {
+  projectId: string;
+}
 
-export interface CreatePillarSubAgentsInput {
+export interface ListAutomationTargetsResponse {
+  source: "none" | "confirmed" | "draft";
+  currentVersionId: string | null;
+  currentVersionLabel: string | null;
+  draftApprovalId: string | null;
+  candidates: AutomationTargetCandidate[];
+}
+
+export interface StartAutomationRunInput {
+  projectId: string;
+  targetUpdateId: string;
+  constraints: AutomationConstraints;
+}
+
+export interface PauseAutomationRunInput {
+  projectId: string;
+  summary?: string | null;
+}
+
+export interface StopAutomationRunInput {
+  projectId: string;
+  summary?: string | null;
+}
+
+export interface RequestAutomationFailureRecoveryInput {
+  projectId: string;
+}
+
+export interface ConfirmAutomationFailureRecoveryInput {
   projectId: string;
 }

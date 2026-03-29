@@ -64,15 +64,12 @@ const createSession = (): AgentSession => {
     pingTaskContext: null,
     pongTaskContext: null,
     projectCategory: "general-project",
-    dynamicSubAgents: [],
     slackMessages: [],
     slackActiveDirectorId: "project-manager",
     slackPresenceGuestId: null,
     pendingApprovals: [],
     directorSettingsOverrides: {},
     directorStateMap: {},
-    agentConversations: {},
-    activeAgentId: null,
   };
 };
 

@@ -1,8 +1,8 @@
 import {
+  Component,
   Fragment,
   useCallback,
   useEffect,
-  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -11,13 +11,9 @@ import {
   type DragEvent as ReactDragEvent,
   type ReactNode,
 } from "react";
-import mermaid from "mermaid";
 import { getDirectorMetadata, type DirectorFlowLink } from "@shared/director-metadata";
 import { APP_PAGE_OPTIONS, getVisibleAppPageOptions, resolveVisibleAppPage, type AppPage } from "@shared/app-shell";
-import { normalizeFlowchartGraph } from "@shared/flowchart";
 import { sortPillarsByOrder } from "@shared/pillar-flow";
-import { InteractiveFlowchart } from "./components/InteractiveFlowchart";
-import { FlowchartDiff } from "./components/FlowchartDiff";
 import {
   AGENT_STAGE_LABELS,
   DIRECTOR_LABELS,
@@ -30,6 +26,7 @@ import {
   type CorePillar,
   type HardMemoryReportMetadata,
   type HardMemoryReportUpdate,
+  type JeffOutcomeDecision,
   type JeffExecutionReport,
   type DirectorChatResponse,
   type DirectorFocusMode,
@@ -39,6 +36,8 @@ import {
   type AgentStage,
   type AgentStageConfirmation,
   type AiProvider,
+  type AutomationConstraints,
+  type AutomationTargetCandidate,
   type AppUpdateStatus,
   type AppEvent,
   type AttachPathInspection,
@@ -48,15 +47,18 @@ import {
   type EnvFileSnapshot,
   type EnvVariableEntry,
   type FeasibilityAssessment,
-  type FlowchartGraph,
-  type GenerateFlowchartResult,
   type GenerateProjectOutlineReportInput,
-  type InstallSkillCatalogInput,
   type CascadeProposal,
   type ModelCatalog,
   type ModelOption,
   type PendingApproval,
+  type PingDirectRunMode,
+  type PingExecutionReportSnapshot,
+  type PingPlanSnapshot,
+  type PingRawReport,
+  type PingTaskSnapshot,
   type PlanDraft,
+  type PongValidationReport,
   type ProjectCategory,
   type ProviderUsage,
   type Project,
@@ -77,17 +79,9 @@ import {
   type VersionPlan,
   type VersionUpdate,
   type VibeAttachment,
-  type PendingPlannedUpdate,
-  type PlanningChatMessage,
   type PlanningMode,
-  type PlanningChatResponse,
-  type GenerateFlowchartInput,
-  type PlanningChatInput,
-  type SavePlannedUpdateInput,
   type UpdateStageStatus,
   type DiffStats,
-  type GitSyncResult,
-  type Skill,
   type SlackChatMessage,
   type SlackChatInput,
   type SlackChatResponse,
@@ -153,12 +147,10 @@ const emptySettings: Settings = {
     reasoningEffort: "xhigh",
     serviceTier: "flex",
     customInstructions: "",
-    repoVisibility: "private",
   },
   appSourcePath: "/Users/kc/Desktop/PROGRAMS",
   codexBinaryPath: null,
   claudeBinaryPath: null,
-  githubClientIdOverride: null,
 };
 
 const emptySetup: SetupSnapshot = {
@@ -168,7 +160,6 @@ const emptySetup: SetupSnapshot = {
   showSetupOnLaunch: false,
   currentCheckId: null,
   isPackagedBuild: false,
-  githubConfigured: false,
 };
 
 const emptyAuth: AuthSnapshot = {
@@ -195,19 +186,6 @@ const emptyAuth: AuthSnapshot = {
     errorMessage: null,
     runtimeErrorMessage: null,
     connectErrorMessage: null,
-  },
-  github: {
-    configured: false,
-    canConnect: false,
-    clientIdSource: null,
-    hasStoredToken: false,
-    loggedIn: false,
-    verified: false,
-    login: null,
-    avatarUrl: null,
-    expiresAt: null,
-    errorMessage: null,
-    loginPrompt: null,
   },
 };
 
@@ -507,7 +485,9 @@ const buildDirectorLiveContextItems = (directorId: DirectorId, session: AgentSes
 };
 
 const getDirectorProjectNotes = (directorId: DirectorId, session: AgentSession | null): string[] =>
-  directorId === "creative-director" ? session?.danMemory.notes ?? session?.danInternalNotes ?? [] : [];
+  directorId === "creative-director"
+    ? (session?.danMemory.notes ?? []).map((n) => typeof n === "string" ? n : n.content)
+    : [];
 
 const formatDate = (value: string | null): string =>
   value
@@ -810,7 +790,7 @@ const createAgentLandingTileStyle = (iconColor: string, muted = false): CSSPrope
   };
 };
 
-const isProjectUpdating = (status: Project["status"]): boolean => status === "executing" || status === "syncing";
+const isProjectUpdating = (status: Project["status"]): boolean => status === "executing";
 
 const getHomeTileDotState = (
   project: Project,
@@ -979,10 +959,8 @@ function App() {
   slackSelectedProjectIdRef.current = slackSelectedProjectId;
   const selectedProjectIdRef = useRef(selectedProjectId);
   selectedProjectIdRef.current = selectedProjectId;
-  const [skills, setSkills] = useState<Skill[]>([]);
   const [programAgentSession, setProgramAgentSession] = useState<AgentSession | null>(null);
   const [projectAssumedFlags, setProjectAssumedFlags] = useState<Record<string, boolean>>({});
-  const [pendingUpdates, setPendingUpdates] = useState<Record<string, PendingPlannedUpdate | null>>({});
   const [outlineReports, setOutlineReports] = useState<Record<string, ProjectOutlineReport | null | undefined>>({});
   const [envSnapshots, setEnvSnapshots] = useState<Record<string, EnvFileSnapshot | undefined>>({});
   const [isUpdateDropTarget, setIsUpdateDropTarget] = useState(false);
@@ -1146,7 +1124,6 @@ function App() {
       setSetup(bootstrap.setup);
       setAppUpdate(bootstrap.appUpdate);
       setModelCatalog(bootstrap.modelCatalog);
-      setSkills(bootstrap.skills);
       setComposerOptions(getComposerDefaults(bootstrap.settings));
 
       // Derive project categories
@@ -1313,10 +1290,6 @@ function App() {
         case "auth.claude.codePrompt":
           setClaudeAuthCodePrompt(event.prompt);
           return;
-        case "auth.github":
-          setAuth((current) => ({ ...current, github: event.status }));
-          void refreshSetup().catch(() => undefined);
-          return;
         case "modelCatalog.updated":
           setModelCatalog(event.catalog);
           return;
@@ -1451,12 +1424,6 @@ function App() {
               : current,
           );
           return;
-        case "project.pendingUpdate":
-          setPendingUpdates((current) => ({
-            ...current,
-            [event.projectId]: event.pending,
-          }));
-          return;
         case "project.outlineReport":
           setOutlineReports((current) => ({
             ...current,
@@ -1520,9 +1487,6 @@ function App() {
       ...current,
       [projectId]: detail.runtime,
     }));
-    void window.programs.getPendingUpdate(projectId).then((pending) => {
-      setPendingUpdates((current) => ({ ...current, [projectId]: pending }));
-    }).catch(() => undefined);
     return detail;
   };
 
@@ -1599,16 +1563,12 @@ function App() {
         parentDirectory: formState.parentDirectory.trim(),
         iconColor: formState.iconColor,
         initialIdea: formState.initialIdea.trim(),
-        createRemote: false,
-        visibility: "private",
       });
       selectProject(project.id);
     } else {
       const project = await window.programs.attachProject({
         localPath: formState.attachDirectory.trim(),
         iconColor: formState.iconColor,
-        createRemote: false,
-        visibility: "private",
       });
       selectProject(project.id);
     }
@@ -1718,16 +1678,14 @@ function App() {
       setTheme(updated.theme);
       setAppUpdate(nextAppUpdate);
       setComposerOptions(getComposerDefaults(updated));
-      const [codexStatus, claudeStatus, githubStatus] = await Promise.all([
+      const [codexStatus, claudeStatus] = await Promise.all([
         window.programs.getCodexStatus(),
         window.programs.getClaudeStatus(),
-        window.programs.getGitHubStatus(),
       ]);
       setAuth((current) => ({
         ...current,
         codex: codexStatus,
         claude: claudeStatus,
-        github: githubStatus,
       }));
       await refreshSetup();
       if (showUsageSheet) {
@@ -1776,16 +1734,6 @@ function App() {
     });
   };
 
-  const handleConnectGitHub = async () => {
-    await withBusy("auth.github", async () => {
-      const prompt = await window.programs.loginGitHub();
-      const status = await window.programs.getGitHubStatus();
-      setAuth((current) => ({ ...current, github: status }));
-      pushToast(`Approve GitHub access in your browser with code ${prompt.userCode}.`, "info");
-      await refreshSetup();
-    });
-  };
-
   const handleDisconnectCodex = async () => {
     await withBusy("auth.codex", async () => {
       const status = await window.programs.logoutCodex();
@@ -1798,14 +1746,6 @@ function App() {
     await withBusy("auth.claude", async () => {
       const status = await window.programs.logoutClaude();
       setAuth((current) => ({ ...current, claude: status }));
-      await refreshSetup();
-    });
-  };
-
-  const handleDisconnectGitHub = async () => {
-    await withBusy("auth.github", async () => {
-      const status = await window.programs.logoutGitHub();
-      setAuth((current) => ({ ...current, github: status }));
       await refreshSetup();
     });
   };
@@ -1835,14 +1775,6 @@ function App() {
       pushToast(result.message, result.ok ? "success" : "error");
       const status = await window.programs.getClaudeStatus();
       setAuth((current) => ({ ...current, claude: status }));
-    });
-  };
-
-  const handleReconnectGitHub = async () => {
-    await withBusy("auth.github", async () => {
-      const status = await window.programs.getGitHubStatus();
-      setAuth((current) => ({ ...current, github: status }));
-      pushToast(status.loggedIn ? `GitHub is connected${status.login ? ` as ${status.login}` : ""}.` : "GitHub is not connected.", status.loggedIn ? "success" : "error");
     });
   };
 
@@ -1901,9 +1833,6 @@ function App() {
         return;
       case "claudeLogin":
         await handleConnectClaude();
-        return;
-      case "githubLogin":
-        await handleConnectGitHub();
         return;
       case "installGit":
         setSetupConfirmCheck(check);
@@ -2302,7 +2231,23 @@ function App() {
 
       <div className="chatViewportDivider pageChromeDivider" aria-hidden="true" />
 
-      <div className={showUpdatePanel ? "projectDetailWorkspace updateOpen" : "projectDetailWorkspace"}>
+      <div className="chatFabWrap">
+        <button
+          type="button"
+          className="chatFab"
+          aria-label="Chat with Jeff"
+          onClick={() => {
+            setCurrentPage("agents");
+            handleSelectDirector("project-manager");
+          }}
+        >
+          <svg width="28" height="28" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+            <path d="M2 4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6l-4 3V4z" fill="currentColor" />
+          </svg>
+        </button>
+      </div>
+
+      <div className="projectDetailWorkspace">
         <div className="projectSummaryCard">
           <div className="summaryMain">
             <div className="summaryHeaderRow">
@@ -2352,153 +2297,6 @@ function App() {
             </div>
           </div>
         </div>
-
-        <ProgramModeSwitchRow
-          project={selectedProject}
-          skills={skills}
-          attachedSkillId={selectedProject.runtimeConfig.attachedSkillId ?? null}
-          onAttachSkill={(skillId) => {
-            void window.programs.attachSkillToProject({ projectId: selectedProject.id, skillId });
-          }}
-          onSync={() => {
-            void (async () => {
-              setBusyKey("git.sync");
-              try {
-                const result = await window.programs.syncProjectToGitHub({ projectId: selectedProject.id });
-                if (result.error) {
-                  pushToast(result.error, "error");
-                } else if (result.committed || result.pushed) {
-                  pushToast("Synced to GitHub.", "success");
-                } else {
-                  pushToast("Nothing to sync.", "info");
-                }
-              } catch (error) {
-                pushToast(error instanceof Error ? error.message : "Sync failed.", "error");
-              } finally {
-                setBusyKey(null);
-              }
-            })();
-          }}
-          isSyncing={busyKey === "git.sync"}
-        />
-
-        {showUpdatePanel ? (
-          <div
-            ref={updateSectionRef}
-            className={isUpdateDropTarget ? "updateSection dragActive" : "updateSection"}
-            onDragEnter={handleUpdateSectionDragEnter}
-            onDragOver={handleUpdateSectionDragOver}
-            onDragLeave={handleUpdateSectionDragLeave}
-            onDrop={(event) => void handleUpdateSectionDrop(event)}
-          >
-            <div className={showUpdateDock ? "updateCard updateCard-withDock" : "updateCard"}>
-              <div className="updateCardSpacer" />
-
-              <div className="updateFooterStack">
-                <PendingApprovalsPanel
-                  projectId={selectedProject.id}
-                  session={programAgentSession}
-                  onSessionUpdate={setProgramAgentSession}
-                  pushToast={pushToast}
-                />
-                {showUpdateDock ? (
-                  <UpdateStagePanel
-                    plan={activePlan}
-                    canConfirmPlan={canConfirmPlan}
-                    confirmBusy={busyKey === "plan.approve"}
-                    onConfirm={handleConfirmUpdate}
-                  />
-                ) : null}
-
-                {planError ? (
-                  <div className="planErrorBanner">
-                    <span className="planErrorBanner-message">{planError}</span>
-                    <button className="planErrorBanner-dismiss" onClick={() => setPlanError(null)}>
-                      Dismiss
-                    </button>
-                  </div>
-                ) : null}
-
-                <div className="composerShell">
-                  {composerOptions.contextPaths.length ? (
-                    <div className="composerAttachmentRow">
-                      <div className="chipList">
-                        {composerOptions.contextPaths.map((path) => (
-                          <button
-                            key={path}
-                            className="pathChip"
-                            onClick={() =>
-                              setComposerOptions((current) => ({
-                                ...current,
-                                contextPaths: current.contextPaths.filter((item) => item !== path),
-                              }))
-                            }
-                          >
-                            {path}
-                            <span aria-hidden="true">×</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  <textarea
-                    ref={composerInputRef}
-                    value={composerValue}
-                    onChange={(event) => setComposerValue(event.target.value)}
-                    className="composerInput"
-                    placeholder={
-                      activePlan?.status === "awaitingApproval"
-                        ? `Ask ${providerLabel(composerOptions.provider)} to revise the current plan.`
-                        : "Describe the next change."
-                    }
-                  />
-
-                  <ComposerControlBar
-                    options={composerOptions}
-                    modelCatalog={modelCatalog}
-                    addFilesBusy={busyKey === "context.pick"}
-                    sendBusy={busyKey === "plan.send"}
-                    isRunning={Boolean(activePlan && activePlan.status !== "completed" && activePlan.status !== "failed" && activePlan.status !== "awaitingApproval")}
-                    onCodexModelChange={(model) =>
-                      setComposerOptions((current) => ({
-                        ...current,
-                        provider: "codex",
-                        model,
-                        speed: "normal",
-                        reasoningEffort: "xhigh",
-                      }))
-                    }
-                    onClaudeModelChange={(claudeModel) =>
-                      setComposerOptions((current) => ({
-                        ...current,
-                        provider: "claude",
-                        claudeModel,
-                      }))
-                    }
-                    onReasoningChange={(reasoningEffort) =>
-                      setComposerOptions((current) => ({ ...current, reasoningEffort }))
-                    }
-                    onSpeedChange={(speed) => setComposerOptions((current) => ({ ...current, speed }))}
-                    onPlanningModeChange={(planningMode) =>
-                      setComposerOptions((current) => ({ ...current, planningMode }))
-                    }
-                    onAddFiles={() => void handlePickContextPaths()}
-                    onSubmit={handlePlanAction}
-                    onStop={handleCancelPlan}
-                    submitLabel={activePlan?.status === "awaitingApproval" ? "Revise update" : "Send update"}
-                  />
-                </div>
-              </div>
-
-              {isUpdateDropTarget ? (
-                <div className="updateDropOverlay" aria-hidden="true">
-                  <span>Drop files anywhere in this area to attach them</span>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        ) : null}
       </div>
     </section>
   );
@@ -2508,7 +2306,7 @@ function App() {
       <div className="appShell">
         <div className="loadingGate">
           <div className="sectionTag">Starting PROGRAMS</div>
-          <h1>{startupIssue ? "PROGRAMS could not start" : "Checking your workspace"}</h1>
+          <h1 className={startupIssue ? undefined : "isLoading"}>{startupIssue ? "PROGRAMS could not start" : "Checking your workspace"}</h1>
           <p>{startupIssue ?? "PROGRAMS is loading your setup, projects, and local workspace."}</p>
         </div>
       </div>
@@ -2721,6 +2519,7 @@ function App() {
               settings={settings}
               agentSession={agentSession}
               agentSelectedProjectId={agentSelectedProjectId}
+              activePlan={agentSelectedProjectId ? projectDetails[agentSelectedProjectId]?.activePlan ?? null : null}
               agentViewStage={agentViewStage}
               modelCatalog={modelCatalog}
               selectedDirectorId={selectedDirectorId}
@@ -2734,8 +2533,6 @@ function App() {
               onUpdateAgentDefaults={handleUpdateAgentDefaults}
               pushToast={pushToast}
             />
-          ) : activePage === "skills" ? (
-            <SkillsPage skills={skills} onSkillsChange={setSkills} pushToast={pushToast} />
           ) : (
             programsPage
           )}
@@ -2912,13 +2709,10 @@ function App() {
           onSave={(next) => void handleSaveSettings(next)}
           onConnectCodex={() => void handleConnectCodex()}
           onConnectClaude={() => void handleConnectClaude()}
-          onConnectGitHub={() => void handleConnectGitHub()}
           onDisconnectCodex={() => void handleDisconnectCodex()}
           onDisconnectClaude={() => void handleDisconnectClaude()}
-          onDisconnectGitHub={() => void handleDisconnectGitHub()}
           onReconnectCodex={() => void handleReconnectCodex()}
           onReconnectClaude={() => void handleReconnectClaude()}
-          onReconnectGitHub={() => void handleReconnectGitHub()}
           onTestClaude={() => void handleTestClaude()}
           onSetupCodex={() => void handleSetupCodex()}
           onSetupClaude={() => void handleSetupClaude()}
@@ -2954,40 +2748,8 @@ function App() {
         <ProgramDetailsModal
           project={programDetailsProject}
           updates={projectDetails[programDetailsProjectId]?.updates ?? []}
-          currentFlowchart={projectDetails[programDetailsProjectId]?.flowchart ?? createFallbackPlan(programDetailsProject)}
-          currentFlowchartGraph={projectDetails[programDetailsProjectId]?.flowchartGraph ?? null}
-          pendingUpdate={pendingUpdates[programDetailsProjectId] ?? null}
           agentSession={programAgentSession}
-          busyKey={busyKey}
           onClose={() => setProgramDetailsProjectId(null)}
-          onGenerateFlowchart={async (provider: AiProvider) => {
-            await withBusy("generate-flowchart", async () => {
-              const result = await window.programs.generateFlowchart({
-                projectId: programDetailsProjectId,
-                provider,
-                model: composerOptions.model,
-                claudeModel: composerOptions.claudeModel,
-              });
-              setProjectDetails((current) =>
-                current[programDetailsProjectId]
-                  ? {
-                      ...current,
-                      [programDetailsProjectId]: {
-                        ...current[programDetailsProjectId],
-                        flowchart: result.flowchart,
-                        flowchartGraph: result.flowchartGraph,
-                      },
-                    }
-                  : current,
-              );
-            });
-          }}
-          onApplyPendingUpdate={async () => {
-            await withBusy("apply-pending", async () => {
-              await window.programs.applyPlannedUpdate(programDetailsProjectId);
-              setProgramDetailsProjectId(null);
-            });
-          }}
           onUndo={(update) => void handleUndoUpdate(update)}
         />
       ) : null}
@@ -3607,35 +3369,11 @@ function AgentLandingCard({
 
 
 function HomepageComposer() {
-  const [draftValue, setDraftValue] = useState("");
-  const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
-
-  useEffect(() => {
-    syncComposerTextareaHeight(composerInputRef.current, { minHeight: SLACK_COMPOSER_MIN_HEIGHT });
-  }, [draftValue]);
-
   return (
     <section className="homepageComposer">
-      <div className="chatViewportDivider" aria-hidden="true" />
-      <div className="homepageComposerContent">
-        <div className="composerShell slackComposerShellCompact homepageComposerShell">
-          <textarea
-            ref={composerInputRef}
-            className="composerInput slackComposerInputCompact"
-            value={draftValue}
-            onChange={(event) => setDraftValue(event.target.value)}
-            placeholder="Describe what you want to work on next..."
-          />
-          <button
-            type="button"
-            className="primaryButton composerSubmitButton"
-            disabled
-            aria-label="Send"
-            title="Coming soon"
-          >
-            <ArrowUpIcon />
-          </button>
-        </div>
+      <div className="chatViewportDivider pageChromeDivider" aria-hidden="true" />
+      <div className="homepageMainArea" style={{ display: "flex", alignItems: "center", justifyContent: "center", flex: 1 }}>
+        <span style={{ color: "var(--color-text-tertiary, #888)" }}>TBD</span>
       </div>
     </section>
   );
@@ -3798,11 +3536,19 @@ function UsageOverviewSheet({
       : usage.claude.note;
   if (usage.claude.status === "ready" || auth.claude.loggedIn || claudeNote) {
     const claudeUsesLocalMetrics = usage.claude.windows.some((window) => window.usedPercent === null);
+    const claudeBadge =
+      usage.claude.status === "ready"
+        ? claudeUsesLocalMetrics
+          ? "Activity"
+          : "Live"
+        : usage.claude.status === "unsupported"
+          ? "Unavailable"
+          : "Status";
     cards.push({
       key: "claude",
       name: "Claude",
       subtitle: auth.claude.loggedIn ? formatUsageSubtitle(auth.claude.email, auth.claude.planType ?? "Signed in") : "Activity history",
-      badge: usage.claude.status === "ready" ? (claudeUsesLocalMetrics ? "Activity" : "Live") : "Status",
+      badge: claudeBadge,
       windows: usage.claude.windows,
       note: claudeNote,
     });
@@ -3952,12 +3698,12 @@ const labelForPendingApprovalKind = (kind: PendingApproval["kind"]): string => {
       return "Store Details";
     case "plan":
       return "Plan Run";
-    case "apply-pending-update":
-      return "Apply Update";
     case "agent-update":
       return "Agent Update";
     case "validation":
       return "Validation";
+    case "outcome-decision":
+      return "Outcome Decision";
   }
 };
 
@@ -4304,12 +4050,6 @@ function UpdateStagePanel({
               <p><TypewriterText text={plan.impact} /></p>
             </div>
           ) : null}
-          {plan.flowchartChanges ? (
-            <div>
-              <strong>Flowchart changes</strong>
-              <p><TypewriterText text={plan.flowchartChanges} /></p>
-            </div>
-          ) : null}
         </div>
         {plan.contextPaths.length ? (
           <div className="planMetaGrid">
@@ -4419,13 +4159,10 @@ function SettingsModal({
   onSave,
   onConnectCodex,
   onConnectClaude,
-  onConnectGitHub,
   onDisconnectCodex,
   onDisconnectClaude,
-  onDisconnectGitHub,
   onReconnectCodex,
   onReconnectClaude,
-  onReconnectGitHub,
   onTestClaude,
   onSetupCodex,
   onSetupClaude,
@@ -4450,13 +4187,10 @@ function SettingsModal({
   onSave: (settings: Settings) => void;
   onConnectCodex: () => void;
   onConnectClaude: () => void;
-  onConnectGitHub: () => void;
   onDisconnectCodex: () => void;
   onDisconnectClaude: () => void;
-  onDisconnectGitHub: () => void;
   onReconnectCodex: () => void;
   onReconnectClaude: () => void;
-  onReconnectGitHub: () => void;
   onTestClaude: () => void;
   onSetupCodex: () => void;
   onSetupClaude: () => void;
@@ -4468,36 +4202,6 @@ function SettingsModal({
   onCancelClaudeAuthCode: () => void;
 }) {
   const [draft, setDraft] = useState(settings);
-  const codexModelOptions = useMemo(() => {
-    const base = modelCatalog.codex.length ? modelCatalog.codex : DEFAULT_MODEL_CATALOG.codex;
-    if (base.some((option) => option.id === draft.advancedDefaults.model)) {
-      return base;
-    }
-
-    return [
-      {
-        id: draft.advancedDefaults.model,
-        label: labelForModel(draft.advancedDefaults.model, base, fallbackCodexModelLabel),
-        detail: null,
-      },
-      ...base,
-    ];
-  }, [draft.advancedDefaults.model, modelCatalog.codex]);
-  const claudeModelOptions = useMemo(() => {
-    const base = modelCatalog.claude.length ? modelCatalog.claude : DEFAULT_MODEL_CATALOG.claude;
-    if (base.some((option) => option.id === draft.advancedDefaults.claudeModel)) {
-      return base;
-    }
-
-    return [
-      {
-        id: draft.advancedDefaults.claudeModel,
-        label: labelForModel(draft.advancedDefaults.claudeModel, base, fallbackClaudeModelLabel),
-        detail: null,
-      },
-      ...base,
-    ];
-  }, [draft.advancedDefaults.claudeModel, modelCatalog.claude]);
   const gitInstallCheck = setup.checks.find((check) => check.id === "gitInstall") ?? null;
   const codexTone = auth.codex.loggedIn ? "confirmed" : auth.codex.available ? "info" : "action_required";
   const claudeTone: StatusTone = !auth.claude.available
@@ -4541,33 +4245,6 @@ function SettingsModal({
     : !auth.claude.loggedIn && auth.claude.canConnect
       ? onConnectClaude
       : undefined;
-  const githubTone: StatusTone = !auth.github.configured
-    ? "info"
-    : auth.github.loggedIn && auth.github.verified
-      ? "confirmed"
-      : auth.github.hasStoredToken
-        ? "action_required"
-        : "info";
-  const githubDetail = !auth.github.configured
-    ? "Add a GitHub OAuth client ID below, then connect GitHub to enable HTTPS sync."
-    : auth.github.loggedIn
-      ? auth.github.login
-        ? `Signed in as ${auth.github.login}. HTTPS sync is ready.`
-        : "Connected and verified for HTTPS sync."
-      : auth.github.loginPrompt
-        ? `Approve GitHub access in your browser with code ${auth.github.loginPrompt.userCode}.`
-        : auth.github.errorMessage ?? "Connect GitHub to sync projects with remote repositories.";
-  const githubActionLabel = auth.github.configured && !auth.github.loggedIn
-    ? auth.github.hasStoredToken
-      ? "Reconnect"
-      : "Connect"
-    : null;
-  const githubClientIdSourceLabel = auth.github.clientIdSource === "bundled"
-    ? "Bundled client ID is active."
-    : auth.github.clientIdSource === "override"
-      ? "Developer override is active."
-      : "No client ID configured yet.";
-  const isAdvancedMode = draft.uiMode === "advanced";
   const appUpdateTone: StatusTone =
     appUpdate.buildState === "failed"
       ? "action_required"
@@ -4612,30 +4289,6 @@ function SettingsModal({
   return (
     <Modal title="Settings" onClose={onClose} fullscreen>
       <div className="settingsStack">
-        <section className="settingsSection">
-          <div className="settingsSectionHead">
-            <h4>Mode</h4>
-            <StatusChip tone="info">{isAdvancedMode ? "Advanced" : "Basic"}</StatusChip>
-          </div>
-          <div className="speedToggle">
-            <button
-              className={draft.uiMode === "simple" ? "toggleOption active" : "toggleOption"}
-              onClick={() => setDraft({ ...draft, uiMode: "simple" })}
-            >
-              Basic
-            </button>
-            <button
-              className={draft.uiMode === "advanced" ? "toggleOption active" : "toggleOption"}
-              onClick={() => setDraft({ ...draft, uiMode: "advanced" })}
-            >
-              Advanced
-            </button>
-          </div>
-          <p className="helperText">
-            Basic keeps Settings lighter. Advanced exposes more saved AI defaults, while the Programs composer stays compact in either mode.
-          </p>
-        </section>
-
         <section className="settingsSection">
           <div className="settingsSectionHead">
             <h4>Appearance</h4>
@@ -4813,27 +4466,6 @@ function SettingsModal({
             ) : null}
 
             <ConnectionRow
-              title="GitHub"
-              tone={githubTone}
-              detail={githubDetail}
-              extraActionLabel={auth.github.loginPrompt ? "Open Browser" : null}
-              onExtraAction={
-                auth.github.loginPrompt
-                  ? () => {
-                      void window.programs.openExternal(auth.github.loginPrompt!.verificationUri);
-                    }
-                  : undefined
-              }
-              actionLabel={githubActionLabel}
-              onAction={githubActionLabel ? onConnectGitHub : undefined}
-              reconnectLabel={auth.github.loggedIn ? "Reconnect" : null}
-              onReconnect={auth.github.loggedIn ? onReconnectGitHub : undefined}
-              disconnectLabel={auth.github.loggedIn ? "Disconnect" : null}
-              onDisconnect={auth.github.loggedIn ? onDisconnectGitHub : undefined}
-              disabled={busyKey === "auth.github"}
-            />
-
-            <ConnectionRow
               title="Git"
               tone={gitInstallCheck?.status ?? "info"}
               detail={
@@ -4848,193 +4480,6 @@ function SettingsModal({
           </div>
         </section>
 
-        {isAdvancedMode ? (
-          <section className="settingsSection">
-            <div className="settingsSectionHead">
-              <h4>Advanced defaults</h4>
-            </div>
-
-            <label>
-              Default AI provider
-              <select
-                value={draft.advancedDefaults.provider}
-                onChange={(event) =>
-                  setDraft({
-                    ...draft,
-                    advancedDefaults: {
-                      ...draft.advancedDefaults,
-                      provider: event.target.value as AiProvider,
-                    },
-                  })
-                }
-              >
-                <option value="codex">Codex</option>
-                <option value="claude">Claude</option>
-              </select>
-            </label>
-
-            <label>
-              Codex model
-              <select
-                value={draft.advancedDefaults.model}
-                onChange={(event) =>
-                  setDraft({
-                    ...draft,
-                    advancedDefaults: {
-                      ...draft.advancedDefaults,
-                      model: event.target.value as CodexModel,
-                    },
-                  })
-                }
-              >
-                {codexModelOptions.map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {model.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label>
-              Claude model
-              <select
-                value={draft.advancedDefaults.claudeModel}
-                onChange={(event) =>
-                  setDraft({
-                    ...draft,
-                    advancedDefaults: {
-                      ...draft.advancedDefaults,
-                      claudeModel: event.target.value as ClaudeModel,
-                    },
-                  })
-                }
-              >
-                {claudeModelOptions.map((model) => (
-                  <option key={model.id} value={model.id}>
-                    {model.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label>
-              Thinking depth
-              <select
-                value={draft.advancedDefaults.reasoningEffort}
-                onChange={(event) =>
-                  setDraft({
-                    ...draft,
-                    advancedDefaults: {
-                      ...draft.advancedDefaults,
-                      reasoningEffort: event.target.value as Settings["advancedDefaults"]["reasoningEffort"],
-                    },
-                  })
-                }
-              >
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
-                <option value="xhigh">Extra high</option>
-              </select>
-            </label>
-
-            <div>
-              <span className="fieldLabel">Speed</span>
-              <div className="speedToggle">
-                <button
-                  className={draft.defaultSpeed === "normal" ? "toggleOption active" : "toggleOption"}
-                  onClick={() => setDraft({ ...draft, defaultSpeed: "normal" })}
-                >
-                  Normal
-                </button>
-                <button
-                  className={draft.defaultSpeed === "fast" ? "toggleOption active" : "toggleOption"}
-                  onClick={() => setDraft({ ...draft, defaultSpeed: "fast" })}
-                >
-                  Fast
-                </button>
-              </div>
-            </div>
-
-            <label className="checkboxField">
-              <input
-                type="checkbox"
-                checked={draft.autoApprovePlans}
-                onChange={(event) => setDraft({ ...draft, autoApprovePlans: event.target.checked })}
-              />
-              <span>Auto-approve plans by default</span>
-            </label>
-
-            <label>
-              Custom AI instructions
-              <textarea
-                rows={4}
-                value={draft.advancedDefaults.customInstructions}
-                onChange={(event) =>
-                  setDraft({
-                    ...draft,
-                    advancedDefaults: {
-                      ...draft.advancedDefaults,
-                      customInstructions: event.target.value,
-                    },
-                  })
-                }
-              />
-            </label>
-
-            {!isPackagedBuild ? (
-              <>
-                <label>
-                  Codex binary path
-                  <input
-                    value={draft.codexBinaryPath ?? ""}
-                    onChange={(event) => setDraft({ ...draft, codexBinaryPath: event.target.value || null })}
-                    placeholder="/Applications/Codex.app/Contents/Resources/codex"
-                  />
-                </label>
-                <label>
-                  Claude binary path
-                  <input
-                    value={draft.claudeBinaryPath ?? ""}
-                    onChange={(event) => setDraft({ ...draft, claudeBinaryPath: event.target.value || null })}
-                    placeholder="claude (auto-detected from PATH)"
-                  />
-                </label>
-                <label>
-                  GitHub OAuth client ID
-                  <input
-                    value={draft.githubClientIdOverride ?? ""}
-                    onChange={(event) => setDraft({ ...draft, githubClientIdOverride: event.target.value || null })}
-                    placeholder="Paste your GitHub OAuth app client ID"
-                  />
-                </label>
-                <p className="helperText">
-                  {githubClientIdSourceLabel} Use a GitHub OAuth app with device flow enabled so PROGRAMS can create and sync private repos over HTTPS.
-                </p>
-                <div className="settingsActionRow">
-                  <button
-                    className="secondaryButton"
-                    type="button"
-                    onClick={() => {
-                      void window.programs.openExternal("https://github.com/settings/developers");
-                    }}
-                  >
-                    Configure GitHub App
-                  </button>
-                  <button
-                    className="secondaryButton"
-                    type="button"
-                    onClick={() => {
-                      void window.programs.openExternal("https://docs.github.com/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps");
-                    }}
-                  >
-                    Device Flow Docs
-                  </button>
-                </div>
-              </>
-            ) : null}
-          </section>
-        ) : null}
       </div>
 
       <div className="modalActions">
@@ -5114,26 +4559,14 @@ function ConnectionRow({
 function ProgramDetailsModal({
   project,
   updates,
-  currentFlowchart,
-  currentFlowchartGraph,
-  pendingUpdate,
   agentSession,
-  busyKey,
   onClose,
-  onGenerateFlowchart,
-  onApplyPendingUpdate,
   onUndo,
 }: {
   project: Project;
   updates: UpdateRecord[];
-  currentFlowchart: string;
-  currentFlowchartGraph: FlowchartGraph | null;
-  pendingUpdate: PendingPlannedUpdate | null;
   agentSession: AgentSession | null;
-  busyKey: string | null;
   onClose: () => void;
-  onGenerateFlowchart: (provider: AiProvider) => Promise<void>;
-  onApplyPendingUpdate: () => Promise<void>;
   onUndo: (update: UpdateRecord) => void;
 }) {
   const [activeTab, setActiveTab] = useState<ProgramDetailsTab>("ideal");
@@ -5143,7 +4576,7 @@ function ProgramDetailsModal({
     [updates],
   );
   const hasHistory = savedUpdates.length > 0;
-  const hasPlanned = Boolean(pendingUpdate) || (agentSession?.plannedUpdates.length ?? 0) > 0;
+  const hasPlanned = (agentSession?.plannedUpdates.length ?? 0) > 0;
   const tabAvailability: Record<ProgramDetailsTab, boolean> = {
     ideal: true,
     current: true,
@@ -5209,17 +4642,6 @@ function ProgramDetailsModal({
 
       {activeTab === "planned" ? (
         <div className="detailsPanel">
-          {pendingUpdate ? (
-            <>
-              <div className="detailsHeading">
-                <div>
-                  <span className="fieldLabel">Version Roadmap</span>
-                  <h4>{pendingUpdate.description}</h4>
-                </div>
-                <span className="helperText">{formatDate(pendingUpdate.createdAt)}</span>
-              </div>
-            </>
-          ) : null}
           {agentSession && agentSession.plannedUpdates.length > 0 ? (
             <div className="agentPlannedUpdatesList">
               {agentSession.plannedUpdates
@@ -5239,12 +4661,12 @@ function ProgramDetailsModal({
                   </div>
                 ))}
             </div>
-          ) : !pendingUpdate ? (
+          ) : (
             <div className="placeholderPanel">
               <h4>No planned updates</h4>
               <p>Planned updates will appear here once a roadmap has been defined.</p>
             </div>
-          ) : null}
+          )}
         </div>
       ) : null}
 
@@ -5275,89 +4697,6 @@ function ProgramDetailsModal({
       ) : null}
       </div>
     </Modal>
-  );
-}
-
-function CurrentFlowchartPanel({
-  flowchart,
-  flowchartGraph,
-  theme,
-  busyKey,
-  onGenerateFlowchart,
-}: {
-  flowchart: string;
-  flowchartGraph: FlowchartGraph | null;
-  theme: Theme;
-  busyKey: string | null;
-  onGenerateFlowchart: (provider: AiProvider) => Promise<void>;
-}) {
-  const [genProvider, setGenProvider] = useState<AiProvider>("codex");
-  const isStarter = flowchart.includes("Describe a change in plain English") || flowchart.includes("Describe an update");
-
-  return (
-    <div className="detailsPanel">
-      {isStarter ? (
-        <div className="generateFlowchartCard">
-          <h4>No system flowchart generated yet</h4>
-          <p>Generate a flowchart from the current codebase to see how the system works.</p>
-          <div className="generateFlowchartActions">
-            <div className="speedToggle" style={{ marginBottom: 12 }}>
-              <button
-                className={`toggleOption ${genProvider === "codex" ? "active" : ""}`}
-                onClick={() => setGenProvider("codex")}
-              >
-                Codex
-              </button>
-              <button
-                className={`toggleOption ${genProvider === "claude" ? "active" : ""}`}
-                onClick={() => setGenProvider("claude")}
-              >
-                Claude
-              </button>
-            </div>
-            <button
-              className="primaryButton"
-              onClick={() => void onGenerateFlowchart(genProvider)}
-              disabled={busyKey === "generate-flowchart"}
-            >
-              {busyKey === "generate-flowchart" ? "Generating..." : "Generate Flowchart"}
-            </button>
-          </div>
-        </div>
-      ) : (
-        <>
-          <p className="modalLead">This is the current high-level system flow for the selected project.</p>
-          <div className="generateFlowchartActions regenerateFlowchartActions">
-            <div className="speedToggle">
-              <button
-                className={`toggleOption ${genProvider === "codex" ? "active" : ""}`}
-                onClick={() => setGenProvider("codex")}
-              >
-                Codex
-              </button>
-              <button
-                className={`toggleOption ${genProvider === "claude" ? "active" : ""}`}
-                onClick={() => setGenProvider("claude")}
-              >
-                Claude
-              </button>
-            </div>
-            <button
-              className="secondaryButton"
-              onClick={() => void onGenerateFlowchart(genProvider)}
-              disabled={busyKey === "generate-flowchart"}
-            >
-              {busyKey === "generate-flowchart" ? "Regenerating..." : "Regenerate Flowchart"}
-            </button>
-          </div>
-          {flowchartGraph ? (
-            <InteractiveFlowchart graph={flowchartGraph} theme={theme} />
-          ) : (
-            <MermaidChart chart={flowchart} flowchartGraph={flowchartGraph} theme={theme} />
-          )}
-        </>
-      )}
-    </div>
   );
 }
 
@@ -5735,152 +5074,6 @@ function RuntimeModal({
   );
 }
 
-interface FlowchartTooltipState {
-  label: string;
-  description: string;
-  left: number;
-  top: number;
-}
-
-function MermaidChart({
-  chart,
-  flowchartGraph,
-  theme,
-}: {
-  chart: string;
-  flowchartGraph?: FlowchartGraph | null;
-  theme: Theme;
-}) {
-  const [svg, setSvg] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [bindFunctions, setBindFunctions] = useState<((element: Element) => void) | null>(null);
-  const [tooltip, setTooltip] = useState<FlowchartTooltipState | null>(null);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const chartId = useId().replace(/:/g, "-");
-  const normalizedGraph = useMemo(() => normalizeFlowchartGraph(flowchartGraph), [flowchartGraph]);
-
-  useEffect(() => {
-    let cancelled = false;
-    mermaid.initialize({
-      startOnLoad: false,
-      theme: theme === "light" ? "default" : "dark",
-      securityLevel: "loose",
-      fontFamily: "IBM Plex Sans, Avenir Next, SF Pro Display, Segoe UI, sans-serif",
-    });
-
-    mermaid
-      .render(`mermaid-${chartId}`, chart)
-      .then((result) => {
-        if (cancelled) {
-          return;
-        }
-        setSvg(result.svg);
-        setBindFunctions(() => result.bindFunctions ?? null);
-        setTooltip(null);
-        setError(null);
-      })
-      .catch((renderError: unknown) => {
-        if (cancelled) {
-          return;
-        }
-        setError(renderError instanceof Error ? renderError.message : "The flowchart could not be rendered.");
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [chart, chartId, theme]);
-
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container || !svg) {
-      return;
-    }
-
-    bindFunctions?.(container);
-    setTooltip(null);
-
-    if (!normalizedGraph) {
-      return;
-    }
-
-    const cleanups: Array<() => void> = [];
-    for (const node of normalizedGraph.nodes) {
-      if (!node.description.trim()) {
-        continue;
-      }
-
-      const target = container.querySelector<SVGGElement>(`[id="${node.id}"]`);
-      if (!target) {
-        continue;
-      }
-
-      const showTooltip = () => {
-        const containerRect = container.getBoundingClientRect();
-        const targetRect = target.getBoundingClientRect();
-        setTooltip({
-          label: node.label,
-          description: node.description,
-          left: targetRect.left - containerRect.left + targetRect.width / 2,
-          top: targetRect.top - containerRect.top - 10,
-        });
-      };
-
-      const hideTooltip = () => {
-        setTooltip((current) => (current?.label === node.label ? null : current));
-      };
-
-      target.classList.add("mermaidNodeInteractive");
-      target.setAttribute("tabindex", "0");
-      target.setAttribute("focusable", "true");
-      target.setAttribute("aria-label", `${node.label}: ${node.description}`);
-      target.addEventListener("mouseenter", showTooltip);
-      target.addEventListener("mouseleave", hideTooltip);
-      target.addEventListener("focus", showTooltip);
-      target.addEventListener("blur", hideTooltip);
-
-      cleanups.push(() => {
-        target.classList.remove("mermaidNodeInteractive");
-        target.removeAttribute("tabindex");
-        target.removeAttribute("focusable");
-        target.removeAttribute("aria-label");
-        target.removeEventListener("mouseenter", showTooltip);
-        target.removeEventListener("mouseleave", hideTooltip);
-        target.removeEventListener("focus", showTooltip);
-        target.removeEventListener("blur", hideTooltip);
-      });
-    }
-
-    return () => {
-      setTooltip(null);
-      for (const cleanup of cleanups) {
-        cleanup();
-      }
-    };
-  }, [bindFunctions, normalizedGraph, svg]);
-
-  if (error) {
-    return <div className="errorBanner">{error}</div>;
-  }
-
-  return (
-    <div className="mermaidChartFrame">
-      <div ref={containerRef} className="mermaidSurface" dangerouslySetInnerHTML={{ __html: svg }} />
-      {tooltip ? (
-        <div
-          className="mermaidNodeTooltip"
-          style={{
-            left: tooltip.left,
-            top: tooltip.top,
-          }}
-        >
-          <strong>{tooltip.label}</strong>
-          <span>{tooltip.description}</span>
-        </div>
-      ) : null}
-    </div>
-  );
-}
 
 function Modal({
   title,
@@ -6205,8 +5398,6 @@ function labelForUpdateStatus(status: UpdateRecord["status"]): string {
   switch (status) {
     case "saved":
       return "saved";
-    case "pendingSync":
-      return "saved";
     case "reverted":
       return "reverted";
     case "failed":
@@ -6216,67 +5407,6 @@ function labelForUpdateStatus(status: UpdateRecord["status"]): string {
     case "planned":
       return "planned";
   }
-}
-
-function createFallbackPlan(project: Project): string {
-  return `flowchart TD
-    A["Select ${project.name}"] --> B["Describe an update"]
-    B --> C["Review the AI plan"]
-    C --> D["Apply the update locally"]
-    D --> E["Run and review the local result"]
-  `;
-}
-
-function buildDiffFlowchart(oldMermaid: string, newMermaid: string): string {
-  const extractNodes = (mermaid: string): Map<string, string> => {
-    const nodes = new Map<string, string>();
-    const nodePattern =
-      /([A-Za-z_]\w*)\s*(?:\(\["([^"]*?)"\]\)|\("([^"]*?)"\)|\[\["([^"]*?)"\]\]|\["([^"]*?)"\])/g;
-    let match: RegExpExecArray | null;
-    while ((match = nodePattern.exec(mermaid)) !== null) {
-      const label = match[2] ?? match[3] ?? match[4] ?? match[5] ?? "";
-      nodes.set(match[1], label);
-    }
-    return nodes;
-  };
-
-  const oldNodes = extractNodes(oldMermaid);
-  const newNodes = extractNodes(newMermaid);
-
-  const styles: string[] = [];
-  for (const [id, label] of newNodes) {
-    if (!oldNodes.has(id)) {
-      styles.push(`  style ${id} fill:#10B981,color:#fff`);
-    } else if (oldNodes.get(id) !== label) {
-      styles.push(`  style ${id} fill:#F59E0B,color:#fff`);
-    }
-  }
-
-  for (const [id] of oldNodes) {
-    if (!newNodes.has(id)) {
-      styles.push(`  style ${id} fill:#FB7185,color:#fff`);
-    }
-  }
-
-  if (styles.length === 0) return newMermaid;
-
-  const lines = newMermaid.trimEnd().split("\n");
-  return [...lines, ...styles].join("\n");
-}
-
-function MermaidChartDiff({
-  oldChart,
-  newChart,
-  flowchartGraph,
-  theme,
-}: {
-  oldChart: string;
-  newChart: string;
-  flowchartGraph?: FlowchartGraph | null;
-  theme: Theme;
-}) {
-  const diffChart = useMemo(() => buildDiffFlowchart(oldChart, newChart), [oldChart, newChart]);
-  return <MermaidChart chart={diffChart} flowchartGraph={flowchartGraph} theme={theme} />;
 }
 
 function CoreDetailsReport({
@@ -6534,6 +5664,57 @@ const buildHardMemoryReportFromApproval = (
   return null;
 };
 
+const findToddUpdatePlanDraftApproval = (session: AgentSession | null): PendingApproval | null =>
+  session?.pendingApprovals.find((approval) => {
+    const payload = approval.draftPayload;
+    return approval.requestedByDirectorId === "rd-director"
+      && approval.kind === "store-data"
+      && payload?.action === "applyStoredData"
+      && payload?.dataType === "versionUpdates";
+  }) ?? null;
+
+const buildDisplayedUpdatePlan = (session: AgentSession | null): {
+  source: "none" | "confirmed" | "draft";
+  versions: VersionPlan[];
+  updates: VersionUpdate[];
+  draftApprovalId: string | null;
+  draftReport: HardMemoryReportMetadata | null;
+} => {
+  const confirmedUpdates = session?.toddMemory?.futureUpdatePlan ?? [];
+  const versions = collectHardMemoryRoadmapVersions(session);
+  if (confirmedUpdates.length > 0) {
+    return {
+      source: "confirmed",
+      versions,
+      updates: confirmedUpdates,
+      draftApprovalId: null,
+      draftReport: null,
+    };
+  }
+
+  const draftApproval = findToddUpdatePlanDraftApproval(session);
+  if (!draftApproval) {
+    return {
+      source: "none",
+      versions,
+      updates: [],
+      draftApprovalId: null,
+      draftReport: null,
+    };
+  }
+
+  const draftReport = buildHardMemoryReportFromApproval(session, draftApproval);
+  return {
+    source: "draft",
+    versions: draftReport?.roadmapVersions ?? versions,
+    updates: Array.isArray(draftApproval.draftPayload?.updates)
+      ? draftApproval.draftPayload.updates as VersionUpdate[]
+      : [],
+    draftApprovalId: draftApproval.id,
+    draftReport,
+  };
+};
+
 function HardMemoryReportSections({
   report,
   session,
@@ -6594,7 +5775,22 @@ function HardMemoryReportSections({
               </ul>
             </div>
           ) : null}
-          <CoreDetailsReport coreDetails={danDraftCoreDetails} />
+          {report.reportStage === "soft" && session ? (
+            <div className="pendingProposalCard">
+              <h5>Takeaway Notes</h5>
+              {(session.danMemory?.notes ?? []).length > 0 ? (
+                <ul className="agentSummaryList">
+                  {(session.danMemory?.notes ?? []).map((note) => (
+                    <li key={note.id}>{note.content}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="emptyFieldText">No notes yet.</p>
+              )}
+            </div>
+          ) : (
+            <CoreDetailsReport coreDetails={danDraftCoreDetails} />
+          )}
         </>
       ) : null}
 
@@ -6777,13 +5973,109 @@ function HardMemoryReportPanel({
   );
 }
 
+class ErrorBoundaryPanel extends Component<
+  { onClose: () => void; children: ReactNode },
+  { hasError: boolean }
+> {
+  constructor(props: { onClose: () => void; children: ReactNode }) {
+    super(props);
+    this.state = { hasError: false };
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="slackResearchPanel">
+          <div className="slackResearchPanelHeader">
+            <h3>Error</h3>
+            <button className="secondaryButton" style={{ fontSize: "0.75rem", padding: "4px 8px" }} onClick={this.props.onClose}>
+              Close
+            </button>
+          </div>
+          <div className="slackResearchPanelBody">
+            <p>Something went wrong loading this report. Close and try again.</p>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 function ExecutionReportPanel({
   report,
+  projectId,
+  session,
+  onSessionUpdate,
+  pushToast,
   onClose,
 }: {
   report: JeffExecutionReport;
+  projectId: string | null;
+  session: AgentSession | null;
+  onSessionUpdate: (session: AgentSession) => void;
+  pushToast: (message: string, level: "info" | "success" | "error") => void;
   onClose: () => void;
 }) {
+  const [decisionSummary, setDecisionSummary] = useState(report.summary);
+  const [busyAction, setBusyAction] = useState<"successful" | "partially-successful" | "failure" | "pong" | null>(null);
+  const isPending = session?.jeffMemory.pendingReports.some((pendingReport) => pendingReport.id === report.id) ?? false;
+
+  useEffect(() => {
+    setDecisionSummary(report.summary);
+  }, [report.id, report.summary]);
+
+  const handleJeffDecision = async (decision: JeffOutcomeDecision) => {
+    if (!projectId) {
+      return;
+    }
+    setBusyAction(decision);
+    try {
+      await window.programs.recordJeffOutcome({
+        projectId,
+        reportId: report.id,
+        decision,
+        summary: decisionSummary.trim() || report.summary,
+      });
+      const refreshed = await window.programs.getAgentSession(projectId);
+      if (refreshed) {
+        onSessionUpdate(refreshed);
+      }
+      pushToast(`Jeff marked the update as ${decision}.`, decision === "failure" ? "error" : "success");
+      onClose();
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Could not record Jeff's outcome.", "error");
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleSendToPong = async () => {
+    if (!projectId) {
+      return;
+    }
+    setBusyAction("pong");
+    try {
+      await window.programs.assignPongValidation({
+        projectId,
+        instruction: decisionSummary.trim() || report.summary,
+        updateId: report.updateId,
+      });
+      const refreshed = await window.programs.getAgentSession(projectId);
+      if (refreshed) {
+        onSessionUpdate(refreshed);
+      }
+      pushToast("Jeff handed the report to Pong for validation.", "info");
+      onClose();
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Could not send the report to Pong.", "error");
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
   return (
     <div className="slackResearchPanel">
       <div className="slackResearchPanelHeader">
@@ -6801,37 +6093,44 @@ function ExecutionReportPanel({
           <h4>Outcome</h4>
           <p>{report.outcome}</p>
         </section>
-        <section>
-          <h4>Ping Raw Report</h4>
-          <p>Status: {report.rawReport.status.replace(/_/g, " ")}</p>
-          <p>{report.rawReport.summary}</p>
-          {report.rawReport.changedFiles.length > 0 ? (
-            <>
-              <h4>Changed Files</h4>
-              <ul className="slackUpdateList">
-                {report.rawReport.changedFiles.map((filePath) => (
-                  <li key={filePath}>{filePath}</li>
-                ))}
-              </ul>
-            </>
-          ) : null}
-          {report.rawReport.blocker ? (
-            <>
-              <h4>Blocker</h4>
-              <p>{report.rawReport.blocker}</p>
-            </>
-          ) : null}
-          {report.rawReport.unexpectedNotes.length > 0 ? (
-            <>
-              <h4>Unexpected Notes</h4>
-              <ul className="slackUpdateList">
-                {report.rawReport.unexpectedNotes.map((item, index) => (
-                  <li key={`${report.id}-unexpected-${index}`}>{item}</li>
-                ))}
-              </ul>
-            </>
-          ) : null}
-        </section>
+        {report.rawReport ? (
+          <section>
+            <h4>Update Details</h4>
+            <p>Status: {report.rawReport.status?.replace(/_/g, " ") ?? "unknown"}</p>
+            <p>{report.rawReport.summary}</p>
+            {report.rawReport.changedFiles?.length > 0 ? (
+              <>
+                <h4>Changed Files</h4>
+                <ul className="slackUpdateList">
+                  {report.rawReport.changedFiles.map((filePath) => (
+                    <li key={filePath}>{filePath}</li>
+                  ))}
+                </ul>
+              </>
+            ) : null}
+            {report.rawReport.blocker ? (
+              <>
+                <h4>Blocker</h4>
+                <p>{report.rawReport.blocker}</p>
+              </>
+            ) : null}
+            {report.rawReport.unexpectedNotes?.length > 0 ? (
+              <>
+                <h4>Unexpected Notes</h4>
+                <ul className="slackUpdateList">
+                  {report.rawReport.unexpectedNotes.map((item, index) => (
+                    <li key={`${report.id}-unexpected-${index}`}>{item}</li>
+                  ))}
+                </ul>
+              </>
+            ) : null}
+          </section>
+        ) : (
+          <section>
+            <h4>Update Details</h4>
+            <p className="helperText">Report data is unavailable.</p>
+          </section>
+        )}
         <section>
           <h4>Todd Follow-Up</h4>
           <p>
@@ -6840,98 +6139,286 @@ function ExecutionReportPanel({
               : "No Todd follow-up needed."}
           </p>
         </section>
+        <section>
+          <h4>Jeff's Assessment</h4>
+          <textarea
+            className="composerInput"
+            style={{ minHeight: 110 }}
+            value={decisionSummary}
+            onChange={(event) => setDecisionSummary(event.target.value)}
+            placeholder="Jeff's review summary..."
+          />
+          {isPending ? (
+            <div className="proposalActions" style={{ marginTop: 12 }}>
+              <button className="primaryButton" onClick={() => void handleJeffDecision("successful")} disabled={busyAction !== null}>
+                Successful
+              </button>
+              <button className="secondaryButton" onClick={() => void handleJeffDecision("partially-successful")} disabled={busyAction !== null}>
+                Partially-successful
+              </button>
+              <button className="secondaryButton" onClick={() => void handleJeffDecision("failure")} disabled={busyAction !== null}>
+                Failure
+              </button>
+              <button className="secondaryButton" onClick={() => void handleSendToPong()} disabled={busyAction !== null}>
+                Send to Pong
+              </button>
+            </div>
+          ) : (
+            <p className="helperText" style={{ marginTop: 8 }}>
+              Jeff already reviewed this report.
+            </p>
+          )}
+        </section>
       </div>
     </div>
   );
 }
 
-function ProgramModeSwitchRow({
-  project,
-  skills,
-  attachedSkillId,
-  onAttachSkill,
-  onSync,
-  isSyncing,
+const humanizeSnakeCase = (value: string | null | undefined): string =>
+  value ? value.replace(/_/g, " ") : "unknown";
+
+function PingTaskPanel({
+  task,
+  onClose,
 }: {
-  project: Project;
-  skills: Skill[];
-  attachedSkillId: string | null;
-  onAttachSkill: (skillId: string | null) => void;
-  onSync: () => void;
-  isSyncing: boolean;
+  task: PingTaskSnapshot;
+  onClose: () => void;
 }) {
-  const [diffStats, setDiffStats] = useState<DiffStats | null>(null);
-  const [showSkillPicker, setShowSkillPicker] = useState(false);
-  const attachableSkills = skills.filter((skill) => skill.installStatus === "ready");
-
-  useEffect(() => {
-    void window.programs.readProjectDiffStats(project.id).then(setDiffStats).catch(() => {});
-  }, [project.id]);
-
-  const attachedSkill = skills.find((s) => s.id === attachedSkillId) ?? null;
-
   return (
-    <div className="programModeSwitchRow">
-      <div className="skillAttachmentArea">
-        <button
-          className="skillAttachButton"
-          onClick={() => setShowSkillPicker(!showSkillPicker)}
-        >
-          {attachedSkill ? attachedSkill.name : "Skill"}
+    <div className="slackResearchPanel">
+      <div className="slackResearchPanelHeader">
+        <h3>Ping's Update Task</h3>
+        <button className="secondaryButton" style={{ fontSize: "0.75rem", padding: "4px 8px" }} onClick={onClose}>
+          Close
         </button>
-        {showSkillPicker ? (
-          <div className="skillPickerPopover">
-            <button className="skillPickerItem" onClick={() => { onAttachSkill(null); setShowSkillPicker(false); }}>
-              None
-            </button>
-            {skills.map((skill) => (
-              <button
-                key={skill.id}
-                className={`skillPickerItem${skill.id === attachedSkillId ? " active" : ""}`}
-                onClick={() => { onAttachSkill(skill.id); setShowSkillPicker(false); }}
-                disabled={skill.installStatus !== "ready"}
-              >
-                {skill.name}
-                <span className="skillBadge">
-                  {skill.installStatus !== "ready"
-                    ? skill.installStatus
-                    : skill.isUniversal
-                      ? "Universal"
-                      : skill.sourceProvider}
-                </span>
-              </button>
-            ))}
-            {skills.length === 0 ? <p className="skillPickerEmpty">No skills yet. Add them in the Agents page.</p> : null}
-            {skills.length > 0 && attachableSkills.length === 0 ? (
-              <p className="skillPickerEmpty">Installed skills are still unavailable. Finish or retry the install first.</p>
+      </div>
+      <div className="slackResearchPanelBody">
+        <section>
+          <h4>Source</h4>
+          <p>{task.source === "todd-approved-update" ? "Todd-approved update" : "Direct Ping request"}</p>
+        </section>
+        <section>
+          <h4>Original Request</h4>
+          <SlackMarkdown text={task.originalUserRequest} />
+        </section>
+        {task.updateTitle || task.updateDescription ? (
+          <section>
+            <h4>Todd Update Context</h4>
+            {task.updateTitle ? <p><strong>{task.updateTitle}</strong></p> : null}
+            {task.updateDescription ? <SlackMarkdown text={task.updateDescription} /> : null}
+          </section>
+        ) : null}
+        {task.toddExplanation ? (
+          <section>
+            <h4>Todd Explanation</h4>
+            <SlackMarkdown text={task.toddExplanation} />
+          </section>
+        ) : null}
+        {task.relevantPillarIds.length > 0 ? (
+          <section>
+            <h4>Relevant Pillars</h4>
+            <ul className="slackUpdateList">
+              {task.relevantPillarIds.map((pillarId) => (
+                <li key={pillarId}>{pillarId}</li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+        {task.toddCodebaseMapSummary ? (
+          <section>
+            <h4>Todd's Codebase Map</h4>
+            <SlackMarkdown text={task.toddCodebaseMapSummary} />
+          </section>
+        ) : null}
+        {task.coreDetailsContext ? (
+          <section>
+            <h4>Core Details Context</h4>
+            <pre className="updateStageCodeBlock">{task.coreDetailsContext}</pre>
+          </section>
+        ) : null}
+        <section>
+          <h4>Runtime</h4>
+          <ul className="slackUpdateList">
+            <li>Provider: {providerLabel(task.runtime.provider)}</li>
+            <li>Model: {task.runtime.provider === "claude" ? task.runtime.claudeModel : task.runtime.model}</li>
+            <li>Reasoning: {labelForReasoningEffort(task.runtime.reasoningEffort)}</li>
+            <li>Planning: {labelForPlanningMode(task.runtime.planningMode)}</li>
+          </ul>
+          {task.runtime.contextPaths.length > 0 ? (
+            <>
+              <h4>Context Paths</h4>
+              <ul className="slackUpdateList">
+                {task.runtime.contextPaths.map((path) => (
+                  <li key={path}>{path}</li>
+                ))}
+              </ul>
+            </>
+          ) : null}
+        </section>
+        <section>
+          <h4>Exact Planning Prompt</h4>
+          <pre className="updateStageCodeBlock">{task.planPrompt || "No planning prompt was captured."}</pre>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function PingPlanPanel({
+  plan,
+  summary,
+  onClose,
+}: {
+  plan: PingPlanSnapshot | null;
+  summary: string;
+  onClose: () => void;
+}) {
+  return (
+    <div className="slackResearchPanel">
+      <div className="slackResearchPanelHeader">
+        <h3>Ping's Plan</h3>
+        <button className="secondaryButton" style={{ fontSize: "0.75rem", padding: "4px 8px" }} onClick={onClose}>
+          Close
+        </button>
+      </div>
+      <div className="slackResearchPanelBody">
+        <section>
+          <h4>Summary</h4>
+          <SlackMarkdown text={summary} />
+        </section>
+        {plan ? (
+          <>
+            <section>
+              <h4>Status</h4>
+              <ul className="slackUpdateList">
+                <li>Overall: {humanizeSnakeCase(plan.status)}</li>
+                <li>Thinking: {humanizeSnakeCase(plan.thinkingStatus)}</li>
+                <li>Planning: {humanizeSnakeCase(plan.planningStatus)}</li>
+                <li>Building: {humanizeSnakeCase(plan.buildingStatus)}</li>
+                <li>Verifying: {humanizeSnakeCase(plan.verifyingStatus)}</li>
+              </ul>
+            </section>
+            {plan.explanation ? (
+              <section>
+                <h4>Explanation</h4>
+                <SlackMarkdown text={plan.explanation} />
+              </section>
             ) : null}
-          </div>
+            {plan.steps.length > 0 ? (
+              <section>
+                <h4>Steps</h4>
+                <ol className="planList">
+                  {plan.steps.map((step) => (
+                    <li key={step.step}>
+                      <span className={`stepPill step-${step.status}`}>{humanizeSnakeCase(step.status)}</span>
+                      {step.step}
+                    </li>
+                  ))}
+                </ol>
+              </section>
+            ) : null}
+            {plan.impact ? (
+              <section>
+                <h4>Impact</h4>
+                <SlackMarkdown text={plan.impact} />
+              </section>
+            ) : null}
+            <section>
+              <h4>Runtime</h4>
+              <ul className="slackUpdateList">
+                <li>Provider: {providerLabel(plan.provider)}</li>
+                <li>Model: {plan.provider === "claude" ? plan.claudeModel : plan.model}</li>
+                <li>Reasoning: {labelForReasoningEffort(plan.reasoningEffort)}</li>
+                <li>Planning: {labelForPlanningMode(plan.planningMode)}</li>
+              </ul>
+              {plan.contextPaths.length > 0 ? (
+                <>
+                  <h4>Context Paths</h4>
+                  <ul className="slackUpdateList">
+                    {plan.contextPaths.map((path) => (
+                      <li key={path}>{path}</li>
+                    ))}
+                  </ul>
+                </>
+              ) : null}
+            </section>
+          </>
         ) : null}
       </div>
+    </div>
+  );
+}
 
-      <div className="gitSyncPanel">
-        {diffStats ? (
-          <span className="gitSyncStats">
-            <span className="gitSyncAdded">+{diffStats.added}</span>
-            <span className="gitSyncRemoved">-{diffStats.removed}</span>
-          </span>
-        ) : (
-          <span className="gitSyncStats gitSyncEmpty">No changes</span>
-        )}
-        <button
-          className="secondaryButton gitSyncButton"
-          onClick={() => {
-            onSync();
-            // Refresh diff stats after sync
-            setTimeout(() => {
-              void window.programs.readProjectDiffStats(project.id).then(setDiffStats).catch(() => {});
-            }, 2000);
-          }}
-          disabled={isSyncing || !project.remoteUrl}
-          title={project.remoteUrl ? "Commit and push to GitHub" : "No remote URL configured"}
-        >
-          {isSyncing ? "Syncing..." : "Sync"}
+function PingUpdateReportPanel({
+  report,
+  fallbackRawReport,
+  onClose,
+}: {
+  report: PingExecutionReportSnapshot | null;
+  fallbackRawReport: PingRawReport;
+  onClose: () => void;
+}) {
+  const rawReport = report?.rawReport ?? fallbackRawReport;
+
+  return (
+    <div className="slackResearchPanel">
+      <div className="slackResearchPanelHeader">
+        <h3>Ping's Update Report</h3>
+        <button className="secondaryButton" style={{ fontSize: "0.75rem", padding: "4px 8px" }} onClick={onClose}>
+          Close
         </button>
+      </div>
+      <div className="slackResearchPanelBody">
+        <section>
+          <h4>Status</h4>
+          <p>{humanizeSnakeCase(rawReport.status)}</p>
+        </section>
+        <section>
+          <h4>Summary</h4>
+          <SlackMarkdown text={rawReport.summary} />
+        </section>
+        {rawReport.changedFiles.length > 0 ? (
+          <section>
+            <h4>Changed Files</h4>
+            <ul className="slackUpdateList">
+              {rawReport.changedFiles.map((filePath) => (
+                <li key={filePath}>{filePath}</li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+        {rawReport.blocker ? (
+          <section>
+            <h4>Blocker</h4>
+            <SlackMarkdown text={rawReport.blocker} />
+          </section>
+        ) : null}
+        {rawReport.unexpectedNotes.length > 0 ? (
+          <section>
+            <h4>Unexpected Notes</h4>
+            <ul className="slackUpdateList">
+              {rawReport.unexpectedNotes.map((item, index) => (
+                <li key={`unexpected-${index}`}>{item}</li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
+        {report ? (
+          <section>
+            <h4>Saved Output</h4>
+            <ul className="slackUpdateList">
+              {report.historyUpdateId ? <li>History update: {report.historyUpdateId}</li> : null}
+              {report.commitSha ? <li>Commit SHA: {report.commitSha}</li> : null}
+              {report.jeffReportId ? <li>Jeff report: {report.jeffReportId}</li> : null}
+            </ul>
+            {report.jeffSummary ? (
+              <>
+                <h4>Jeff Summary</h4>
+                <SlackMarkdown text={report.jeffSummary} />
+              </>
+            ) : null}
+          </section>
+        ) : null}
       </div>
     </div>
   );
@@ -7063,27 +6550,39 @@ const collectConceptVibes = (pillars: CorePillar[], prefix = ""): { pillarName: 
   return items;
 };
 
-function ConceptThreadList({
-  pillars,
-  depth = 0,
-}: {
-  pillars: CorePillar[];
-  depth?: number;
-}) {
+function ConceptThreadItem({ pillar, depth }: { pillar: CorePillar; depth: number }) {
+  const [expanded, setExpanded] = useState(false);
+  const hasChildren = pillar.corePillars.length > 0;
+
   return (
-    <div className="conceptThreadList">
-      {sortPillarsByOrder(pillars).map((pillar) => (
-        <article
-          key={pillar.id}
-          className="conceptThreadCard"
-          style={{ marginLeft: depth > 0 ? depth * 16 : 0 }}
-        >
-          <div className="conceptThreadTitleRow">
-            <h5 className="conceptThreadTitle">{pillar.name}</h5>
-            {pillar.function?.status === "assumed" ? (
-              <span className="pillarStatusBadge pillarStatusBadge--assumed">assumed</span>
-            ) : null}
-          </div>
+    <article
+      className="conceptThreadCard"
+      style={{ marginLeft: depth > 0 ? depth * 16 : 0 }}
+    >
+      <div
+        className="conceptThreadTitleRow conceptThreadTitleRow--toggle"
+        onClick={() => setExpanded((v) => !v)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => e.key === "Enter" || e.key === " " ? setExpanded((v) => !v) : undefined}
+      >
+        <span className={`conceptThreadChevron${expanded ? " conceptThreadChevron--open" : ""}${!hasChildren ? " conceptThreadChevron--hidden" : ""}`}>›</span>
+        <h5 className="conceptThreadTitle">{pillar.name}</h5>
+        {pillar.function?.status === "assumed" ? (
+          <span className="pillarStatusBadge pillarStatusBadge--assumed">assumed</span>
+        ) : null}
+        <span className="conceptThreadBadgeGroup">
+          {hasChildren ? (
+            <span className="pillarStatusBadge pillarStatusBadge--nested">NESTED</span>
+          ) : pillar.pillarType === "tbd" ? (
+            <span className="pillarStatusBadge pillarStatusBadge--tbd">TBD</span>
+          ) : (
+            <span className="pillarStatusBadge pillarStatusBadge--end">END</span>
+          )}
+        </span>
+      </div>
+      {expanded ? (
+        <>
           <div className="conceptThreadMeta">
             {pillar.function?.summary ? (
               <div className="conceptThreadMetaRow">
@@ -7107,26 +6606,44 @@ function ConceptThreadList({
               <p className="conceptThreadDescription">{pillar.description}</p>
             ) : null}
           </div>
-          {pillar.corePillars.length > 0 ? (
+          {hasChildren ? (
             <ConceptThreadList pillars={pillar.corePillars} depth={depth + 1} />
           ) : null}
-        </article>
+        </>
+      ) : null}
+    </article>
+  );
+}
+
+function ConceptThreadList({
+  pillars,
+  depth = 0,
+}: {
+  pillars: CorePillar[];
+  depth?: number;
+}) {
+  return (
+    <div className="conceptThreadList">
+      {sortPillarsByOrder(pillars).map((pillar) => (
+        <ConceptThreadItem key={pillar.id} pillar={pillar} depth={depth} />
       ))}
     </div>
   );
 }
 
+type CorePillarsView = "Linear" | "Threads" | "Total";
+
 function ConceptOverview({
   concept,
   title,
   emptyLabel,
-  experienceDescription,
 }: {
   concept: AgentCoreDetails | null;
   title?: string;
   emptyLabel: string;
-  experienceDescription?: string | null;
 }) {
+  const [pillarsView, setPillarsView] = useState<CorePillarsView>("Threads");
+
   if (!concept) {
     return <p className="coreDetailEmpty">{emptyLabel}</p>;
   }
@@ -7146,15 +6663,28 @@ function ConceptOverview({
         <article className="coreDetailCard coreDetailCard-full">
           <h4>User Experience</h4>
           <p className="coreDetailValue">
-            {experienceDescription ?? concept.fullFlow?.summary ?? "The full experience has not been described yet."}
+            {concept.fullFlow?.summary ?? "The full experience has not been described yet."}
           </p>
         </article>
         <article className="coreDetailCard coreDetailCard-full">
-          <h4>Concept Threads</h4>
+          <div className="corePillarsCardHeader">
+            <h4>Core-Pillars</h4>
+            <div className="corePillarsToggle">
+              {(["Linear", "Threads", "Total"] as CorePillarsView[]).map((opt) => (
+                <button
+                  key={opt}
+                  className={`corePillarsToggleBtn${pillarsView === opt ? " corePillarsToggleBtn--active" : ""}`}
+                  onClick={() => setPillarsView(opt)}
+                >
+                  {opt}
+                </button>
+              ))}
+            </div>
+          </div>
           {concept.corePillars.length > 0 ? (
             <ConceptThreadList pillars={concept.corePillars} />
           ) : (
-            <p className="coreDetailEmpty">No concept threads have been locked in yet.</p>
+            <p className="coreDetailEmpty">No core-pillars have been locked in yet.</p>
           )}
         </article>
       </div>
@@ -7600,7 +7130,7 @@ function DirectorInfoPanel({
                   ))}
                 </div>
               ) : (
-                <p className="coreDetailEmpty">No vibes attached yet. Attach vibes to the concept threads.</p>
+                <p className="coreDetailEmpty">No vibes attached yet. Attach vibes to the core-pillars.</p>
               )}
             </div>
           </>
@@ -7615,14 +7145,13 @@ function DirectorInfoPanel({
             <ConceptOverview
               concept={workingConcept}
               emptyLabel="Dan has not locked in the concept yet."
-              experienceDescription={session.danMemory.fullExperienceDescription}
             />
             {session.danMemory.notes.length > 0 ? (
               <div className="conceptNotesBlock">
                 <span className="pmStatusLabel">Conversation Notes</span>
                 <ul className="agentSummaryList">
                   {session.danMemory.notes.map((note, index) => (
-                    <li key={`dan-concept-note-${index}`}>{note}</li>
+                    <li key={`dan-concept-note-${index}`}>{typeof note === "string" ? note : note.content}</li>
                   ))}
                 </ul>
               </div>
@@ -7647,7 +7176,6 @@ function DirectorInfoPanel({
                 concept={toddMemory.confirmedConcept}
                 title="Confirmed Concept"
                 emptyLabel="Todd is waiting for Dan to lock the concept."
-                experienceDescription={session.danMemory.fullExperienceDescription}
               />
               <div className="agentInfoPanelSection">
                 <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Current Codebase Index</h5>
@@ -8007,10 +7535,16 @@ function DirectorFunctionsPanel({
 function DirectorMemoryPanel({
   directorId,
   session,
+  projectId,
+  onSessionUpdate,
+  pushToast,
   onViewExecutionReport,
 }: {
   directorId: DirectorId;
   session: AgentSession | null;
+  projectId?: string | null;
+  onSessionUpdate?: (session: AgentSession) => void;
+  pushToast?: (message: string, level: "info" | "success" | "error") => void;
   onViewExecutionReport?: (report: JeffExecutionReport) => void;
 }) {
   if (!session) return null;
@@ -8036,7 +7570,7 @@ function DirectorMemoryPanel({
                   <div>
                     <span className="pmStatusLabel">Session Notes</span>
                     <ul className="agentSummaryList">
-                      {danMemory.notes.map((note, i) => <li key={`dan-soft-${i}`}>{note}</li>)}
+                      {danMemory.notes.map((note, i) => <li key={`dan-soft-${i}`}>{typeof note === "string" ? note : note.content}</li>)}
                     </ul>
                   </div>
                 ) : null}
@@ -8046,7 +7580,7 @@ function DirectorMemoryPanel({
                       Todd-Bound Notes <span className="memoryHandoffBadge memoryHandoffBadge--handoff">Handoff</span>
                     </span>
                     <ul className="agentSummaryList">
-                      {danMemory.toddHandoffNotes.map((note, i) => <li key={`dan-handoff-${i}`}>{note}</li>)}
+                      {danMemory.toddHandoffNotes.map((note, i) => <li key={`dan-handoff-${i}`}>{typeof note === "string" ? note : note.content}</li>)}
                     </ul>
                   </div>
                 ) : null}
@@ -8168,7 +7702,7 @@ function DirectorMemoryPanel({
                   <div style={{ marginTop: hasPendingHandoff ? 10 : 0 }}>
                     <span className="pmStatusLabel">Planning Notes</span>
                     <ul className="agentSummaryList">
-                      {toddMemory.notes.map((note, i) => <li key={`todd-note-${i}`}>{note}</li>)}
+                      {toddMemory.notes.map((note, i) => <li key={`todd-note-${i}`}>{typeof note === "string" ? note : note.content}</li>)}
                     </ul>
                   </div>
                 ) : null}
@@ -8215,7 +7749,7 @@ function DirectorMemoryPanel({
                     <span className="pmStatusLabel">Archived Planning Notes ({toddMemory.backupNotes.length})</span>
                     <ul className="agentSummaryList">
                       {toddMemory.backupNotes.slice(-5).map((note, i) => (
-                        <li key={`todd-backup-${i}`}>{note}</li>
+                        <li key={`todd-backup-${i}`}>{typeof note === "string" ? note : note.content}</li>
                       ))}
                       {toddMemory.backupNotes.length > 5 ? (
                         <li className="helperText">...and {toddMemory.backupNotes.length - 5} more</li>
@@ -8300,7 +7834,7 @@ function DirectorMemoryPanel({
                     style={{ marginTop: 12 }}
                     onClick={() => onViewExecutionReport(pingMemory.latestJeffReport!)}
                   >
-                    View Update Report
+                    View Project Status Report
                   </button>
                 ) : null}
               </div>
@@ -8346,6 +7880,28 @@ function DirectorMemoryPanel({
 
   if (directorId === "project-manager") {
     const stateEntries = Object.entries(session.directorStateMap ?? {}).filter(([, state]) => Boolean(state));
+    const pendingReports = session.jeffMemory.pendingReports ?? [];
+    const pendingValidations = session.jeffMemory.pendingValidations ?? [];
+    const handleValidationDecision = async (report: PongValidationReport, decision: JeffOutcomeDecision) => {
+      if (!projectId || !onSessionUpdate || !pushToast) {
+        return;
+      }
+      try {
+        await window.programs.recordJeffOutcome({
+          projectId,
+          reportId: report.id,
+          decision,
+          summary: report.summary,
+        });
+        const refreshed = await window.programs.getAgentSession(projectId);
+        if (refreshed) {
+          onSessionUpdate(refreshed);
+        }
+        pushToast(`Jeff marked the validation as ${decision}.`, decision === "failure" ? "error" : "success");
+      } catch (error) {
+        pushToast(error instanceof Error ? error.message : "Could not record the validation outcome.", "error");
+      }
+    };
     return (
       <div className="agentInfoPanel agentSummaryPanel">
         <div className="agentSummaryGrid">
@@ -8367,6 +7923,58 @@ function DirectorMemoryPanel({
                       </li>
                     ))}
                   </ul>
+                ) : null}
+                {pendingReports.length > 0 ? (
+                  <div style={{ marginTop: 12 }}>
+                    <span className="pmStatusLabel">Pending Update Reports</span>
+                    <div className="validationResultsList" style={{ marginTop: 8 }}>
+                      {pendingReports.map((report) => (
+                        <div key={report.id} className="validationResultCard validationResultCard--pass">
+                          <span className="validationResultType">{report.title}</span>
+                          <p style={{ gridColumn: "1 / -1" }}>{report.summary}</p>
+                          {onViewExecutionReport ? (
+                            <button
+                              type="button"
+                              className="slackViewMoreButton"
+                              style={{ marginTop: 8 }}
+                              onClick={() => onViewExecutionReport(report)}
+                            >
+                              Review Report
+                            </button>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+                {pendingValidations.length > 0 ? (
+                  <div style={{ marginTop: 12 }}>
+                    <span className="pmStatusLabel">Pending Validation Reports</span>
+                    <div className="validationResultsList" style={{ marginTop: 8 }}>
+                      {pendingValidations.map((report) => (
+                        <div key={report.id} className={`validationResultCard validationResultCard--${report.passed === false ? "fail" : "pass"}`}>
+                          <span className="validationResultType">Pong validation</span>
+                          <span className={`validationResultStatus${report.passed ? " pmStatusDone" : ""}`}>
+                            {report.passed === null ? "REVIEW" : report.passed ? "PASS" : "FAIL"}
+                          </span>
+                          <p style={{ gridColumn: "1 / -1" }}>{report.summary}</p>
+                          {projectId && onSessionUpdate && pushToast ? (
+                            <div className="proposalActions" style={{ marginTop: 8 }}>
+                              <button className="primaryButton" onClick={() => void handleValidationDecision(report, "successful")}>
+                                Successful
+                              </button>
+                              <button className="secondaryButton" onClick={() => void handleValidationDecision(report, "partially-successful")}>
+                                Partially-successful
+                              </button>
+                              <button className="secondaryButton" onClick={() => void handleValidationDecision(report, "failure")}>
+                                Failure
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 ) : null}
               </div>
             </details>
@@ -8404,7 +8012,7 @@ function DirectorProfilePanel({
   const [executionReport, setExecutionReport] = useState<JeffExecutionReport | null>(null);
 
   return (
-    <div className="directorProfilePanel directorProfilePanel--static">
+    <div className="directorProfilePanel directorProfilePanel--scrollable">
       <div className="directorProfilePanelContent">
         <div
           className="directorProfileCard"
@@ -8431,14 +8039,23 @@ function DirectorProfilePanel({
           <DirectorMemoryPanel
             directorId={directorId}
             session={session}
+            projectId={projectId}
+            onSessionUpdate={onSessionUpdate}
+            pushToast={_pushToast}
             onViewExecutionReport={setExecutionReport}
           />
         </div>
         {executionReport ? (
-          <ExecutionReportPanel
-            report={executionReport}
-            onClose={() => setExecutionReport(null)}
-          />
+          <ErrorBoundaryPanel onClose={() => setExecutionReport(null)}>
+            <ExecutionReportPanel
+              report={executionReport}
+              projectId={projectId}
+              session={session}
+              onSessionUpdate={onSessionUpdate}
+              pushToast={_pushToast}
+              onClose={() => setExecutionReport(null)}
+            />
+          </ErrorBoundaryPanel>
         ) : null}
       </div>
     </div>
@@ -8452,6 +8069,7 @@ function AgentsPage({
   settings,
   agentSession,
   agentSelectedProjectId,
+  activePlan,
   agentViewStage,
   modelCatalog,
   onSelectProject,
@@ -8467,6 +8085,7 @@ function AgentsPage({
   settings: Settings;
   agentSession: AgentSession | null;
   agentSelectedProjectId: string | null;
+  activePlan: PlanDraft | null;
   agentViewStage: AgentStage;
   modelCatalog: ModelCatalog;
   onSelectProject: (projectId: string | null) => void;
@@ -8478,13 +8097,17 @@ function AgentsPage({
   onClearSelectedDirector: () => void;
   pushToast: (message: string, level: "info" | "success" | "error") => void;
 }) {
-  const [showProgressPanel, setShowProgressPanel] = useState(false);
-  const [showAgentStructurePanel, setShowAgentStructurePanel] = useState(false);
   const [showProjectDetails, setShowProjectDetails] = useState(false);
+  const [projectDetailsInitialView, setProjectDetailsInitialView] = useState<DetailsView | undefined>(undefined);
   const [showDirectorProfile, setShowDirectorProfile] = useState(false);
   const [hardMemoryReportMessageId, setHardMemoryReportMessageId] = useState<string | null>(null);
+  const [pingTaskMessageId, setPingTaskMessageId] = useState<string | null>(null);
+  const [pingPlanMessageId, setPingPlanMessageId] = useState<string | null>(null);
+  const [pingUpdateReportMessageId, setPingUpdateReportMessageId] = useState<string | null>(null);
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [pingAddFilesBusy, setPingAddFilesBusy] = useState(false);
+  const [pingRunMode, setPingRunMode] = useState<PingDirectRunMode>("auto");
   const [lastRouteHint, setLastRouteHint] = useState<{ directorId: DirectorId; reason: string } | null>(null);
   const [optimisticAgentMessages, setOptimisticAgentMessages] = useState<AgentChatMessage[]>([]);
   const [pendingMemoryProcessDirector, setPendingMemoryProcessDirector] = useState<DirectorId | null>(null);
@@ -8494,6 +8117,12 @@ function AgentsPage({
   } | null>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const programmingDirectorDefaults = getDirectorMetadata("programming-director").runtimeDefaults;
+  const [pingComposerOptions, setPingComposerOptions] = useState<ComposerOptions>(() => ({
+    ...getComposerDefaults(settings),
+    reasoningEffort: programmingDirectorDefaults.reasoningEffort,
+    planningMode: programmingDirectorDefaults.planningMode,
+  }));
   const agentRuntimeOptions = useMemo<ComposerOptions>(
     () => ({
       ...getComposerDefaults(settings),
@@ -8535,6 +8164,28 @@ function AgentsPage({
     [agentSelectedProjectId, projects],
   );
   const showInlineDirectorChat = Boolean(selectedDirectorId && selectedDirector && agentSelectedProjectId);
+  const pingOverrides = agentSession?.directorSettingsOverrides?.["programming-director"] ?? {};
+  const pingAutoOptions = useMemo<ComposerOptions>(
+    () => ({
+      ...getComposerDefaults(settings),
+      model: pingOverrides.model ?? settings.advancedDefaults.model,
+      claudeModel: pingOverrides.claudeModel ?? settings.advancedDefaults.claudeModel,
+      reasoningEffort: pingOverrides.reasoningEffort ?? programmingDirectorDefaults.reasoningEffort,
+      planningMode: pingOverrides.planningMode ?? programmingDirectorDefaults.planningMode,
+      contextPaths: pingComposerOptions.contextPaths,
+    }),
+    [
+      pingComposerOptions.contextPaths,
+      pingOverrides.claudeModel,
+      pingOverrides.model,
+      pingOverrides.planningMode,
+      pingOverrides.reasoningEffort,
+      programmingDirectorDefaults.planningMode,
+      programmingDirectorDefaults.reasoningEffort,
+      settings,
+    ],
+  );
+  const pingRuntimeOptions = pingRunMode === "auto" ? pingAutoOptions : pingComposerOptions;
 
   const persistedDirectorMessages = selectedDirectorId
     ? agentSession?.directorConversations?.[selectedDirectorId]?.messages ?? []
@@ -8545,6 +8196,24 @@ function AgentsPage({
       ? currentDirectorMessages.find((message) => message.id === hardMemoryReportMessageId && message.metadata?.type === "hard-memory-report") ?? null
       : null,
     [currentDirectorMessages, hardMemoryReportMessageId],
+  );
+  const pingTaskMessage = useMemo(
+    () => pingTaskMessageId
+      ? currentDirectorMessages.find((message) => message.id === pingTaskMessageId && message.metadata?.type === "ping-task") ?? null
+      : null,
+    [currentDirectorMessages, pingTaskMessageId],
+  );
+  const pingPlanMessage = useMemo(
+    () => pingPlanMessageId
+      ? currentDirectorMessages.find((message) => message.id === pingPlanMessageId && message.metadata?.type === "ping-plan-summary") ?? null
+      : null,
+    [currentDirectorMessages, pingPlanMessageId],
+  );
+  const pingUpdateReportMessage = useMemo(
+    () => pingUpdateReportMessageId
+      ? currentDirectorMessages.find((message) => message.id === pingUpdateReportMessageId && message.metadata?.type === "ping-update-report") ?? null
+      : null,
+    [currentDirectorMessages, pingUpdateReportMessageId],
   );
   const directorConversationSignature = useMemo(
     () => currentDirectorMessages
@@ -8580,6 +8249,9 @@ function AgentsPage({
     if (!selectedDirectorId) {
       setShowDirectorProfile(false);
       setHardMemoryReportMessageId(null);
+      setPingTaskMessageId(null);
+      setPingPlanMessageId(null);
+      setPingUpdateReportMessageId(null);
     }
   }, [selectedDirectorId]);
 
@@ -8588,6 +8260,9 @@ function AgentsPage({
       setShowProjectDetails(false);
     }
     setHardMemoryReportMessageId(null);
+    setPingTaskMessageId(null);
+    setPingPlanMessageId(null);
+    setPingUpdateReportMessageId(null);
     setPendingAgentAlert(null);
   }, [agentSelectedProjectId]);
 
@@ -8598,6 +8273,46 @@ function AgentsPage({
   }, [hardMemoryReportMessage, hardMemoryReportMessageId]);
 
   useEffect(() => {
+    if (pingTaskMessageId && !pingTaskMessage) {
+      setPingTaskMessageId(null);
+    }
+  }, [pingTaskMessage, pingTaskMessageId]);
+
+  useEffect(() => {
+    if (pingPlanMessageId && !pingPlanMessage) {
+      setPingPlanMessageId(null);
+    }
+  }, [pingPlanMessage, pingPlanMessageId]);
+
+  useEffect(() => {
+    if (pingUpdateReportMessageId && !pingUpdateReportMessage) {
+      setPingUpdateReportMessageId(null);
+    }
+  }, [pingUpdateReportMessage, pingUpdateReportMessageId]);
+
+  useEffect(() => {
+    setPingRunMode("auto");
+    setPingComposerOptions((current) => ({
+      ...current,
+      ...getComposerDefaults(settings),
+      reasoningEffort: pingOverrides.reasoningEffort ?? programmingDirectorDefaults.reasoningEffort,
+      planningMode: pingOverrides.planningMode ?? programmingDirectorDefaults.planningMode,
+      model: pingOverrides.model ?? settings.advancedDefaults.model,
+      claudeModel: pingOverrides.claudeModel ?? settings.advancedDefaults.claudeModel,
+      contextPaths: [],
+    }));
+  }, [
+    agentSelectedProjectId,
+    pingOverrides.claudeModel,
+    pingOverrides.model,
+    pingOverrides.planningMode,
+    pingOverrides.reasoningEffort,
+    programmingDirectorDefaults.planningMode,
+    programmingDirectorDefaults.reasoningEffort,
+    settings,
+  ]);
+
+  useEffect(() => {
     if (!pendingMemoryProcessDirector || !agentSelectedProjectId || !showInlineDirectorChat) return;
     if (selectedDirectorId !== pendingMemoryProcessDirector) return;
 
@@ -8606,7 +8321,11 @@ function AgentsPage({
 
     const promptMessage = directorId === "creative-director"
       ? "Let's review and process the notes we've gathered."
-      : "Let's review and process the pending handoff from Dan.";
+      : directorId === "project-manager"
+        ? "Let's review the pending update reports and decide outcomes."
+        : directorId === "validation-director"
+          ? "Let's run the assigned validation check."
+          : "Let's review and process the pending handoff from Dan.";
 
     const optimisticUserMsg: AgentChatMessage = {
       id: `opt-${Date.now()}`,
@@ -8620,6 +8339,13 @@ function AgentsPage({
 
     (async () => {
       try {
+        if (agentSession?.automation.status === "running") {
+          const paused = await window.programs.pauseAutomationRun({
+            projectId: agentSelectedProjectId,
+            summary: "Automation paused because the user triggered a manual agent step.",
+          });
+          onSessionUpdate(paused);
+        }
         const response = await window.programs.directorChat({
           projectId: agentSelectedProjectId,
           directorId,
@@ -8639,7 +8365,7 @@ function AgentsPage({
         setIsLoading(false);
       }
     })();
-  }, [pendingMemoryProcessDirector, selectedDirectorId, showInlineDirectorChat, agentSelectedProjectId]);
+  }, [agentSelectedProjectId, agentSession?.automation.status, onSessionUpdate, pendingMemoryProcessDirector, selectedDirectorId, showInlineDirectorChat, settings.advancedDefaults.claudeModel, settings.advancedDefaults.model, settings.advancedDefaults.provider, pushToast]);
 
   const runDirectorAlertAction = useCallback(async (directorId: DirectorId) => {
     if (!agentSelectedProjectId) return;
@@ -8653,6 +8379,13 @@ function AgentsPage({
       onSelectDirector(directorId);
       setIsLoading(true);
       try {
+        if (agentSession?.automation.status === "running") {
+          const paused = await window.programs.pauseAutomationRun({
+            projectId: agentSelectedProjectId,
+            summary: "Automation paused because the user triggered a manual Ping step.",
+          });
+          onSessionUpdate(paused);
+        }
         await window.programs.routeUpdateToProgramming({
           projectId: agentSelectedProjectId,
           updateId: nextUpdate.id,
@@ -8667,6 +8400,18 @@ function AgentsPage({
       } finally {
         setIsLoading(false);
       }
+      return;
+    }
+
+    if (directorId === "project-manager") {
+      onSelectDirector(directorId);
+      setPendingMemoryProcessDirector(directorId);
+      return;
+    }
+
+    if (directorId === "validation-director") {
+      onSelectDirector(directorId);
+      setPendingMemoryProcessDirector(directorId);
       return;
     }
 
@@ -8696,8 +8441,62 @@ function AgentsPage({
     void runDirectorAlertAction(directorId);
   }, [agentSession, runDirectorAlertAction]);
 
+  const handlePickPingContextPaths = useCallback(async () => {
+    if (!agentSelectedProjectId) {
+      return;
+    }
+    setPingAddFilesBusy(true);
+    try {
+      const result = await window.programs.pickContextPaths(agentSelectedProjectId);
+      if (!result.canceled && result.paths.length > 0) {
+        setPingComposerOptions((current) => ({
+          ...current,
+          contextPaths: dedupePaths([...current.contextPaths, ...result.paths]),
+        }));
+      }
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Could not attach context files.", "error");
+    } finally {
+      setPingAddFilesBusy(false);
+    }
+  }, [agentSelectedProjectId, pushToast]);
+
+  const pingPlanIsRunning = Boolean(
+    activePlan
+    && activePlan.status !== "completed"
+    && activePlan.status !== "failed"
+    && activePlan.status !== "awaitingApproval",
+  );
+  const pingCanConfirmPlan = activePlan?.status === "awaitingApproval";
+
+  const handleConfirmPingPlan = useCallback(async () => {
+    if (!agentSelectedProjectId) {
+      return;
+    }
+    try {
+      await window.programs.approvePlan({ projectId: agentSelectedProjectId });
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Could not confirm Ping's plan.", "error");
+    }
+  }, [agentSelectedProjectId, pushToast]);
+
+  const handleCancelPingRun = useCallback(async () => {
+    if (!agentSelectedProjectId) {
+      return;
+    }
+    try {
+      await window.programs.cancelPlan(agentSelectedProjectId);
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Could not stop Ping's run.", "error");
+    }
+  }, [agentSelectedProjectId, pushToast]);
+
   const handleSend = async () => {
     if (!inputValue.trim() || !agentSelectedProjectId || !selectedDirectorId) return;
+    if (selectedDirectorId === "programming-director" && pingPlanIsRunning) {
+      pushToast("Wait for Ping's current run to finish or stop it first.", "error");
+      return;
+    }
     const msg = inputValue.trim();
     setInputValue("");
     setLastRouteHint(null);
@@ -8712,20 +8511,42 @@ function AgentsPage({
     setIsLoading(true);
 
     try {
-      const response = await window.programs.directorChat({
-        projectId: agentSelectedProjectId,
-        directorId: selectedDirectorId,
-        focusMode: null,
-        provider: settings.advancedDefaults.provider,
-        model: settings.advancedDefaults.model,
-        claudeModel: settings.advancedDefaults.claudeModel,
-        message: msg,
-      });
+      if (agentSession?.automation.status === "running") {
+        const paused = await window.programs.pauseAutomationRun({
+          projectId: agentSelectedProjectId,
+          summary: "Automation paused because the user took manual control in the agent chat.",
+        });
+        onSessionUpdate(paused);
+      }
+      const response = selectedDirectorId === "programming-director"
+        ? await window.programs.startPingDirectUpdate({
+            projectId: agentSelectedProjectId,
+            message: msg,
+            runMode: pingRunMode,
+            provider: pingRunMode === "manual" ? pingRuntimeOptions.provider : undefined,
+            model: pingRunMode === "manual" ? pingRuntimeOptions.model : undefined,
+            claudeModel: pingRunMode === "manual" ? pingRuntimeOptions.claudeModel : undefined,
+            reasoningEffort: pingRunMode === "manual" ? pingRuntimeOptions.reasoningEffort : undefined,
+            planningMode: pingRunMode === "manual" ? pingRuntimeOptions.planningMode : undefined,
+            contextPaths: pingRuntimeOptions.contextPaths,
+          })
+        : await window.programs.directorChat({
+            projectId: agentSelectedProjectId,
+            directorId: selectedDirectorId,
+            focusMode: null,
+            provider: settings.advancedDefaults.provider,
+            model: settings.advancedDefaults.model,
+            claudeModel: settings.advancedDefaults.claudeModel,
+            message: msg,
+          });
       const refreshed = await window.programs.getAgentSession(agentSelectedProjectId);
       if (refreshed) onSessionUpdate(refreshed);
 
-      if (response.routeSuggestion) {
+      if ("routeSuggestion" in response && response.routeSuggestion) {
         setLastRouteHint(response.routeSuggestion);
+      }
+      if (selectedDirectorId === "programming-director") {
+        setPingComposerOptions((current) => ({ ...current, contextPaths: [] }));
       }
     } catch (error) {
       pushToast(error instanceof Error ? error.message : "Something went wrong.", "error");
@@ -8777,16 +8598,6 @@ function AgentsPage({
           >
             {DIRECTOR_NAMES[selectedDirectorId]}
           </button>
-        )}
-        {agentSelectedProjectId && !selectedDirectorId && (
-          <>
-            <button className="secondaryButton" style={{ height: '28px', padding: '0 10px', fontSize: '0.8rem' }} onClick={() => setShowAgentStructurePanel(true)}>
-              Agent Structure
-            </button>
-            <button className="secondaryButton" style={{ height: '28px', padding: '0 10px', fontSize: '0.8rem' }} onClick={() => setShowProgressPanel(true)}>
-              Progress
-            </button>
-          </>
         )}
         {selectedProject ? <div className="slackTopBarSpacer" aria-hidden="true" /> : null}
         {selectedProject ? (
@@ -8916,8 +8727,55 @@ function AgentsPage({
                                 </button>
                               );
                             })() : null}
+                            {msg.metadata?.type === "ping-task" ? (
+                              <button
+                                type="button"
+                                className="slackViewMoreButton"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setHardMemoryReportMessageId(null);
+                                  setPingPlanMessageId(null);
+                                  setPingUpdateReportMessageId(null);
+                                  setPingTaskMessageId(msg.id);
+                                }}
+                              >
+                                View Update Task
+                              </button>
+                            ) : null}
+                            {msg.metadata?.type === "ping-plan-summary" ? (
+                              <button
+                                type="button"
+                                className="slackViewMoreButton"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setHardMemoryReportMessageId(null);
+                                  setPingTaskMessageId(null);
+                                  setPingUpdateReportMessageId(null);
+                                  setPingPlanMessageId(msg.id);
+                                }}
+                              >
+                                View Update Plan
+                              </button>
+                            ) : null}
+                            {msg.metadata?.type === "ping-update-report" ? (
+                              <button
+                                type="button"
+                                className="slackViewMoreButton"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setHardMemoryReportMessageId(null);
+                                  setPingTaskMessageId(null);
+                                  setPingPlanMessageId(null);
+                                  setPingUpdateReportMessageId(msg.id);
+                                }}
+                              >
+                                View Update Report
+                              </button>
+                            ) : null}
                           </div>
-                          <div className="slackMessageTimestamp">{formatSlackTimestamp(msg.createdAt)}</div>
+                          {msg.status !== "working" ? (
+                            <div className="slackMessageTimestamp">{formatSlackTimestamp(msg.createdAt)}</div>
+                          ) : null}
                         </div>
                       </div>
                     </div>
@@ -8939,6 +8797,35 @@ function AgentsPage({
 
               <div className="slackComposerFooter">
                 <div className="composerShell slackComposerShellCompact">
+                  {selectedDirectorId === "programming-director" && activePlan ? (
+                    <UpdateStagePanel
+                      plan={activePlan}
+                      canConfirmPlan={pingCanConfirmPlan}
+                      confirmBusy={false}
+                      onConfirm={() => void handleConfirmPingPlan()}
+                    />
+                  ) : null}
+                  {selectedDirectorId === "programming-director" && pingRuntimeOptions.contextPaths.length > 0 ? (
+                    <div className="composerAttachmentRow">
+                      <div className="chipList">
+                        {pingRuntimeOptions.contextPaths.map((path) => (
+                          <button
+                            key={path}
+                            className="pathChip"
+                            onClick={() =>
+                              setPingComposerOptions((current) => ({
+                                ...current,
+                                contextPaths: current.contextPaths.filter((item) => item !== path),
+                              }))
+                            }
+                          >
+                            {path}
+                            <span aria-hidden="true">×</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                   <textarea
                     ref={composerInputRef}
                     className="composerInput slackComposerInputCompact"
@@ -8954,25 +8841,42 @@ function AgentsPage({
                     }}
                   />
                   <ComposerControlBar
-                    options={agentRuntimeOptions}
+                    options={selectedDirectorId === "programming-director" ? pingRuntimeOptions : agentRuntimeOptions}
                     modelCatalog={modelCatalog}
-                    hideAddFilesButton
-                    hideModelMenu
-                    hideThinkingMenu
-                    hidePlanningMenu
-                    hideSpeedMenu
-                    addFilesBusy={false}
+                    hideAddFilesButton={selectedDirectorId !== "programming-director"}
+                    hideModelMenu={true}
+                    hideThinkingMenu={true}
+                    hidePlanningMenu={true}
+                    hideSpeedMenu={true}
+                    addFilesBusy={pingAddFilesBusy}
                     sendBusy={isLoading || !inputValue.trim()}
-                    isRunning={isLoading}
-                    onCodexModelChange={() => {}}
-                    onClaudeModelChange={() => {}}
-                    onReasoningChange={() => {}}
-                    onSpeedChange={() => {}}
-                    onPlanningModeChange={() => {}}
-                    onAddFiles={() => {}}
+                    isRunning={selectedDirectorId === "programming-director" ? pingPlanIsRunning || isLoading : isLoading}
+                    onCodexModelChange={(model) =>
+                      setPingComposerOptions((current) => ({
+                        ...current,
+                        provider: "codex",
+                        model,
+                        speed: "normal",
+                      }))
+                    }
+                    onClaudeModelChange={(claudeModel) =>
+                      setPingComposerOptions((current) => ({
+                        ...current,
+                        provider: "claude",
+                        claudeModel,
+                      }))
+                    }
+                    onReasoningChange={(reasoningEffort) =>
+                      setPingComposerOptions((current) => ({ ...current, reasoningEffort }))
+                    }
+                    onSpeedChange={(speed) => setPingComposerOptions((current) => ({ ...current, speed }))}
+                    onPlanningModeChange={(planningMode) =>
+                      setPingComposerOptions((current) => ({ ...current, planningMode }))
+                    }
+                    onAddFiles={() => void handlePickPingContextPaths()}
                     onSubmit={() => void handleSend()}
-                    onStop={() => {}}
-                    submitLabel="Send"
+                    onStop={selectedDirectorId === "programming-director" ? () => void handleCancelPingRun() : () => {}}
+                    submitLabel={selectedDirectorId === "programming-director" ? "Send update" : "Send"}
                   />
                 </div>
               </div>
@@ -8988,6 +8892,23 @@ function AgentsPage({
                 onClose={() => setHardMemoryReportMessageId(null)}
                 pushToast={pushToast}
               />
+            ) : pingTaskMessage?.metadata?.type === "ping-task" ? (
+              <PingTaskPanel
+                task={pingTaskMessage.metadata.task}
+                onClose={() => setPingTaskMessageId(null)}
+              />
+            ) : pingPlanMessage?.metadata?.type === "ping-plan-summary" ? (
+              <PingPlanPanel
+                plan={pingPlanMessage.metadata.plan ?? null}
+                summary={pingPlanMessage.metadata.summary}
+                onClose={() => setPingPlanMessageId(null)}
+              />
+            ) : pingUpdateReportMessage?.metadata?.type === "ping-update-report" ? (
+              <PingUpdateReportPanel
+                report={pingUpdateReportMessage.metadata.report ?? null}
+                fallbackRawReport={pingUpdateReportMessage.metadata.rawReport}
+                onClose={() => setPingUpdateReportMessageId(null)}
+              />
             ) : null}
           </div>
         </div>
@@ -9002,32 +8923,13 @@ function AgentsPage({
           onUpdateAgentDefaults={onUpdateAgentDefaults}
           onSessionUpdate={onSessionUpdate}
           pushToast={pushToast}
-          onClose={() => setShowProjectDetails(false)}
+          initialView={projectDetailsInitialView}
+          onClose={() => {
+            setShowProjectDetails(false);
+            setProjectDetailsInitialView(undefined);
+          }}
         />
       ) : null}
-
-      {showAgentStructurePanel && (
-        <Modal title="Agent Structure" onClose={() => setShowAgentStructurePanel(false)}>
-          <div style={{ padding: '8px 0' }}>
-            <svg viewBox="0 0 640 380" width="100%" style={{ display: 'block' }}>
-              <line x1="320" y1="70" x2="110" y2="210" stroke="#555" strokeWidth="2" />
-              <line x1="320" y1="70" x2="460" y2="210" stroke="#555" strokeWidth="2" />
-              <line x1="460" y1="210" x2="350" y2="330" stroke="#555" strokeWidth="2" />
-              <line x1="460" y1="210" x2="570" y2="330" stroke="#555" strokeWidth="2" />
-              <circle cx="320" cy="70" r="44" fill="#991B1B" />
-              <text x="320" y="70" textAnchor="middle" dominantBaseline="middle" fill="white" fontSize="16" fontWeight="600">Jeff</text>
-              <circle cx="110" cy="210" r="44" fill="#C2410C" />
-              <text x="110" y="210" textAnchor="middle" dominantBaseline="middle" fill="white" fontSize="16" fontWeight="600">Dan</text>
-              <circle cx="460" cy="210" r="44" fill="#166534" />
-              <text x="460" y="210" textAnchor="middle" dominantBaseline="middle" fill="white" fontSize="16" fontWeight="600">Todd</text>
-              <circle cx="350" cy="330" r="44" fill="#A16207" />
-              <text x="350" y="330" textAnchor="middle" dominantBaseline="middle" fill="white" fontSize="16" fontWeight="600">Ping</text>
-              <circle cx="570" cy="330" r="44" fill="#5B21B6" />
-              <text x="570" y="330" textAnchor="middle" dominantBaseline="middle" fill="white" fontSize="16" fontWeight="600">Pong</text>
-            </svg>
-          </div>
-        </Modal>
-      )}
 
       {pendingAgentAlert ? (
         <Modal
@@ -9062,74 +8964,23 @@ function AgentsPage({
         </Modal>
       ) : null}
 
-      {showProgressPanel && agentSession && (
-        <Modal title="Project Progress" onClose={() => setShowProgressPanel(false)} fullscreen>
-          <div className="progressPanelContent">
-            <div className="progressSection">
-              <h4>Dan — Creative</h4>
-              <div className="progressItems">
-                <div className="progressItem"><span>Concept</span><StatusChip tone={agentSession.danMemory.confirmedConcept ? "confirmed" : "neutral"}>{agentSession.danMemory.confirmedConcept ? "Locked" : "Pending"}</StatusChip></div>
-                <div className="progressItem"><span>Notes</span><span>{agentSession.danMemory.notes.length}</span></div>
-                <div className="progressItem"><span>Draft</span><span>{agentSession.danMemory.draftConcept ? (agentSession.danMemory.draftStatus ?? "working") : "None"}</span></div>
-                <div className="progressItem"><span>Experience</span><span>{agentSession.danMemory.fullExperienceDescription ? "Tracked" : "Pending"}</span></div>
-              </div>
-            </div>
-            <div className="progressSection">
-              <h4>Todd — R&D</h4>
-              <div className="progressItems">
-                <div className="progressItem"><span>Roadmap</span><StatusChip tone={agentSession.versions.length > 0 ? "confirmed" : "neutral"}>{agentSession.versions.length} planned</StatusChip></div>
-                <div className="progressItem"><span>Future Updates</span><StatusChip tone={agentSession.toddMemory.futureUpdatePlan.length > 0 ? "confirmed" : "neutral"}>{agentSession.toddMemory.futureUpdatePlan.length} planned</StatusChip></div>
-                <div className="progressItem"><span>Trouble Log</span><span>{agentSession.toddMemory.troubleLog.length}</span></div>
-                <div className="progressItem"><span>Codebase Index</span><span>{agentSession.toddMemory.codebaseIndexedMap ? "Ready" : "Pending"}</span></div>
-              </div>
-            </div>
-            <div className="progressSection">
-              <h4>Ping — Programming</h4>
-              <div className="progressItems">
-                <div className="progressItem"><span>Completed</span><span>{agentSession.toddMemory.futureUpdatePlan.filter((u) => u.status === "completed").length}</span></div>
-                <div className="progressItem"><span>In Progress</span><span>{agentSession.toddMemory.futureUpdatePlan.filter((u) => u.status === "in_progress").length}</span></div>
-                <div className="progressItem"><span>Pending</span><span>{agentSession.toddMemory.futureUpdatePlan.filter((u) => u.status === "pending").length}</span></div>
-                <div className="progressItem"><span>Latest Report</span><span>{agentSession.pingMemory.latestRawReport?.status ?? "None"}</span></div>
-              </div>
-            </div>
-            <div className="progressSection">
-              <h4>Pong — Validation</h4>
-              <div className="progressItems">
-                <div className="progressItem"><span>Frequency</span><span>{agentSession.validationFrequency}</span></div>
-                <div className="progressItem"><span>Results</span><span>{agentSession.validationResults.length}</span></div>
-              </div>
-            </div>
-          </div>
-        </Modal>
-      )}
-
       {showDirectorProfile && selectedDirectorId !== null && (
         <Modal
           title=""
           onClose={() => setShowDirectorProfile(false)}
           fullscreen
           headerLeading={(
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <button
-                type="button"
-                className="textButton"
-                onClick={() => setShowDirectorProfile(false)}
-              >
-                View Agent Team
-              </button>
-              {selectedProject ? (
-                <button
-                  type="button"
-                  className="textButton"
-                  onClick={() => {
-                    setShowDirectorProfile(false);
-                    setShowProjectDetails(true);
-                  }}
-                >
-                  View Project Details
-                </button>
-              ) : null}
-            </div>
+            <button
+              type="button"
+              className="textButton"
+              onClick={() => {
+                setShowDirectorProfile(false);
+                setProjectDetailsInitialView({ type: "agents" });
+                setShowProjectDetails(true);
+              }}
+            >
+              View Agent Team
+            </button>
           )}
         >
           <DirectorProfilePanel
@@ -9252,10 +9103,14 @@ function SlackPage({
   const [researchPanelMessage, setResearchPanelMessage] = useState<SlackChatMessage | null>(null);
   const [updatePanelMessage, setUpdatePanelMessage] = useState<SlackChatMessage | null>(null);
   const [executionReportMessage, setExecutionReportMessage] = useState<SlackChatMessage | null>(null);
+  const [pingTaskMessage, setPingTaskMessage] = useState<SlackChatMessage | null>(null);
+  const [pingPlanMessage, setPingPlanMessage] = useState<SlackChatMessage | null>(null);
+  const [pingUpdateReportMessage, setPingUpdateReportMessage] = useState<SlackChatMessage | null>(null);
   const [optimisticMessages, setOptimisticMessages] = useState<SlackChatMessage[]>([]);
   const [devSelectionMode, setDevSelectionMode] = useState(false);
   const [selectedDeleteIds, setSelectedDeleteIds] = useState<Set<string>>(new Set());
   const [showRefreshModal, setShowRefreshModal] = useState(false);
+  const [slackDetailsInitialView, setSlackDetailsInitialView] = useState<DetailsView | undefined>(undefined);
   const [refreshing, setRefreshing] = useState(false);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -9327,6 +9182,15 @@ function SlackPage({
     ?? presenceGuestId
     ?? slackAgentSession?.slackActiveDirectorId
     ?? "project-manager";
+  const automationTargetTitle = useMemo(() => {
+    const targetId = slackAgentSession?.automation.selectedTargetUpdateId;
+    if (!targetId) {
+      return null;
+    }
+    return slackAgentSession?.toddMemory.futureUpdatePlan.find((update) => update.id === targetId)?.title
+      ?? selectedProject?.name
+      ?? null;
+  }, [selectedProject?.name, slackAgentSession?.automation.selectedTargetUpdateId, slackAgentSession?.toddMemory.futureUpdatePlan]);
 
   useEffect(() => {
     if (chatScrollRef.current) {
@@ -9345,6 +9209,9 @@ function SlackPage({
     setResearchPanelMessage(null);
     setUpdatePanelMessage(null);
     setExecutionReportMessage(null);
+    setPingTaskMessage(null);
+    setPingPlanMessage(null);
+    setPingUpdateReportMessage(null);
     setHardMemoryReportMessageId(null);
     setDevSelectionMode(false);
     setSelectedDeleteIds(new Set());
@@ -9355,6 +9222,12 @@ function SlackPage({
       setHardMemoryReportMessageId(null);
     }
   }, [hardMemoryReportMessage, hardMemoryReportMessageId]);
+
+  useEffect(() => {
+    if (pingTaskMessage && !displayMessages.some((message) => message.id === pingTaskMessage.id)) {
+      setPingTaskMessage(null);
+    }
+  }, [displayMessages, pingTaskMessage]);
 
   useLayoutEffect(() => {
     syncComposerTextareaHeight(composerInputRef.current, { minHeight: SLACK_COMPOSER_MIN_HEIGHT });
@@ -9394,6 +9267,13 @@ function SlackPage({
     setIsLoading(true);
 
     try {
+      if (slackAgentSession?.automation.status === "running") {
+        const paused = await window.programs.pauseAutomationRun({
+          projectId: slackSelectedProjectId,
+          summary: "Automation paused because the user took manual control in Slack.",
+        });
+        onSessionUpdate(paused);
+      }
       await window.programs.slackChat({
         projectId: slackSelectedProjectId,
         provider: settings.advancedDefaults.provider,
@@ -9470,6 +9350,40 @@ function SlackPage({
       pushToast(err instanceof Error ? err.message : "Refresh failed", "error");
     } finally {
       setRefreshing(false);
+    }
+  };
+
+  const handleAutomationControl = async (action: "pause" | "resume" | "stop" | "recovery") => {
+    if (!slackSelectedProjectId) return;
+    try {
+      const updated = action === "pause"
+        ? await window.programs.pauseAutomationRun({
+          projectId: slackSelectedProjectId,
+          summary: "Automation paused from Slack.",
+        })
+        : action === "resume"
+          ? await window.programs.resumeAutomationRun(slackSelectedProjectId)
+          : action === "stop"
+            ? await window.programs.stopAutomationRun({
+              projectId: slackSelectedProjectId,
+              summary: "Automation stopped from Slack.",
+            })
+            : await window.programs.requestAutomationFailureRecovery({
+              projectId: slackSelectedProjectId,
+            });
+      onSessionUpdate(updated);
+      pushToast(
+        action === "pause"
+          ? "Automation paused."
+          : action === "resume"
+            ? "Automation resumed."
+            : action === "stop"
+              ? "Automation stopped."
+              : "Failure recovery queued for confirmation.",
+        action === "stop" ? "info" : "success",
+      );
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Could not update automation.", "error");
     }
   };
 
@@ -9556,6 +9470,67 @@ function SlackPage({
 
       {slackSelectedProjectId ? (
         <>
+          {(slackAgentSession?.automation.status ?? "idle") !== "idle" || slackAgentSession?.automation.selectedTargetUpdateId ? (
+            <div className="slackDetailsCard" style={{ marginBottom: 12 }}>
+              <div className="slackDetailsSubsectionHead">
+                <h5 style={{ margin: 0 }}>Automation</h5>
+                <StatusChip tone={
+                  slackAgentSession?.automation.status === "running"
+                    ? "info"
+                    : slackAgentSession?.automation.status === "completed"
+                      ? "confirmed"
+                      : slackAgentSession?.automation.status === "stopped"
+                        ? "action_required"
+                        : "neutral"
+                }>
+                  {slackAgentSession?.automation.status ?? "idle"}
+                </StatusChip>
+              </div>
+              <p style={{ margin: "8px 0 0", fontSize: 12, color: "var(--muted)" }}>
+                {automationTargetTitle
+                  ? `Target: ${automationTargetTitle}`
+                  : "No automation target is selected yet."}
+              </p>
+              {slackAgentSession?.automation.nextUpdateId ? (
+                <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--muted)" }}>
+                  Next update: {slackAgentSession.toddMemory.futureUpdatePlan.find((update) => update.id === slackAgentSession.automation.nextUpdateId)?.title ?? "Waiting on current step"}
+                </p>
+              ) : null}
+              {slackAgentSession?.automation.stopSummary ? (
+                <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--muted)" }}>
+                  {slackAgentSession.automation.stopSummary}
+                </p>
+              ) : null}
+              <div className="proposalActions" style={{ marginTop: 10 }}>
+                <button
+                  className="secondaryButton"
+                  disabled={slackAgentSession?.automation.status !== "running"}
+                  onClick={() => void handleAutomationControl("pause")}
+                >
+                  Pause
+                </button>
+                <button
+                  className="secondaryButton"
+                  disabled={slackAgentSession?.automation.status !== "paused" && slackAgentSession?.automation.status !== "stopped"}
+                  onClick={() => void handleAutomationControl("resume")}
+                >
+                  Resume
+                </button>
+                <button
+                  className="secondaryButton"
+                  disabled={slackAgentSession?.automation.status !== "running" && slackAgentSession?.automation.status !== "paused"}
+                  onClick={() => void handleAutomationControl("stop")}
+                >
+                  Stop
+                </button>
+                {slackAgentSession?.automation.pendingRevertCommitSha ? (
+                  <button className="secondaryButton" onClick={() => void handleAutomationControl("recovery")}>
+                    Queue Recovery Revert
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
           {(slackAgentSession?.pendingApprovals.length ?? 0) > 0 ? (
             <div className="conversationApprovalShelf">
               <PendingApprovalsPanel
@@ -9624,6 +9599,9 @@ function SlackPage({
                                           setResearchPanelMessage(null);
                                           setUpdatePanelMessage(null);
                                           setExecutionReportMessage(null);
+                                          setPingTaskMessage(null);
+                                          setPingPlanMessage(null);
+                                          setPingUpdateReportMessage(null);
                                           setHardMemoryReportMessageId(msg.id);
                                         }}
                                       >
@@ -9637,6 +9615,11 @@ function SlackPage({
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         setHardMemoryReportMessageId(null);
+                                        setUpdatePanelMessage(null);
+                                        setExecutionReportMessage(null);
+                                        setPingTaskMessage(null);
+                                        setPingPlanMessage(null);
+                                        setPingUpdateReportMessage(null);
                                         setResearchPanelMessage(msg);
                                       }}
                                     >
@@ -9649,10 +9632,64 @@ function SlackPage({
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         setHardMemoryReportMessageId(null);
+                                        setResearchPanelMessage(null);
+                                        setExecutionReportMessage(null);
+                                        setPingTaskMessage(null);
+                                        setPingPlanMessage(null);
+                                        setPingUpdateReportMessage(null);
                                         setUpdatePanelMessage(msg);
                                       }}
                                     >
                                       View Update
+                                    </button>
+                                  )}
+                                  {msg.metadata?.type === "ping-task" && (
+                                    <button
+                                      className="slackViewMoreButton"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setHardMemoryReportMessageId(null);
+                                        setResearchPanelMessage(null);
+                                        setUpdatePanelMessage(null);
+                                        setExecutionReportMessage(null);
+                                        setPingPlanMessage(null);
+                                        setPingUpdateReportMessage(null);
+                                        setPingTaskMessage(msg);
+                                      }}
+                                    >
+                                      View Update Task
+                                    </button>
+                                  )}
+                                  {msg.metadata?.type === "ping-plan-summary" && (
+                                    <button
+                                      className="slackViewMoreButton"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setHardMemoryReportMessageId(null);
+                                        setPingTaskMessage(null);
+                                        setResearchPanelMessage(null);
+                                        setUpdatePanelMessage(null);
+                                        setExecutionReportMessage(null);
+                                        setPingPlanMessage(msg);
+                                      }}
+                                    >
+                                      View Update Plan
+                                    </button>
+                                  )}
+                                  {msg.metadata?.type === "ping-update-report" && (
+                                    <button
+                                      className="slackViewMoreButton"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setHardMemoryReportMessageId(null);
+                                        setPingTaskMessage(null);
+                                        setResearchPanelMessage(null);
+                                        setUpdatePanelMessage(null);
+                                        setExecutionReportMessage(null);
+                                        setPingUpdateReportMessage(msg);
+                                      }}
+                                    >
+                                      View Update Report
                                     </button>
                                   )}
                                   {msg.metadata?.type === "execution-report" && (
@@ -9661,16 +9698,23 @@ function SlackPage({
                                       onClick={(e) => {
                                         e.stopPropagation();
                                         setHardMemoryReportMessageId(null);
+                                        setResearchPanelMessage(null);
+                                        setUpdatePanelMessage(null);
+                                        setPingTaskMessage(null);
+                                        setPingPlanMessage(null);
+                                        setPingUpdateReportMessage(null);
                                         setExecutionReportMessage(msg);
                                       }}
                                     >
-                                      View Update Report
+                                      View Project Status Report
                                     </button>
                                   )}
                                 </div>
-                                <div className="slackMessageTimestamp">
-                                  {formatSlackTimestamp(msg.createdAt)}
-                                </div>
+                                {msg.status !== "working" ? (
+                                  <div className="slackMessageTimestamp">
+                                    {formatSlackTimestamp(msg.createdAt)}
+                                  </div>
+                                ) : null}
                               </div>
                             </div>
                           </>
@@ -9798,11 +9842,40 @@ function SlackPage({
                 </div>
               )}
 
-              {executionReportMessage?.metadata?.type === "execution-report" ? (
-                <ExecutionReportPanel
-                  report={executionReportMessage.metadata.report}
-                  onClose={() => setExecutionReportMessage(null)}
+              {pingTaskMessage?.metadata?.type === "ping-task" ? (
+                <PingTaskPanel
+                  task={pingTaskMessage.metadata.task}
+                  onClose={() => setPingTaskMessage(null)}
                 />
+              ) : null}
+
+              {pingPlanMessage?.metadata?.type === "ping-plan-summary" ? (
+                <PingPlanPanel
+                  plan={pingPlanMessage.metadata.plan ?? null}
+                  summary={pingPlanMessage.metadata.summary}
+                  onClose={() => setPingPlanMessage(null)}
+                />
+              ) : null}
+
+              {pingUpdateReportMessage?.metadata?.type === "ping-update-report" ? (
+                <PingUpdateReportPanel
+                  report={pingUpdateReportMessage.metadata.report ?? null}
+                  fallbackRawReport={pingUpdateReportMessage.metadata.rawReport}
+                  onClose={() => setPingUpdateReportMessage(null)}
+                />
+              ) : null}
+
+              {executionReportMessage?.metadata?.type === "execution-report" ? (
+                <ErrorBoundaryPanel onClose={() => setExecutionReportMessage(null)}>
+                  <ExecutionReportPanel
+                    report={executionReportMessage.metadata.report}
+                    projectId={slackSelectedProjectId}
+                    session={slackAgentSession}
+                    onSessionUpdate={onSessionUpdate}
+                    pushToast={pushToast}
+                    onClose={() => setExecutionReportMessage(null)}
+                  />
+                </ErrorBoundaryPanel>
               ) : null}
             </div>
           </div>
@@ -9823,7 +9896,11 @@ function SlackPage({
           onUpdateAgentDefaults={onUpdateAgentDefaults}
           onSessionUpdate={onSessionUpdate}
           pushToast={pushToast}
-          onClose={() => setShowProjectDetails(false)}
+          initialView={slackDetailsInitialView}
+          onClose={() => {
+            setShowProjectDetails(false);
+            setSlackDetailsInitialView(undefined);
+          }}
         />
       ) : null}
 
@@ -9843,11 +9920,12 @@ function SlackPage({
               type="button"
               className="textButton"
               onClick={() => {
+                setSlackDetailsInitialView({ type: "agents" });
                 setShowProjectDetails(true);
                 setShowDirectorProfile(null);
               }}
             >
-              Project Details
+              View Agent Team
             </button>
           }
           onClose={() => setShowDirectorProfile(null)}
@@ -9889,6 +9967,7 @@ function SlackProjectDetailsModal({
   onSessionUpdate,
   pushToast,
   onClose,
+  initialView,
 }: {
   project: Project;
   session: AgentSession | null;
@@ -9898,12 +9977,94 @@ function SlackProjectDetailsModal({
   onSessionUpdate: (session: AgentSession) => void;
   pushToast: (message: string, level: "info" | "success" | "error") => void;
   onClose: () => void;
+  initialView?: DetailsView;
 }) {
-  const [currentView, setCurrentView] = useState<DetailsView>({ type: "main" });
+  const [currentView, setCurrentView] = useState<DetailsView>(initialView ?? { type: "main" });
   const [summaryRange, setSummaryRange] = useState<SlackDetailsRange>("daily");
   const [forecastRange, setForecastRange] = useState<SlackDetailsRange>("daily");
+  const [automationTargets, setAutomationTargets] = useState<{
+    source: "none" | "confirmed" | "draft";
+    currentVersionId: string | null;
+    currentVersionLabel: string | null;
+    draftApprovalId: string | null;
+    candidates: AutomationTargetCandidate[];
+  }>({
+    source: "none",
+    currentVersionId: null,
+    currentVersionLabel: null,
+    draftApprovalId: null,
+    candidates: [],
+  });
+  const [loadingAutomationTargets, setLoadingAutomationTargets] = useState(false);
+  const [automationBusy, setAutomationBusy] = useState<"start" | "pause" | "resume" | "stop" | "recovery" | null>(null);
+  const [selectedAutomationTargetId, setSelectedAutomationTargetId] = useState<string | null>(session?.automation.selectedTargetUpdateId ?? null);
+  const [automationConstraints, setAutomationConstraints] = useState<AutomationConstraints>(
+    session?.automation.constraints ?? {
+      allowedHours: null,
+      codexMaxUsedPercent: null,
+      claudeMaxUsedPercent: null,
+    },
+  );
   const description = buildSlackProjectDescription(session);
   const concept = getConfirmedConcept(session);
+  const displayedPlan = useMemo(
+    () => buildDisplayedUpdatePlan(session),
+    [session],
+  );
+  const selectedAutomationTarget = useMemo(
+    () => automationTargets.candidates.find((candidate) => candidate.updateId === selectedAutomationTargetId) ?? null,
+    [automationTargets.candidates, selectedAutomationTargetId],
+  );
+
+  useEffect(() => {
+    setAutomationConstraints(
+      session?.automation.constraints ?? {
+        allowedHours: null,
+        codexMaxUsedPercent: null,
+        claudeMaxUsedPercent: null,
+      },
+    );
+  }, [session?.automation.constraints]);
+
+  useEffect(() => {
+    if (currentView.type !== "planned") {
+      return;
+    }
+    let cancelled = false;
+    setLoadingAutomationTargets(true);
+    void window.programs.listAutomationTargets({ projectId: project.id })
+      .then((response) => {
+        if (cancelled) {
+          return;
+        }
+        setAutomationTargets(response);
+        setSelectedAutomationTargetId((current) => {
+          if (current && response.candidates.some((candidate) => candidate.updateId === current)) {
+            return current;
+          }
+          if (
+            session?.automation.selectedTargetUpdateId
+            && response.candidates.some((candidate) => candidate.updateId === session.automation.selectedTargetUpdateId)
+          ) {
+            return session.automation.selectedTargetUpdateId;
+          }
+          return response.candidates[0]?.updateId ?? null;
+        });
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          pushToast(error instanceof Error ? error.message : "Could not load automation targets.", "error");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingAutomationTargets(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentView.type, project.id, pushToast, session?.automation.selectedTargetUpdateId, session?.updatedAt]);
 
   const headerLeading = (() => {
     if (currentView.type === "director") {
@@ -9943,6 +10104,58 @@ function SlackProjectDetailsModal({
   })();
 
   const title = currentView.type === "main" ? `${project.name} Details` : "";
+
+  const handleAutomationAction = async (
+    action: "start" | "pause" | "resume" | "stop" | "recovery",
+  ) => {
+    setAutomationBusy(action);
+    try {
+      let updatedSession: AgentSession;
+      if (action === "start") {
+        if (!selectedAutomationTargetId) {
+          throw new Error("Select a target update first.");
+        }
+        updatedSession = await window.programs.startAutomationRun({
+          projectId: project.id,
+          targetUpdateId: selectedAutomationTargetId,
+          constraints: automationConstraints,
+        });
+      } else if (action === "pause") {
+        updatedSession = await window.programs.pauseAutomationRun({
+          projectId: project.id,
+          summary: "Automation paused by the user.",
+        });
+      } else if (action === "resume") {
+        updatedSession = await window.programs.resumeAutomationRun(project.id);
+      } else if (action === "stop") {
+        updatedSession = await window.programs.stopAutomationRun({
+          projectId: project.id,
+          summary: "Automation stopped by the user.",
+        });
+      } else {
+        updatedSession = await window.programs.requestAutomationFailureRecovery({
+          projectId: project.id,
+        });
+      }
+      onSessionUpdate(updatedSession);
+      pushToast(
+        action === "start"
+          ? "Automation started."
+          : action === "pause"
+            ? "Automation paused."
+            : action === "resume"
+              ? "Automation resumed."
+              : action === "stop"
+                ? "Automation stopped."
+                : "Failure recovery queued for confirmation.",
+        action === "stop" ? "info" : "success",
+      );
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Could not update automation.", "error");
+    } finally {
+      setAutomationBusy(null);
+    }
+  };
 
   return (
     <Modal
@@ -10031,7 +10244,6 @@ function SlackProjectDetailsModal({
             <ConceptOverview
               concept={concept}
               emptyLabel="The concept has not been confirmed yet."
-              experienceDescription={session?.danMemory.fullExperienceDescription}
             />
           </div>
         </div>
@@ -10160,10 +10372,9 @@ function SlackProjectDetailsModal({
       {currentView.type === "planned" ? (
         <div className="detailsScrollContent">
           {(() => {
-            const versionPlan = session?.toddMemory?.versionPlan;
-            const futureUpdates = session?.toddMemory?.futureUpdatePlan ?? [];
-            const versions = [versionPlan?.v1, versionPlan?.v2, versionPlan?.v3].filter(Boolean) as import("../../shared/types").VersionPlan[];
-            if (versions.length === 0 && futureUpdates.length === 0) {
+            const versions = displayedPlan.versions;
+            const updates = displayedPlan.updates;
+            if (versions.length === 0 && updates.length === 0) {
               return (
                 <div className="slackDetailsCard">
                   <p style={{ color: "var(--muted)" }}>No planned updates yet.</p>
@@ -10171,13 +10382,207 @@ function SlackProjectDetailsModal({
               );
             }
             const updatesByVersion: Record<string, import("../../shared/types").VersionUpdate[]> = {};
-            for (const u of futureUpdates) {
+            for (const u of updates) {
               const key = u.versionId ?? "__unassigned__";
               if (!updatesByVersion[key]) updatesByVersion[key] = [];
               updatesByVersion[key].push(u);
             }
+            const selectedPathUpdates = selectedAutomationTarget
+              ? updates
+                .filter((update) => selectedAutomationTarget.pathUpdateIds.includes(update.id))
+                .slice()
+                .sort((left, right) => left.order - right.order)
+              : [];
             return (
               <>
+                <div className="slackDetailsCard" style={{ marginBottom: 12 }}>
+                  <div className="slackDetailsSubsectionHead">
+                    <h5 style={{ margin: 0 }}>Automation Target</h5>
+                    <StatusChip tone={
+                      displayedPlan.source === "draft"
+                        ? "action_required"
+                        : session?.automation.status === "running"
+                          ? "info"
+                          : session?.automation.status === "completed"
+                            ? "confirmed"
+                            : "neutral"
+                    }>
+                      {displayedPlan.source === "draft"
+                        ? "Draft plan"
+                        : session?.automation.status ?? "idle"}
+                    </StatusChip>
+                  </div>
+                  <p style={{ margin: "8px 0 0", fontSize: 12, color: "var(--muted)" }}>
+                    {automationTargets.currentVersionLabel
+                      ? `Current version: ${automationTargets.currentVersionLabel}`
+                      : displayedPlan.source === "draft"
+                        ? "Todd has a live draft update plan that still needs confirmation."
+                        : "No current version is ready for automation yet."}
+                  </p>
+                  {loadingAutomationTargets ? (
+                    <p style={{ margin: "8px 0 0", fontSize: 12, color: "var(--muted)" }}>Loading available targets...</p>
+                  ) : automationTargets.candidates.length > 0 ? (
+                    <div className="validationResultsList" style={{ marginTop: 12 }}>
+                      {automationTargets.candidates.map((candidate) => (
+                        <label key={candidate.updateId} className="validationResultCard validationResultCard--pass" style={{ cursor: "pointer" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <input
+                              type="radio"
+                              name="automation-target"
+                              checked={selectedAutomationTargetId === candidate.updateId}
+                              onChange={() => setSelectedAutomationTargetId(candidate.updateId)}
+                            />
+                            <span className="validationResultType">{candidate.title}</span>
+                            <span className={`validationResultStatus${candidate.status === "in_progress" ? " pmStatusDone" : ""}`}>
+                              {candidate.status.replace(/_/g, " ")}
+                            </span>
+                          </div>
+                          <p style={{ gridColumn: "1 / -1", margin: "6px 0 0", fontSize: 12, color: "var(--muted)" }}>
+                            {candidate.description}
+                          </p>
+                        </label>
+                      ))}
+                    </div>
+                  ) : (
+                    <p style={{ margin: "8px 0 0", fontSize: 12, color: "var(--muted)" }}>
+                      {displayedPlan.source === "draft"
+                        ? "Confirm Todd's update plan to enable target selection."
+                        : "No selectable future targets are available in the current version."}
+                    </p>
+                  )}
+                  {selectedPathUpdates.length > 0 ? (
+                    <div style={{ marginTop: 12 }}>
+                      <span className="pmStatusLabel">Path To Selected Target</span>
+                      <div className="updatePlanList" style={{ marginTop: 8 }}>
+                        {selectedPathUpdates.map((update, index) => (
+                          <div key={update.id} className="agentPlannedUpdateItem">
+                            <span className="orderBadge">{index + 1}</span>
+                            <div className="updateContent">
+                              <div className="updateTitle">{update.title}</div>
+                              <div className="updateDescription">{update.description}</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  <div className="proposalActions" style={{ marginTop: 12, alignItems: "center" }}>
+                    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
+                      Start Hour
+                      <input
+                        type="number"
+                        min={0}
+                        max={23}
+                        className="plannerSelect"
+                        value={automationConstraints.allowedHours?.startHour ?? ""}
+                        onChange={(event) => {
+                          const next = event.target.value === "" ? null : Math.max(0, Math.min(23, Number(event.target.value)));
+                          setAutomationConstraints((current) => ({
+                            ...current,
+                            allowedHours: next == null
+                              ? null
+                              : {
+                                startHour: next,
+                                endHour: current.allowedHours?.endHour ?? 23,
+                              },
+                          }));
+                        }}
+                      />
+                    </label>
+                    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
+                      End Hour
+                      <input
+                        type="number"
+                        min={0}
+                        max={23}
+                        className="plannerSelect"
+                        value={automationConstraints.allowedHours?.endHour ?? ""}
+                        onChange={(event) => {
+                          const next = event.target.value === "" ? null : Math.max(0, Math.min(23, Number(event.target.value)));
+                          setAutomationConstraints((current) => ({
+                            ...current,
+                            allowedHours: next == null
+                              ? null
+                              : {
+                                startHour: current.allowedHours?.startHour ?? 0,
+                                endHour: next,
+                              },
+                          }));
+                        }}
+                      />
+                    </label>
+                    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
+                      Codex Max %
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        className="plannerSelect"
+                        value={automationConstraints.codexMaxUsedPercent ?? ""}
+                        onChange={(event) => setAutomationConstraints((current) => ({
+                          ...current,
+                          codexMaxUsedPercent: event.target.value === "" ? null : Math.max(0, Math.min(100, Number(event.target.value))),
+                        }))}
+                      />
+                    </label>
+                    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
+                      Claude Max %
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        className="plannerSelect"
+                        value={automationConstraints.claudeMaxUsedPercent ?? ""}
+                        onChange={(event) => setAutomationConstraints((current) => ({
+                          ...current,
+                          claudeMaxUsedPercent: event.target.value === "" ? null : Math.max(0, Math.min(100, Number(event.target.value))),
+                        }))}
+                      />
+                    </label>
+                  </div>
+                  <div className="proposalActions" style={{ marginTop: 12 }}>
+                    <button
+                      className="primaryButton"
+                      disabled={automationBusy !== null || displayedPlan.source === "draft" || !selectedAutomationTargetId}
+                      onClick={() => void handleAutomationAction("start")}
+                    >
+                      Start Toward Target
+                    </button>
+                    <button
+                      className="secondaryButton"
+                      disabled={automationBusy !== null || session?.automation.status !== "running"}
+                      onClick={() => void handleAutomationAction("pause")}
+                    >
+                      Pause
+                    </button>
+                    <button
+                      className="secondaryButton"
+                      disabled={automationBusy !== null || (session?.automation.status !== "paused" && session?.automation.status !== "stopped")}
+                      onClick={() => void handleAutomationAction("resume")}
+                    >
+                      Resume
+                    </button>
+                    <button
+                      className="secondaryButton"
+                      disabled={automationBusy !== null || (session?.automation.status !== "running" && session?.automation.status !== "paused")}
+                      onClick={() => void handleAutomationAction("stop")}
+                    >
+                      Stop
+                    </button>
+                    {session?.automation.pendingRevertCommitSha ? (
+                      <button
+                        className="secondaryButton"
+                        disabled={automationBusy !== null}
+                        onClick={() => void handleAutomationAction("recovery")}
+                      >
+                        Queue Recovery Revert
+                      </button>
+                    ) : null}
+                  </div>
+                  {session?.automation.stopSummary ? (
+                    <p style={{ margin: "10px 0 0", fontSize: 12, color: "var(--muted)" }}>{session.automation.stopSummary}</p>
+                  ) : null}
+                </div>
                 {versions.map((v) => {
                   const vUpdates = (updatesByVersion[v.id] ?? []).slice().sort((a, b) => a.order - b.order);
                   return (
@@ -10199,7 +10604,7 @@ function SlackProjectDetailsModal({
                                 <div className="updateTitle">{u.title}</div>
                                 {u.description ? <div className="updateDescription">{u.description}</div> : null}
                               </div>
-                              <span className={`subAgentModelBadge subAgentModelBadge--${u.status === "completed" ? "premium" : u.status === "in_progress" ? "standard" : "basic"}`}>
+                              <span className={`updatePlanStatusBadge updatePlanStatusBadge--${u.status === "completed" ? "premium" : u.status === "in_progress" ? "standard" : "basic"}`}>
                                 {u.status.replace("_", " ")}
                               </span>
                             </div>
@@ -10219,7 +10624,7 @@ function SlackProjectDetailsModal({
                             <div className="updateTitle">{u.title}</div>
                             {u.description ? <div className="updateDescription">{u.description}</div> : null}
                           </div>
-                          <span className={`subAgentModelBadge subAgentModelBadge--${u.status === "completed" ? "premium" : u.status === "in_progress" ? "standard" : "basic"}`}>
+                          <span className={`updatePlanStatusBadge updatePlanStatusBadge--${u.status === "completed" ? "premium" : u.status === "in_progress" ? "standard" : "basic"}`}>
                             {u.status.replace("_", " ")}
                           </span>
                         </div>
@@ -10234,7 +10639,7 @@ function SlackProjectDetailsModal({
       ) : null}
 
       {currentView.type === "agents" ? (
-        <div className="directorProfilePanel directorProfilePanel--static">
+        <div className="directorProfilePanel directorProfilePanel--scrollable">
           <div className="directorProfilePanelContent">
             <div className="slackDetailsCard slackDetailsAgentFlow">
               {SLACK_DETAILS_DIRECTOR_FLOW.map((directorId, index) => (
@@ -10282,44 +10687,6 @@ function SlackProjectDetailsModal({
               </div>
             ) : null}
 
-            {/* Sub-Agents from Core Pillars */}
-            {session && session.dynamicSubAgents.filter((sa) => sa.sourcePillarId).length > 0 ? (
-              <div className="slackDetailsCard" style={{ marginTop: 12 }}>
-                <h5 style={{ marginBottom: 8, fontSize: 13, color: "var(--text)" }}>Pillar Sub-Agents</h5>
-                {session.dynamicSubAgents.filter((sa) => sa.sourcePillarId).map((sa) => (
-                  <div key={sa.id} className="subAgentCard">
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ fontWeight: 600, fontSize: 13 }}>{sa.name}</span>
-                      <span className={`subAgentModelBadge subAgentModelBadge--${sa.modelTier}`}>
-                        {sa.modelTier}
-                      </span>
-                    </div>
-                    <div style={{ fontSize: 12, color: "var(--muted)" }}>{sa.role}</div>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-
-            {/* Create Team button */}
-            {session && session.corePillars.filter((p) => p.pillarType === "core").length > 0 &&
-             session.dynamicSubAgents.filter((sa) => sa.sourcePillarId).length === 0 ? (
-              <button
-                type="button"
-                className="refreshButton"
-                style={{ marginTop: 12 }}
-                onClick={async () => {
-                  try {
-                    const updated = await window.programs.createPillarSubAgents({ projectId: project.id });
-                    onSessionUpdate(updated);
-                    pushToast("Sub-agent team created", "success");
-                  } catch (err) {
-                    pushToast(err instanceof Error ? err.message : "Failed to create team", "error");
-                  }
-                }}
-              >
-                Create Team
-              </button>
-            ) : null}
           </div>
         </div>
       ) : null}
@@ -10536,221 +10903,6 @@ function SlackDetailsPillarTree({
         </div>
       ) : null}
     </div>
-  );
-}
-
-function SkillsPage({
-  skills,
-  onSkillsChange,
-  pushToast,
-}: {
-  skills: Skill[];
-  onSkillsChange: (skills: Skill[]) => void;
-  pushToast: (message: string, level: "info" | "success" | "error") => void;
-}) {
-  const recommendedSkills: Array<{
-    catalogId: InstallSkillCatalogInput["catalogId"];
-    providerLabel: string;
-    typeLabel: string;
-    title: string;
-    description: string;
-  }> = [
-    {
-      catalogId: "frontend-design-universal",
-      providerLabel: "Universal",
-      typeLabel: "Skill",
-      title: "Front-end Design",
-      description: "Design-focused guidance for stronger visual direction, layout polish, and responsive UI work across Codex and Claude.",
-    },
-    {
-      catalogId: "user-testing-universal",
-      providerLabel: "Universal",
-      typeLabel: "Skill",
-      title: "User Testing",
-      description: "PROGRAMS-native browser testing with Playwright artifacts so either provider can inspect the app like a user.",
-    },
-  ];
-
-  const upsertSkill = (nextSkill: Skill) => {
-    const existingIndex = skills.findIndex((skill) => skill.id === nextSkill.id);
-    if (existingIndex >= 0) {
-      const next = [...skills];
-      next[existingIndex] = nextSkill;
-      onSkillsChange(next);
-      return;
-    }
-
-    const duplicateIndex = skills.findIndex(
-      (skill) =>
-        (nextSkill.installSlug && skill.installSlug === nextSkill.installSlug)
-        || skill.name === nextSkill.name,
-    );
-    if (duplicateIndex >= 0) {
-      const next = [...skills];
-      next[duplicateIndex] = nextSkill;
-      onSkillsChange(next);
-      return;
-    }
-
-    onSkillsChange([nextSkill, ...skills]);
-  };
-
-  const installedCatalogSkill = (catalogId: InstallSkillCatalogInput["catalogId"]): Skill | null =>
-    skills.find((skill) => skill.installSlug === catalogId) ?? null;
-
-  const sortedSkills = useMemo(
-    () => [...skills].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)),
-    [skills],
-  );
-
-  return (
-    <section className="agentsPage">
-      <div className="skillsSectionHeader">
-        <h4>Skills</h4>
-        <button
-          className="secondaryButton"
-          onClick={async () => {
-            const result = await window.programs.pickMaterialFiles();
-            if (result.canceled || result.paths.length === 0) return;
-            try {
-              const skill = await window.programs.downloadSkill({ filePath: result.paths[0] });
-              onSkillsChange([...skills, skill]);
-              pushToast(`Skill "${skill.name}" imported.`, "success");
-            } catch (error) {
-              pushToast(error instanceof Error ? error.message : "Failed to import skill.", "error");
-            }
-          }}
-        >
-          Import Skill
-        </button>
-      </div>
-      <div className="catalogSkillsGrid">
-        {recommendedSkills.map((item) => {
-          const installed = installedCatalogSkill(item.catalogId);
-          const installLabel = installed
-            ? installed.installStatus === "ready"
-              ? item.typeLabel === "Plugin"
-                ? "Reinstall"
-                : "Installed"
-              : installed.installStatus === "error"
-                ? "Retry Install"
-                : "Installing..."
-            : item.typeLabel === "Plugin"
-              ? "Install Plugin"
-              : "Install Skill";
-          const installTone: StatusTone = installed
-            ? installed.installStatus === "ready"
-              ? "confirmed"
-              : installed.installStatus === "error"
-                ? "action_required"
-                : "info"
-            : "neutral";
-
-          return (
-            <div key={item.catalogId} className="skillCard skillCard-catalog">
-              <div className="skillCardHeader">
-                <span className="skillCardName">{item.title}</span>
-                <span className={`skillProviderBadge skillProviderBadge-${item.providerLabel.toLowerCase()}`}>
-                  {item.providerLabel}
-                </span>
-              </div>
-              <div className="skillMetaRow">
-                <span className="skillMetaTag">{item.typeLabel}</span>
-                <StatusChip tone={installTone}>
-                  {installed ? installed.installStatus : "Available"}
-                </StatusChip>
-              </div>
-              <p className="skillCardDescription">{item.description}</p>
-              {installed?.lastError ? <div className="errorBanner">{installed.lastError}</div> : null}
-              <div className="skillCardActions">
-                <button
-                  className="secondaryButton"
-                  disabled={installed?.installStatus === "installing"}
-                  onClick={async () => {
-                    try {
-                      const skill = await window.programs.installSkillCatalogItem({ catalogId: item.catalogId });
-                      upsertSkill(skill);
-                      pushToast(
-                        skill.installStatus === "ready"
-                          ? `"${skill.name}" is available.`
-                          : skill.lastError ?? `PROGRAMS could not finish installing "${skill.name}".`,
-                        skill.installStatus === "ready" ? "success" : "error",
-                      );
-                    } catch (error) {
-                      pushToast(error instanceof Error ? error.message : "Failed to install skill.", "error");
-                    }
-                  }}
-                >
-                  {installLabel}
-                </button>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-      {skills.length === 0 ? (
-        <p className="skillsEmpty">No skills installed yet. Import a local skill or install one of the recommended Claude and universal skills above.</p>
-      ) : (
-        <div className="skillsGrid">
-          {sortedSkills.map((skill) => (
-            <div key={skill.id} className="skillCard">
-              <div className="skillCardHeader">
-                <span className="skillCardName">{skill.name}</span>
-                <div className="skillBadgeRow">
-                  <span className={`skillProviderBadge skillProviderBadge-${skill.sourceProvider}`}>
-                    {skill.isUniversal ? "Universal" : skill.sourceProvider}
-                  </span>
-                  <span className="skillMetaTag">{skill.sourceType}</span>
-                </div>
-              </div>
-              <div className="skillMetaRow">
-                <StatusChip tone={skill.installStatus === "ready" ? "confirmed" : skill.installStatus === "error" ? "action_required" : "info"}>
-                  {skill.installStatus}
-                </StatusChip>
-                {skill.installSlug ? <span className="helperText">{skill.installSlug}</span> : null}
-              </div>
-              {skill.description ? (
-                <p className="skillCardDescription">{skill.description}</p>
-              ) : null}
-              {skill.installPath ? <p className="skillPathText">{skill.installPath}</p> : null}
-              {skill.lastError ? <div className="errorBanner">{skill.lastError}</div> : null}
-              <div className="skillCardActions">
-                {skill.sourceType === "skill" && !skill.isUniversal ? (
-                  <button
-                    className="secondaryButton"
-                    onClick={async () => {
-                      try {
-                        const converted = await window.programs.convertSkill({ skillId: skill.id });
-                        onSkillsChange(skills.map((s) => (s.id === converted.id ? converted : s)));
-                        pushToast(`Converted "${converted.name}" to universal.`, "success");
-                      } catch (error) {
-                        pushToast(error instanceof Error ? error.message : "Failed to convert skill.", "error");
-                      }
-                    }}
-                  >
-                    Convert to Universal
-                  </button>
-                ) : null}
-                <button
-                  className="secondaryButton skillDeleteButton"
-                  onClick={async () => {
-                    try {
-                      await window.programs.deleteSkill(skill.id);
-                      onSkillsChange(skills.filter((s) => s.id !== skill.id));
-                      pushToast(`Skill "${skill.name}" deleted.`, "success");
-                    } catch (error) {
-                      pushToast(error instanceof Error ? error.message : "Failed to delete skill.", "error");
-                    }
-                  }}
-                >
-                  Delete
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </section>
   );
 }
 

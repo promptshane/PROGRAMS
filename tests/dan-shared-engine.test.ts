@@ -22,10 +22,6 @@ const shell = { openExternal: async () => {}, showItemInFolder: async () => {}, 
     ],
     ['import { ClaudeService } from "@main/services/claude-service";', "class ClaudeService {}"],
     ['import { CodexService } from "@main/services/codex-service";', "class CodexService {}"],
-    [
-      'import { GitHubService, type GitHubClientConfig } from "@main/services/github-service";',
-      "class GitHubService {}\ntype GitHubClientConfig = Record<string, unknown> | null;",
-    ],
     ['import { GitService } from "@main/services/git-service";', "class GitService {}"],
     ['import { PlaywrightService } from "@main/services/playwright-service";', "class PlaywrightService {}"],
     ['import { ProjectStore } from "@main/services/project-store";', "class ProjectStore {}"],
@@ -34,7 +30,6 @@ const shell = { openExternal: async () => {}, showItemInFolder: async () => {}, 
       `  constructor(
     private readonly store: ProjectStore,
     private readonly git: GitService,
-    private readonly github: GitHubService,
     private readonly runner: RunnerService,
     private readonly playwright: PlaywrightService,
     private readonly codex: CodexService,
@@ -44,7 +39,6 @@ const shell = { openExternal: async () => {}, showItemInFolder: async () => {}, 
       `  constructor(
     store: ProjectStore,
     git: GitService,
-    github: GitHubService,
     runner: RunnerService,
     playwright: PlaywrightService,
     codex: CodexService,
@@ -53,7 +47,6 @@ const shell = { openExternal: async () => {}, showItemInFolder: async () => {}, 
   ) {
     this.store = store;
     this.git = git;
-    this.github = github;
     this.runner = runner;
     this.playwright = playwright;
     this.codex = codex;
@@ -148,7 +141,6 @@ const createSession = (): AgentSession => {
     pingTaskContext: null,
     pongTaskContext: null,
     projectCategory: "general-project",
-    dynamicSubAgents: [],
     slackMessages: [],
     slackActiveDirectorId: "project-manager",
     slackPresenceGuestId: null,
@@ -168,6 +160,7 @@ const createSession = (): AgentSession => {
       rawMemories: [],
       forgottenMemories: [],
       creativeHistory: [],
+      toddHandoffNotes: [],
     },
     toddMemory: {
       confirmedConcept: null,
@@ -176,6 +169,9 @@ const createSession = (): AgentSession => {
       previousUpdateLog: [],
       troubleLog: [],
       codebaseIndexedMap: null,
+      notes: [],
+      pendingHandoff: null,
+      backupNotes: [],
     },
     pingMemory: {
       activeUpdateId: null,
@@ -185,8 +181,44 @@ const createSession = (): AgentSession => {
       latestRawReport: null,
       latestJeffReport: null,
     },
-    agentConversations: {},
-    activeAgentId: null,
+    jeffMemory: {
+      pendingReports: [],
+      pendingValidations: [],
+      outcomeLog: [],
+      notes: [],
+      backupNotes: [],
+    },
+    pongMemory: {
+      jeffInstruction: null,
+      previousValidationReports: [],
+      latestValidationReport: null,
+      screenshotPaths: [],
+    },
+    automation: {
+      status: "idle",
+      selectedTargetUpdateId: null,
+      selectedTargetVersionId: null,
+      inScopeUpdateIds: [],
+      constraints: {
+        allowedHours: null,
+        codexMaxUsedPercent: null,
+        claudeMaxUsedPercent: null,
+      },
+      stopReason: null,
+      stopSummary: null,
+      currentStep: "idle",
+      startedAt: null,
+      lastResumedAt: null,
+      updatedAt: null,
+      completedAt: null,
+      resumeRequired: false,
+      nextUpdateId: null,
+      lastSuccessfulUpdateId: null,
+      lastSuccessfulHistoryUpdateId: null,
+      pendingRevertReportId: null,
+      pendingRevertHistoryUpdateId: null,
+      pendingRevertCommitSha: null,
+    },
   };
 };
 
@@ -493,7 +525,6 @@ const createBackendHarness = (responses: Array<Record<string, unknown>>) => {
   };
   const backend = new ProgramsBackend(
     store as never,
-    {} as never,
     {} as never,
     {} as never,
     {} as never,
@@ -1075,7 +1106,10 @@ test("Todd research turns can hand concept questions back to Dan without consumi
     directorId: "creative-director",
     reason: "Dan needs to lock the conceptual behavior of the workspace before the technical plan can settle.",
   });
-  assert.deepEqual(session.toddMemory.notes, ["Wait for Dan to confirm the final workspace behavior before finalizing the stack."]);
+  assert.deepEqual(
+    session.toddMemory.notes.map((note) => typeof note === "string" ? note : note.content),
+    ["Wait for Dan to confirm the final workspace behavior before finalizing the stack."],
+  );
   assert.deepEqual(session.toddMemory.pendingHandoff, {
     summary: "Dan needs the implementation plan to respect a guided onboarding tone.",
     rawInputs: [
@@ -1739,4 +1773,216 @@ test("Ping Slack intro, response, and outro bubbles all carry translation metada
   assert.equal(session.slackMessages[1]?.content, "I'll look at the implementation...");
   assert.equal(session.slackMessages[2]?.content, "已完成。修改已保存。");
   assert.equal(session.slackMessages[3]?.content, "I’m stepping back out of the code thread.");
+});
+
+test("Automation targets fall back to Todd's live draft update plan when no confirmed plan exists", async () => {
+  const session = createSession();
+  session.toddMemory.versionPlan.v1 = {
+    id: "version-1",
+    label: "V1",
+    description: "Ship the onboarding baseline.",
+    goals: ["Land the first confirmed experience."],
+    status: "confirmed",
+    order: 0,
+  };
+  session.pendingApprovals.push({
+    id: "approval-1",
+    kind: "store-data",
+    status: "pending",
+    requestedByDirectorId: "rd-director",
+    targetDirectorId: "rd-director",
+    summary: "Confirm update plan",
+    draftMessage: "Draft update plan ready.",
+    draftPayload: {
+      action: "applyStoredData",
+      dataType: "versionUpdates",
+      updates: [
+        {
+          id: "update-1",
+          versionId: "version-1",
+          title: "Ship onboarding shell",
+          description: "Build the first onboarding pass.",
+          order: 0,
+          status: "pending",
+          dependencies: [],
+          pillarIds: [],
+          skillsNeeded: [],
+        },
+      ],
+    },
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+
+  const harness = createBackendHarness([]);
+  harness.setStoredSession(session);
+
+  const response = await (harness.backend.listAutomationTargets as Function)({
+    projectId: session.projectId,
+  });
+
+  assert.equal(response.source, "draft");
+  assert.equal(response.currentVersionLabel, "V1");
+  assert.equal(response.draftApprovalId, "approval-1");
+  assert.equal(response.candidates.length, 1);
+  assert.equal(response.candidates[0]?.available, false);
+  assert.equal(response.candidates[0]?.draft, true);
+});
+
+test("Automation step marks the run completed when the selected target is already done", async () => {
+  const session = createSession();
+  session.toddMemory.futureUpdatePlan = [
+    {
+      id: "update-1",
+      versionId: "version-1",
+      title: "Ship onboarding shell",
+      description: "Build the first onboarding pass.",
+      order: 0,
+      status: "completed",
+      dependencies: [],
+      pillarIds: [],
+      skillsNeeded: [],
+    },
+  ];
+  session.automation = {
+    ...session.automation,
+    status: "running",
+    selectedTargetUpdateId: "update-1",
+    selectedTargetVersionId: "version-1",
+    inScopeUpdateIds: ["update-1"],
+    currentStep: "jeff",
+  };
+
+  const harness = createBackendHarness([]);
+  harness.setStoredSession(session);
+
+  const shouldContinue = await (harness.backend.performAutomationStep as Function)(session);
+
+  assert.equal(shouldContinue, false);
+  assert.equal(session.automation.status, "completed");
+  assert.equal(session.automation.stopReason, "target-completed");
+});
+
+test("Automation step stops outside the allowed work hours", async () => {
+  const session = createSession();
+  session.toddMemory.futureUpdatePlan = [
+    {
+      id: "update-1",
+      versionId: "version-1",
+      title: "Ship onboarding shell",
+      description: "Build the first onboarding pass.",
+      order: 0,
+      status: "pending",
+      dependencies: [],
+      pillarIds: [],
+      skillsNeeded: [],
+    },
+  ];
+  const nowHour = new Date().getHours();
+  session.automation = {
+    ...session.automation,
+    status: "running",
+    selectedTargetUpdateId: "update-1",
+    selectedTargetVersionId: "version-1",
+    inScopeUpdateIds: ["update-1"],
+    constraints: {
+      allowedHours: {
+        startHour: (nowHour + 1) % 24,
+        endHour: (nowHour + 2) % 24,
+      },
+      codexMaxUsedPercent: null,
+      claudeMaxUsedPercent: null,
+    },
+    currentStep: "jeff",
+  };
+
+  const harness = createBackendHarness([]);
+  harness.setStoredSession(session);
+
+  const shouldContinue = await (harness.backend.performAutomationStep as Function)(session);
+
+  assert.equal(shouldContinue, false);
+  assert.equal(session.automation.status, "stopped");
+  assert.equal(session.automation.stopReason, "outside-work-hours");
+});
+
+test("Automation step consumes a successful Jeff report and marks the update complete", async () => {
+  const session = createSession();
+  session.toddMemory.futureUpdatePlan = [
+    {
+      id: "update-1",
+      versionId: "version-1",
+      title: "Ship backend patch",
+      description: "Apply the backend fix.",
+      order: 0,
+      status: "in_progress",
+      dependencies: [],
+      pillarIds: [],
+      skillsNeeded: [],
+    },
+  ];
+  session.jeffMemory.pendingReports.push({
+    id: "report-1",
+    updateId: "update-1",
+    historyUpdateId: "history-1",
+    commitSha: "abc123",
+    title: "Update report: Ship backend patch",
+    summary: "Ship backend patch completed cleanly.",
+    outcome: "Ship backend patch completed cleanly.",
+    toddFollowUpNeeded: false,
+    toddFollowUpReason: null,
+    rawReport: {
+      status: "success",
+      updateId: "update-1",
+      goal: "Apply the backend fix.",
+      summary: "Applied the backend fix.",
+      zhResponse: "已完成。修改已保存。",
+      enTranslation: "Done. Changes saved.",
+      changedFiles: ["src/backend.ts"],
+      blocker: null,
+      unexpectedNotes: [],
+      createdAt: NOW,
+    },
+    createdAt: NOW,
+  });
+  session.automation = {
+    ...session.automation,
+    status: "running",
+    selectedTargetUpdateId: "update-1",
+    selectedTargetVersionId: "version-1",
+    inScopeUpdateIds: ["update-1"],
+    currentStep: "awaiting-report",
+  };
+
+  const harness = createBackendHarness([]);
+  harness.setStoredSession(session);
+
+  const shouldContinue = await (harness.backend.performAutomationStep as Function)(session);
+
+  assert.equal(shouldContinue, true);
+  assert.equal(session.jeffMemory.pendingReports.length, 0);
+  assert.equal(session.toddMemory.futureUpdatePlan[0]?.status, "completed");
+  assert.equal(session.jeffMemory.outcomeLog.length, 1);
+  assert.equal(session.toddMemory.previousUpdateLog.length, 1);
+});
+
+test("Automation failure recovery queues a confirmation approval when a revert is available", async () => {
+  const session = createSession();
+  session.automation = {
+    ...session.automation,
+    status: "stopped",
+    stopReason: "failure",
+    pendingRevertReportId: "report-1",
+    pendingRevertHistoryUpdateId: "history-1",
+    pendingRevertCommitSha: "abc123",
+  };
+
+  const harness = createBackendHarness([]);
+  harness.setStoredSession(session);
+
+  await (harness.backend.requestAutomationFailureRecovery as Function)({
+    projectId: session.projectId,
+  });
+
+  assert.equal(session.pendingApprovals.some((approval) => approval.draftPayload?.action === "automationFailureRecovery"), true);
 });

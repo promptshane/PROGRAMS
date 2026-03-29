@@ -638,15 +638,21 @@ code {
 }
 
 .homepageComposer {
-  padding: var(--page-chrome-divider-offset) 32px 48px;
-  display: grid;
-  gap: 18px;
-  width: 100%;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding-top: var(--page-chrome-divider-offset);
+}
+
+.homepageMainArea {
+  flex: 1;
+  min-height: 0;
 }
 
 .homepageComposerContent {
   display: grid;
   max-width: 720px;
+  padding: 0 32px 24px;
 }
 
 .homepageComposerShell {
@@ -684,6 +690,18 @@ code {
   padding: 48px;
   border-radius: 34px;
   box-shadow: var(--shadow-lg);
+  animation: loadingFadeIn 0.6s ease both;
+}
+
+@keyframes loadingFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .loadingGate h1,
@@ -692,6 +710,20 @@ code {
   font-size: clamp(2.2rem, 5vw, 4.2rem);
   line-height: 0.95;
   letter-spacing: -0.05em;
+}
+
+.loadingGate h1.isLoading::after {
+  content: '...';
+  display: inline-block;
+  overflow: hidden;
+  white-space: nowrap;
+  vertical-align: bottom;
+  animation: loadingDots 1.8s steps(4, end) infinite;
+}
+
+@keyframes loadingDots {
+  from { width: 0; }
+  to   { width: 1.2em; }
 }
 
 .loadingGate p,
@@ -794,6 +826,7 @@ code {
 }
 
 .projectLayout-detail {
+  position: relative;
   min-height: 0;
   margin-top: 0;
   height: 100%;
@@ -806,6 +839,57 @@ code {
 
 .projectLayout-detail .pageChromeDivider {
   margin-bottom: 6px;
+}
+
+.chatFabWrap {
+  position: absolute;
+  bottom: 28px;
+  right: 28px;
+  width: 72px;
+  height: 72px;
+  z-index: 10;
+}
+
+.chatFabWrap::before {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  border-radius: 50%;
+  background: conic-gradient(
+    from 0deg,
+    transparent 0%,
+    transparent 72%,
+    rgba(255, 210, 200, 0.55) 81%,
+    rgba(255, 255, 255, 0.88) 88%,
+    rgba(255, 210, 200, 0.55) 95%,
+    transparent 100%
+  );
+  animation: chatFabSpin 3.5s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes chatFabSpin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.chatFab {
+  position: relative;
+  width: 72px;
+  height: 72px;
+  border-radius: 50%;
+  background: #991B1B;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 16px rgba(153, 27, 27, 0.45), var(--shadow-lg);
+}
+
+.chatFab:hover {
+  background: #b91c1c;
 }
 
 .projectDetailWorkspace {
@@ -1659,7 +1743,6 @@ code {
 .pickerCard,
 .selectedPathRow,
 .compactMetaCard,
-.mermaidSurface,
 .diffDisclosure {
   background: var(--panel-soft);
   border: 1px solid var(--border);
@@ -2562,255 +2645,6 @@ select {
   letter-spacing: 0.14em;
 }
 
-.mermaidChartFrame {
-  position: relative;
-}
-
-.mermaidSurface {
-  padding: 18px;
-  overflow: auto;
-}
-
-.mermaidSurface svg {
-  display: block;
-  width: 100%;
-  height: auto;
-}
-
-.mermaidNodeInteractive {
-  cursor: help;
-}
-
-.mermaidNodeInteractive:focus {
-  outline: none;
-}
-
-.mermaidNodeTooltip {
-  position: absolute;
-  z-index: 20;
-  min-width: 180px;
-  max-width: 260px;
-  display: grid;
-  gap: 6px;
-  padding: 12px 14px;
-  border-radius: 14px;
-  border: 1px solid rgba(148, 163, 184, 0.22);
-  background: rgba(8, 15, 30, 0.96);
-  color: #f8fafc;
-  box-shadow: 0 18px 40px rgba(2, 8, 23, 0.36);
-  pointer-events: none;
-  transform: translate(-50%, calc(-100% - 6px));
-}
-
-.mermaidNodeTooltip strong {
-  font-size: 0.82rem;
-  line-height: 1.15;
-}
-
-.mermaidNodeTooltip span {
-  color: rgba(226, 232, 240, 0.82);
-  font-size: 0.78rem;
-  line-height: 1.35;
-}
-
-/* ── Interactive Flowchart Viewer ─────────────────────── */
-.flowchartViewer {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  min-height: 340px;
-}
-
-.flowchartViewer--empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 200px;
-}
-
-.flowchartViewport {
-  position: relative;
-  overflow: hidden;
-  border-radius: var(--radius-md);
-  background: var(--panel-soft);
-  border: 1px solid var(--border);
-  height: 460px;
-}
-
-.flowchartCanvas {
-  position: absolute;
-  top: 0;
-  left: 0;
-  transform-origin: 0 0;
-  transition: transform 0.3s ease-out;
-}
-
-/* ── Flowchart Nodes ──────────────────────────────────── */
-.flowchartNode {
-  position: absolute;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 8px 16px;
-  border: 1.5px solid var(--border-strong);
-  background: var(--panel-strong);
-  color: var(--text);
-  font-size: 0.82rem;
-  font-weight: 500;
-  line-height: 1.2;
-  cursor: pointer;
-  transition: opacity 0.25s ease, box-shadow 0.25s ease, border-color 0.25s ease, background 0.25s ease;
-  z-index: 1;
-  text-align: center;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.flowchartNode:hover {
-  border-color: var(--accent);
-}
-
-.flowchartNode:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
-.flowchartNodeLabel {
-  pointer-events: none;
-}
-
-/* Node kind shapes */
-.flowchartNode--entry {
-  border-radius: 100px;
-  background: var(--panel);
-  border-color: var(--accent);
-  font-weight: 600;
-}
-
-.flowchartNode--page {
-  border-radius: var(--radius-sm);
-}
-
-.flowchartNode--action {
-  border-radius: 100px;
-  background: var(--panel-soft);
-}
-
-.flowchartNode--system {
-  border-radius: var(--radius-sm);
-  border-style: double;
-  border-width: 3px;
-}
-
-/* Node states */
-.flowchartNode--selected {
-  box-shadow: 0 0 0 3px var(--accent), 0 8px 24px rgba(0, 0, 0, 0.18);
-  border-color: var(--accent-strong);
-  z-index: 3;
-}
-
-/* Current node in guided mode — prominent, non-interactive feel */
-.flowchartNode--current {
-  box-shadow: 0 0 0 3px var(--accent), 0 4px 16px rgba(0, 0, 0, 0.14);
-  border-color: var(--accent-strong);
-  background: var(--panel);
-  z-index: 3;
-  cursor: default;
-}
-
-.flowchartNode--hidden {
-  opacity: 0;
-  pointer-events: none;
-}
-
-/* Diff colors */
-.flowchartNode--added {
-  border-color: #10B981;
-  box-shadow: 0 0 0 2px rgba(16, 185, 129, 0.25);
-}
-
-.flowchartNode--modified {
-  border-color: #F59E0B;
-  box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.25);
-}
-
-.flowchartNode--removed {
-  border-color: #FB7185;
-  box-shadow: 0 0 0 2px rgba(251, 113, 133, 0.25);
-  opacity: 0.6;
-  text-decoration: line-through;
-}
-
-/* ── Flowchart Edges ──────────────────────────────────── */
-.flowchartEdgeLayer {
-  position: absolute;
-  top: 0;
-  left: 0;
-  pointer-events: none;
-  z-index: 0;
-}
-
-.flowchartEdgePath {
-  stroke: var(--muted);
-  stroke-width: 1.5;
-  fill: none;
-}
-
-.flowchartArrowhead {
-  fill: var(--muted);
-}
-
-.flowchartEdgeLabel {
-  fill: var(--muted);
-  font-size: 0.72rem;
-  font-family: inherit;
-}
-
-/* ── Flowchart Controls ───────────────────────────────── */
-.flowchartControls {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  display: flex;
-  gap: 4px;
-  z-index: 10;
-}
-
-.flowchartControlBtn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  background: var(--panel-strong);
-  color: var(--text);
-  font-size: 1rem;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
-}
-
-.flowchartControlBtn:hover:not(:disabled) {
-  background: var(--panel);
-  border-color: var(--accent);
-}
-
-.flowchartControlBtn:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
-
-.flowchartControlBtn--reset {
-  width: auto;
-  padding: 0 12px;
-  font-size: 0.72rem;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-}
-
 /* ── Guided Flow Step (card layout, no canvas) ────────── */
 .guidedFlowStep {
   display: flex;
@@ -2935,88 +2769,6 @@ select {
   border-radius: var(--radius-md);
   text-align: center;
   align-self: flex-start;
-}
-
-/* ── Flowchart Mode Toggle ────────────────────────────── */
-.flowchartModeToggle {
-  display: flex;
-  gap: 2px;
-  padding: 6px 0 4px;
-  align-self: start;
-}
-
-.flowchartModeBtn {
-  padding: 4px 14px;
-  font-size: 0.75rem;
-  font-weight: 500;
-  border: 1px solid var(--border-strong);
-  background: var(--panel-strong);
-  color: var(--muted);
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
-  letter-spacing: 0.02em;
-}
-
-.flowchartModeBtn:first-child {
-  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
-}
-
-.flowchartModeBtn:last-child {
-  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
-}
-
-.flowchartModeBtn--active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-
-.flowchartModeBtn:hover:not(.flowchartModeBtn--active) {
-  background: var(--panel);
-  color: var(--text);
-  border-color: var(--accent);
-}
-
-/* ── Flowchart Back Button ────────────────────────────── */
-.flowchartBackBtn {
-  position: absolute;
-  top: 10px;
-  left: 10px;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 5px 12px;
-  font-size: 0.78rem;
-  font-weight: 500;
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-sm);
-  background: var(--panel-strong);
-  color: var(--text);
-  cursor: pointer;
-  z-index: 10;
-  transition: background 0.15s, border-color 0.15s;
-}
-
-.flowchartBackBtn:hover {
-  background: var(--panel);
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-/* ── Guided end-of-flow hint ──────────────────────────── */
-.flowchartEndHint {
-  position: absolute;
-  bottom: 12px;
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 0.75rem;
-  color: var(--muted);
-  background: var(--panel-strong);
-  border: 1px solid var(--border);
-  border-radius: 100px;
-  padding: 3px 14px;
-  pointer-events: none;
-  z-index: 10;
 }
 
 /* ── Node Description Panel ───────────────────────────── */
@@ -4297,43 +4049,6 @@ select {
   border: 1px solid rgba(16, 185, 129, 0.3);
   color: var(--color-text);
   font-size: 0.875rem;
-}
-
-/* ── Generate flowchart card ────────────────────────── */
-.generateFlowchartCard {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  padding: 48px 24px;
-  gap: 12px;
-}
-
-.generateFlowchartCard h4 {
-  margin: 0;
-}
-
-.generateFlowchartCard p {
-  color: var(--color-text-secondary, #94a3b8);
-  margin: 0;
-  max-width: 340px;
-}
-
-.generateFlowchartActions {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-}
-
-.regenerateFlowchartActions {
-  width: 100%;
-  margin-bottom: 16px;
-  flex-direction: row;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
 }
 
 /* ── Simplified history list ────────────────────────── */
@@ -5995,6 +5710,29 @@ select {
   flex-wrap: wrap;
 }
 
+.conceptThreadTitleRow--toggle {
+  cursor: pointer;
+  user-select: none;
+}
+.conceptThreadTitleRow--toggle:hover .conceptThreadTitle {
+  opacity: 0.75;
+}
+
+.conceptThreadChevron {
+  font-size: 1rem;
+  color: var(--text-muted);
+  width: 14px;
+  flex-shrink: 0;
+  transition: transform 0.15s ease;
+  line-height: 1;
+}
+.conceptThreadChevron--open {
+  transform: rotate(90deg);
+}
+.conceptThreadChevron--hidden {
+  visibility: hidden;
+}
+
 .conceptThreadTitle {
   margin: 0;
   font-size: 0.92rem;
@@ -6019,6 +5757,60 @@ select {
   font-size: 0.8rem;
   line-height: 1.5;
   color: var(--muted);
+}
+
+.conceptThreadBadgeGroup {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* --- Core-Pillars card header + view toggle --- */
+
+.corePillarsCardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.corePillarsCardHeader h4 {
+  margin: 0;
+}
+
+.corePillarsToggle {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.corePillarsToggleBtn {
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--border);
+  padding: 3px 10px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+
+.corePillarsToggleBtn:last-child {
+  border-right: none;
+}
+
+.corePillarsToggleBtn:hover {
+  background: var(--panel-hover, rgba(255,255,255,0.05));
+}
+
+.corePillarsToggleBtn--active {
+  background: var(--accent, #3B82F6);
+  color: #fff;
 }
 
 .conceptNotesBlock {
@@ -6836,6 +6628,9 @@ select {
 .pillarAssumptionText--dan { color: #DC2626; }
 .pillarStatusBadge { font-size: 10px; padding: 1px 6px; border-radius: 4px; margin-left: 8px; }
 .pillarStatusBadge--assumed { background: #FEF3C7; color: #92400E; }
+.pillarStatusBadge--tbd { background: #FEF9C3; color: #854D0E; }
+.pillarStatusBadge--end { background: #FEE2E2; color: #991B1B; }
+.pillarStatusBadge--nested { background: #DCFCE7; color: #166534; }
 
 /* --- Director State Sections --- */
 .directorStateSection {
@@ -6858,21 +6653,12 @@ select {
   margin-bottom: 2px;
 }
 
-/* --- Sub-Agent Cards --- */
-.subAgentCard {
-  padding: 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  margin-bottom: 4px;
-}
-.subAgentModelBadge {
+.updatePlanStatusBadge {
   font-size: 10px;
   padding: 2px 6px;
   border-radius: 4px;
   font-weight: 600;
 }
-.subAgentModelBadge--mini { background: #E0F2FE; color: #0369A1; }
-.subAgentModelBadge--large { background: #FEF3C7; color: #92400E; }
 
 /* --- Refresh Project Modal --- */
 .refreshModal { padding: 24px; max-width: 400px; }
@@ -7490,152 +7276,6 @@ select {
 }
 
 /* ───────────────────────────────────────────────────
-   Skill Attachment (center of mode switch row)
-   ─────────────────────────────────────────────────── */
-
-.skillAttachmentArea {
-  flex: 1;
-  display: flex;
-  justify-content: center;
-  position: relative;
-}
-
-.skillAttachButton {
-  padding: 5px 14px;
-  font-size: 0.75rem;
-  font-family: inherit;
-  border-radius: var(--radius-sm);
-  border: 1px dashed var(--border-strong);
-  background: transparent;
-  color: var(--muted);
-  cursor: pointer;
-  transition: border-color 0.15s, color 0.15s;
-  max-width: 200px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.skillAttachButton:hover {
-  border-color: var(--text);
-  color: var(--text);
-}
-
-.skillAttachButton.hasSkill {
-  border-style: solid;
-  color: var(--text);
-}
-
-.skillPickerPopover {
-  position: absolute;
-  top: 100%;
-  left: 50%;
-  transform: translateX(-50%);
-  margin-top: 4px;
-  min-width: 200px;
-  max-width: 280px;
-  background: var(--panel-strong);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  box-shadow: var(--shadow-sm);
-  z-index: 20;
-  padding: 4px 0;
-}
-
-.skillPickerItem {
-  display: block;
-  width: 100%;
-  padding: 7px 14px;
-  font-size: 0.8125rem;
-  font-family: inherit;
-  background: transparent;
-  border: none;
-  color: var(--text);
-  cursor: pointer;
-  text-align: left;
-}
-
-.skillPickerItem:hover {
-  background: var(--button-secondary);
-}
-
-.skillPickerItem:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
-}
-
-.skillPickerItem.active {
-  color: var(--success);
-}
-
-.skillBadge {
-  display: inline-block;
-  padding: 2px 8px;
-  font-size: 0.6875rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  border-radius: 6px;
-  background: var(--info-bg);
-  color: var(--info);
-}
-
-/* ───────────────────────────────────────────────────
-   Git Sync Panel (right of mode switch row)
-   ─────────────────────────────────────────────────── */
-
-.gitSyncPanel {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-shrink: 0;
-}
-
-.gitSyncStats {
-  display: flex;
-  gap: 6px;
-  font-size: 0.75rem;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-
-.gitSyncAdded {
-  color: var(--success);
-}
-
-.gitSyncRemoved {
-  color: var(--error);
-}
-
-.gitSyncButton {
-  padding: 5px 12px;
-  font-size: 0.75rem;
-  font-family: inherit;
-  font-weight: 500;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--button-secondary-border);
-  background: var(--button-secondary);
-  color: var(--button-secondary-text);
-  cursor: pointer;
-  transition: opacity 0.15s;
-}
-
-.gitSyncButton:hover {
-  opacity: 0.8;
-}
-
-.gitSyncButton:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-.gitSyncEmpty {
-  font-size: 0.75rem;
-  color: var(--muted);
-  opacity: 0.6;
-}
-
-/* ───────────────────────────────────────────────────
    Program Todo List (inline in Talk/Plan mode)
    ─────────────────────────────────────────────────── */
 
@@ -7712,165 +7352,6 @@ select {
 .unifiedTodoText.completed {
   text-decoration: line-through;
   opacity: 0.5;
-}
-
-/* ───────────────────────────────────────────────────
-   Skills Section (beneath Agents page)
-   ─────────────────────────────────────────────────── */
-
-.skillsSection {
-  margin-top: 32px;
-  padding-top: 24px;
-  border-top: 1px solid var(--border);
-}
-
-.skillsSectionHeader {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 16px;
-}
-
-.skillsSectionHeader h4 {
-  margin: 0;
-  font-size: 1rem;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.skillsEmpty {
-  font-size: 0.8125rem;
-  color: var(--muted);
-  padding: 12px 0;
-}
-
-.skillsGrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 12px;
-}
-
-.catalogSkillsGrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 12px;
-  margin-bottom: 18px;
-}
-
-.skillCard {
-  padding: 14px 16px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border);
-  background: var(--panel-soft);
-}
-
-.skillCard-catalog {
-  background: color-mix(in srgb, var(--panel-soft) 82%, rgba(59, 130, 246, 0.08));
-}
-
-.skillCardHeader {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 6px;
-}
-
-.skillCardName {
-  font-size: 0.875rem;
-  font-weight: 600;
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.skillProviderBadge {
-  display: inline-block;
-  padding: 2px 8px;
-  font-size: 0.625rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  border-radius: 6px;
-  flex-shrink: 0;
-}
-
-.skillProviderBadge-claude {
-  background: rgba(205, 133, 63, 0.14);
-  color: #d4a056;
-}
-
-.skillProviderBadge-codex {
-  background: var(--success-bg);
-  color: var(--success);
-}
-
-.skillProviderBadge-universal {
-  background: var(--info-bg);
-  color: var(--info);
-}
-
-.skillBadgeRow,
-.skillMetaRow {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.skillMetaRow {
-  margin-bottom: 10px;
-}
-
-.skillMetaTag {
-  display: inline-block;
-  padding: 2px 8px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  color: var(--muted);
-  font-size: 0.625rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.skillCardDescription {
-  font-size: 0.75rem;
-  color: var(--muted);
-  margin: 0 0 10px;
-  line-height: 1.4;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.skillPathText {
-  margin: 0 0 10px;
-  font-size: 0.6875rem;
-  color: var(--muted);
-  overflow-wrap: anywhere;
-}
-
-.skillCardActions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.skillCardActions .secondaryButton {
-  font-size: 0.6875rem;
-  padding: 4px 10px;
-}
-
-.skillDeleteButton {
-  color: var(--error) !important;
-  border-color: var(--error-bg) !important;
-}
-
-.skillDeleteButton:hover {
-  background: var(--error-bg) !important;
 }
 
 /* ───────────────────────────────────────────────────
@@ -8327,51 +7808,6 @@ select {
   font-style: italic;
   margin: 12px 0;
   opacity: 0.7;
-}
-
-/* ───────────────────────────────────────────────────
-   Multi-Agent System — Progress Panel
-   ─────────────────────────────────────────────────── */
-
-.progressPanelContent {
-  padding: 8px 0;
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.progressSection {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.progressSection h5 {
-  margin: 0;
-  font-size: 0.7rem;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--muted);
-}
-
-.progressItems {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.progressItem {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 5px 0;
-  font-size: 0.8125rem;
-  color: var(--text);
-}
-
-.progressItem span:first-child {
-  color: var(--muted);
 }
 
 /* ── Project category sections ── */

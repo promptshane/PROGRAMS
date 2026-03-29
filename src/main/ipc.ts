@@ -3,12 +3,11 @@ import { dialog, ipcMain, shell } from "electron";
 import { isSubPath } from "@main/utils/fs";
 import type { ProgramsBackend } from "@main/backend";
 import type {
+  ConfirmAutomationFailureRecoveryInput,
   ApprovePlanInput,
-  AttachSkillInput,
   AttachVibeInput,
   ApprovePendingApprovalInput,
   ConfirmAgentDataInput,
-  ConvertSkillInput,
   DirectorChatInput,
   DirectorFocusMode,
   DirectorId,
@@ -16,29 +15,26 @@ import type {
   DeleteSlackMessagesInput,
   DirectorSettingsOverride,
   DirectoryPickMode,
-  DownloadSkillInput,
-  InstallSkillCatalogInput,
-  GenerateFlowchartInput,
   GenerateProjectOutlineReportInput,
-  GitSyncInput,
+  ListAutomationTargetsInput,
   ListPendingApprovalsInput,
-  PlanningChatInput,
+  PauseAutomationRunInput,
   ProjectAttachInput,
   ProjectCreateInput,
-  ProjectEnableSyncInput,
+  RequestAutomationFailureRecoveryInput,
   RemoveVibeInput,
   RenameProjectInput,
   RevisePendingApprovalInput,
   ResolveDroppedContextPathsInput,
-  RetrySyncInput,
   RouteUpdateToProgrammingInput,
   RunValidationInput,
-  SavePlannedUpdateInput,
   SetValidationFrequencyInput,
   SettingsUpdateInput,
+  StartAutomationRunInput,
+  StartPingDirectUpdateInput,
   StartPlanInput,
+  StopAutomationRunInput,
   UpdatePendingApprovalStatusInput,
-  PlaywrightRunInput,
   UpdateProjectInput,
   WriteProjectEnvFileInput,
 } from "@shared/types";
@@ -65,22 +61,16 @@ export const registerIpc = (backend: ProgramsBackend): void => {
   ipcMain.handle("auth.claude.logout", () => backend.logoutClaude());
   ipcMain.handle("auth.claude.test", () => backend.testClaudeConnection());
   ipcMain.handle("auth.claude.submitLoginCode", (_event, code: string) => backend.submitClaudeLoginCode(code));
-
-  ipcMain.handle("auth.github.status", () => backend.getGitHubStatus());
-  ipcMain.handle("auth.github.inspectAttachPath", (_event, localPath: string) => backend.inspectAttachPath(localPath));
-  ipcMain.handle("auth.github.login", () => backend.loginGitHub());
-  ipcMain.handle("auth.github.logout", () => backend.logoutGitHub());
   ipcMain.handle("usage.read", () => backend.readUsage());
 
   ipcMain.handle("projects.list", () => backend.listProjects());
   ipcMain.handle("projects.read", (_event, projectId: string) => backend.readProject(projectId));
   ipcMain.handle("projects.create", (_event, input: ProjectCreateInput) => backend.createProject(input));
   ipcMain.handle("projects.attach", (_event, input: ProjectAttachInput) => backend.attachProject(input));
-  ipcMain.handle("projects.enableSync", (_event, input: ProjectEnableSyncInput) => backend.enableProjectSync(input));
+  ipcMain.handle("projects.inspectAttachPath", (_event, localPath: string) => backend.inspectAttachPath(localPath));
   ipcMain.handle("projects.rename", (_event, input: RenameProjectInput) => backend.renameProject(input));
   ipcMain.handle("projects.update", (_event, input: UpdateProjectInput) => backend.updateProject(input));
   ipcMain.handle("projects.unlink", (_event, projectId: string) => backend.unlinkProject(projectId));
-  ipcMain.handle("projects.planView", (_event, projectId: string) => backend.readPlanView(projectId));
   ipcMain.handle("projects.readHistory", (_event, projectId: string) => backend.readHistory(projectId));
   ipcMain.handle("projects.readOutlineReport", (_event, projectId: string) => backend.readOutlineReport(projectId));
   ipcMain.handle("projects.generateOutlineReport", (_event, input: GenerateProjectOutlineReportInput) =>
@@ -98,18 +88,6 @@ export const registerIpc = (backend: ProgramsBackend): void => {
   ipcMain.handle("updates.undoUpdate", (_event, projectId: string, updateId: string) =>
     backend.undoUpdate(projectId, updateId),
   );
-  ipcMain.handle("updates.retrySync", (_event, input: RetrySyncInput) => backend.retrySync(input));
-
-  ipcMain.handle("projects.generateFlowchart", (_event, input: GenerateFlowchartInput) =>
-    backend.generateFlowchart(input));
-  ipcMain.handle("planning.chat", (_event, input: PlanningChatInput) =>
-    backend.planningChat(input));
-  ipcMain.handle("planning.saveUpdate", (_event, input: SavePlannedUpdateInput) =>
-    backend.savePlannedUpdate(input));
-  ipcMain.handle("planning.getPending", (_event, projectId: string) =>
-    backend.getPendingUpdate(projectId));
-  ipcMain.handle("planning.applyUpdate", (_event, projectId: string) =>
-    backend.applyPlannedUpdate(projectId));
 
   ipcMain.handle("agents.getSession", (_event, projectId: string) =>
     backend.getAgentSession(projectId));
@@ -117,6 +95,8 @@ export const registerIpc = (backend: ProgramsBackend): void => {
   // Director system
   ipcMain.handle("directors.chat", (_event, input: DirectorChatInput) =>
     backend.directorChat(input));
+  ipcMain.handle("directors.ping.start", (_event, input: StartPingDirectUpdateInput) =>
+    backend.startPingDirectUpdate(input));
   ipcMain.handle("slack.chat", (_event, input: SlackChatInput) =>
     backend.slackChat(input));
   ipcMain.handle("approvals.list", (_event, input: ListPendingApprovalsInput) =>
@@ -135,6 +115,20 @@ export const registerIpc = (backend: ProgramsBackend): void => {
     backend.clearSlackMessages(projectId));
   ipcMain.handle("slack.refreshProject", (_event, input: import("@shared/types").RefreshProjectInput) =>
     backend.refreshProject(input));
+  ipcMain.handle("automation.targets", (_event, input: ListAutomationTargetsInput) =>
+    backend.listAutomationTargets(input));
+  ipcMain.handle("automation.start", (_event, input: StartAutomationRunInput) =>
+    backend.startAutomationRun(input));
+  ipcMain.handle("automation.pause", (_event, input: PauseAutomationRunInput) =>
+    backend.pauseAutomationRun(input));
+  ipcMain.handle("automation.resume", (_event, projectId: string) =>
+    backend.resumeAutomationRun(projectId));
+  ipcMain.handle("automation.stop", (_event, input: StopAutomationRunInput) =>
+    backend.stopAutomationRun(input));
+  ipcMain.handle("automation.recovery.request", (_event, input: RequestAutomationFailureRecoveryInput) =>
+    backend.requestAutomationFailureRecovery(input));
+  ipcMain.handle("automation.recovery.confirm", (_event, input: ConfirmAutomationFailureRecoveryInput) =>
+    backend.confirmAutomationFailureRecovery(input));
   ipcMain.handle("directors.setFocusMode", (_event, projectId: string, directorId: DirectorId, focusMode: DirectorFocusMode) =>
     backend.setDirectorFocusMode(projectId, directorId, focusMode));
   ipcMain.handle("directors.updateSettings", (_event, projectId: string, directorId: DirectorId, overrides: DirectorSettingsOverride) =>
@@ -149,8 +143,6 @@ export const registerIpc = (backend: ProgramsBackend): void => {
     backend.attachVibeToCorePillar(input));
   ipcMain.handle("agents.removeVibe", (_event, input: RemoveVibeInput) =>
     backend.removeVibeFromCorePillar(input));
-  ipcMain.handle("agents.createPillarSubAgents", (_event, input: import("@shared/types").CreatePillarSubAgentsInput) =>
-    backend.createPillarSubAgents(input));
   ipcMain.handle("agents.confirmData", (_event, input: ConfirmAgentDataInput) =>
     backend.confirmAgentData(input));
   ipcMain.handle("agents.routeUpdate", (_event, input: RouteUpdateToProgrammingInput) =>
@@ -159,22 +151,13 @@ export const registerIpc = (backend: ProgramsBackend): void => {
     backend.runValidation(input));
   ipcMain.handle("agents.setValidationFrequency", (_event, input: SetValidationFrequencyInput) =>
     backend.setValidationFrequency(input));
+  ipcMain.handle("jeff.recordOutcome", (_event, input: { projectId: string; reportId: string; decision: string; summary: string }) =>
+    backend.recordJeffOutcome(input as { projectId: string; reportId: string; decision: import("@shared/types").JeffOutcomeDecision; summary: string }));
+  ipcMain.handle("pong.assignValidation", (_event, input: { projectId: string; instruction: string; updateId?: string | null }) =>
+    backend.assignPongValidation(input));
 
-  // Git sync
-  ipcMain.handle("projects.syncGitHub", (_event, input: GitSyncInput) => backend.syncProjectToGitHub(input));
   ipcMain.handle("projects.diffStats", (_event, projectId: string) => backend.readProjectDiffStats(projectId));
 
-  // Skills
-  ipcMain.handle("skills.list", () => backend.listSkills());
-  ipcMain.handle("skills.download", (_event, input: DownloadSkillInput) => backend.downloadSkill(input));
-  ipcMain.handle("skills.installCatalog", (_event, input: InstallSkillCatalogInput) => backend.installSkillCatalogItem(input));
-  ipcMain.handle("skills.convert", (_event, input: ConvertSkillInput) => backend.convertSkillToUniversal(input));
-  ipcMain.handle("skills.delete", (_event, id: string) => backend.deleteSkill(id));
-  ipcMain.handle("skills.read", (_event, id: string) => backend.readSkill(id));
-  ipcMain.handle("skills.runPlaywright", (_event, input: PlaywrightRunInput) => backend.runPlaywrightTest(input));
-
-  // Skill attachment
-  ipcMain.handle("projects.attachSkill", (_event, input: AttachSkillInput) => backend.attachSkillToProject(input));
 
   ipcMain.handle("system.pickMaterialFiles", async () => {
     const result = await dialog.showOpenDialog({

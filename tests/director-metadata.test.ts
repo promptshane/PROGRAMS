@@ -19,10 +19,10 @@ test("programming director runtime defaults use auto planning", () => {
   });
 });
 
-test("Dan, Todd, and Ping use fixed stage-aware runtime policy", () => {
+test("Dan and Todd use fixed stage-aware runtime policy while Ping stays overrideable", () => {
   assert.equal(usesFixedDirectorRuntimePolicy("creative-director"), true);
   assert.equal(usesFixedDirectorRuntimePolicy("rd-director"), true);
-  assert.equal(usesFixedDirectorRuntimePolicy("programming-director"), true);
+  assert.equal(usesFixedDirectorRuntimePolicy("programming-director"), false);
   assert.equal(usesFixedDirectorRuntimePolicy("project-manager"), false);
   assert.equal(usesFixedDirectorRuntimePolicy("validation-director"), false);
 });
@@ -32,7 +32,7 @@ test("stage-aware model tier resolution keeps Dan and Todd small for conversatio
   assert.equal(resolveDirectorModelTier("creative-director", "synthesis"), "big");
   assert.equal(resolveDirectorModelTier("rd-director", "conversation"), "small");
   assert.equal(resolveDirectorModelTier("rd-director", "synthesis"), "big");
-  assert.equal(resolveDirectorModelTier("programming-director", "execution"), "big");
+  assert.equal(resolveDirectorModelTier("programming-director", "execution"), null);
   assert.equal(resolveDirectorModelTier("project-manager", "conversation"), null);
 });
 

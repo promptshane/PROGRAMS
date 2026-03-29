@@ -16,24 +16,20 @@ import type {
   DirectorConversation,
   DirectorId,
   DirectorFocusMode,
-  DynamicSubAgent,
-  FlowchartGraph,
   JeffExecutionReport,
-  PendingPlannedUpdate,
   PendingApproval,
   PingMemory,
   PingRawReport,
-  PlanningSession,
   ProjectCategory,
   ProjectDirectorProgress,
   ProjectOutlineReport,
   Project,
   RdFocusMode,
   ScratchpadItem,
-  Skill,
   Settings,
   SettingsUpdateInput,
   SetupState,
+  TaggedNote,
   ToddCodebaseIndexedMap,
   ToddMemory,
   UpdateRecord,
@@ -49,9 +45,8 @@ import {
 import { DEFAULT_SETTINGS, DEFAULT_SETUP_STATE } from "../defaults.ts";
 import { ensureDirectory, pathExists } from "../utils/fs.ts";
 
-interface LegacySettingsShape extends Partial<Settings> {
-  githubClientId?: string | null;
-}
+const LEGACY_FLOWCHART_PATH = "";
+const LEGACY_FLOWCHART_TEXT = "";
 
 const normalizeModel = (value: string | undefined): Settings["advancedDefaults"]["model"] => {
   const normalized = value?.trim();
@@ -175,7 +170,7 @@ const buildDanMemory = (session: {
   return {
     confirmedConcept,
     draftConcept: session.danMemory?.draftConcept ?? session.danDraftCoreDetails ?? null,
-    notes: session.danMemory?.notes ?? session.danInternalNotes ?? [],
+    notes: session.danMemory?.notes ?? (session.danInternalNotes ?? []).map((n, i): TaggedNote => typeof n === "string" ? { id: `legacy-${i}`, content: n, tag: "general", createdAt: new Date(0).toISOString() } : n),
     sideNotes: session.danMemory?.sideNotes ?? session.danSideNotes ?? [],
     draftChangeSummary: session.danMemory?.draftChangeSummary ?? session.danDraftChangeSummary ?? [],
     draftStatus: session.danMemory?.draftStatus ?? session.danDraftStatus ?? null,
@@ -187,7 +182,7 @@ const buildDanMemory = (session: {
     rawMemories: session.danMemory?.rawMemories ?? [],
     forgottenMemories: session.danMemory?.forgottenMemories ?? [],
     creativeHistory: session.danMemory?.creativeHistory ?? [],
-    toddHandoffNotes: session.danMemory?.toddHandoffNotes ?? [],
+    toddHandoffNotes: session.danMemory?.toddHandoffNotes ?? [] as TaggedNote[],
   };
 };
 
@@ -245,10 +240,43 @@ const buildPingMemory = (session: {
   codebaseMapSummary: session.pingMemory?.codebaseMapSummary ?? session.toddMemory.codebaseIndexedMap?.summary ?? null,
   latestRawReport: session.pingMemory?.latestRawReport ?? null,
   latestJeffReport: session.pingMemory?.latestJeffReport ?? null,
+  currentRun: session.pingMemory?.currentRun ?? null,
+});
+
+const buildAutomationState = (
+  automation: AgentSession["automation"] | null | undefined,
+): AgentSession["automation"] => ({
+  status: automation?.status ?? "idle",
+  selectedTargetUpdateId: automation?.selectedTargetUpdateId ?? null,
+  selectedTargetVersionId: automation?.selectedTargetVersionId ?? null,
+  inScopeUpdateIds: Array.isArray(automation?.inScopeUpdateIds) ? automation!.inScopeUpdateIds : [],
+  constraints: {
+    allowedHours: automation?.constraints?.allowedHours ?? null,
+    codexMaxUsedPercent: typeof automation?.constraints?.codexMaxUsedPercent === "number"
+      ? automation.constraints.codexMaxUsedPercent
+      : null,
+    claudeMaxUsedPercent: typeof automation?.constraints?.claudeMaxUsedPercent === "number"
+      ? automation.constraints.claudeMaxUsedPercent
+      : null,
+  },
+  stopReason: automation?.stopReason ?? null,
+  stopSummary: automation?.stopSummary ?? null,
+  currentStep: automation?.currentStep ?? "idle",
+  startedAt: automation?.startedAt ?? null,
+  lastResumedAt: automation?.lastResumedAt ?? null,
+  updatedAt: automation?.updatedAt ?? null,
+  completedAt: automation?.completedAt ?? null,
+  resumeRequired: automation?.resumeRequired ?? false,
+  nextUpdateId: automation?.nextUpdateId ?? null,
+  lastSuccessfulUpdateId: automation?.lastSuccessfulUpdateId ?? null,
+  lastSuccessfulHistoryUpdateId: automation?.lastSuccessfulHistoryUpdateId ?? null,
+  pendingRevertReportId: automation?.pendingRevertReportId ?? null,
+  pendingRevertHistoryUpdateId: automation?.pendingRevertHistoryUpdateId ?? null,
+  pendingRevertCommitSha: automation?.pendingRevertCommitSha ?? null,
 });
 
 const syncLegacyFieldsFromMemory = (session: AgentSession): AgentSession => {
-  session.danInternalNotes = [...session.danMemory.notes];
+  session.danInternalNotes = session.danMemory.notes.map((n) => typeof n === "string" ? n : n.content);
   session.danSideNotes = [...session.danMemory.sideNotes];
   session.danDraftCoreDetails = session.danMemory.draftConcept;
   session.danDraftChangeSummary = [...session.danMemory.draftChangeSummary];
@@ -258,6 +286,7 @@ const syncLegacyFieldsFromMemory = (session: AgentSession): AgentSession => {
   session.versions = [session.toddMemory.versionPlan.v1, session.toddMemory.versionPlan.v2, session.toddMemory.versionPlan.v3]
     .filter((version): version is VersionPlan => Boolean(version));
   session.versionUpdates = session.toddMemory.futureUpdatePlan.map(normalizeVersionUpdate);
+  session.automation = buildAutomationState(session.automation);
   session.pingTaskContext = session.pingMemory.activeTask
     ? {
         currentTask: session.pingMemory.activeTask,
@@ -281,7 +310,7 @@ interface ProjectRow {
   thread_id: string | null;
   flowchart_path: string;
   last_updated_at: string | null;
-  status: Project["status"];
+  status: string;
   created_at: string;
   updated_at: string;
   metadata_json: string;
@@ -298,19 +327,33 @@ interface UpdateRow {
   flowchart_graph_json: string | null;
   created_at: string;
   kind: UpdateRecord["kind"];
-  status: UpdateRecord["status"];
+  status: string;
   error_message: string | null;
 }
 
-const parseFlowchartGraphJson = (value: string | null | undefined): FlowchartGraph | null => {
-  if (!value) {
-    return null;
+const normalizeProjectStatus = (status: string): Project["status"] => {
+  switch (status) {
+    case "planning":
+    case "awaitingApproval":
+    case "executing":
+    case "running":
+    case "error":
+      return status;
+    default:
+      return "idle";
   }
+};
 
-  try {
-    return JSON.parse(value) as FlowchartGraph;
-  } catch {
-    return null;
+const normalizeUpdateStatus = (status: string): UpdateRecord["status"] => {
+  switch (status) {
+    case "planned":
+    case "executing":
+    case "saved":
+    case "reverted":
+    case "failed":
+      return status;
+    default:
+      return "saved";
   }
 };
 
@@ -320,12 +363,9 @@ const mapProjectRow = (row: ProjectRow): Project => ({
   iconColor: row.icon_color,
   description: row.description,
   localPath: row.local_path,
-  remoteUrl: row.remote_url,
-  defaultBranch: row.default_branch,
   threadId: row.thread_id,
-  flowchartPath: row.flowchart_path,
   lastUpdatedAt: row.last_updated_at,
-  status: row.status,
+  status: normalizeProjectStatus(row.status),
   createdAt: row.created_at,
   updatedAt: row.updated_at,
   runtimeConfig: JSON.parse(row.metadata_json),
@@ -338,11 +378,9 @@ const mapUpdateRow = (row: UpdateRow): UpdateRecord => ({
   prompt: row.prompt,
   summary: row.summary,
   commitSha: row.commit_sha,
-  flowchart: row.flowchart,
-  flowchartGraph: parseFlowchartGraphJson(row.flowchart_graph_json),
   createdAt: row.created_at,
   kind: row.kind,
-  status: row.status,
+  status: normalizeUpdateStatus(row.status),
   errorMessage: row.error_message,
 });
 
@@ -470,15 +508,12 @@ export class ProjectStore {
     this.ensureColumn("agent_sessions", "unified_messages_json", "TEXT DEFAULT '[]'");
     this.ensureColumn("agent_sessions", "cascade_pending_json", "TEXT");
     this.ensureColumn("agent_sessions", "misc_materials_json", "TEXT DEFAULT '[]'");
-    // Multi-agent system columns (legacy)
-    this.ensureColumn("agent_sessions", "agent_conversations_json", "TEXT DEFAULT '{}'");
+    // Director system columns
     this.ensureColumn("agent_sessions", "versions_json", "TEXT DEFAULT '[]'");
     this.ensureColumn("agent_sessions", "version_updates_json", "TEXT DEFAULT '[]'");
     this.ensureColumn("agent_sessions", "feasibility_json", "TEXT DEFAULT '[]'");
     this.ensureColumn("agent_sessions", "validation_results_json", "TEXT DEFAULT '[]'");
     this.ensureColumn("agent_sessions", "validation_frequency", "TEXT DEFAULT 'manual'");
-    this.ensureColumn("agent_sessions", "active_agent_id", "TEXT");
-    // Director system columns
     this.ensureColumn("agent_sessions", "director_conversations_json", "TEXT DEFAULT '{}'");
     this.ensureColumn("agent_sessions", "director_progress_json", "TEXT DEFAULT '{}'");
     this.ensureColumn("agent_sessions", "creative_focus_mode", "TEXT");
@@ -490,7 +525,6 @@ export class ProjectStore {
     this.ensureColumn("agent_sessions", "dan_draft_change_summary_json", "TEXT DEFAULT '[]'");
     this.ensureColumn("agent_sessions", "dan_draft_status", "TEXT");
     this.ensureColumn("agent_sessions", "project_category", "TEXT DEFAULT 'general-project'");
-    this.ensureColumn("agent_sessions", "dynamic_sub_agents_json", "TEXT DEFAULT '[]'");
     this.ensureColumn("agent_sessions", "active_director_id", "TEXT");
     // Slack chat columns
     this.ensureColumn("agent_sessions", "slack_messages_json", "TEXT DEFAULT '[]'");
@@ -508,6 +542,7 @@ export class ProjectStore {
     this.ensureColumn("agent_sessions", "dan_memory_json", "TEXT");
     this.ensureColumn("agent_sessions", "todd_memory_json", "TEXT");
     this.ensureColumn("agent_sessions", "ping_memory_json", "TEXT");
+    this.ensureColumn("agent_sessions", "automation_json", "TEXT");
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS home_scratchpad (
@@ -526,29 +561,8 @@ export class ProjectStore {
         created_at TEXT NOT NULL
       );
 
-      CREATE TABLE IF NOT EXISTS skills (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        description TEXT NOT NULL DEFAULT '',
-        source_provider TEXT NOT NULL DEFAULT 'claude',
-        source_type TEXT NOT NULL DEFAULT 'skill',
-        instructions TEXT NOT NULL,
-        original_file_path TEXT,
-        is_universal INTEGER NOT NULL DEFAULT 0,
-        install_status TEXT NOT NULL DEFAULT 'ready',
-        install_slug TEXT,
-        install_path TEXT,
-        last_error TEXT,
-        created_at TEXT NOT NULL,
-        updated_at TEXT NOT NULL
-      );
     `);
 
-    this.ensureColumn("skills", "source_type", "TEXT NOT NULL DEFAULT 'skill'");
-    this.ensureColumn("skills", "install_status", "TEXT NOT NULL DEFAULT 'ready'");
-    this.ensureColumn("skills", "install_slug", "TEXT");
-    this.ensureColumn("skills", "install_path", "TEXT");
-    this.ensureColumn("skills", "last_error", "TEXT");
 
     this.migrateExistingTodosOnce();
 
@@ -708,11 +722,7 @@ export class ProjectStore {
     ]);
   }
 
-  private mergeSettings(settings: LegacySettingsShape): Settings {
-    const githubClientIdOverride =
-      settings.githubClientIdOverride !== undefined
-        ? settings.githubClientIdOverride
-        : settings.githubClientId ?? DEFAULT_SETTINGS.githubClientIdOverride;
+  private mergeSettings(settings: Partial<Settings>): Settings {
     const appSourcePath =
       typeof settings.appSourcePath === "string"
         ? settings.appSourcePath.trim() || null
@@ -732,7 +742,6 @@ export class ProjectStore {
       ...settings,
       autoApprovePlans: settings.autoApprovePlans ?? DEFAULT_SETTINGS.autoApprovePlans,
       appSourcePath,
-      githubClientIdOverride,
       advancedDefaults,
     };
   }
@@ -820,10 +829,10 @@ export class ProjectStore {
         project.iconColor,
         project.description,
         project.localPath,
-        project.remoteUrl,
-        project.defaultBranch,
+        null,
+        "main",
         project.threadId,
-        project.flowchartPath,
+        LEGACY_FLOWCHART_PATH,
         project.lastUpdatedAt,
         project.status,
         project.createdAt,
@@ -848,10 +857,10 @@ export class ProjectStore {
         project.iconColor,
         project.description,
         project.localPath,
-        project.remoteUrl,
-        project.defaultBranch,
+        null,
+        "main",
         project.threadId,
-        project.flowchartPath,
+        LEGACY_FLOWCHART_PATH,
         project.lastUpdatedAt,
         project.status,
         project.updatedAt,
@@ -895,8 +904,8 @@ export class ProjectStore {
         update.prompt,
         update.summary,
         update.commitSha,
-        update.flowchart,
-        update.flowchartGraph ? JSON.stringify(update.flowchartGraph) : null,
+        LEGACY_FLOWCHART_TEXT,
+        null,
         update.createdAt,
         update.kind,
         update.status,
@@ -916,8 +925,8 @@ export class ProjectStore {
         update.prompt,
         update.summary,
         update.commitSha,
-        update.flowchart,
-        update.flowchartGraph ? JSON.stringify(update.flowchartGraph) : null,
+        LEGACY_FLOWCHART_TEXT,
+        null,
         update.kind,
         update.status,
         update.errorMessage,
@@ -932,127 +941,6 @@ export class ProjectStore {
       "SELECT * FROM updates WHERE project_id = ? ORDER BY created_at DESC",
       [projectId],
     ).map(mapUpdateRow);
-  }
-
-  async readLatestPendingSync(projectId: string): Promise<UpdateRecord | null> {
-    const row = this.getRows<UpdateRow>(
-      `SELECT * FROM updates
-       WHERE project_id = ? AND status = 'pendingSync'
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [projectId],
-    )[0];
-
-    return row ? mapUpdateRow(row) : null;
-  }
-
-  async savePendingUpdate(update: PendingPlannedUpdate): Promise<PendingPlannedUpdate> {
-    this.run(
-      `REPLACE INTO pending_planned_updates (
-         id, project_id, flowchart, flowchart_graph_json, previous_flowchart, previous_flowchart_graph_json, description, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        update.id,
-        update.projectId,
-        update.flowchart,
-        update.flowchartGraph ? JSON.stringify(update.flowchartGraph) : null,
-        update.previousFlowchart,
-        update.previousFlowchartGraph ? JSON.stringify(update.previousFlowchartGraph) : null,
-        update.description,
-        update.createdAt,
-      ],
-    );
-    return update;
-  }
-
-  async getPendingUpdate(projectId: string): Promise<PendingPlannedUpdate | null> {
-    const row = this.getRows<{
-      id: string;
-      project_id: string;
-      flowchart: string;
-      flowchart_graph_json: string | null;
-      previous_flowchart: string;
-      previous_flowchart_graph_json: string | null;
-      description: string;
-      created_at: string;
-    }>(
-      "SELECT * FROM pending_planned_updates WHERE project_id = ? ORDER BY created_at DESC LIMIT 1",
-      [projectId],
-    )[0];
-
-    if (!row) return null;
-    return {
-      id: row.id,
-      projectId: row.project_id,
-      flowchart: row.flowchart,
-      flowchartGraph: parseFlowchartGraphJson(row.flowchart_graph_json),
-      previousFlowchart: row.previous_flowchart,
-      previousFlowchartGraph: parseFlowchartGraphJson(row.previous_flowchart_graph_json),
-      description: row.description,
-      createdAt: row.created_at,
-    };
-  }
-
-  async deletePendingUpdate(projectId: string): Promise<void> {
-    this.run("DELETE FROM pending_planned_updates WHERE project_id = ?", [projectId]);
-  }
-
-  async savePlanningSession(session: PlanningSession): Promise<PlanningSession> {
-    this.run(
-      `REPLACE INTO planning_sessions (
-         id, project_id, provider, messages_json, current_flowchart, current_flowchart_graph_json,
-         previous_flowchart, previous_flowchart_graph_json, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        session.id,
-        session.projectId,
-        session.provider,
-        JSON.stringify(session.messages),
-        session.currentFlowchart,
-        session.currentFlowchartGraph ? JSON.stringify(session.currentFlowchartGraph) : null,
-        session.previousFlowchart,
-        session.previousFlowchartGraph ? JSON.stringify(session.previousFlowchartGraph) : null,
-        session.createdAt,
-        session.updatedAt,
-      ],
-    );
-    return session;
-  }
-
-  async getPlanningSession(sessionId: string): Promise<PlanningSession | null> {
-    const row = this.getRows<{
-      id: string;
-      project_id: string;
-      provider: string;
-      messages_json: string;
-      current_flowchart: string;
-      current_flowchart_graph_json: string | null;
-      previous_flowchart: string;
-      previous_flowchart_graph_json: string | null;
-      created_at: string;
-      updated_at: string;
-    }>(
-      "SELECT * FROM planning_sessions WHERE id = ?",
-      [sessionId],
-    )[0];
-
-    if (!row) return null;
-    return {
-      id: row.id,
-      projectId: row.project_id,
-      provider: row.provider as PlanningSession["provider"],
-      messages: JSON.parse(row.messages_json),
-      currentFlowchart: row.current_flowchart,
-      currentFlowchartGraph: parseFlowchartGraphJson(row.current_flowchart_graph_json),
-      previousFlowchart: row.previous_flowchart,
-      previousFlowchartGraph: parseFlowchartGraphJson(row.previous_flowchart_graph_json),
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
-  }
-
-  async deletePlanningSession(sessionId: string): Promise<void> {
-    this.run("DELETE FROM planning_sessions WHERE id = ?", [sessionId]);
   }
 
   async readOutlineReport(projectId: string): Promise<ProjectOutlineReport | null> {
@@ -1257,7 +1145,6 @@ export class ProjectStore {
       pingTaskContext: JSON.parse((r.ping_task_context_json as string) || "null"),
       pongTaskContext: JSON.parse((r.pong_task_context_json as string) || "null"),
       projectCategory: ((r.project_category as string) || "general-project") as ProjectCategory,
-      dynamicSubAgents: JSON.parse((r.dynamic_sub_agents_json as string) || "[]") as DynamicSubAgent[],
       slackMessages,
       slackActiveDirectorId: ((r.slack_active_director_id as string) || "project-manager") as DirectorId,
       slackPresenceGuestId: ((r.slack_presence_guest_id as string | null) ?? null) as DirectorId | null,
@@ -1267,6 +1154,7 @@ export class ProjectStore {
       danMemory: JSON.parse((r.dan_memory_json as string) || "null") as AgentSession["danMemory"] | null,
       toddMemory: JSON.parse((r.todd_memory_json as string) || "null") as ToddMemory | null,
       pingMemory: JSON.parse((r.ping_memory_json as string) || "null") as PingMemory | null,
+      automation: buildAutomationState(JSON.parse((r.automation_json as string) || "null") as AgentSession["automation"] | null),
     } as AgentSession;
 
     baseSession.danMemory = buildDanMemory(baseSession);
@@ -1318,19 +1206,19 @@ export class ProjectStore {
          planned_updates_json, core_pillars_json, core_details_chat_json,
          attached_materials_json, provider, created_at, updated_at,
          conversation_mode, unified_messages_json, cascade_pending_json, misc_materials_json,
-         agent_conversations_json, versions_json, version_updates_json,
-         feasibility_json, validation_results_json, validation_frequency, active_agent_id,
+         versions_json, version_updates_json,
+         feasibility_json, validation_results_json, validation_frequency,
          director_conversations_json, director_progress_json,
          creative_focus_mode, rd_focus_mode, validation_focus_mode,
          dan_internal_notes_json, dan_side_notes_json, dan_draft_core_details_json,
          dan_draft_change_summary_json, dan_draft_status,
-         project_category, dynamic_sub_agents_json, active_director_id,
+         project_category, active_director_id,
          slack_messages_json, slack_active_director_id, pending_approvals_json,
          director_settings_overrides_json, current_core_pillars_json,
          director_state_map_json, deleted_notes_json, dan_archived_notes_json,
          ping_task_context_json, pong_task_context_json, slack_presence_guest_id,
-         dan_memory_json, todd_memory_json, ping_memory_json
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         dan_memory_json, todd_memory_json, ping_memory_json, automation_json
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         prepared.id,
         prepared.projectId,
@@ -1348,13 +1236,11 @@ export class ProjectStore {
         JSON.stringify(prepared.unifiedMessages),
         JSON.stringify(prepared.cascadePending),
         JSON.stringify(prepared.miscMaterials),
-        JSON.stringify(prepared.directorConversations),
         JSON.stringify(prepared.versions),
         JSON.stringify(prepared.versionUpdates),
         JSON.stringify(prepared.feasibilityAssessments),
         JSON.stringify(prepared.validationResults),
         prepared.validationFrequency,
-        prepared.activeDirectorId,
         JSON.stringify(prepared.directorConversations),
         JSON.stringify(prepared.directorProgress),
         prepared.creativeFocusMode,
@@ -1366,7 +1252,6 @@ export class ProjectStore {
         JSON.stringify(prepared.danDraftChangeSummary ?? []),
         prepared.danDraftStatus,
         prepared.projectCategory,
-        JSON.stringify(prepared.dynamicSubAgents),
         prepared.activeDirectorId,
         JSON.stringify(prepared.slackMessages ?? []),
         prepared.slackActiveDirectorId ?? "project-manager",
@@ -1382,6 +1267,7 @@ export class ProjectStore {
         JSON.stringify(prepared.danMemory),
         JSON.stringify(prepared.toddMemory),
         JSON.stringify(prepared.pingMemory),
+        JSON.stringify(prepared.automation),
       ],
     );
   }
@@ -1390,109 +1276,4 @@ export class ProjectStore {
     this.run("DELETE FROM agent_sessions WHERE project_id = ?", [projectId]);
   }
 
-  // --- Skills ---
-
-  listSkills(): Skill[] {
-    const rows = this.getRows<{
-      id: string;
-      name: string;
-      description: string;
-      source_provider: string;
-      source_type: string;
-      instructions: string;
-      original_file_path: string | null;
-      is_universal: number;
-      install_status: string;
-      install_slug: string | null;
-      install_path: string | null;
-      last_error: string | null;
-      created_at: string;
-      updated_at: string;
-    }>("SELECT * FROM skills ORDER BY created_at DESC");
-
-    return rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      description: row.description,
-      sourceProvider: row.source_provider as Skill["sourceProvider"],
-      sourceType: row.source_type as Skill["sourceType"],
-      instructions: row.instructions,
-      originalFilePath: row.original_file_path,
-      isUniversal: row.is_universal === 1,
-      installStatus: row.install_status as Skill["installStatus"],
-      installSlug: row.install_slug,
-      installPath: row.install_path,
-      lastError: row.last_error,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    }));
-  }
-
-  readSkill(id: string): Skill | null {
-    const rows = this.getRows<{
-      id: string;
-      name: string;
-      description: string;
-      source_provider: string;
-      source_type: string;
-      instructions: string;
-      original_file_path: string | null;
-      is_universal: number;
-      install_status: string;
-      install_slug: string | null;
-      install_path: string | null;
-      last_error: string | null;
-      created_at: string;
-      updated_at: string;
-    }>("SELECT * FROM skills WHERE id = ?", [id]);
-
-    if (rows.length === 0) return null;
-    const row = rows[0];
-    return {
-      id: row.id,
-      name: row.name,
-      description: row.description,
-      sourceProvider: row.source_provider as Skill["sourceProvider"],
-      sourceType: row.source_type as Skill["sourceType"],
-      instructions: row.instructions,
-      originalFilePath: row.original_file_path,
-      isUniversal: row.is_universal === 1,
-      installStatus: row.install_status as Skill["installStatus"],
-      installSlug: row.install_slug,
-      installPath: row.install_path,
-      lastError: row.last_error,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
-  }
-
-  saveSkill(skill: Skill): void {
-    this.run(
-      `INSERT OR REPLACE INTO skills (
-         id, name, description, source_provider, source_type, instructions, original_file_path,
-         is_universal, install_status, install_slug, install_path, last_error, created_at, updated_at
-       )
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        skill.id,
-        skill.name,
-        skill.description,
-        skill.sourceProvider,
-        skill.sourceType,
-        skill.instructions,
-        skill.originalFilePath,
-        String(skill.isUniversal ? 1 : 0),
-        skill.installStatus,
-        skill.installSlug,
-        skill.installPath,
-        skill.lastError,
-        skill.createdAt,
-        skill.updatedAt,
-      ],
-    );
-  }
-
-  deleteSkill(id: string): void {
-    this.run("DELETE FROM skills WHERE id = ?", [id]);
-  }
 }

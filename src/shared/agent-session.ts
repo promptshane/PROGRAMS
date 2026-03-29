@@ -3,10 +3,17 @@ import {
   normalizeDirectorId,
   type DirectorId,
   type DirectorStateSnapshot,
+  type JeffExecutionReport,
+  type JeffMemory,
+  type JeffOutcomeEntry,
   type PendingApproval,
   type PendingApprovalKind,
   type PendingApprovalStatus,
+  type PongMemory,
+  type PongValidationReport,
   type SlackChatMessage,
+  type SoftMemoryTag,
+  type TaggedNote,
 } from "./types.ts";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -27,9 +34,9 @@ const normalizeApprovalKind = (value: unknown): PendingApprovalKind | null => {
     case "codebase-scan":
     case "store-data":
     case "plan":
-    case "apply-pending-update":
     case "agent-update":
     case "validation":
+    case "outcome-decision":
       return value;
     default:
       return null;
@@ -212,5 +219,112 @@ export const sanitizeSlackPresenceGuestId = (
   return {
     directorId: normalized,
     changed: normalized !== value,
+  };
+};
+
+const VALID_SOFT_MEMORY_TAGS: SoftMemoryTag[] = [
+  "likely-hard",
+  "likely-backup",
+  "handoff-to-dan",
+  "handoff-to-todd",
+  "handoff-to-ping",
+  "handoff-to-pong",
+  "handoff-to-jeff",
+  "general",
+];
+
+const normalizeSoftMemoryTag = (value: unknown): SoftMemoryTag =>
+  typeof value === "string" && VALID_SOFT_MEMORY_TAGS.includes(value as SoftMemoryTag)
+    ? (value as SoftMemoryTag)
+    : "general";
+
+export const sanitizeTaggedNotes = (value: unknown): TaggedNote[] => {
+  if (!Array.isArray(value)) return [];
+  const notes: TaggedNote[] = [];
+  for (let i = 0; i < value.length; i += 1) {
+    const item = value[i];
+    if (typeof item === "string" && item.trim()) {
+      notes.push({
+        id: `migrated-${i}`,
+        content: item,
+        tag: "general",
+        createdAt: new Date(0).toISOString(),
+      });
+    } else if (isRecord(item) && typeof item.content === "string" && item.content.trim()) {
+      notes.push({
+        id: typeof item.id === "string" && item.id.trim() ? item.id : `sanitized-${i}`,
+        content: item.content,
+        tag: normalizeSoftMemoryTag(item.tag),
+        createdAt: normalizeIsoString(item.createdAt, new Date(0).toISOString()),
+      });
+    }
+  }
+  return notes;
+};
+
+const sanitizeJeffExecutionReports = (value: unknown): JeffExecutionReport[] => {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is JeffExecutionReport =>
+      isRecord(item) && typeof item.id === "string" && typeof item.summary === "string",
+  );
+};
+
+const sanitizePongValidationReports = (value: unknown): PongValidationReport[] => {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is PongValidationReport =>
+      isRecord(item) && typeof item.id === "string" && typeof item.summary === "string",
+  );
+};
+
+const sanitizeJeffOutcomeLog = (value: unknown): JeffOutcomeEntry[] => {
+  if (!Array.isArray(value)) return [];
+  return value.filter(
+    (item): item is JeffOutcomeEntry =>
+      isRecord(item)
+      && typeof item.id === "string"
+      && typeof item.reportId === "string"
+      && typeof item.decision === "string",
+  );
+};
+
+export const sanitizeJeffMemory = (value: unknown): JeffMemory => {
+  if (!isRecord(value)) {
+    return {
+      pendingReports: [],
+      pendingValidations: [],
+      outcomeLog: [],
+      notes: [],
+      backupNotes: [],
+    };
+  }
+  return {
+    pendingReports: sanitizeJeffExecutionReports(value.pendingReports),
+    pendingValidations: sanitizePongValidationReports(value.pendingValidations),
+    outcomeLog: sanitizeJeffOutcomeLog(value.outcomeLog),
+    notes: sanitizeTaggedNotes(value.notes),
+    backupNotes: sanitizeTaggedNotes(value.backupNotes),
+  };
+};
+
+export const sanitizePongMemory = (value: unknown): PongMemory => {
+  if (!isRecord(value)) {
+    return {
+      jeffInstruction: null,
+      previousValidationReports: [],
+      latestValidationReport: null,
+      screenshotPaths: [],
+    };
+  }
+  return {
+    jeffInstruction: typeof value.jeffInstruction === "string" ? value.jeffInstruction : null,
+    previousValidationReports: sanitizePongValidationReports(value.previousValidationReports),
+    latestValidationReport:
+      isRecord(value.latestValidationReport)
+      && typeof (value.latestValidationReport as Record<string, unknown>).id === "string"
+        ? (value.latestValidationReport as unknown as PongValidationReport)
+        : null,
+    screenshotPaths: sanitizeStringList(value.screenshotPaths),
   };
 };

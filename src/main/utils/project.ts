@@ -3,13 +3,6 @@ import { basename, join, resolve } from "node:path";
 import type { ProjectRuntimeConfig } from "@shared/types";
 import { pathExists } from "./fs.ts";
 
-export const slugifyRepositoryName = (name: string): string =>
-  name
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
 const LOCAL_URL_LITERAL_REGEX = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):\d{2,5}(?:\/[^\s"'<>]*)?/i;
 const COMMAND_PORT_REGEX = /(?:^|\s)(?:PORT=(\d{2,5})|--port(?:=|\s+)(\d{2,5})|-p\s+(\d{2,5}))(?:\s|$)/i;
 const COMMAND_HOST_REGEX = /(?:^|\s)(?:HOST=([^\s]+)|--host(?:=|\s+)([^\s]+))(?:\s|$)/i;
@@ -246,7 +239,6 @@ export const detectRuntimeConfig = async (projectPath: string): Promise<ProjectR
       openUrl: null,
       lastRunUrl: null,
       initialIdea: null,
-      githubRepoName: null,
     };
   }
 
@@ -281,7 +273,6 @@ export const detectRuntimeConfig = async (projectPath: string): Promise<ProjectR
     openUrl,
     lastRunUrl: null,
     initialIdea: null,
-    githubRepoName: basename(projectPath),
   };
 };
 

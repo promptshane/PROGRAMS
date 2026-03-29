@@ -14,7 +14,6 @@ export const DEFAULT_ADVANCED_DEFAULTS: AdvancedDefaults = {
   reasoningEffort: "xhigh",
   serviceTier: "flex",
   customInstructions: "",
-  repoVisibility: "private",
 };
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -26,7 +25,6 @@ export const DEFAULT_SETTINGS: Settings = {
   appSourcePath: "/Users/kc/Desktop/PROGRAMS",
   codexBinaryPath: null,
   claudeBinaryPath: null,
-  githubClientIdOverride: null,
 };
 
 export const DEFAULT_SETUP_STATE: SetupState = {
@@ -38,10 +36,6 @@ export const CLAUDE_DOWNLOAD_URL = "https://docs.anthropic.com/en/docs/claude-co
 export const CODEX_SIGNIN_HELP_URL =
   "https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan";
 export const GIT_DOWNLOAD_URL = "https://git-scm.com/install/mac.html";
-export const GITHUB_AUTH_URL = "https://github.com/login";
-export const GITHUB_SSH_SETUP_URL = "https://github.com/settings/keys";
-export const GITHUB_NEW_REPO_URL = "https://github.com/new";
-export const GITHUB_TOKEN_SETTINGS_URL = "https://github.com/settings/personal-access-tokens";
 
 export const DEFAULT_ICON_COLORS = [
   "#FB7185",
@@ -67,11 +61,3 @@ export const EMPTY_RUNTIME = (projectId: string): RuntimeState => ({
 
 export const speedToServiceTier = (speed: SpeedMode): "flex" | "fast" =>
   speed === "fast" ? "fast" : "flex";
-
-export const createStarterFlowchart = (projectName: string): string => `flowchart TD
-    A["Select ${projectName}"] --> B["Describe a change in plain English"]
-    B --> C["Review the AI plan"]
-    C --> D["Apply the update locally"]
-    D --> E["Review the local result"]
-    E --> F["Run the program"]
-`;

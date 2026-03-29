@@ -18,10 +18,31 @@ export const hasDanActionableMemory = (session: AgentSession | null): boolean =>
   );
 
 export const hasToddActionableMemory = (session: AgentSession | null): boolean =>
-  Boolean(session?.toddMemory.pendingHandoff);
+  Boolean(
+    session
+    && (
+      session.toddMemory.pendingHandoff
+      || (session.danMemory.toddHandoffNotes?.length ?? 0) > 0
+    ),
+  );
 
 export const hasPingPendingUpdate = (session: AgentSession | null): boolean =>
   Boolean(session?.toddMemory.futureUpdatePlan.some((update) => update.status === "pending"));
+
+export const hasPingActiveTask = (session: AgentSession | null): boolean =>
+  Boolean(session?.pingMemory.activeTask);
+
+export const hasJeffPendingWork = (session: AgentSession | null): boolean =>
+  Boolean(
+    session
+    && (
+      (session.jeffMemory?.pendingReports?.length ?? 0) > 0
+      || (session.jeffMemory?.pendingValidations?.length ?? 0) > 0
+    ),
+  );
+
+export const hasPongPendingWork = (session: AgentSession | null): boolean =>
+  Boolean(session?.pongMemory?.jeffInstruction);
 
 export const getNextPendingProgrammingUpdate = (session: AgentSession | null): VersionUpdate | null => {
   if (!session) {
@@ -47,6 +68,16 @@ export const resolveAgentAlertState = (
   directorId: DirectorId,
   session: AgentSession | null,
 ): AgentAlertState | null => {
+  if (directorId === "project-manager") {
+    if (!hasJeffPendingWork(session)) {
+      return null;
+    }
+    return {
+      tone: hasPingActiveTask(session) ? "red" : "white",
+      warningTargetDirectorId: hasPingActiveTask(session) ? "programming-director" : null,
+    };
+  }
+
   if (directorId === "creative-director") {
     return hasDanActionableMemory(session)
       ? { tone: "white", warningTargetDirectorId: null }
@@ -70,6 +101,16 @@ export const resolveAgentAlertState = (
     return {
       tone: hasToddActionableMemory(session) ? "red" : "white",
       warningTargetDirectorId: hasToddActionableMemory(session) ? "rd-director" : null,
+    };
+  }
+
+  if (directorId === "validation-director") {
+    if (!hasPongPendingWork(session)) {
+      return null;
+    }
+    return {
+      tone: hasPingActiveTask(session) ? "red" : "white",
+      warningTargetDirectorId: hasPingActiveTask(session) ? "programming-director" : null,
     };
   }
 

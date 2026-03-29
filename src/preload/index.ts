@@ -1,8 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
   AgentSession,
-  AttachSkillInput,
-  ConvertSkillInput,
   ClaudeConnectionTestResult,
   AttachVibeInput,
   ConfirmAgentDataInput,
@@ -25,44 +23,36 @@ import type {
   SetValidationFrequencyInput,
   ValidationResult,
   AppUpdateStatus,
+  ConfirmAutomationFailureRecoveryInput,
   AppEvent,
   ApprovePlanInput,
+  ListAutomationTargetsInput,
+  ListAutomationTargetsResponse,
   AttachPathInspection,
   BootstrapPayload,
   ContextPathPickResult,
   DiffStats,
-  DownloadSkillInput,
-  GitHubLoginPrompt,
-  InstallSkillCatalogInput,
   ListPendingApprovalsInput,
   DroppedContextPathResult,
   DirectoryPickMode,
   DirectoryPickResult,
   EnvFileSnapshot,
-  GenerateFlowchartInput,
-  GenerateFlowchartResult,
   GenerateProjectOutlineReportInput,
-  GitSyncInput,
-  GitSyncResult,
-  PendingPlannedUpdate,
-  PlanningChatInput,
-  PlanningChatResponse,
   Project,
   ProjectAttachInput,
   ProjectCreateInput,
   ProjectDetail,
   ProjectOutlineReport,
-  ProjectEnableSyncInput,
   RenameProjectInput,
   ResolveDroppedContextPathsInput,
-  RetrySyncInput,
-  SavePlannedUpdateInput,
   Settings,
   SettingsUpdateInput,
   SetupSnapshot,
-  Skill,
-  PlaywrightRunInput,
-  PlaywrightRunResult,
+  StartAutomationRunInput,
+  StartPingDirectUpdateInput,
+  PauseAutomationRunInput,
+  StopAutomationRunInput,
+  RequestAutomationFailureRecoveryInput,
   StartPlanInput,
   UpdateProjectInput,
   UsageSnapshot,
@@ -93,11 +83,8 @@ const api = {
   submitClaudeLoginCode: (code: string): Promise<void> =>
     ipcRenderer.invoke("auth.claude.submitLoginCode", code),
 
-  getGitHubStatus: () => ipcRenderer.invoke("auth.github.status"),
   inspectAttachPath: (localPath: string): Promise<AttachPathInspection> =>
-    ipcRenderer.invoke("auth.github.inspectAttachPath", localPath),
-  loginGitHub: (): Promise<GitHubLoginPrompt> => ipcRenderer.invoke("auth.github.login"),
-  logoutGitHub: () => ipcRenderer.invoke("auth.github.logout"),
+    ipcRenderer.invoke("projects.inspectAttachPath", localPath),
   readUsage: (): Promise<UsageSnapshot> => ipcRenderer.invoke("usage.read"),
 
   readAppUpdateStatus: (): Promise<AppUpdateStatus> => ipcRenderer.invoke("appUpdate.read"),
@@ -107,11 +94,9 @@ const api = {
   readProject: (projectId: string): Promise<ProjectDetail> => ipcRenderer.invoke("projects.read", projectId),
   createProject: (input: ProjectCreateInput) => ipcRenderer.invoke("projects.create", input),
   attachProject: (input: ProjectAttachInput) => ipcRenderer.invoke("projects.attach", input),
-  enableProjectSync: (input: ProjectEnableSyncInput) => ipcRenderer.invoke("projects.enableSync", input),
   renameProject: (input: RenameProjectInput) => ipcRenderer.invoke("projects.rename", input),
   updateProject: (input: UpdateProjectInput) => ipcRenderer.invoke("projects.update", input),
   unlinkProject: (projectId: string) => ipcRenderer.invoke("projects.unlink", projectId),
-  readPlanView: (projectId: string): Promise<string> => ipcRenderer.invoke("projects.planView", projectId),
   readHistory: (projectId: string) => ipcRenderer.invoke("projects.readHistory", projectId),
   readOutlineReport: (projectId: string): Promise<ProjectOutlineReport | null> =>
     ipcRenderer.invoke("projects.readOutlineReport", projectId),
@@ -130,18 +115,6 @@ const api = {
   approvePlan: (input: ApprovePlanInput) => ipcRenderer.invoke("updates.approvePlan", input),
   undoUpdate: (projectId: string, updateId: string) =>
     ipcRenderer.invoke("updates.undoUpdate", projectId, updateId),
-  retrySync: (input: RetrySyncInput) => ipcRenderer.invoke("updates.retrySync", input),
-
-  generateFlowchart: (input: GenerateFlowchartInput): Promise<GenerateFlowchartResult> =>
-    ipcRenderer.invoke("projects.generateFlowchart", input),
-  planningChat: (input: PlanningChatInput): Promise<PlanningChatResponse> =>
-    ipcRenderer.invoke("planning.chat", input),
-  savePlannedUpdate: (input: SavePlannedUpdateInput): Promise<PendingPlannedUpdate> =>
-    ipcRenderer.invoke("planning.saveUpdate", input),
-  getPendingUpdate: (projectId: string): Promise<PendingPlannedUpdate | null> =>
-    ipcRenderer.invoke("planning.getPending", projectId),
-  applyPlannedUpdate: (projectId: string): Promise<{ started: true }> =>
-    ipcRenderer.invoke("planning.applyUpdate", projectId),
 
   getAgentSession: (projectId: string): Promise<AgentSession | null> =>
     ipcRenderer.invoke("agents.getSession", projectId),
@@ -149,6 +122,8 @@ const api = {
   // Director system
   directorChat: (input: DirectorChatInput): Promise<DirectorChatResponse> =>
     ipcRenderer.invoke("directors.chat", input),
+  startPingDirectUpdate: (input: StartPingDirectUpdateInput): Promise<{ started: true }> =>
+    ipcRenderer.invoke("directors.ping.start", input),
   slackChat: (input: SlackChatInput): Promise<SlackChatResponse> =>
     ipcRenderer.invoke("slack.chat", input),
   listPendingApprovals: (input: ListPendingApprovalsInput): Promise<PendingApproval[]> =>
@@ -167,6 +142,20 @@ const api = {
     ipcRenderer.invoke("slack.clearAll", projectId),
   refreshProject: (input: import("@shared/types").RefreshProjectInput): Promise<void> =>
     ipcRenderer.invoke("slack.refreshProject", input),
+  listAutomationTargets: (input: ListAutomationTargetsInput): Promise<ListAutomationTargetsResponse> =>
+    ipcRenderer.invoke("automation.targets", input),
+  startAutomationRun: (input: StartAutomationRunInput): Promise<AgentSession> =>
+    ipcRenderer.invoke("automation.start", input),
+  pauseAutomationRun: (input: PauseAutomationRunInput): Promise<AgentSession> =>
+    ipcRenderer.invoke("automation.pause", input),
+  resumeAutomationRun: (projectId: string): Promise<AgentSession> =>
+    ipcRenderer.invoke("automation.resume", projectId),
+  stopAutomationRun: (input: StopAutomationRunInput): Promise<AgentSession> =>
+    ipcRenderer.invoke("automation.stop", input),
+  requestAutomationFailureRecovery: (input: RequestAutomationFailureRecoveryInput): Promise<AgentSession> =>
+    ipcRenderer.invoke("automation.recovery.request", input),
+  confirmAutomationFailureRecovery: (input: ConfirmAutomationFailureRecoveryInput): Promise<AgentSession> =>
+    ipcRenderer.invoke("automation.recovery.confirm", input),
   setDirectorFocusMode: (projectId: string, directorId: DirectorId, focusMode: DirectorFocusMode): Promise<AgentSession> =>
     ipcRenderer.invoke("directors.setFocusMode", projectId, directorId, focusMode),
   updateDirectorSettings: (projectId: string, directorId: DirectorId, overrides: DirectorSettingsOverride): Promise<AgentSession> =>
@@ -180,8 +169,6 @@ const api = {
     ipcRenderer.invoke("agents.attachVibe", input),
   removeVibe: (input: RemoveVibeInput): Promise<AgentSession> =>
     ipcRenderer.invoke("agents.removeVibe", input),
-  createPillarSubAgents: (input: import("@shared/types").CreatePillarSubAgentsInput): Promise<AgentSession> =>
-    ipcRenderer.invoke("agents.createPillarSubAgents", input),
   confirmAgentData: (input: ConfirmAgentDataInput): Promise<AgentSession> =>
     ipcRenderer.invoke("agents.confirmData", input),
   routeUpdateToProgramming: (input: RouteUpdateToProgrammingInput): Promise<{ started: true }> =>
@@ -190,32 +177,13 @@ const api = {
     ipcRenderer.invoke("agents.runValidation", input),
   setValidationFrequency: (input: SetValidationFrequencyInput): Promise<AgentSession> =>
     ipcRenderer.invoke("agents.setValidationFrequency", input),
-
-  // Git sync
-  syncProjectToGitHub: (input: GitSyncInput): Promise<GitSyncResult> =>
-    ipcRenderer.invoke("projects.syncGitHub", input),
+  recordJeffOutcome: (input: { projectId: string; reportId: string; decision: string; summary: string }): Promise<void> =>
+    ipcRenderer.invoke("jeff.recordOutcome", input),
+  assignPongValidation: (input: { projectId: string; instruction: string; updateId?: string | null }): Promise<void> =>
+    ipcRenderer.invoke("pong.assignValidation", input),
   readProjectDiffStats: (projectId: string): Promise<DiffStats | null> =>
     ipcRenderer.invoke("projects.diffStats", projectId),
 
-  // Skills
-  listSkills: (): Promise<Skill[]> =>
-    ipcRenderer.invoke("skills.list"),
-  downloadSkill: (input: DownloadSkillInput): Promise<Skill> =>
-    ipcRenderer.invoke("skills.download", input),
-  installSkillCatalogItem: (input: InstallSkillCatalogInput): Promise<Skill> =>
-    ipcRenderer.invoke("skills.installCatalog", input),
-  convertSkill: (input: ConvertSkillInput): Promise<Skill> =>
-    ipcRenderer.invoke("skills.convert", input),
-  deleteSkill: (id: string): Promise<void> =>
-    ipcRenderer.invoke("skills.delete", id),
-  readSkill: (id: string): Promise<Skill | null> =>
-    ipcRenderer.invoke("skills.read", id),
-  runPlaywrightTest: (input: PlaywrightRunInput): Promise<PlaywrightRunResult> =>
-    ipcRenderer.invoke("skills.runPlaywright", input),
-
-  // Skill attachment
-  attachSkillToProject: (input: AttachSkillInput): Promise<Project> =>
-    ipcRenderer.invoke("projects.attachSkill", input),
 
   pickMaterialFiles: (): Promise<{ canceled: boolean; paths: string[] }> =>
     ipcRenderer.invoke("system.pickMaterialFiles"),

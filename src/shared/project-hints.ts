@@ -1,9 +1,9 @@
-export interface FlowchartHintItem {
+export interface ProjectHintItem {
   file: string;
   label: string;
 }
 
-export interface FlowchartHintGroup {
+export interface ProjectHintGroup {
   file: string;
   source: string;
   items: string[];
@@ -24,8 +24,8 @@ const humanizeActionName = (value: string): string => {
   return tokens.map((token) => token.toLowerCase()).join(" ");
 };
 
-export const extractNavigationHintsFromText = (filePath: string, text: string): FlowchartHintGroup[] => {
-  const hints: FlowchartHintGroup[] = [];
+export const extractNavigationHintsFromText = (filePath: string, text: string): ProjectHintGroup[] => {
+  const hints: ProjectHintGroup[] = [];
   const seen = new Set<string>();
 
   const pushHint = (source: string, items: string[]) => {
@@ -59,7 +59,10 @@ export const extractNavigationHintsFromText = (filePath: string, text: string): 
     if (!values.length) {
       continue;
     }
-    const contextWindow = text.slice(Math.max(0, (match.index ?? 0) - 60), Math.min(text.length, (match.index ?? 0) + match[0].length + 60));
+    const contextWindow = text.slice(
+      Math.max(0, (match.index ?? 0) - 60),
+      Math.min(text.length, (match.index ?? 0) + match[0].length + 60),
+    );
     if (/(tab|view|screen|page|section|mode|map\s*\(\s*\(\w+\)\s*=>)/i.test(contextWindow) || /App\.(t|j)sx?$/i.test(filePath)) {
       pushHint("const array", values);
     }
@@ -68,8 +71,8 @@ export const extractNavigationHintsFromText = (filePath: string, text: string): 
   return hints;
 };
 
-export const extractActionHintsFromText = (filePath: string, text: string): FlowchartHintItem[] => {
-  const hints: FlowchartHintItem[] = [];
+export const extractActionHintsFromText = (filePath: string, text: string): ProjectHintItem[] => {
+  const hints: ProjectHintItem[] = [];
   const seen = new Set<string>();
   const functionPattern = /\bfunction\s+(handle[A-Z]\w+|(?:create|open|import|save|export|generate|archive|delete)[A-Z]\w*)\s*\(/g;
   const constPattern =

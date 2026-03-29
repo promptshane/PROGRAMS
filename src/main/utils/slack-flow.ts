@@ -90,6 +90,48 @@ const AUTO_ROUTED_SLACK_DIRECTORS: DirectorId[] = [
   "programming-director",
 ] as const;
 
+/**
+ * Name-based direct routing patterns.
+ * Matches when a message clearly targets a specific director by name
+ * at the beginning of the message or with a casual address prefix.
+ */
+const DIRECT_ROUTE_PATTERNS: { pattern: RegExp; directorId: DirectorId }[] = [
+  { pattern: /^(?:hey\s+|@)?dan\b[,:\s]/i, directorId: "creative-director" },
+  { pattern: /^(?:hey\s+|@)?todd\b[,:\s]/i, directorId: "rd-director" },
+  { pattern: /^(?:hey\s+|@)?ping\b[,:\s]/i, directorId: "programming-director" },
+  { pattern: /^(?:hey\s+|@)?pong\b[,:\s]/i, directorId: "validation-director" },
+  { pattern: /^(?:hey\s+|@)?jeff\b[,:\s]/i, directorId: "project-manager" },
+];
+
+/**
+ * Detects if the user's message clearly targets a specific director,
+ * allowing us to skip Jeff's routing turn and go directly to that director.
+ * Returns the target DirectorId, or null if the message is ambiguous
+ * and Jeff should orchestrate.
+ */
+export const resolveSlackDirectRoute = (
+  message: string,
+  presenceGuestId: DirectorId | null,
+): DirectorId | null => {
+  const trimmed = message.trim();
+  if (!trimmed) return null;
+
+  // Check name-based patterns (e.g., "Dan, what about...", "@Todd can you...")
+  for (const { pattern, directorId } of DIRECT_ROUTE_PATTERNS) {
+    if (pattern.test(trimmed)) {
+      return directorId;
+    }
+  }
+
+  // If a director is already present in the channel, keep routing to them
+  // unless the message explicitly addresses Jeff or another director
+  if (presenceGuestId && presenceGuestId !== "project-manager") {
+    return presenceGuestId;
+  }
+
+  return null;
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object" && !Array.isArray(value);
 

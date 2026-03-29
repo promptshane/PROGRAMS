@@ -1,40 +1,13 @@
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { ensureDirectory, pathExists } from "../utils/fs.ts";
-import { execCommand, execFileCommand } from "../utils/process.ts";
+import { execCommand } from "../utils/process.ts";
 import type { DiffStats } from "@shared/types";
 
-export interface GitRemoteInfo {
+export interface GitRepositoryInfo {
   isRepo: boolean;
-  remoteUrl: string | null;
-  defaultBranch: string;
 }
 
 export type GitInstallRequestResult = "alreadyAvailable" | "requested" | "manualDownload";
-
-interface GitHubAuthOptions {
-  remoteUrl?: string | null;
-  token?: string | null;
-}
-
-const isGitHubHttpsRemote = (remoteUrl: string | null | undefined): boolean =>
-  Boolean(remoteUrl?.trim() && /^https:\/\/github\.com\//i.test(remoteUrl.trim()));
-
-const buildGitHubAuthConfigArgs = (options?: GitHubAuthOptions): string[] => {
-  if (!options?.token || !isGitHubHttpsRemote(options.remoteUrl)) {
-    return [];
-  }
-
-  const basicAuth = Buffer.from(`x-access-token:${options.token}`).toString("base64");
-  return [
-    "-c",
-    `http.extraheader=AUTHORIZATION: basic ${basicAuth}`,
-  ];
-};
-
-const buildGitEnv = (): NodeJS.ProcessEnv => ({
-  ...process.env,
-  GIT_TERMINAL_PROMPT: "0",
-});
 
 export class GitService {
   async readWorkingTreeDiffStats(localPath: string): Promise<DiffStats | null> {
@@ -72,6 +45,35 @@ export class GitService {
     return sawTextDiff ? { added, removed } : null;
   }
 
+  async readWorkingTreeChangedFiles(localPath: string): Promise<string[]> {
+    const result = await execCommand("git status --short --untracked-files=all", localPath);
+    if (result.code !== 0) {
+      return [];
+    }
+
+    const files = new Set<string>();
+    for (const line of result.stdout.split(/\r?\n/)) {
+      if (!line.trim()) {
+        continue;
+      }
+      let filePath = line.slice(3).trim();
+      if (!filePath) {
+        continue;
+      }
+      if (filePath.includes(" -> ")) {
+        filePath = filePath.split(" -> ").at(-1)?.trim() ?? filePath;
+      }
+      if (filePath.startsWith("\"") && filePath.endsWith("\"")) {
+        filePath = filePath.slice(1, -1);
+      }
+      if (filePath) {
+        files.add(filePath);
+      }
+    }
+
+    return [...files];
+  }
+
   async isAvailable(): Promise<boolean> {
     const result = await execCommand("git --version", process.cwd());
     return result.code === 0;
@@ -101,34 +103,16 @@ ${result.stderr}`.toLowerCase();
     return "manualDownload";
   }
 
-  async inspectRepository(localPath: string): Promise<GitRemoteInfo> {
+  async inspectRepository(localPath: string): Promise<GitRepositoryInfo> {
     const repoCheck = await execCommand("git rev-parse --is-inside-work-tree", localPath);
     if (repoCheck.code !== 0) {
       return {
         isRepo: false,
-        remoteUrl: null,
-        defaultBranch: "main",
       };
     }
 
-    const remoteResult = await execCommand("git remote get-url origin", localPath);
-    const remoteUrl = remoteResult.code === 0 ? remoteResult.stdout.trim() : null;
-    const branchResult = await execCommand(
-      "git symbolic-ref refs/remotes/origin/HEAD --short",
-      localPath,
-    );
-    const currentBranchResult = await execCommand("git branch --show-current", localPath);
-    const defaultBranch =
-      branchResult.code === 0 && branchResult.stdout.trim()
-        ? branchResult.stdout.trim().split("/").pop() ?? "main"
-        : currentBranchResult.code === 0 && currentBranchResult.stdout.trim()
-          ? currentBranchResult.stdout.trim()
-        : "main";
-
     return {
       isRepo: true,
-      remoteUrl,
-      defaultBranch,
     };
   }
 
@@ -140,72 +124,9 @@ ${result.stderr}`.toLowerCase();
     }
   }
 
-  async configureRemote(localPath: string, remoteUrl: string): Promise<void> {
-    const currentRemote = await execCommand("git remote get-url origin", localPath);
-    if (currentRemote.code === 0) {
-      const setResult = await execCommand(`git remote set-url origin "${remoteUrl}"`, localPath);
-      if (setResult.code !== 0) {
-        throw new Error(setResult.stderr || "Could not update the GitHub connection.");
-      }
-      return;
-    }
-
-    const addResult = await execCommand(`git remote add origin "${remoteUrl}"`, localPath);
-    if (addResult.code !== 0) {
-      throw new Error(addResult.stderr || "Could not connect the project to GitHub.");
-    }
-  }
-
-  async cloneRepository(remoteUrl: string, localPath: string): Promise<void> {
-    await ensureDirectory(dirname(localPath));
-    const cloneResult = await execCommand(`git clone "${remoteUrl}" "${localPath}"`, process.cwd());
-    if (cloneResult.code !== 0) {
-      throw new Error(cloneResult.stderr || "Could not download the latest project from GitHub.");
-    }
-  }
-
-  async hasRemoteBranch(localPath: string, branch: string, auth?: GitHubAuthOptions): Promise<boolean> {
-    const result = await execFileCommand(
-      "git",
-      [...buildGitHubAuthConfigArgs(auth), "ls-remote", "--heads", "origin", branch],
-      localPath,
-      buildGitEnv(),
-    );
-    return result.code === 0 && result.stdout.trim().length > 0;
-  }
-
-  async fetch(localPath: string, auth?: GitHubAuthOptions): Promise<void> {
-    const result = await execFileCommand(
-      "git",
-      [...buildGitHubAuthConfigArgs(auth), "fetch", "origin"],
-      localPath,
-      buildGitEnv(),
-    );
-    if (result.code !== 0) {
-      throw new Error(result.stderr || "Could not check GitHub for the latest version.");
-    }
-  }
-
   async hasUncommittedChanges(localPath: string): Promise<boolean> {
     const result = await execCommand("git status --porcelain", localPath);
     return result.stdout.trim().length > 0;
-  }
-
-  async fastForward(localPath: string, branch: string, auth?: GitHubAuthOptions): Promise<void> {
-    const hasBranch = await this.hasRemoteBranch(localPath, branch, auth);
-    if (!hasBranch) {
-      return;
-    }
-
-    const checkoutResult = await execCommand(`git checkout ${branch}`, localPath);
-    if (checkoutResult.code !== 0) {
-      throw new Error(checkoutResult.stderr || `Could not switch to ${branch}.`);
-    }
-
-    const mergeResult = await execCommand(`git merge --ff-only origin/${branch}`, localPath);
-    if (mergeResult.code !== 0) {
-      throw new Error(mergeResult.stderr || "Could not fast-forward to the latest GitHub version.");
-    }
   }
 
   async commitAll(localPath: string, message: string): Promise<string | null> {
@@ -245,18 +166,6 @@ ${result.stderr}`.toLowerCase();
     return result.code === 0 && result.stdout.trim() ? result.stdout.trim() : null;
   }
 
-  async push(localPath: string, branch: string, auth?: GitHubAuthOptions): Promise<void> {
-    const result = await execFileCommand(
-      "git",
-      [...buildGitHubAuthConfigArgs(auth), "push", "-u", "origin", branch],
-      localPath,
-      buildGitEnv(),
-    );
-    if (result.code !== 0) {
-      throw new Error(result.stderr || "Could not sync this update to GitHub.");
-    }
-  }
-
   async revertCommit(localPath: string, commitSha: string): Promise<string> {
     const revertResult = await execCommand(`git revert --no-edit ${commitSha}`, localPath);
     if (revertResult.code !== 0) {
@@ -271,25 +180,9 @@ ${result.stderr}`.toLowerCase();
     return shaResult.stdout.trim();
   }
 
-  async ensureRepository(localPath: string, remoteUrl: string | null, defaultBranch: string): Promise<void> {
+  async ensureRepository(localPath: string, defaultBranch = "main"): Promise<void> {
     if (!(await pathExists(join(localPath, ".git")))) {
-      if (remoteUrl) {
-        if (!(await pathExists(localPath))) {
-          await this.cloneRepository(remoteUrl, localPath);
-          return;
-        }
-
-        await this.initializeRepository(localPath, defaultBranch);
-        await this.configureRemote(localPath, remoteUrl);
-        return;
-      }
-
       await this.initializeRepository(localPath, defaultBranch);
-      return;
-    }
-
-    if (remoteUrl) {
-      await this.configureRemote(localPath, remoteUrl);
     }
   }
 }

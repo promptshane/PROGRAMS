@@ -10,7 +10,8 @@ export interface ClaudeUsageWindowData {
 }
 
 export const CLAUDE_USAGE_RATE_LIMITS_ENV = "PROGRAMS_CLAUDE_RATE_LIMITS_FILE";
-export const CLAUDE_USAGE_STATUS_LINE_COMMAND = 'cat > "$PROGRAMS_CLAUDE_RATE_LIMITS_FILE"';
+export const CLAUDE_USAGE_STATUS_LINE_COMMAND =
+  `/bin/sh -c 'cat >> "$PROGRAMS_CLAUDE_RATE_LIMITS_FILE"; printf "\\n" >> "$PROGRAMS_CLAUDE_RATE_LIMITS_FILE"'`;
 
 const claudeRateLimitWindowSchema = z.object({
   used_percentage: z.number(),
@@ -66,17 +67,30 @@ const buildUsageWindow = (
 };
 
 export const parseClaudeStatusLineUsageWindows = (raw: string): ClaudeUsageWindowData[] | null => {
-  try {
-    const parsed = claudeStatusLineSchema.parse(JSON.parse(raw));
-    const windows = [
-      buildUsageWindow(5 * 60, parsed.rate_limits?.five_hour),
-      buildUsageWindow(7 * 24 * 60, parsed.rate_limits?.seven_day),
-    ].filter((window): window is ClaudeUsageWindowData => Boolean(window));
+  let latestWindows: ClaudeUsageWindowData[] | null = null;
 
-    return windows.length > 0 ? windows : null;
-  } catch {
-    return null;
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    try {
+      const parsed = claudeStatusLineSchema.parse(JSON.parse(trimmed));
+      const windows = [
+        buildUsageWindow(5 * 60, parsed.rate_limits?.five_hour),
+        buildUsageWindow(7 * 24 * 60, parsed.rate_limits?.seven_day),
+      ].filter((window): window is ClaudeUsageWindowData => Boolean(window));
+
+      if (windows.length > 0) {
+        latestWindows = windows;
+      }
+    } catch {
+      // Ignore partial writes and unrelated status line payloads.
+    }
   }
+
+  return latestWindows;
 };
 
 export const buildClaudeUsageProbeSettingsArg = (reasoningEffort: ReasoningEffort = "low"): string =>

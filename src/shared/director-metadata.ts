@@ -50,8 +50,8 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     label: DIRECTOR_LABELS["project-manager"],
     shortDescription: "Coordinates requests, tracks overall project state, and routes work to the right specialist.",
     modelBehaviorNote: "Uses the selected project provider and model defaults.",
-    introMessage: "",
-    outroMessage: "",
+    introMessage: "I’m pulling the current state together.",
+    outroMessage: "I’m stepping back into coordination mode.",
     runtimeDefaults: {
       reasoningEffort: "high",
       planningMode: "none",
@@ -80,8 +80,8 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     label: DIRECTOR_LABELS["creative-director"],
     shortDescription: "Holds the heart of the idea and refines the confirmed concept through conversation.",
     modelBehaviorNote: "Uses the small model for conversation and soft-memory notes, then the big model for hard-memory synthesis.",
-    introMessage: "",
-    outroMessage: "",
+    introMessage: "I’m stepping into the concept thread.",
+    outroMessage: "I’m stepping back out of the concept thread.",
     runtimeDefaults: {
       reasoningEffort: "xhigh",
       planningMode: "none",
@@ -105,8 +105,8 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     label: DIRECTOR_LABELS["rd-director"],
     shortDescription: "Turns Dan's confirmed concept into technical roadmap, future updates, and codebase-aware planning.",
     modelBehaviorNote: "Uses the small model for conversation and working notes, then the big model for roadmap and update synthesis.",
-    introMessage: "",
-    outroMessage: "",
+    introMessage: "I’m mapping the technical path now.",
+    outroMessage: "I’m stepping back out of the planning thread.",
     runtimeDefaults: {
       reasoningEffort: "xhigh",
       planningMode: "none",
@@ -129,9 +129,9 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     name: DIRECTOR_NAMES["programming-director"],
     label: DIRECTOR_LABELS["programming-director"],
     shortDescription: "Executes Todd-approved updates, reports the result, and returns to waiting.",
-    modelBehaviorNote: "Uses the big model only for planning, applying, and reporting code updates.",
-    introMessage: "",
-    outroMessage: "",
+    modelBehaviorNote: "Uses the selected provider plus Ping's project-level runtime defaults unless the current run overrides them.",
+    introMessage: "I'll look at the implementation...",
+    outroMessage: "I’m stepping back out of the code thread.",
     runtimeDefaults: {
       reasoningEffort: "high",
       planningMode: "auto",
@@ -155,8 +155,8 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     label: DIRECTOR_LABELS["validation-director"],
     shortDescription: "Defines the expected outcome, tests the current state, and compares the build against the intended goal.",
     modelBehaviorNote: "Uses the selected project provider and model defaults.",
-    introMessage: "",
-    outroMessage: "",
+    introMessage: "I’m stepping into validation now.",
+    outroMessage: "I’m stepping back out of validation.",
     runtimeDefaults: {
       reasoningEffort: "high",
       planningMode: "none",
@@ -202,8 +202,7 @@ export const SMALL_CLAUDE_MODEL: ClaudeModel = "sonnet";
 
 export const usesFixedDirectorRuntimePolicy = (directorId: DirectorId): boolean =>
   directorId === "creative-director"
-  || directorId === "rd-director"
-  || directorId === "programming-director";
+  || directorId === "rd-director";
 
 export const resolveDirectorModelTier = (
   directorId: DirectorId,
@@ -211,9 +210,6 @@ export const resolveDirectorModelTier = (
 ): DirectorModelTier | null => {
   if (directorId === "creative-director" || directorId === "rd-director") {
     return useCase === "conversation" ? "small" : "big";
-  }
-  if (directorId === "programming-director") {
-    return "big";
   }
   return null;
 };

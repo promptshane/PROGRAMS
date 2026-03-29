@@ -10,27 +10,14 @@ import {
   CODEX_DOWNLOAD_URL,
   GIT_DOWNLOAD_URL,
   EMPTY_RUNTIME,
-  createStarterFlowchart,
 } from "@main/defaults";
 import { ClaudeService } from "@main/services/claude-service";
 import { CodexService } from "@main/services/codex-service";
-import { GitHubService, type GitHubClientConfig } from "@main/services/github-service";
 import { GitService } from "@main/services/git-service";
 import { PlaywrightService } from "@main/services/playwright-service";
 import { ProjectStore } from "@main/services/project-store";
 import { RunnerService } from "@main/services/runner-service";
-import {
-  FLOWCHART_OUTPUT_CONTRACT,
-  FLOWCHART_PROMPT_RULES,
-  type FlowchartRepoHints,
-  collectFlowchartRepoHints,
-  flowchartGraphJsonSchema,
-  formatFlowchartRepoHints,
-  materializeFlowchartSnapshot,
-  nullableFlowchartGraphJsonSchema,
-  readFlowchartSnapshot,
-  writeFlowchartSnapshot,
-} from "@main/utils/flowchart";
+import { collectProjectRepoHints, formatProjectRepoHints, type ProjectRepoHints } from "@main/utils/project-hints";
 import { emitSettledAppUpdateStatus } from "@main/utils/app-update";
 import {
   createPendingApproval,
@@ -40,14 +27,14 @@ import {
 } from "@main/utils/approval-queue";
 import { getProviderPreflightError } from "@main/utils/provider-auth";
 import { parseEnvEntries, parseProjectOutlineReportResponse, serializeEnvEntries } from "@main/utils/project-outline";
-import { detectRuntimeConfig, deriveAttachedProjectName, deriveProjectDescription, slugifyRepositoryName } from "@main/utils/project";
-import { buildCatalogSkill, USER_TESTING_RUNNER_PLACEHOLDER } from "@main/utils/skill-library";
+import { detectRuntimeConfig, deriveAttachedProjectName, deriveProjectDescription } from "@main/utils/project";
 import {
   buildSlackApprovalDescriptor,
   buildSlackProviderAttemptPlan,
   canAutoRouteSlackDirector,
   buildSlackResponseContract,
   normalizeSlackDirectorMode,
+  resolveSlackDirectRoute,
   resolveSlackDirectorMode,
   validateSlackTurnParsedResponse,
 } from "@main/utils/slack-flow";
@@ -142,6 +129,10 @@ import type {
   AgentAcceptCascadeInput,
   AgentApplyCoreDetailsInput,
   AiProvider,
+  AutomationConstraints,
+  AutomationRunState,
+  AutomationStopReason,
+  AutomationTargetCandidate,
   AppUpdateStatus,
   AppEvent,
   ApprovePlanInput,
@@ -160,16 +151,26 @@ import type {
   DanMemory,
   DanRawMemory,
   DanHistoryLogEntry,
+  JeffMemory,
+  JeffOutcomeDecision,
+  JeffOutcomeEntry,
+  PongMemory,
+  PongValidationReport,
+  TaggedNote,
   EnvFileSnapshot,
   FeasibilityAssessment,
-  GenerateFlowchartResult,
   GenerateProjectOutlineReportInput,
-  GitHubAuthStatus,
   JeffExecutionReport,
   ModelCatalog,
   PingMemory,
+  PingExecutionReportSnapshot,
+  PingPlanSnapshot,
   PingRawReport,
   PingRawReportStatus,
+  PingRuntimeSnapshot,
+  PingRunSnapshot,
+  PingTaskSnapshot,
+  PingTaskSource,
   ProjectCategory,
   ProjectDirectorProgress,
   RdFocusMode,
@@ -179,11 +180,9 @@ import type {
   ProjectAttachInput,
   ProjectCreateInput,
   ProjectDetail,
-  ProjectEnableSyncInput,
   ProjectOutlineReport,
   RemoveVibeInput,
   RenameProjectInput,
-  RetrySyncInput,
   RouteUpdateToProgrammingInput,
   RunValidationInput,
   SetValidationFrequencyInput,
@@ -191,6 +190,7 @@ import type {
   SettingsUpdateInput,
   SetupCheck,
   SetupSnapshot,
+  StartPingDirectUpdateInput,
   StartPlanInput,
   UpdateProjectInput,
   UpdateRecord,
@@ -202,29 +202,20 @@ import type {
   VersionPlan,
   VersionUpdate,
   VibeAttachment,
-  GenerateFlowchartInput,
-  PlanningChatInput,
-  PlanningChatResponse,
-  PlanningChatMessage,
-  PlanningSession,
   PlanningMode,
-  SavePlannedUpdateInput,
-  PendingPlannedUpdate,
   WriteProjectEnvFileInput,
-  GitSyncInput,
-  GitSyncResult,
-  Skill,
-  InstallSkillCatalogInput,
   ListPendingApprovalsInput,
-  DownloadSkillInput,
-  ConvertSkillInput,
-  AttachSkillInput,
+  ListAutomationTargetsInput,
+  ListAutomationTargetsResponse,
+  PauseAutomationRunInput,
   PendingApproval,
   PendingApprovalKind,
   DiffStats,
   PlaywrightRunInput,
   PlaywrightRunResult,
   ClaudeConnectionTestResult,
+  ConfirmAutomationFailureRecoveryInput,
+  RequestAutomationFailureRecoveryInput,
   SlackChatInput,
   SlackChatResponse,
   SlackChatMessage,
@@ -236,8 +227,9 @@ import type {
   DirectorSettingsOverride,
   DirectorStateSnapshot,
   RefreshProjectInput,
-  CreatePillarSubAgentsInput,
   CorePillar,
+  StartAutomationRunInput,
+  StopAutomationRunInput,
   UpdatePendingApprovalStatusInput,
 } from "@shared/types";
 
@@ -257,6 +249,31 @@ function resolveDirectorRuntime(
     reasoningEffort: overrides.reasoningEffort ?? base.reasoningEffort,
     planningMode: overrides.planningMode ?? base.planningMode,
   };
+}
+
+function resolveDirectorRequestedModels(
+  session: AgentSession | null,
+  directorId: DirectorId,
+  model: StartPlanInput["model"],
+  claudeModel: StartPlanInput["claudeModel"],
+): { model: StartPlanInput["model"]; claudeModel: StartPlanInput["claudeModel"] } {
+  const overrides = session?.directorSettingsOverrides?.[directorId];
+  return {
+    model: overrides?.model ?? model,
+    claudeModel: overrides?.claudeModel ?? claudeModel,
+  };
+}
+
+function isPingStartupFailure(error: unknown): error is Error & {
+  startupFailed: true;
+  replacementThreadId?: string | null;
+} {
+  return Boolean(
+    error
+    && typeof error === "object"
+    && "startupFailed" in error
+    && (error as { startupFailed?: boolean }).startupFailed === true,
+  );
 }
 
 function hasToddVersionRoadmap(session: AgentSession): boolean {
@@ -324,7 +341,6 @@ const APP_UPDATE_SOURCE_FILES = [
 
 const SLACK_DIRECTOR_INTRO_DELAY_MS = 0;
 const SLACK_DIRECTOR_POST_INTRO_DELAY_MS = 0;
-
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 interface AppUpdateWorkspaceInfo {
   workspacePath: string | null;
@@ -348,25 +364,6 @@ interface AppUpdateEvaluation {
   statusKey: string | null;
   workspacePath: string | null;
 }
-
-const flowchartGenerationSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["flowchartGraph"],
-  properties: {
-    flowchartGraph: flowchartGraphJsonSchema,
-  },
-} as const;
-
-const planningChatSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["response", "flowchartGraph"],
-  properties: {
-    response: { type: "string" },
-    flowchartGraph: nullableFlowchartGraphJsonSchema,
-  },
-} as const;
 
 const agentChatSchema = {
   type: "object",
@@ -1001,10 +998,9 @@ const sortNestedPillarsByOrder = (pillars: CorePillar[]): CorePillar[] =>
 const archiveDanNotes = (
   session: AgentSession,
   reason: string,
-  notes: string[],
+  notes: TaggedNote[],
 ): void => {
-  const archivedNotes = mergeTrimmedNotes(notes);
-  if (archivedNotes.length === 0) {
+  if (notes.length === 0) {
     session.danInternalNotes = [];
     return;
   }
@@ -1012,7 +1008,7 @@ const archiveDanNotes = (
   session.danArchivedNotes = session.danArchivedNotes ?? [];
   const timestamp = new Date().toISOString();
   session.danArchivedNotes.push(
-    ...archivedNotes.map((note) => `[${timestamp} | ${reason}] ${note}`),
+    ...notes.map((note) => `[${timestamp} | ${reason}] ${note.content}`),
   );
   session.danInternalNotes = [];
 };
@@ -1315,6 +1311,40 @@ const buildToddCodebaseMapFromSession = (
   };
 };
 
+const migrateToTaggedNotes = (
+  notes: (string | TaggedNote)[],
+  defaultTag: TaggedNote["tag"] = "general",
+): TaggedNote[] =>
+  notes.map((note) =>
+    typeof note === "string"
+      ? { id: randomUUID(), content: note, tag: defaultTag, createdAt: new Date().toISOString() }
+      : note,
+  );
+
+const extractNoteContents = (notes: TaggedNote[]): string[] =>
+  notes.map((note) => note.content);
+
+const mergeTaggedNotes = (
+  existing: TaggedNote[],
+  newStrings: string[],
+  defaultTag: TaggedNote["tag"] = "general",
+): TaggedNote[] => {
+  const seen = new Set(existing.map((note) => note.content.trim()));
+  const result = [...existing];
+  for (const raw of newStrings) {
+    const trimmed = raw.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    result.push({
+      id: randomUUID(),
+      content: trimmed,
+      tag: defaultTag,
+      createdAt: new Date().toISOString(),
+    });
+  }
+  return result;
+};
+
 const syncAgentMemories = (session: AgentSession): AgentSession => {
   const confirmedConcept = buildConfirmedConceptFromSession(session);
   const hasDanMemory = Boolean(session.danMemory);
@@ -1323,7 +1353,7 @@ const syncAgentMemories = (session: AgentSession): AgentSession => {
   const danMemory: DanMemory = {
     confirmedConcept: confirmedConcept ?? session.danMemory?.confirmedConcept ?? null,
     draftConcept: hasDanMemory ? session.danMemory!.draftConcept : session.danDraftCoreDetails ?? null,
-    notes: hasDanMemory ? [...session.danMemory!.notes] : session.danInternalNotes ?? [],
+    notes: migrateToTaggedNotes(hasDanMemory ? [...session.danMemory!.notes] : (session.danInternalNotes ?? [])),
     sideNotes: hasDanMemory ? [...session.danMemory!.sideNotes] : session.danSideNotes ?? [],
     draftChangeSummary: hasDanMemory ? [...session.danMemory!.draftChangeSummary] : session.danDraftChangeSummary ?? [],
     draftStatus: hasDanMemory ? session.danMemory!.draftStatus : session.danDraftStatus ?? null,
@@ -1337,7 +1367,7 @@ const syncAgentMemories = (session: AgentSession): AgentSession => {
       ? [...(session.danMemory!.forgottenMemories ?? [])]
       : [...(session.danSideNotes ?? []), ...(session.deletedNotes ?? [])],
     creativeHistory: hasDanMemory ? [...(session.danMemory!.creativeHistory ?? [])] : [],
-    toddHandoffNotes: hasDanMemory ? [...(session.danMemory!.toddHandoffNotes ?? [])] : [],
+    toddHandoffNotes: migrateToTaggedNotes(hasDanMemory ? [...(session.danMemory!.toddHandoffNotes ?? [])] : [], "handoff-to-todd"),
   };
 
   const toddMemory: ToddMemory = {
@@ -1349,9 +1379,9 @@ const syncAgentMemories = (session: AgentSession): AgentSession => {
     previousUpdateLog: hasToddMemory ? [...session.toddMemory!.previousUpdateLog] : [],
     troubleLog: hasToddMemory ? [...session.toddMemory!.troubleLog] : [],
     codebaseIndexedMap: buildToddCodebaseMapFromSession(session, hasToddMemory ? session.toddMemory!.codebaseIndexedMap ?? null : null),
-    notes: hasToddMemory ? [...(session.toddMemory!.notes ?? [])] : [],
+    notes: migrateToTaggedNotes(hasToddMemory ? [...(session.toddMemory!.notes ?? [])] : []),
     pendingHandoff: hasToddMemory ? session.toddMemory!.pendingHandoff ?? null : null,
-    backupNotes: hasToddMemory ? [...(session.toddMemory!.backupNotes ?? [])] : [],
+    backupNotes: migrateToTaggedNotes(hasToddMemory ? [...(session.toddMemory!.backupNotes ?? [])] : [], "likely-backup"),
   };
 
   const pingMemory: PingMemory = {
@@ -1361,21 +1391,42 @@ const syncAgentMemories = (session: AgentSession): AgentSession => {
     codebaseMapSummary: hasPingMemory ? session.pingMemory!.codebaseMapSummary : toddMemory.codebaseIndexedMap?.summary ?? null,
     latestRawReport: hasPingMemory ? session.pingMemory!.latestRawReport : null,
     latestJeffReport: hasPingMemory ? session.pingMemory!.latestJeffReport : null,
+    currentRun: hasPingMemory ? session.pingMemory!.currentRun ?? null : null,
+  };
+
+  const hasJeffMemory = Boolean(session.jeffMemory);
+  const jeffMemory: JeffMemory = {
+    pendingReports: hasJeffMemory ? [...(session.jeffMemory!.pendingReports ?? [])] : [],
+    pendingValidations: hasJeffMemory ? [...(session.jeffMemory!.pendingValidations ?? [])] : [],
+    outcomeLog: hasJeffMemory ? [...(session.jeffMemory!.outcomeLog ?? [])] : [],
+    notes: migrateToTaggedNotes(hasJeffMemory ? [...(session.jeffMemory!.notes ?? [])] : []),
+    backupNotes: migrateToTaggedNotes(hasJeffMemory ? [...(session.jeffMemory!.backupNotes ?? [])] : [], "likely-backup"),
+  };
+
+  const hasPongMemory = Boolean(session.pongMemory);
+  const pongMemory: PongMemory = {
+    jeffInstruction: hasPongMemory ? session.pongMemory!.jeffInstruction ?? null : null,
+    previousValidationReports: hasPongMemory ? [...(session.pongMemory!.previousValidationReports ?? [])] : [],
+    latestValidationReport: hasPongMemory ? session.pongMemory!.latestValidationReport ?? null : null,
+    screenshotPaths: hasPongMemory ? [...(session.pongMemory!.screenshotPaths ?? [])] : [],
   };
 
   session.danMemory = danMemory;
   session.toddMemory = toddMemory;
   session.pingMemory = pingMemory;
+  session.jeffMemory = jeffMemory;
+  session.pongMemory = pongMemory;
   session.versions = [toddMemory.versionPlan.v1, toddMemory.versionPlan.v2, toddMemory.versionPlan.v3]
     .filter((version): version is VersionPlan => Boolean(version));
   session.versionUpdates = [...toddMemory.futureUpdatePlan];
-  session.danInternalNotes = [...danMemory.notes];
+  session.danInternalNotes = extractNoteContents(danMemory.notes);
   session.danSideNotes = [...danMemory.sideNotes];
   session.danDraftCoreDetails = danMemory.draftConcept;
   session.danDraftChangeSummary = [...danMemory.draftChangeSummary];
   session.danDraftStatus = danMemory.draftStatus;
   session.danArchivedNotes = [...danMemory.archivedNotes];
   session.deletedNotes = [...danMemory.deletedNotes];
+  session.automation = buildDefaultAutomationState(session.automation);
   return session;
 };
 
@@ -1403,6 +1454,82 @@ const buildPingRawReport = (input: {
   };
 };
 
+const buildPingPlanSnapshot = (draft: PlanDraft): PingPlanSnapshot | null => {
+  if (!draft.pingTaskSnapshot) {
+    return null;
+  }
+
+  return {
+    task: draft.pingTaskSnapshot,
+    provider: draft.provider,
+    model: draft.model,
+    claudeModel: draft.claudeModel,
+    reasoningEffort: draft.reasoningEffort,
+    planningMode: draft.planningMode,
+    threadId: draft.threadId,
+    turnId: draft.turnId,
+    status: draft.status,
+    thinkingStatus: draft.thinkingStatus,
+    planningStatus: draft.planningStatus,
+    buildingStatus: draft.buildingStatus,
+    verifyingStatus: draft.verifyingStatus,
+    explanation: draft.explanation,
+    steps: [...draft.steps],
+    summary: draft.summary,
+    impact: draft.impact,
+    contextPaths: [...draft.contextPaths],
+    lastUpdatedAt: draft.lastUpdatedAt,
+  };
+};
+
+const buildPingTaskSnapshot = (input: {
+  source: PingTaskSource;
+  projectId: string;
+  updateId?: string | null;
+  updateTitle?: string | null;
+  updateDescription?: string | null;
+  originalUserRequest: string;
+  toddExplanation?: string | null;
+  relevantPillarIds?: string[];
+  toddCodebaseMapSummary?: string | null;
+  coreDetailsContext?: string | null;
+  runtime: PingRuntimeSnapshot;
+  planPrompt?: string;
+}): PingTaskSnapshot => ({
+  source: input.source,
+  projectId: input.projectId,
+  updateId: input.updateId ?? null,
+  updateTitle: input.updateTitle ?? null,
+  updateDescription: input.updateDescription ?? null,
+  originalUserRequest: input.originalUserRequest,
+  toddExplanation: input.toddExplanation ?? null,
+  relevantPillarIds: input.relevantPillarIds ?? [],
+  toddCodebaseMapSummary: input.toddCodebaseMapSummary ?? null,
+  coreDetailsContext: input.coreDetailsContext ?? null,
+  runtime: input.runtime,
+  planPrompt: input.planPrompt ?? "",
+  createdAt: new Date().toISOString(),
+});
+
+const buildPingExecutionReportSnapshot = (input: {
+  task: PingTaskSnapshot;
+  plan: PingPlanSnapshot | null;
+  rawReport: PingRawReport;
+  historyUpdateId?: string | null;
+  commitSha?: string | null;
+  jeffReportId?: string | null;
+  jeffSummary?: string | null;
+}): PingExecutionReportSnapshot => ({
+  task: input.task,
+  plan: input.plan ?? null,
+  rawReport: input.rawReport,
+  historyUpdateId: input.historyUpdateId ?? null,
+  commitSha: input.commitSha ?? null,
+  jeffReportId: input.jeffReportId ?? null,
+  jeffSummary: input.jeffSummary ?? null,
+  createdAt: new Date().toISOString(),
+});
+
 const buildJeffExecutionReport = (input: {
   rawReport: PingRawReport;
   title: string;
@@ -1410,9 +1537,13 @@ const buildJeffExecutionReport = (input: {
   outcome: string;
   toddFollowUpNeeded: boolean;
   toddFollowUpReason?: string | null;
+  historyUpdateId?: string | null;
+  commitSha?: string | null;
 }): JeffExecutionReport => ({
   id: randomUUID(),
   updateId: input.rawReport.updateId,
+  historyUpdateId: input.historyUpdateId ?? null,
+  commitSha: input.commitSha ?? null,
   title: input.title,
   summary: input.summary,
   outcome: input.outcome,
@@ -1421,6 +1552,227 @@ const buildJeffExecutionReport = (input: {
   rawReport: input.rawReport,
   createdAt: new Date().toISOString(),
 });
+
+const buildDefaultAutomationState = (
+  automation: Partial<AutomationRunState> = {},
+): AutomationRunState => ({
+  status: automation.status ?? "idle",
+  selectedTargetUpdateId: automation.selectedTargetUpdateId ?? null,
+  selectedTargetVersionId: automation.selectedTargetVersionId ?? null,
+  inScopeUpdateIds: automation.inScopeUpdateIds ?? [],
+  constraints: {
+    allowedHours: automation.constraints?.allowedHours ?? null,
+    codexMaxUsedPercent: typeof automation.constraints?.codexMaxUsedPercent === "number"
+      ? automation.constraints.codexMaxUsedPercent
+      : null,
+    claudeMaxUsedPercent: typeof automation.constraints?.claudeMaxUsedPercent === "number"
+      ? automation.constraints.claudeMaxUsedPercent
+      : null,
+  },
+  stopReason: automation.stopReason ?? null,
+  stopSummary: automation.stopSummary ?? null,
+  currentStep: automation.currentStep ?? "idle",
+  startedAt: automation.startedAt ?? null,
+  lastResumedAt: automation.lastResumedAt ?? null,
+  updatedAt: automation.updatedAt ?? null,
+  completedAt: automation.completedAt ?? null,
+  resumeRequired: automation.resumeRequired ?? false,
+  nextUpdateId: automation.nextUpdateId ?? null,
+  lastSuccessfulUpdateId: automation.lastSuccessfulUpdateId ?? null,
+  lastSuccessfulHistoryUpdateId: automation.lastSuccessfulHistoryUpdateId ?? null,
+  pendingRevertReportId: automation.pendingRevertReportId ?? null,
+  pendingRevertHistoryUpdateId: automation.pendingRevertHistoryUpdateId ?? null,
+  pendingRevertCommitSha: automation.pendingRevertCommitSha ?? null,
+});
+
+const AUTOMATION_VERSION_UNASSIGNED = "__unassigned__";
+const AUTOMATION_POLL_INTERVAL_MS = 1500;
+
+const collectToddRoadmapVersions = (session: AgentSession): VersionPlan[] => ([
+  session.toddMemory.versionPlan.v1,
+  session.toddMemory.versionPlan.v2,
+  session.toddMemory.versionPlan.v3,
+  ...session.versions,
+])
+  .filter((version): version is VersionPlan => Boolean(version))
+  .filter((version, index, array) => array.findIndex((candidate) => candidate.id === version.id) === index)
+  .sort((left, right) => left.order - right.order);
+
+const findToddDraftUpdateApproval = (session: AgentSession): PendingApproval | null =>
+  (session.pendingApprovals ?? []).find((approval) => {
+    const payload = approval.draftPayload ?? {};
+    return approval.requestedByDirectorId === "rd-director"
+      && approval.kind === "store-data"
+      && payload.action === "applyStoredData"
+      && payload.dataType === "versionUpdates"
+      && Array.isArray(payload.updates);
+  }) ?? null;
+
+const resolveToddPlanSource = (session: AgentSession): {
+  updates: VersionUpdate[];
+  roadmapVersions: VersionPlan[];
+  draft: boolean;
+  draftApprovalId: string | null;
+  source: ListAutomationTargetsResponse["source"];
+} => {
+  const roadmapVersions = collectToddRoadmapVersions(session);
+  const confirmedUpdates = normalizeFutureUpdatePlan(session.toddMemory.futureUpdatePlan ?? []);
+  if (confirmedUpdates.length > 0) {
+    return {
+      updates: confirmedUpdates,
+      roadmapVersions,
+      draft: false,
+      draftApprovalId: null,
+      source: "confirmed",
+    };
+  }
+
+  const draftApproval = findToddDraftUpdateApproval(session);
+  if (!draftApproval) {
+    return {
+      updates: [],
+      roadmapVersions,
+      draft: false,
+      draftApprovalId: null,
+      source: "none",
+    };
+  }
+
+  return {
+    updates: normalizeFutureUpdatePlan((draftApproval.draftPayload?.updates as VersionUpdate[]) ?? []),
+    roadmapVersions,
+    draft: true,
+    draftApprovalId: draftApproval.id,
+    source: "draft",
+  };
+};
+
+const getAutomationVersionKey = (versionId: string | null): string =>
+  versionId && versionId.trim().length > 0 ? versionId : AUTOMATION_VERSION_UNASSIGNED;
+
+const compareAutomationUpdates = (
+  left: VersionUpdate,
+  right: VersionUpdate,
+  versions: VersionPlan[],
+): number => {
+  const leftVersionIndex = versions.findIndex((version) => version.id === left.versionId);
+  const rightVersionIndex = versions.findIndex((version) => version.id === right.versionId);
+  const normalizedLeftVersionIndex = leftVersionIndex >= 0 ? leftVersionIndex : Number.MAX_SAFE_INTEGER;
+  const normalizedRightVersionIndex = rightVersionIndex >= 0 ? rightVersionIndex : Number.MAX_SAFE_INTEGER;
+  if (normalizedLeftVersionIndex !== normalizedRightVersionIndex) {
+    return normalizedLeftVersionIndex - normalizedRightVersionIndex;
+  }
+  if (left.order !== right.order) {
+    return left.order - right.order;
+  }
+  return left.title.localeCompare(right.title);
+};
+
+const resolveAutomationCurrentVersionKey = (
+  updates: VersionUpdate[],
+  versions: VersionPlan[],
+): string | null => {
+  const active = updates
+    .filter((update) => update.status === "pending" || update.status === "in_progress")
+    .slice()
+    .sort((left, right) => compareAutomationUpdates(left, right, versions))[0] ?? null;
+  return active ? getAutomationVersionKey(active.versionId ?? null) : null;
+};
+
+const listAutomationTargetCandidates = (session: AgentSession): ListAutomationTargetsResponse => {
+  syncAgentMemories(session);
+  const plan = resolveToddPlanSource(session);
+  const currentVersionKey = resolveAutomationCurrentVersionKey(plan.updates, plan.roadmapVersions);
+  const currentVersion = currentVersionKey && currentVersionKey !== AUTOMATION_VERSION_UNASSIGNED
+    ? plan.roadmapVersions.find((version) => version.id === currentVersionKey) ?? null
+    : null;
+  const versionUpdates = currentVersionKey
+    ? plan.updates
+      .filter((update) => getAutomationVersionKey(update.versionId ?? null) === currentVersionKey)
+      .slice()
+      .sort((left, right) => compareAutomationUpdates(left, right, plan.roadmapVersions))
+    : [];
+
+  const pendingPath = versionUpdates.filter((update) => update.status !== "completed");
+  const candidates: AutomationTargetCandidate[] = versionUpdates
+    .filter((update) => update.status === "pending" || update.status === "in_progress")
+    .map((update) => ({
+      updateId: update.id,
+      versionId: update.versionId || null,
+      versionLabel: currentVersion?.label ?? "Unassigned",
+      title: update.title,
+      description: update.description,
+      order: update.order,
+      status: update.status,
+      available: !plan.draft,
+      draft: plan.draft,
+      blockedReason: plan.draft ? "Confirm Todd's current update plan before starting automation." : null,
+      pathUpdateIds: pendingPath
+        .filter((candidate) => candidate.order <= update.order)
+        .map((candidate) => candidate.id),
+    }));
+
+  return {
+    source: plan.source,
+    currentVersionId: currentVersion?.id ?? (currentVersionKey === AUTOMATION_VERSION_UNASSIGNED ? null : null),
+    currentVersionLabel: currentVersion?.label ?? (currentVersionKey === AUTOMATION_VERSION_UNASSIGNED ? "Unassigned" : null),
+    draftApprovalId: plan.draftApprovalId,
+    candidates,
+  };
+};
+
+const resolveAutomationTarget = (
+  session: AgentSession,
+  targetUpdateId: string,
+): { candidate: AutomationTargetCandidate | null; draftApprovalId: string | null } => {
+  const listing = listAutomationTargetCandidates(session);
+  return {
+    candidate: listing.candidates.find((candidate) => candidate.updateId === targetUpdateId) ?? null,
+    draftApprovalId: listing.draftApprovalId,
+  };
+};
+
+const resolveUsagePercent = (usage: UsageSnapshot["codex"] | UsageSnapshot["claude"]): number | null => {
+  if (usage.status !== "ready") {
+    return null;
+  }
+  const values = usage.windows
+    .map((window) => window.usedPercent)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  return values.length > 0 ? Math.max(...values) : null;
+};
+
+const isWithinAutomationHours = (allowedHours: AutomationConstraints["allowedHours"]): boolean => {
+  if (!allowedHours) {
+    return true;
+  }
+
+  const start = Math.max(0, Math.min(23, allowedHours.startHour));
+  const end = Math.max(0, Math.min(23, allowedHours.endHour));
+  const currentHour = new Date().getHours();
+  if (start === end) {
+    return true;
+  }
+  if (start < end) {
+    return currentHour >= start && currentHour < end;
+  }
+  return currentHour >= start || currentHour < end;
+};
+
+const shouldAutomationValidateUpdate = (session: AgentSession, update: VersionUpdate): boolean => {
+  if (session.validationFrequency === "every-update") {
+    return true;
+  }
+  const text = `${update.title} ${update.description}`.toLowerCase();
+  return /(ui|visual|screen|page|layout|style|css|component|frontend|render)/.test(text);
+};
+
+const resolveAutomationValidationType = (update: VersionUpdate): RunValidationInput["validationType"] => {
+  const text = `${update.title} ${update.description}`.toLowerCase();
+  return /(ui|visual|screen|page|layout|style|css|component|frontend|render)/.test(text)
+    ? "visual"
+    : "functional";
+};
 
 const clipMemoryText = (value: string, maxLength: number): string => {
   const normalized = value.trim().replace(/\s+/g, " ");
@@ -1492,7 +1844,7 @@ const archiveToddPendingHandoff = (
     `[${timestamp} | ${reason}] Handoff context: ${pendingHandoff.context}`,
     ...pendingHandoff.rawInputs.map((input) => `[${timestamp} | ${reason}] Handoff raw: ${input}`),
   ];
-  session.toddMemory.backupNotes = mergeTrimmedNotes(session.toddMemory.backupNotes ?? [], archivedNotes);
+  session.toddMemory.backupNotes = mergeTaggedNotes(session.toddMemory.backupNotes ?? [], archivedNotes, "likely-backup");
 };
 
 const consumeToddPendingHandoff = (
@@ -1834,13 +2186,13 @@ function buildDanSharedPrompt(args: {
   const { projectName, session, focusMode, surface, conversationSection, currentMessage } = args;
   const hardMemorySection = formatDanHardMemory(session);
   const draftContext = formatDanDraftCoreDetails(session.danMemory?.draftConcept ?? session.danDraftCoreDetails);
-  const softNotes = session.danMemory?.notes ?? session.danInternalNotes ?? [];
+  const softNotes = session.danMemory?.notes ?? [];
   const softNotesSection = softNotes.length > 0
-    ? `Soft Memory (Session Notes):\n${softNotes.map((note) => `- ${note}`).join("\n")}`
+    ? `Soft Memory (Session Notes):\n${softNotes.map((note) => `- ${typeof note === "string" ? note : note.content}`).join("\n")}`
     : "Soft Memory (Session Notes):\n- None yet.";
   const toddHandoffNotes = session.danMemory?.toddHandoffNotes ?? [];
   const toddHandoffSection = toddHandoffNotes.length > 0
-    ? `\nTodd-Bound Handoff Notes (planning items to pass to Todd):\n${toddHandoffNotes.map((note) => `- ${note}`).join("\n")}`
+    ? `\nTodd-Bound Handoff Notes (planning items to pass to Todd):\n${toddHandoffNotes.map((note) => `- ${typeof note === "string" ? note : note.content}`).join("\n")}`
     : "";
   const backupSection = formatDanBackupMemoryForRecall(currentMessage, session);
   const surfaceHint = surface === "slack"
@@ -2141,11 +2493,9 @@ Your response must be ONLY strict JSON (no markdown fences):
 const buildProjectOutlinePrompt = ({
   project,
   repoHints,
-  currentFlowchart,
 }: {
   project: Project;
-  repoHints: FlowchartRepoHints;
-  currentFlowchart: string;
+  repoHints: ProjectRepoHints;
 }): string => `
 You are analyzing a software project for a non-technical dashboard view.
 
@@ -2154,10 +2504,7 @@ Current description: ${project.description}
 Current runtime command: ${project.runtimeConfig.runCommand ?? "Unknown"}
 Current open URL: ${project.runtimeConfig.openUrl ?? "Unknown"}
 
-Current system flowchart:
-${currentFlowchart}
-
-${formatFlowchartRepoHints(repoHints)}
+${formatProjectRepoHints(repoHints)}
 
 Instructions:
 - Explore the codebase in read-only mode.
@@ -2296,7 +2643,7 @@ ${buildSlackResponseContract(directorId, mode)}`;
     const toddCoreContext = formatScopedCoreDetails(session, { confirmedOnly: true, includeCurrent: true, includeIdeal: true });
     const toddPendingHandoff = formatToddPendingHandoffPrompt(session.toddMemory?.pendingHandoff ?? null);
     const toddNotesSection = (session.toddMemory?.notes ?? []).length > 0
-      ? `\nPlanning Notes (working assumptions):\n${session.toddMemory!.notes.map((note) => `- ${note}`).join("\n")}`
+      ? `\nPlanning Notes (working assumptions):\n${session.toddMemory!.notes.map((note) => `- ${typeof note === "string" ? note : note.content}`).join("\n")}`
       : "";
     return `You are Todd, the R&D Director for "${projectName}".
 You are in a team Slack channel. Your role:
@@ -2536,24 +2883,25 @@ function buildReworkedSlackDirectorPrompt(
 
     return `You are Jeff, the Project Manager for "${projectName}".
 You are in a team Slack channel with the user and all directors.
-You are the central coordinator.${presenceNote}
+You are the central coordinator and orchestrator.${presenceNote}
 Your role:
-- Handle general user conversation about the project
-- Route specialist work only to Dan, Todd, or Ping in this Slack flow
+- You are the team lead — your job is to route work to the right people, not to do their work yourself
+- When the user's message is clearly for one specialist, be brief: acknowledge and hand off immediately (e.g. "I'll bring Dan in for this.")
+- When the message touches multiple domains, outline the plan before handing off to the first director (e.g. "This touches creative and technical — I'll bring Dan in first for the concept side, then we can loop Todd in for the architecture.")
+- Do not repeat or analyze what the user said if a specialist should handle it — just route
 - Route creative concept shaping and core-detail clarification to "creative-director" (Dan)
 - Route codebase scans, architecture assessment, and repo review to "rd-director" (Todd) as codebase analysis
 - Route roadmap, milestone, version, or V1/V2/V3 planning to "rd-director" (Todd) as version planning
 - Route update sequencing, grouped implementation plans, and rollout-step planning to "rd-director" (Todd) as update planning
 - Route explicit external research, current web information, competitor checks, market checks, or latest-documentation checks to "rd-director" (Todd) as internet research
-- Route implementation-focused conversation to "programming-director" (Ping) only when the user explicitly wants Ping involved or confirmed planning context already exists
-- If you can handle the message yourself, set handoffTo to null
+- Route implementation-focused work to "programming-director" (Ping) when the user wants code applied or confirmed planning context already exists
+- If you can handle the message yourself (general questions, status checks, confirmations), set handoffTo to null
 - If the user asks "anything for me to confirm?" or similar, present unresolved assumptions, assumed state, and pending confirmations clearly
 - Only confirmed information should move downstream for actual planning/building/testing
 - Pong stays manual for now; do not hand off automatically to the validation director in this pass
-- Be conversational and direct
+- Be conversational and direct — talk like a real project lead in Slack, not a robot
 - When handing work to Todd, make the handoffReason explicit enough that PROGRAMS can tell whether this is codebase analysis, version planning, update planning, or internet research
 - If the user asks about prior creative iterations or what changed previously, reference Dan's creative update history below
-- When you finish your current function, end your response with a brief completion line: "[Done: <1-sentence summary of what you accomplished and any next step>]"
 
 Valid director IDs for handoff (use the exact ID string, not the name):
 - "creative-director" (Dan)
@@ -2772,6 +3120,9 @@ Return ONLY strict JSON with exactly these fields:
     const taskSection = pongContext
       ? `\nYour current task context:\n- Task: ${pongContext.currentTask ?? "none"}\n- Todd's explanation of what this update should achieve: ${pongContext.toddUpdateExplanation ?? "none"}\n${pongContext.lastResult ? `- Last result: ${pongContext.lastResult}` : ""}${pongContext.lastFailureReason ? `\n- Last failure: ${pongContext.lastFailureReason}` : ""}\n`
       : "";
+    const jeffInstructionSection = session.pongMemory?.jeffInstruction
+      ? `\nJeff's validation instruction:\n- ${session.pongMemory.jeffInstruction}\n`
+      : "";
     const validationSection = session.validationResults.length > 0
       ? `\nPrior validation results:\n${session.validationResults.slice(-5).map((result) => `- ${result.validationType}: ${result.passed ? "PASS" : "FAIL"} — ${result.summary}`).join("\n")}\n`
       : "";
@@ -2791,7 +3142,7 @@ Valid director IDs for handoff (use the exact ID string, not the name):
 - "programming-director" (Ping)
 
 ${pongCoreContext}
-${taskSection}${validationSection}
+${taskSection}${jeffInstructionSection}${validationSection}
 ${stateContext}
 ${conversationSection}
 ${buildSlackResponseContract(directorId, mode)}`;
@@ -2875,7 +3226,7 @@ Respond as JSON: {"response": string, "routeTo": string|null, "routeReason": str
     case "rd-director": {
       const toddPendingHandoffDm = formatToddPendingHandoffPrompt(session.toddMemory?.pendingHandoff ?? null);
       const toddNotesSectionDm = (session.toddMemory?.notes ?? []).length > 0
-        ? `\nPlanning Notes (working assumptions):\n${session.toddMemory!.notes.map((note) => `- ${note}`).join("\n")}`
+        ? `\nPlanning Notes (working assumptions):\n${session.toddMemory!.notes.map((note) => `- ${typeof note === "string" ? note : note.content}`).join("\n")}`
         : "";
       if (focusMode === "research") {
         const feasContext = session.feasibilityAssessments.length > 0
@@ -2996,6 +3347,9 @@ Respond as JSON:
       const pongTaskSection = pongCtx
         ? `\nYour current task context:\n- Task: ${pongCtx.currentTask ?? "none"}\n- Todd's explanation of what this update should achieve: ${pongCtx.toddUpdateExplanation ?? "none"}\n${pongCtx.lastResult ? `- Last result: ${pongCtx.lastResult}` : ""}${pongCtx.lastFailureReason ? `\n- Last failure: ${pongCtx.lastFailureReason}` : ""}\n`
         : "";
+      const jeffInstructionSection = session.pongMemory?.jeffInstruction
+        ? `\nJeff's validation instruction:\n- ${session.pongMemory.jeffInstruction}\n`
+        : "";
 
       if (focusMode === "identify-goal") {
         return `You are Pong, the Validation Director for "${projectName}".
@@ -3007,7 +3361,7 @@ You are in Identify Goal mode — reviewing confirmed core-details and vibes for
 - Make "response" match the Mandarin line shown first in chat
 
 ${pongScopedContext}
-${pongTaskSection}
+${pongTaskSection}${jeffInstructionSection}
 ${session.corePillars.length > 0 ? `Pillars with vibes:\n${session.corePillars.map((p) => {
   const vibeInfo = p.vibes?.length ? ` (${p.vibes.length} vibes)` : "";
   return `- ${p.name} [${p.pillarType}]${vibeInfo}${p.description ? `: ${p.description}` : ""}`;
@@ -3032,7 +3386,7 @@ Validation results so far: ${session.validationResults.length > 0
   : "None yet"}
 
 ${pongScopedContext}
-${pongTaskSection}
+${pongTaskSection}${jeffInstructionSection}
 ${conversationSection}
 Include validationPassed, validationSummary, and validationDetails when reporting results. Set to null if just discussing.
 
@@ -3049,7 +3403,7 @@ You are in Compare mode — comparing the current-state to the confirmed expecte
 - Make "response" match the Mandarin line shown first in chat
 
 ${pongScopedContext}
-${pongTaskSection}
+${pongTaskSection}${jeffInstructionSection}
 Validation results so far: ${session.validationResults.length > 0
   ? session.validationResults.map((r) => `${r.validationType}: ${r.passed ? "PASS" : "FAIL"} - ${r.summary}`).join("; ")
   : "None yet"}
@@ -3097,6 +3451,109 @@ function resolveNextProgrammingUpdate(
   return session.toddMemory.futureUpdatePlan.find((update) => update.id === requestedUpdateId) ?? null;
 }
 
+function ensureDirectorConversationRecord(
+  session: AgentSession,
+  directorId: DirectorId,
+  focusMode: DirectorFocusMode | null = null,
+): DirectorConversation {
+  if (!session.directorConversations[directorId]) {
+    session.directorConversations[directorId] = {
+      directorId,
+      focusMode,
+      messages: [],
+      lastActiveAt: null,
+    };
+  }
+
+  const conversation = session.directorConversations[directorId];
+  if (focusMode !== null) {
+    conversation.focusMode = focusMode;
+  }
+  return conversation;
+}
+
+function resolveLatestHumanRequest(
+  session: AgentSession,
+  fallback: string,
+): string {
+  const agentMessage = [...session.unifiedMessages]
+    .reverse()
+    .find((message) => message.role === "user" && typeof message.content === "string" && message.content.trim().length > 0);
+  if (agentMessage?.content?.trim()) {
+    return agentMessage.content.trim();
+  }
+
+  const slackMessage = [...session.slackMessages]
+    .reverse()
+    .find((message) => message.role === "user" && typeof message.content === "string" && message.content.trim().length > 0);
+  return slackMessage?.content?.trim() || fallback;
+}
+
+function tokenizeToddOverlap(text: string): string[] {
+  const ignored = new Set([
+    "this",
+    "that",
+    "with",
+    "from",
+    "into",
+    "have",
+    "will",
+    "should",
+    "about",
+    "after",
+    "before",
+    "where",
+    "there",
+    "their",
+    "your",
+    "update",
+    "build",
+    "make",
+    "need",
+  ]);
+
+  return text
+    .toLowerCase()
+    .split(/[^a-z0-9]+/g)
+    .filter((token) => token.length >= 4 && !ignored.has(token));
+}
+
+function findToddOverlapForDirectPingRun(
+  session: AgentSession,
+  task: PingTaskSnapshot,
+  rawReport: PingRawReport,
+): VersionUpdate | null {
+  const directTokens = new Set(
+    tokenizeToddOverlap([
+      task.originalUserRequest,
+      task.updateTitle ?? "",
+      task.updateDescription ?? "",
+      rawReport.summary,
+    ].join(" ")),
+  );
+  if (directTokens.size === 0) {
+    return null;
+  }
+
+  let bestMatch: VersionUpdate | null = null;
+  let bestScore = 0;
+  for (const candidate of session.toddMemory.futureUpdatePlan) {
+    const candidateTokens = new Set(tokenizeToddOverlap(`${candidate.title} ${candidate.description}`));
+    let score = 0;
+    for (const token of candidateTokens) {
+      if (directTokens.has(token)) {
+        score += 1;
+      }
+    }
+    if (score > bestScore) {
+      bestScore = score;
+      bestMatch = candidate;
+    }
+  }
+
+  return bestScore >= 2 ? bestMatch : null;
+}
+
 export class ProgramsBackend {
   private readonly launchedAppPath = this.currentAppBundlePath();
   private readonly launchedAppUpdatedAtPromise = this.launchedAppPath
@@ -3109,11 +3566,11 @@ export class ProgramsBackend {
   private appUpdateInstalling = false;
   private lastAppUpdateStatusJson: string | null = null;
   private initializationPromise: Promise<void> | null = null;
+  private readonly automationJobs = new Set<string>();
 
   constructor(
     private readonly store: ProjectStore,
     private readonly git: GitService,
-    private readonly github: GitHubService,
     private readonly runner: RunnerService,
     private readonly playwright: PlaywrightService,
     private readonly codex: CodexService,
@@ -3130,14 +3587,11 @@ export class ProgramsBackend {
     );
     const runtimes = this.runner.getRuntimeMap(projects.map((project) => project.id));
     const modelCatalog = await this.readModelCatalog(settings);
-    const skills = this.store.listSkills();
-    const githubConfig = this.resolveGitHubClientConfig(settings);
     const auth = {
       codex: await this.codex.getAuthStatus(settings),
       claude: await this.claude.getAuthStatus(settings),
-      github: await this.github.getStatus(githubConfig),
     };
-    const setup = await this.buildSetupSnapshot(settings, auth.codex, auth.claude, auth.github);
+    const setup = await this.buildSetupSnapshot(settings, auth.codex, auth.claude);
     const appUpdate = await this.readAppUpdateStatus();
 
     return {
@@ -3148,7 +3602,6 @@ export class ProgramsBackend {
       setup,
       appUpdate,
       modelCatalog,
-      skills,
     };
   }
 
@@ -3248,14 +3701,11 @@ export class ProgramsBackend {
     const refreshedProject = await this.refreshProjectRuntimeConfig(await this.requireProject(projectId));
     const { project, runtime } = await this.syncProjectRuntimeState(refreshedProject);
     const updates = await this.store.readHistory(projectId);
-    const flowchartSnapshot = await this.readFlowchart(project);
     const activePlan = this.codex.getActivePlan(projectId) ?? this.claude.getActivePlan(projectId);
 
     return {
       project,
       updates,
-      flowchart: flowchartSnapshot.flowchart,
-      flowchartGraph: flowchartSnapshot.flowchartGraph,
       runtime,
       activePlan,
     };
@@ -3264,12 +3714,6 @@ export class ProgramsBackend {
   async readHistory(projectId: string): Promise<UpdateRecord[]> {
     await this.ensureInitialized();
     return this.store.readHistory(projectId);
-  }
-
-  async readPlanView(projectId: string): Promise<string> {
-    await this.ensureInitialized();
-    const project = await this.requireProject(projectId);
-    return (await this.readFlowchart(project)).flowchart;
   }
 
   async readOutlineReport(projectId: string): Promise<ProjectOutlineReport | null> {
@@ -3287,17 +3731,15 @@ export class ProgramsBackend {
     const model = provider === "claude"
       ? input.claudeModel ?? settings.advancedDefaults.claudeModel
       : input.model ?? settings.advancedDefaults.model;
-    const repoHints = await collectFlowchartRepoHints(project.localPath);
-    const currentFlowchart = await this.readFlowchart(project);
+    const repoHints = await collectProjectRepoHints(project.localPath);
     const prompt = buildProjectOutlinePrompt({
       project,
       repoHints,
-      currentFlowchart: currentFlowchart.flowchart,
     });
     const rawResult = await this.aiService(provider).runOneShot(
       project,
       settings,
-      await this.appendProjectSkillInstructions(prompt, project, provider, settings),
+      prompt,
       model,
     );
     const report = parseProjectOutlineReportResponse(project.id, rawResult);
@@ -3362,242 +3804,6 @@ export class ProgramsBackend {
     };
   }
 
-  async generateFlowchart(input: GenerateFlowchartInput): Promise<GenerateFlowchartResult> {
-    await this.ensureInitialized();
-    const settings = await this.store.readSettings();
-    await this.requireProviderReady(input.provider, settings);
-    const project = await this.requireProject(input.projectId);
-    const repoHints = await collectFlowchartRepoHints(project.localPath);
-
-    const prompt = `
-You are analyzing a codebase to produce a structured high-level user-flow diagram.
-
-Project: "${project.name}"
-Current description: ${project.description}
-
-${formatFlowchartRepoHints(repoHints)}
-
-Instructions:
-- Explore the codebase at the project root.
-- Do not change any files.
-- Model the user-visible experience and major system flow, not line-level code.
-- Keep the graph compact, but do not merge major screens just to reduce node count.
-${FLOWCHART_PROMPT_RULES}
-${FLOWCHART_OUTPUT_CONTRACT}
-`.trim();
-
-    const service = this.aiService(input.provider);
-    const model = input.provider === "claude" ? input.claudeModel : input.model;
-
-    const rawResult = await service.runOneShot(
-      project,
-      settings,
-      await this.appendProjectSkillInstructions(prompt, project, input.provider, settings),
-      model,
-      flowchartGenerationSchema,
-    );
-    const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
-    const snapshot = materializeFlowchartSnapshot(parsed.flowchartGraph);
-
-    await this.writeFlowchart(project, snapshot);
-    project.updatedAt = new Date().toISOString();
-    await this.store.updateProject(project);
-    this.emit({ type: "project.updated", project });
-
-    return snapshot;
-  }
-
-  async planningChat(input: PlanningChatInput): Promise<PlanningChatResponse> {
-    await this.ensureInitialized();
-    const settings = await this.store.readSettings();
-    await this.requireProviderReady(input.provider, settings);
-    const project = await this.requireProject(input.projectId);
-
-    let session: PlanningSession;
-    if (input.sessionId) {
-      const existing = await this.store.getPlanningSession(input.sessionId);
-      if (!existing) throw new Error("Planning session not found.");
-      session = existing;
-    } else {
-      const currentFlowchart = await this.readFlowchart(project);
-      session = {
-        id: randomUUID(),
-        projectId: input.projectId,
-        provider: input.provider,
-        messages: [],
-        currentFlowchart: currentFlowchart.flowchart,
-        currentFlowchartGraph: currentFlowchart.flowchartGraph,
-        previousFlowchart: currentFlowchart.flowchart,
-        previousFlowchartGraph: currentFlowchart.flowchartGraph,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
-    }
-
-    const userMessage: PlanningChatMessage = {
-      id: randomUUID(),
-      role: "user",
-      content: input.message,
-      flowchart: null,
-      flowchartGraph: null,
-      createdAt: new Date().toISOString(),
-    };
-    session.messages.push(userMessage);
-
-    const recentMessages = session.messages.slice(-10);
-    const conversationContext = recentMessages
-      .map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.content}`)
-      .join("\n\n");
-    const repoHints = await collectFlowchartRepoHints(project.localPath);
-
-    const prompt = `
-You are a planning assistant helping a non-technical user update their software project "${project.name}".
-
-Current system flowchart (Mermaid format):
-${session.currentFlowchart}
-
-Current system flowchart (structured graph JSON):
-${session.currentFlowchartGraph ? JSON.stringify(session.currentFlowchartGraph, null, 2) : "null"}
-
-${formatFlowchartRepoHints(repoHints)}
-
-Conversation so far:
-${conversationContext}
-
-Instructions:
-- Respond concisely and pragmatically about what you would change.
-- If the user's request is clear enough, also produce an updated structured flowchart graph.
-- Use the structured flowchart rules below when you update the graph.
-${FLOWCHART_PROMPT_RULES}
-- Your final answer must be ONLY strict JSON (no markdown fences):
-  {"response": string, "flowchartGraph": FlowchartGraph | null}
-- If no flowchart update is needed yet, set flowchartGraph to null.
-`.trim();
-
-    const service = this.aiService(input.provider);
-    const model = input.provider === "claude" ? input.claudeModel : input.model;
-
-    const rawResult = await service.runOneShot(
-      project,
-      settings,
-      await this.appendProjectSkillInstructions(prompt, project, input.provider, settings),
-      model,
-      planningChatSchema,
-    );
-    const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
-    const nextSnapshot = parsed.flowchartGraph ? materializeFlowchartSnapshot(parsed.flowchartGraph) : null;
-
-    const assistantMessage: PlanningChatMessage = {
-      id: randomUUID(),
-      role: "assistant",
-      content: parsed.response,
-      flowchart: nextSnapshot?.flowchart ?? null,
-      flowchartGraph: nextSnapshot?.flowchartGraph ?? null,
-      createdAt: new Date().toISOString(),
-    };
-    session.messages.push(assistantMessage);
-
-    if (nextSnapshot) {
-      session.currentFlowchart = nextSnapshot.flowchart;
-      session.currentFlowchartGraph = nextSnapshot.flowchartGraph;
-    }
-
-    session.updatedAt = new Date().toISOString();
-    await this.store.savePlanningSession(session);
-
-    return {
-      sessionId: session.id,
-      message: assistantMessage,
-      updatedFlowchart: nextSnapshot?.flowchart ?? null,
-      updatedFlowchartGraph: nextSnapshot?.flowchartGraph ?? null,
-    };
-  }
-
-  async savePlannedUpdate(input: SavePlannedUpdateInput): Promise<PendingPlannedUpdate> {
-    await this.ensureInitialized();
-    const pending: PendingPlannedUpdate = {
-      id: randomUUID(),
-      projectId: input.projectId,
-      flowchart: input.flowchart,
-      flowchartGraph: input.flowchartGraph,
-      previousFlowchart: input.previousFlowchart,
-      previousFlowchartGraph: input.previousFlowchartGraph,
-      description: input.description,
-      createdAt: new Date().toISOString(),
-    };
-
-    await this.store.savePendingUpdate(pending);
-    this.emit({ type: "project.pendingUpdate", projectId: input.projectId, pending });
-    return pending;
-  }
-
-  async getPendingUpdate(projectId: string): Promise<PendingPlannedUpdate | null> {
-    await this.ensureInitialized();
-    return this.store.getPendingUpdate(projectId);
-  }
-
-  private async applyPlannedUpdateNow(projectId: string): Promise<{ started: true }> {
-    await this.ensureInitialized();
-    const pending = await this.store.getPendingUpdate(projectId);
-    if (!pending) throw new Error("No pending planned update found.");
-
-    const settings = await this.store.readSettings();
-    const prompt = `Update the codebase to match this target system flowchart:
-
-Mermaid flowchart:
-${pending.flowchart}
-
-Structured flowchart graph:
-${pending.flowchartGraph ? JSON.stringify(pending.flowchartGraph, null, 2) : "null"}
-
-Changes described: ${pending.description}`;
-
-    const input: StartPlanInput = {
-      projectId,
-      provider: settings.advancedDefaults.provider,
-      prompt,
-      speed: settings.defaultSpeed,
-      model: settings.advancedDefaults.model,
-      claudeModel: settings.advancedDefaults.claudeModel,
-      reasoningEffort: settings.advancedDefaults.reasoningEffort,
-      planningMode: settings.autoApprovePlans ? "auto" : "review",
-      autoApprove: settings.autoApprovePlans,
-      contextPaths: [],
-    };
-
-    await this.store.deletePendingUpdate(projectId);
-    this.emit({ type: "project.pendingUpdate", projectId, pending: null });
-
-    return this.startPlanNow(input);
-  }
-
-  async applyPlannedUpdate(projectId: string): Promise<{ started: true }> {
-    await this.ensureInitialized();
-    const pending = await this.store.getPendingUpdate(projectId);
-    if (!pending) throw new Error("No pending planned update found.");
-
-    const settings = await this.store.readSettings();
-    const session = await this.getOrCreateAgentSession(projectId, settings.advancedDefaults.provider);
-    const approval = this.queueApproval(session, {
-      kind: "apply-pending-update",
-      requestedByDirectorId: null,
-      targetDirectorId: "programming-director",
-      summary: this.buildApprovalSummary("Confirm planned update", pending.description),
-      draftMessage: pending.description,
-      draftPayload: {
-        action: "applyPendingUpdate",
-        projectId,
-      },
-    });
-    await this.saveAgentSession(projectId, session);
-    this.emit({
-      type: "toast",
-      level: "info",
-      message: `Queued approval: ${approval.summary}`,
-    });
-    return { started: true };
-  }
-
   // --- Agent System ---
 
   async getAgentSession(projectId: string): Promise<AgentSession | null> {
@@ -3620,6 +3826,7 @@ Changes described: ${pending.description}`;
       session.danDraftStatus = session.danDraftStatus === "gathering" || session.danDraftStatus === "ready-to-confirm"
         ? session.danDraftStatus
         : null;
+      syncAgentMemories(session);
     }
     return session;
   }
@@ -3679,7 +3886,6 @@ Changes described: ${pending.description}`;
       pingTaskContext: null,
       pongTaskContext: null,
       projectCategory: "general-project",
-      dynamicSubAgents: [],
       slackMessages: [],
       slackActiveDirectorId: "project-manager",
       slackPresenceGuestId: null,
@@ -3723,7 +3929,22 @@ Changes described: ${pending.description}`;
         codebaseMapSummary: null,
         latestRawReport: null,
         latestJeffReport: null,
+        currentRun: null,
       },
+      jeffMemory: {
+        pendingReports: [],
+        pendingValidations: [],
+        outcomeLog: [],
+        notes: [],
+        backupNotes: [],
+      },
+      pongMemory: {
+        jeffInstruction: null,
+        previousValidationReports: [],
+        latestValidationReport: null,
+        screenshotPaths: [],
+      },
+      automation: buildDefaultAutomationState(),
     });
   }
 
@@ -3883,7 +4104,105 @@ Changes described: ${pending.description}`;
       metadata: extra.metadata ?? null,
     };
     session.slackMessages.push(message);
+
+    // Mirror to the director's individual agent chat conversation
+    this.mirrorSlackMessageToAgentChat(session, directorId, message);
+
     return message;
+  }
+
+  private mirrorSlackMessageToAgentChat(
+    session: AgentSession,
+    directorId: DirectorId,
+    slackMsg: SlackChatMessage,
+  ): void {
+    const conv = ensureDirectorConversationRecord(session, directorId);
+    const agentMsg: AgentChatMessage = {
+      id: slackMsg.id,
+      role: "assistant",
+      content: slackMsg.content,
+      createdAt: slackMsg.createdAt,
+      status: slackMsg.status,
+      metadata: (slackMsg.metadata as AgentChatMessage["metadata"]) ?? null,
+    };
+    conv.messages.push(agentMsg);
+    session.unifiedMessages.push(agentMsg);
+  }
+
+  private replaceDirectorConversationMessage(
+    session: AgentSession,
+    directorId: DirectorId,
+    nextMessage: AgentChatMessage,
+  ): AgentChatMessage {
+    const conv = ensureDirectorConversationRecord(session, directorId);
+    const convIndex = conv.messages.findIndex((message) => message.id === nextMessage.id);
+    if (convIndex >= 0) {
+      conv.messages[convIndex] = nextMessage;
+    }
+    const unifiedIndex = session.unifiedMessages.findIndex((message) => message.id === nextMessage.id);
+    if (unifiedIndex >= 0) {
+      session.unifiedMessages[unifiedIndex] = nextMessage;
+    }
+    return nextMessage;
+  }
+
+  private replaceSlackAssistantMessage(
+    session: AgentSession,
+    directorId: DirectorId,
+    nextMessage: SlackChatMessage,
+  ): SlackChatMessage {
+    const slackIndex = session.slackMessages.findIndex((message) => message.id === nextMessage.id);
+    if (slackIndex >= 0) {
+      session.slackMessages[slackIndex] = nextMessage;
+    }
+    this.replaceDirectorConversationMessage(session, directorId, {
+      id: nextMessage.id,
+      role: "assistant",
+      content: nextMessage.content,
+      createdAt: nextMessage.createdAt,
+      status: nextMessage.status,
+      metadata: (nextMessage.metadata as AgentChatMessage["metadata"]) ?? null,
+    });
+    return nextMessage;
+  }
+
+  /** Sync a mutated Slack message (e.g. working→complete) to its agent chat mirror. */
+  private syncSlackMessageToAgentChat(
+    session: AgentSession,
+    directorId: DirectorId,
+    slackMsg: SlackChatMessage,
+  ): void {
+    const conv = ensureDirectorConversationRecord(session, directorId);
+    const mirror = conv.messages.find((m) => m.id === slackMsg.id);
+    if (!mirror) return;
+    mirror.content = slackMsg.content;
+    mirror.status = slackMsg.status;
+    mirror.createdAt = slackMsg.createdAt;
+    mirror.metadata = (slackMsg.metadata as AgentChatMessage["metadata"]) ?? null;
+  }
+
+  private appendPingLifecycleMessage(
+    session: AgentSession,
+    phase: "intro" | "outro",
+  ): SlackChatMessage {
+    const text = phase === "intro"
+      ? getDirectorMetadata("programming-director").introMessage
+      : getDirectorMetadata("programming-director").outroMessage;
+    return this.appendSlackAssistantMessage(session, "programming-director", text, {
+      status: "complete",
+      metadata: buildPingLifecycleTranslationMetadata(phase, text),
+    });
+  }
+
+  private appendJeffSlackMessage(
+    session: AgentSession,
+    content: string,
+    report?: JeffExecutionReport | null,
+  ): SlackChatMessage {
+    return this.appendSlackAssistantMessage(session, "project-manager", content, {
+      status: "complete",
+      metadata: report ? { type: "execution-report", report } : null,
+    });
   }
 
   private async tryStartSlackPingExecution(args: {
@@ -3908,13 +4227,10 @@ Changes described: ${pending.description}`;
     }
 
     syncAgentMemories(session);
-    const activeUpdateId = session.pingMemory.activeUpdateId;
-    if (!activeUpdateId) {
-      return null;
-    }
 
-    const activeUpdate = session.toddMemory.futureUpdatePlan.find((update) => update.id === activeUpdateId);
-    if (!activeUpdate) {
+    // Find an active or next pending update from Todd's plan
+    const update = resolveNextProgrammingUpdate(session, null);
+    if (!update) {
       return null;
     }
 
@@ -3922,13 +4238,25 @@ Changes described: ${pending.description}`;
     session.slackActiveDirectorId = "programming-director";
     session.slackPresenceGuestId = "programming-director";
     await this.saveAgentSession(project.id, session);
-    await this.routeUpdateToProgrammingNow({
-      projectId: project.id,
-      updateId: activeUpdate.id,
-      provider,
-      model,
-      claudeModel,
-    });
+
+    try {
+      await this.routeUpdateToProgrammingNow({
+        projectId: project.id,
+        updateId: update.id,
+        provider,
+        model,
+        claudeModel,
+      });
+    } catch (error) {
+      // Post the error to Slack instead of crashing the chat
+      const errorText = error instanceof Error ? error.message : "Something went wrong starting the update.";
+      this.appendSlackAssistantMessage(session, "programming-director", errorText, { status: "complete" });
+      this.appendPingLifecycleMessage(session, "outro");
+      session.slackPresenceGuestId = null;
+      session.slackActiveDirectorId = "project-manager";
+      await this.saveAgentSession(project.id, session);
+    }
+
     return executionMessage;
   }
 
@@ -3944,9 +4272,11 @@ Changes described: ${pending.description}`;
     const introMeta = getDirectorMetadata(directorId);
     introPlaceholder.content = introMeta.introMessage;
     introPlaceholder.status = "complete";
+    introPlaceholder.createdAt = new Date().toISOString();
     if (directorId === "programming-director") {
       introPlaceholder.metadata = buildPingLifecycleTranslationMetadata("intro", introMeta.introMessage);
     }
+    this.syncSlackMessageToAgentChat(session, directorId, introPlaceholder);
     await this.saveAgentSession(projectId, session);
     await delay(SLACK_DIRECTOR_POST_INTRO_DELAY_MS);
 
@@ -4037,8 +4367,8 @@ Changes described: ${pending.description}`;
       : [];
     const draftUpdated = Boolean(draftCoreDetails) || draftOperations.length > 0;
 
-    session.danMemory.notes = mergeTrimmedNotes(session.danMemory.notes, notesToAppend);
-    session.danMemory.toddHandoffNotes = mergeTrimmedNotes(session.danMemory.toddHandoffNotes ?? [], toddHandoffNotesToAppend);
+    session.danMemory.notes = mergeTaggedNotes(session.danMemory.notes, notesToAppend);
+    session.danMemory.toddHandoffNotes = mergeTaggedNotes(session.danMemory.toddHandoffNotes ?? [], toddHandoffNotesToAppend, "handoff-to-todd");
     session.danMemory.draftStatus = conversationStatus;
 
     if (draftCoreDetails) {
@@ -4081,7 +4411,7 @@ Changes described: ${pending.description}`;
       session.danMemory.forgottenMemories = session.danMemory.forgottenMemories ?? [];
       const timestamp = new Date().toISOString();
       session.danMemory.forgottenMemories.push(
-        ...session.danMemory.notes.map((note) => `[${timestamp}] ${note}`),
+        ...session.danMemory.notes.map((note) => `[${timestamp}] ${note.content}`),
       );
       session.danMemory.notes = [];
     }
@@ -4094,7 +4424,7 @@ Changes described: ${pending.description}`;
       session.toddMemory.pendingHandoff = buildToddHandoffPackage(
         [
           ...(session.toddMemory.pendingHandoff?.rawInputs ?? []),
-          ...session.danMemory.toddHandoffNotes,
+          ...extractNoteContents(session.danMemory.toddHandoffNotes),
         ],
         session.danMemory.fullExperienceDescription ?? session.toddMemory.pendingHandoff?.context ?? "Creative session handoff",
       );
@@ -4175,8 +4505,12 @@ Changes described: ${pending.description}`;
     const prompt = buildReworkedSlackDirectorPrompt(directorId, project.name, session, { mode });
     let hardMemoryReportMetadata: HardMemoryReportMetadata | null = null;
 
-    const responsePlaceholder = this.appendSlackAssistantMessage(session, directorId, "", { status: "working" });
-    await this.saveAgentSession(project.id, session);
+    const responsePlaceholder = directorId === "programming-director"
+      ? await this.stageSlackDirectorIntroSequence(session, project.id, directorId)
+      : this.appendSlackAssistantMessage(session, directorId, "", { status: "working" });
+    if (directorId !== "programming-director") {
+      await this.saveAgentSession(project.id, session);
+    }
 
     const cleanJson = (raw: string) => {
       let cleaned = raw.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "");
@@ -4201,11 +4535,17 @@ Changes described: ${pending.description}`;
       try {
         hardMemoryReportMetadata = null;
         const service = this.aiService(attemptProvider);
+        const requestedModels = resolveDirectorRequestedModels(
+          session,
+          directorId,
+          model as StartPlanInput["model"],
+          claudeModel as StartPlanInput["claudeModel"],
+        );
         const modelSelection = resolveDirectorModelSelection(
           directorId,
           attemptProvider,
-          model,
-          claudeModel,
+          requestedModels.model,
+          requestedModels.claudeModel,
           resolveDirectorModelUseCase(directorId, mode, undefined),
         );
         const resolvedModel = attemptProvider === "claude"
@@ -4224,6 +4564,9 @@ Changes described: ${pending.description}`;
         );
         const parsed = validateSlackTurnParsedResponse(cleanJson(rawResult), directorId, mode);
         const response = sanitizeSlackResponseContent(parsed.response, directorId);
+        const responseCreatedAt = new Date().toISOString();
+        let assistantContent = response;
+        let assistantMetadata: SlackChatMessage["metadata"] = null;
         let danPresenceAction: DanPresenceAction = "exit";
 
         if (directorId === "creative-director") {
@@ -4243,7 +4586,7 @@ Changes described: ${pending.description}`;
               idealState: normalizeNonEmptyString(parsed.idealState),
               changeSummary: session.danMemory.draftChangeSummary,
               draftCoreDetails: isConfirmed ? session.danMemory.draftConcept : null,
-              createdAt: responsePlaceholder.createdAt,
+              createdAt: responseCreatedAt,
             });
           }
         } else if (directorId === "programming-director") {
@@ -4281,17 +4624,17 @@ Changes described: ${pending.description}`;
             relevantPillarIds: activeUpdate?.pillarIds ?? [],
           };
           this.applySlackDirectorStateSnapshot(session, directorId, parsed);
-          responsePlaceholder.content = typeof parsed.zhResponse === "string" && parsed.zhResponse.trim()
+          assistantContent = typeof parsed.zhResponse === "string" && parsed.zhResponse.trim()
             ? parsed.zhResponse
             : response;
-          responsePlaceholder.metadata = buildPingStatusTranslationMetadata(status);
+          assistantMetadata = buildPingStatusTranslationMetadata(status);
         } else {
           // Todd soft-memory: process notesToAppend and clear pending handoff
           if (directorId === "rd-director") {
             const toddNotesToAppend = Array.isArray(parsed.notesToAppend)
               ? parsed.notesToAppend.filter((note): note is string => typeof note === "string" && note.trim().length > 0)
               : [];
-            session.toddMemory.notes = mergeTrimmedNotes(session.toddMemory.notes ?? [], toddNotesToAppend);
+            session.toddMemory.notes = mergeTaggedNotes(session.toddMemory.notes ?? [], toddNotesToAppend);
             if (consumeToddHandoff) {
               consumeToddPendingHandoff(session, "Todd processed Dan handoff");
             }
@@ -4333,7 +4676,7 @@ Changes described: ${pending.description}`;
             currentState: normalizeNonEmptyString(parsed.currentState),
             idealState: normalizeNonEmptyString(parsed.idealState),
             roadmapVersions: versions,
-            createdAt: responsePlaceholder.createdAt,
+            createdAt: responseCreatedAt,
           });
         }
 
@@ -4405,16 +4748,15 @@ Changes described: ${pending.description}`;
             idealState: normalizeNonEmptyString(parsed.idealState),
             roadmapVersions,
             versionUpdates: reportUpdates,
-            createdAt: responsePlaceholder.createdAt,
+            createdAt: responseCreatedAt,
           });
         }
 
         if (directorId !== "programming-director") {
-          responsePlaceholder.content = response;
+          assistantContent = response;
         }
-        responsePlaceholder.status = "complete";
-        responsePlaceholder.metadata = directorId === "programming-director"
-          ? responsePlaceholder.metadata
+        assistantMetadata = directorId === "programming-director"
+          ? assistantMetadata
           : hardMemoryReportMetadata ?? (researchMode
             ? {
                 type: "research-result",
@@ -4423,6 +4765,13 @@ Changes described: ${pending.description}`;
                 projectSummary: typeof parsed.projectSummary === "string" ? parsed.projectSummary : "",
               }
             : null);
+        const assistantMessage = this.replaceSlackAssistantMessage(session, directorId, {
+          ...responsePlaceholder,
+          content: assistantContent,
+          createdAt: responseCreatedAt,
+          status: "complete",
+          metadata: assistantMetadata,
+        });
         const handoffTarget = normalizeDirectorId(typeof parsed.handoffTo === "string" ? parsed.handoffTo : null);
         if (handoffTarget) {
           session.slackPresenceGuestId = handoffTarget === "project-manager" ? null : handoffTarget;
@@ -4430,13 +4779,17 @@ Changes described: ${pending.description}`;
         } else if (directorId === "creative-director") {
           session.slackPresenceGuestId = danPresenceAction === "stay" ? "creative-director" : null;
           session.slackActiveDirectorId = danPresenceAction === "stay" ? "creative-director" : "project-manager";
+        } else if (directorId === "programming-director") {
+          this.appendPingLifecycleMessage(session, "outro");
+          session.slackPresenceGuestId = null;
+          session.slackActiveDirectorId = "project-manager";
         } else {
           session.slackPresenceGuestId = directorId === "project-manager" ? null : directorId;
           session.slackActiveDirectorId = directorId;
         }
         await this.saveAgentSession(project.id, session);
         return {
-          assistantMessage: responsePlaceholder,
+          assistantMessage,
           parsed,
         };
       } catch (error) {
@@ -4464,9 +4817,13 @@ Changes described: ${pending.description}`;
     const finalError = details.length > 0
       ? `${DIRECTOR_NAMES[directorId]} could not reply. ${details.join(" ")}`
       : `${DIRECTOR_NAMES[directorId]} could not reply because no provider was ready.`;
-    responsePlaceholder.content = finalError;
-    responsePlaceholder.status = "complete";
-    responsePlaceholder.metadata = null;
+    this.replaceSlackAssistantMessage(session, directorId, {
+      ...responsePlaceholder,
+      content: finalError,
+      createdAt: new Date().toISOString(),
+      status: "complete",
+      metadata: null,
+    });
     session.slackPresenceGuestId = null;
     session.slackActiveDirectorId = "project-manager";
     await this.saveAgentSession(project.id, session);
@@ -4531,6 +4888,10 @@ Changes described: ${pending.description}`;
     if (!primaryMessage) {
       throw new Error("Slack director chain did not produce a response.");
     }
+
+    args.session.slackPresenceGuestId = null;
+    args.session.slackActiveDirectorId = "project-manager";
+    await this.saveAgentSession(args.project.id, args.session);
 
     return {
       message: primaryMessage,
@@ -4662,7 +5023,7 @@ Your final answer must be ONLY strict JSON (no markdown fences) matching:
     const rawResult = await service.runOneShot(
       project,
       settings,
-      await this.appendProjectSkillInstructions(prompt, project, input.provider, settings),
+      prompt,
       model,
       agentChatSchema,
     );
@@ -4745,8 +5106,8 @@ Your final answer must be ONLY strict JSON (no markdown fences) matching:
 
         if (nextStage === "iterations") {
           // Special transition: investigate codebase and produce initial planned updates
-          const repoHints = await collectFlowchartRepoHints(project.localPath);
-          const formattedHints = formatFlowchartRepoHints(repoHints);
+          const repoHints = await collectProjectRepoHints(project.localPath);
+          const formattedHints = formatProjectRepoHints(repoHints);
 
           const confirmedContext: string[] = [];
           const fc = session.stages.function.confirmed;
@@ -4790,7 +5151,7 @@ Your response must be ONLY strict JSON (no markdown fences):
           const rawResult = await service.runOneShot(
             project,
             settings,
-            await this.appendProjectSkillInstructions(iterationsPrompt, project, session.provider, settings),
+            iterationsPrompt,
             model,
             agentIterationsSchema,
           );
@@ -4841,7 +5202,7 @@ Your response must be ONLY strict JSON (no markdown fences):
           const rawResult = await service.runOneShot(
             project,
             settings,
-            await this.appendProjectSkillInstructions(pillarPrompt, project, session.provider, settings),
+            pillarPrompt,
             model,
             agentCorePillarsResultSchema,
           );
@@ -4907,7 +5268,7 @@ Your response must be ONLY strict JSON (no markdown fences): {"response": string
             const rawResult = await service.runOneShot(
               project,
               settings,
-              await this.appendProjectSkillInstructions(transitionPrompt, project, session.provider, settings),
+              transitionPrompt,
               model,
               agentTransitionSchema,
             );
@@ -5006,7 +5367,7 @@ Instructions:
     const rawResult = await service.runOneShot(
       project,
       settings,
-      await this.appendProjectSkillInstructions(prompt, project, input.provider, settings),
+      prompt,
       model,
       agentIterationsSchema,
       resolveDirectorRuntime(session, "rd-director").reasoningEffort,
@@ -5129,13 +5490,27 @@ Instructions:
 
     const programmingDefaults = resolveDirectorRuntime(session, "programming-director");
     const planningMode = options.planningMode ?? programmingDefaults.planningMode;
+    const requestedModels = resolveDirectorRequestedModels(
+      session,
+      "programming-director",
+      input.model,
+      input.claudeModel,
+    );
     const modelSelection = resolveDirectorModelSelection(
       "programming-director",
       input.provider,
-      input.model,
-      input.claudeModel,
+      requestedModels.model,
+      requestedModels.claudeModel,
       "execution",
     );
+    const pingRuntime: PingRuntimeSnapshot = {
+      provider: input.provider,
+      model: modelSelection.model,
+      claudeModel: modelSelection.claudeModel,
+      reasoningEffort: programmingDefaults.reasoningEffort,
+      planningMode,
+      contextPaths: [],
+    };
     const planInput: StartPlanInput = {
       projectId: input.projectId,
       provider: input.provider,
@@ -5147,6 +5522,19 @@ Instructions:
       planningMode,
       autoApprove: planningMode === "auto",
       contextPaths: [],
+      pingTaskSnapshot: buildPingTaskSnapshot({
+        source: "todd-approved-update",
+        projectId: input.projectId,
+        updateId: update.id,
+        updateTitle: update.title,
+        updateDescription: update.description,
+        originalUserRequest: resolveLatestHumanRequest(session, `${update.title}: ${update.description}`),
+        toddExplanation: update.description,
+        relevantPillarIds: update.pillarIds ?? [],
+        toddCodebaseMapSummary: session.toddMemory.codebaseIndexedMap?.summary ?? null,
+        coreDetailsContext: formatCoreDetails(session) || null,
+        runtime: pingRuntime,
+      }),
     };
 
     return this.startPlanNow(planInput);
@@ -5154,6 +5542,84 @@ Instructions:
 
   async agentExecuteUpdate(input: AgentExecuteUpdateInput): Promise<{ started: true }> {
     return this.agentExecuteUpdateNow(input, { planningMode: "auto" });
+  }
+
+  async startPingDirectUpdate(input: StartPingDirectUpdateInput): Promise<{ started: true }> {
+    await this.ensureInitialized();
+    const settings = await this.store.readSettings();
+    const project = await this.requireProject(input.projectId);
+    const message = input.message.trim();
+    if (!message) {
+      throw new Error("Describe the update you want Ping to make first.");
+    }
+
+    const session = await this.getOrCreateAgentSession(input.projectId, settings.advancedDefaults.provider);
+    const pingDefaults = resolveDirectorRuntime(session, "programming-director");
+    const autoModels = resolveDirectorRequestedModels(
+      session,
+      "programming-director",
+      settings.advancedDefaults.model,
+      settings.advancedDefaults.claudeModel,
+    );
+    const runtime: PingRuntimeSnapshot = {
+      provider: input.runMode === "manual"
+        ? input.provider ?? settings.advancedDefaults.provider
+        : settings.advancedDefaults.provider,
+      model: input.runMode === "manual"
+        ? input.model ?? autoModels.model
+        : autoModels.model,
+      claudeModel: input.runMode === "manual"
+        ? input.claudeModel ?? autoModels.claudeModel
+        : autoModels.claudeModel,
+      reasoningEffort: input.runMode === "manual"
+        ? input.reasoningEffort ?? pingDefaults.reasoningEffort
+        : pingDefaults.reasoningEffort,
+      planningMode: input.runMode === "manual"
+        ? input.planningMode ?? pingDefaults.planningMode
+        : pingDefaults.planningMode,
+      contextPaths: Array.from(new Set(input.contextPaths ?? [])),
+    };
+
+    session.provider = runtime.provider;
+    session.activeDirectorId = "programming-director";
+    const conversation = ensureDirectorConversationRecord(session, "programming-director");
+    const userMessage: AgentChatMessage = {
+      id: randomUUID(),
+      role: "user",
+      content: message,
+      createdAt: new Date().toISOString(),
+    };
+    conversation.messages.push(userMessage);
+    conversation.lastActiveAt = userMessage.createdAt;
+    session.unifiedMessages.push(userMessage);
+    if (session.directorProgress.programming === "not-started") {
+      session.directorProgress.programming = "in-progress";
+      session.directorProgress.currentDirector = "programming-director";
+    }
+    session.updatedAt = userMessage.createdAt;
+    await this.store.saveAgentSession(session);
+    this.emit({ type: "agent.session", projectId: input.projectId, session });
+
+    return this.startPlanNow({
+      projectId: project.id,
+      provider: runtime.provider,
+      prompt: message,
+      speed: runtime.provider === "codex" ? settings.defaultSpeed : "normal",
+      model: runtime.model,
+      claudeModel: runtime.claudeModel,
+      reasoningEffort: runtime.reasoningEffort,
+      planningMode: runtime.planningMode,
+      autoApprove: runtime.planningMode === "auto",
+      contextPaths: runtime.contextPaths,
+      pingTaskSnapshot: buildPingTaskSnapshot({
+        source: "direct-ping-request",
+        projectId: project.id,
+        originalUserRequest: message,
+        toddCodebaseMapSummary: session.toddMemory.codebaseIndexedMap?.summary ?? null,
+        coreDetailsContext: formatCoreDetails(session) || null,
+        runtime,
+      }),
+    });
   }
 
   async agentResetStage(projectId: string, stage: AgentStage): Promise<AgentSession> {
@@ -5274,7 +5740,7 @@ Your response must be ONLY strict JSON (no markdown fences):
     const rawResult = await service.runOneShot(
       project,
       settings,
-      await this.appendProjectSkillInstructions(prompt, project, input.provider, settings),
+      prompt,
       model,
       agentCoreDetailsSchema,
       resolveDirectorRuntime(session, "creative-director").reasoningEffort,
@@ -5395,7 +5861,7 @@ Response must be strict JSON only (no markdown fences).`;
     const rawResult = await service.runOneShot(
       project,
       settings,
-      await this.appendProjectSkillInstructions(prompt, project, input.provider, settings),
+      prompt,
       model,
       agentSuggestUpdateSchema,
       resolveDirectorRuntime(session, "creative-director").reasoningEffort,
@@ -5553,7 +6019,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     const rawResult = await service.runOneShot(
       project,
       settings,
-      await this.appendProjectSkillInstructions(prompt, project, provider, settings),
+      prompt,
       model,
       agentCascadeSchema,
     );
@@ -5711,11 +6177,17 @@ Your response must be ONLY strict JSON (no markdown fences).`;
 
     const prompt = buildDirectorPrompt(input.directorId, resolvedFocusMode, project.name, session);
     const service = this.aiService(input.provider);
+    const requestedModels = resolveDirectorRequestedModels(
+      session,
+      input.directorId,
+      input.model,
+      input.claudeModel,
+    );
     const modelSelection = resolveDirectorModelSelection(
       input.directorId,
       input.provider,
-      input.model,
-      input.claudeModel,
+      requestedModels.model,
+      requestedModels.claudeModel,
       resolveDirectorModelUseCase(input.directorId, resolvedFocusMode, input.runtimeStage),
     );
     const model = input.provider === "claude" ? modelSelection.claudeModel : modelSelection.model;
@@ -5748,18 +6220,16 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       ? validateSlackTurnParsedResponse(parsedJson, input.directorId, resolvedFocusMode as any)
       : parsedJson;
 
-    // Update intro message with final response
-    introMsg.content = input.directorId === "validation-director" && typeof parsed.zhResponse === "string"
+    const assistantCreatedAt = new Date().toISOString();
+    let assistantContent = input.directorId === "validation-director" && typeof parsed.zhResponse === "string"
       ? parsed.zhResponse
       : sanitizeSlackResponseContent(parsed.response, input.directorId);
-    introMsg.status = "complete";
-    introMsg.metadata = input.directorId === "validation-director"
+    let assistantMetadata: AgentChatMessage["metadata"] = input.directorId === "validation-director"
       ? buildTranslatedMessageMetadata(
-        introMsg.content,
+        assistantContent,
         typeof parsed.enTranslation === "string" ? parsed.enTranslation : parsed.response,
       )
       : null;
-    const assistantMessage = introMsg;
 
     // Process structured data from director response
     let routeSuggestion: DirectorChatResponse["routeSuggestion"] = null;
@@ -5792,7 +6262,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
           idealState: normalizeNonEmptyString(parsed.idealState),
           changeSummary: session.danMemory.draftChangeSummary,
           draftCoreDetails: isConfirmed ? session.danMemory.draftConcept : null,
-          createdAt: assistantMessage.createdAt,
+          createdAt: assistantCreatedAt,
         });
       }
       const handoffTo = normalizeDirectorId(typeof parsed.handoffTo === "string" ? parsed.handoffTo : null);
@@ -5809,7 +6279,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       const toddNotesToAppend = Array.isArray(parsed.notesToAppend)
         ? (parsed.notesToAppend as unknown[]).filter((note): note is string => typeof note === "string" && note.trim().length > 0)
         : [];
-      session.toddMemory.notes = mergeTrimmedNotes(session.toddMemory.notes ?? [], toddNotesToAppend);
+      session.toddMemory.notes = mergeTaggedNotes(session.toddMemory.notes ?? [], toddNotesToAppend);
       const handoffTo = normalizeDirectorId(typeof parsed.handoffTo === "string" ? parsed.handoffTo : null);
       if (handoffTo) {
         routeSuggestion = {
@@ -5881,7 +6351,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
         currentState: normalizeNonEmptyString(parsed.currentState),
         idealState: normalizeNonEmptyString(parsed.idealState),
         roadmapVersions: versions,
-        createdAt: assistantMessage.createdAt,
+        createdAt: assistantCreatedAt,
       });
     }
 
@@ -5956,7 +6426,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
         idealState: normalizeNonEmptyString(parsed.idealState),
         roadmapVersions,
         versionUpdates: reportUpdates,
-        createdAt: assistantMessage.createdAt,
+        createdAt: assistantCreatedAt,
       });
     }
 
@@ -5991,10 +6461,10 @@ Your response must be ONLY strict JSON (no markdown fences).`;
         toddUpdateExplanation: session.pingMemory.context,
         relevantPillarIds: session.pingTaskContext?.relevantPillarIds ?? [],
       };
-      assistantMessage.content = typeof parsed.zhResponse === "string" && parsed.zhResponse.trim()
+      assistantContent = typeof parsed.zhResponse === "string" && parsed.zhResponse.trim()
         ? parsed.zhResponse
-        : assistantMessage.content;
-      assistantMessage.metadata = buildPingStatusTranslationMetadata(rawReport.status);
+        : assistantContent;
+      assistantMetadata = buildPingStatusTranslationMetadata(rawReport.status);
     }
 
     // Pong — Test mode: validation results
@@ -6044,8 +6514,16 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     }
 
     if (hardMemoryReportMetadata) {
-      assistantMessage.metadata = hardMemoryReportMetadata;
+      assistantMetadata = hardMemoryReportMetadata;
     }
+
+    const assistantMessage = this.replaceDirectorConversationMessage(session, input.directorId, {
+      ...introMsg,
+      content: assistantContent,
+      createdAt: assistantCreatedAt,
+      status: "complete",
+      metadata: assistantMetadata,
+    });
 
     // Derive project category
     session.projectCategory = this.deriveProjectCategoryFromSession(session);
@@ -6098,7 +6576,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     const currentDirectorId: DirectorId =
       input.targetDirectorId && input.targetDirectorId !== "project-manager"
         ? input.targetDirectorId
-        : session.slackPresenceGuestId ?? "project-manager";
+        : resolveSlackDirectRoute(input.message, session.slackPresenceGuestId) ?? "project-manager";
     const initialMode = currentDirectorId === "project-manager"
       ? "codebase-analysis"
       : resolveSlackDirectorMode(currentDirectorId, input.message);
@@ -6120,7 +6598,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
         chainedMessages: [],
       };
     }
-    const { message, handoffTo, handoffReason, chainedMessages } = await this.runSlackDirectorChain({
+    const firstTurn = await this.runSlackDirectorTurn({
       session,
       project,
       settings,
@@ -6131,6 +6609,45 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       userMessage: input.message,
       mode: initialMode,
     });
+    const message = firstTurn.assistantMessage;
+    const handoffTo = normalizeDirectorId(typeof firstTurn.parsed.handoffTo === "string" ? firstTurn.parsed.handoffTo : null);
+    const handoffReason = typeof firstTurn.parsed.handoffReason === "string" ? firstTurn.parsed.handoffReason : null;
+    const chainedMessages: SlackChatMessage[] = [];
+    if (handoffTo && canAutoRouteSlackDirector(handoffTo) && handoffTo !== currentDirectorId) {
+      this.appendJeffSlackMessage(
+        session,
+        `Handing this to ${DIRECTOR_NAMES[handoffTo]}${handoffReason ? `: ${handoffReason}` : "."}`,
+      );
+      await this.saveAgentSession(project.id, session);
+      const handoffExecutionMessage = await this.tryStartSlackPingExecution({
+        session,
+        project,
+        provider: input.provider,
+        model: input.model,
+        claudeModel: input.claudeModel,
+        directorId: handoffTo,
+      });
+      if (handoffExecutionMessage) {
+        chainedMessages.push(handoffExecutionMessage);
+      } else {
+        const nextMessage = handoffReason ?? message.content;
+        const secondTurn = await this.runSlackDirectorTurn({
+          session,
+          project,
+          settings,
+          provider: input.provider,
+          model: input.model,
+          claudeModel: input.claudeModel,
+          directorId: handoffTo,
+          userMessage: nextMessage,
+          mode: resolveSlackDirectorMode(handoffTo, nextMessage),
+        });
+        chainedMessages.push(secondTurn.assistantMessage);
+      }
+      session.slackPresenceGuestId = null;
+      session.slackActiveDirectorId = "project-manager";
+      await this.saveAgentSession(project.id, session);
+    }
 
     return {
       sessionId: session.id,
@@ -6165,6 +6682,473 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     session.updatedAt = new Date().toISOString();
     await this.store.saveAgentSession(session);
     this.emit({ type: "agent.session", projectId, session });
+  }
+
+  private patchAutomationState(
+    session: AgentSession,
+    patch: Partial<AutomationRunState>,
+  ): void {
+    session.automation = buildDefaultAutomationState({
+      ...session.automation,
+      ...patch,
+      constraints: {
+        ...(session.automation?.constraints ?? {}),
+        ...(patch.constraints ?? {}),
+      },
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  private async stopAutomationWithReason(
+    session: AgentSession,
+    reason: AutomationStopReason,
+    summary: string,
+    status: AutomationRunState["status"] = "stopped",
+  ): Promise<AgentSession> {
+    this.patchAutomationState(session, {
+      status,
+      stopReason: reason,
+      stopSummary: summary,
+      currentStep: status === "completed" ? "idle" : "awaiting-user",
+      completedAt: status === "completed" ? new Date().toISOString() : session.automation.completedAt,
+      resumeRequired: reason === "restart-resume-required",
+      nextUpdateId: null,
+    });
+    this.appendJeffSlackMessage(session, summary);
+    await this.saveAgentSession(session.projectId, session);
+    return session;
+  }
+
+  private async normalizeAutomationSessionsOnStartup(projects: Project[]): Promise<void> {
+    for (const project of projects) {
+      const session = await this.store.getAgentSession(project.id);
+      if (!session) {
+        continue;
+      }
+      syncAgentMemories(session);
+      if (session.automation.status !== "running") {
+        continue;
+      }
+      this.patchAutomationState(session, {
+        status: "paused",
+        stopReason: "restart-resume-required",
+        stopSummary: "Automation paused because PROGRAMS restarted. Resume when you are ready.",
+        currentStep: "awaiting-user",
+        resumeRequired: true,
+        nextUpdateId: null,
+      });
+      this.appendJeffSlackMessage(session, "Automation paused because PROGRAMS restarted. Resume when you are ready.");
+      await this.store.saveAgentSession(session);
+    }
+  }
+
+  async listAutomationTargets(input: ListAutomationTargetsInput): Promise<ListAutomationTargetsResponse> {
+    await this.ensureInitialized();
+    const session = await this.getOrCreateAgentSession(input.projectId, "codex");
+    return listAutomationTargetCandidates(session);
+  }
+
+  async startAutomationRun(input: StartAutomationRunInput): Promise<AgentSession> {
+    await this.ensureInitialized();
+    const settings = await this.store.readSettings();
+    const session = await this.getOrCreateAgentSession(input.projectId, settings.advancedDefaults.provider);
+    const { candidate } = resolveAutomationTarget(session, input.targetUpdateId);
+    if (!candidate) {
+      throw new Error("That automation target is no longer available.");
+    }
+    if (candidate.draft || !candidate.available) {
+      throw new Error(candidate.blockedReason ?? "Confirm Todd's update plan before starting automation.");
+    }
+
+    const now = new Date().toISOString();
+    this.patchAutomationState(session, {
+      status: "running",
+      selectedTargetUpdateId: candidate.updateId,
+      selectedTargetVersionId: candidate.versionId,
+      inScopeUpdateIds: candidate.pathUpdateIds,
+      constraints: input.constraints,
+      stopReason: null,
+      stopSummary: null,
+      currentStep: "jeff",
+      startedAt: now,
+      lastResumedAt: now,
+      completedAt: null,
+      resumeRequired: false,
+      nextUpdateId: candidate.pathUpdateIds[0] ?? candidate.updateId,
+      pendingRevertReportId: null,
+      pendingRevertHistoryUpdateId: null,
+      pendingRevertCommitSha: null,
+    });
+    this.appendJeffSlackMessage(
+      session,
+      `Starting automation toward "${candidate.title}". I’ll move one update at a time until that target is reached or I need to stop.`,
+    );
+    await this.saveAgentSession(input.projectId, session);
+    this.kickAutomationRun(input.projectId);
+    return session;
+  }
+
+  async pauseAutomationRun(input: PauseAutomationRunInput): Promise<AgentSession> {
+    await this.ensureInitialized();
+    const session = await this.store.getAgentSession(input.projectId);
+    if (!session) {
+      throw new Error("No agent session found for this project.");
+    }
+    syncAgentMemories(session);
+    this.patchAutomationState(session, {
+      status: "paused",
+      stopReason: "manual-pause",
+      stopSummary: input.summary ?? "Automation paused.",
+      currentStep: "awaiting-user",
+      nextUpdateId: null,
+      resumeRequired: false,
+    });
+    this.appendJeffSlackMessage(session, input.summary ?? "Automation paused.");
+    await this.saveAgentSession(input.projectId, session);
+    return session;
+  }
+
+  async resumeAutomationRun(projectId: string): Promise<AgentSession> {
+    await this.ensureInitialized();
+    const session = await this.store.getAgentSession(projectId);
+    if (!session) {
+      throw new Error("No agent session found for this project.");
+    }
+    syncAgentMemories(session);
+    if (!session.automation.selectedTargetUpdateId) {
+      throw new Error("Automation has no target to resume.");
+    }
+    const now = new Date().toISOString();
+    this.patchAutomationState(session, {
+      status: "running",
+      stopReason: null,
+      stopSummary: null,
+      currentStep: "jeff",
+      lastResumedAt: now,
+      resumeRequired: false,
+    });
+    this.appendJeffSlackMessage(session, "Resuming automation.");
+    await this.saveAgentSession(projectId, session);
+    this.kickAutomationRun(projectId);
+    return session;
+  }
+
+  async stopAutomationRun(input: StopAutomationRunInput): Promise<AgentSession> {
+    await this.ensureInitialized();
+    const session = await this.store.getAgentSession(input.projectId);
+    if (!session) {
+      throw new Error("No agent session found for this project.");
+    }
+    syncAgentMemories(session);
+    this.patchAutomationState(session, {
+      status: "stopped",
+      stopReason: "manual-stop",
+      stopSummary: input.summary ?? "Automation stopped.",
+      currentStep: "awaiting-user",
+      nextUpdateId: null,
+      resumeRequired: false,
+    });
+    this.appendJeffSlackMessage(session, input.summary ?? "Automation stopped.");
+    await this.saveAgentSession(input.projectId, session);
+    return session;
+  }
+
+  async requestAutomationFailureRecovery(input: RequestAutomationFailureRecoveryInput): Promise<AgentSession> {
+    await this.ensureInitialized();
+    const settings = await this.store.readSettings();
+    const session = await this.store.getAgentSession(input.projectId);
+    if (!session) {
+      throw new Error("No agent session found for this project.");
+    }
+    syncAgentMemories(session);
+    if (!session.automation.pendingRevertCommitSha || !session.automation.pendingRevertHistoryUpdateId) {
+      throw new Error("There is no revertable failed update to recover from.");
+    }
+
+    const existing = (session.pendingApprovals ?? []).find((approval) => approval.draftPayload?.action === "automationFailureRecovery");
+    if (!existing) {
+      this.queueApproval(session, {
+        kind: "outcome-decision",
+        requestedByDirectorId: "project-manager",
+        targetDirectorId: "project-manager",
+        summary: "Confirm failure recovery revert",
+        draftMessage: "Revert the last failed automation update and stop at the last successful point.",
+        draftPayload: {
+          action: "automationFailureRecovery",
+          projectId: input.projectId,
+          reportId: session.automation.pendingRevertReportId,
+          historyUpdateId: session.automation.pendingRevertHistoryUpdateId,
+          commitSha: session.automation.pendingRevertCommitSha,
+          provider: settings.advancedDefaults.provider,
+        },
+      });
+      this.appendJeffSlackMessage(session, "A revert is available. Confirm it when you want me to recover from the failed update.");
+    }
+    await this.saveAgentSession(input.projectId, session);
+    return session;
+  }
+
+  async confirmAutomationFailureRecovery(input: ConfirmAutomationFailureRecoveryInput): Promise<AgentSession> {
+    await this.ensureInitialized();
+    const session = await this.store.getAgentSession(input.projectId);
+    if (!session) {
+      throw new Error("No agent session found for this project.");
+    }
+    const approval = (session.pendingApprovals ?? []).find((item) => item.draftPayload?.action === "automationFailureRecovery");
+    if (approval) {
+      return this.executePendingApproval(session, approval);
+    }
+    throw new Error("No failure recovery action is waiting to be confirmed.");
+  }
+
+  private kickAutomationRun(projectId: string): void {
+    if (this.automationJobs.has(projectId)) {
+      return;
+    }
+    this.automationJobs.add(projectId);
+    void this.runAutomationLoop(projectId)
+      .catch((error) => {
+        console.warn("[automation] loop failed", error);
+      })
+      .finally(() => {
+        this.automationJobs.delete(projectId);
+      });
+  }
+
+  private async runAutomationLoop(projectId: string): Promise<void> {
+    for (;;) {
+      const session = await this.store.getAgentSession(projectId);
+      if (!session) {
+        return;
+      }
+      syncAgentMemories(session);
+      if (session.automation.status !== "running") {
+        return;
+      }
+
+      const shouldWait = await this.performAutomationStep(session);
+      if (!shouldWait) {
+        return;
+      }
+      await delay(AUTOMATION_POLL_INTERVAL_MS);
+    }
+  }
+
+  private async performAutomationStep(session: AgentSession): Promise<boolean> {
+    const settings = await this.store.readSettings();
+    const automation = buildDefaultAutomationState(session.automation);
+    const targetUpdateId = automation.selectedTargetUpdateId;
+    if (!targetUpdateId) {
+      await this.stopAutomationWithReason(session, "no-target", "Automation stopped because there is no selected target.");
+      return false;
+    }
+
+    const plan = resolveToddPlanSource(session);
+    if (plan.draft || plan.updates.length === 0) {
+      await this.stopAutomationWithReason(session, "no-confirmed-plan", "Automation stopped because Todd's current update plan is not confirmed yet.");
+      return false;
+    }
+
+    if (!isWithinAutomationHours(automation.constraints.allowedHours)) {
+      await this.stopAutomationWithReason(session, "outside-work-hours", "Automation stopped because the current time is outside the allowed work window.");
+      return false;
+    }
+
+    if (automation.constraints.codexMaxUsedPercent != null || automation.constraints.claudeMaxUsedPercent != null) {
+      const usage = await this.readUsage();
+      const codexPercent = resolveUsagePercent(usage.codex);
+      const claudePercent = resolveUsagePercent(usage.claude);
+      if (automation.constraints.codexMaxUsedPercent != null && codexPercent != null && codexPercent >= automation.constraints.codexMaxUsedPercent) {
+        await this.stopAutomationWithReason(session, "codex-usage-limit", `Automation stopped because Codex usage reached ${codexPercent}%.`);
+        return false;
+      }
+      if (automation.constraints.claudeMaxUsedPercent != null && claudePercent != null && claudePercent >= automation.constraints.claudeMaxUsedPercent) {
+        await this.stopAutomationWithReason(session, "claude-usage-limit", `Automation stopped because Claude usage reached ${claudePercent}%.`);
+        return false;
+      }
+    }
+
+    const targetUpdate = session.toddMemory.futureUpdatePlan.find((update) => update.id === targetUpdateId) ?? null;
+    if (targetUpdate?.status === "completed") {
+      await this.stopAutomationWithReason(
+        session,
+        "target-completed",
+        `Reached the selected target update: ${targetUpdate.title}.`,
+        "completed",
+      );
+      return false;
+    }
+
+    const pendingValidation = session.jeffMemory.pendingValidations[0] ?? null;
+    if (pendingValidation) {
+      const decision: JeffOutcomeDecision = pendingValidation.passed === false
+        ? "failure"
+        : pendingValidation.passed === true
+          ? "successful"
+          : "partially-successful";
+      await this.recordJeffOutcome({
+        projectId: session.projectId,
+        reportId: pendingValidation.id,
+        decision,
+        summary: pendingValidation.summary,
+      });
+      if (decision === "failure") {
+        const latest = await this.getAgentSession(session.projectId);
+        if (latest) {
+          await this.stopAutomationWithReason(
+            latest,
+            "failure",
+            latest.automation.pendingRevertCommitSha
+              ? "Automation stopped after a failed validation. A revert is available."
+              : "Automation stopped after a failed validation. Manual recovery is required.",
+          );
+        }
+        return false;
+      }
+      if (decision === "partially-successful") {
+        const latest = await this.getAgentSession(session.projectId);
+        if (latest) {
+          await this.stopAutomationWithReason(
+            latest,
+            "partially-successful",
+            "Automation stopped because validation returned an unresolved partial result.",
+          );
+        }
+        return false;
+      }
+      return true;
+    }
+
+    const pendingReport = session.jeffMemory.pendingReports[0] ?? null;
+    if (pendingReport) {
+      const pendingUpdate = pendingReport.updateId
+        ? session.toddMemory.futureUpdatePlan.find((update) => update.id === pendingReport.updateId) ?? null
+        : null;
+      if (pendingUpdate && shouldAutomationValidateUpdate(session, pendingUpdate)) {
+        this.patchAutomationState(session, {
+          currentStep: "pong",
+          nextUpdateId: pendingUpdate.id,
+        });
+        this.appendJeffSlackMessage(session, `Pong, validate "${pendingUpdate.title}" before I decide whether to continue.`);
+        await this.saveAgentSession(session.projectId, session);
+        await this.runValidationNow({
+          projectId: session.projectId,
+          updateId: pendingUpdate.id,
+          validationType: resolveAutomationValidationType(pendingUpdate),
+          provider: settings.advancedDefaults.provider,
+          model: settings.advancedDefaults.model,
+          claudeModel: settings.advancedDefaults.claudeModel,
+        });
+        return true;
+      }
+
+      const decision: JeffOutcomeDecision = pendingReport.rawReport.status === "blocked"
+        ? "failure"
+        : pendingReport.rawReport.status === "unexpected"
+          ? "partially-successful"
+          : "successful";
+      await this.recordJeffOutcome({
+        projectId: session.projectId,
+        reportId: pendingReport.id,
+        decision,
+        summary: pendingReport.summary,
+      });
+
+      if (decision === "partially-successful") {
+        const latest = await this.getAgentSession(session.projectId);
+        if (latest) {
+          const approvalReason = pendingReport.toddFollowUpReason ?? pendingReport.summary;
+          this.queueApproval(latest, {
+            kind: "outcome-decision",
+            requestedByDirectorId: "project-manager",
+            targetDirectorId: "rd-director",
+            summary: this.buildApprovalSummary("Todd follow-up plan required", approvalReason),
+            draftMessage: approvalReason,
+            draftPayload: {
+              action: "runSlackDirector",
+              directorId: "rd-director",
+              provider: settings.advancedDefaults.provider,
+              model: settings.advancedDefaults.model,
+              claudeModel: settings.advancedDefaults.claudeModel,
+              mode: "update-planning",
+              message: `Write one immediate follow-up update to resolve this issue before the roadmap continues: ${approvalReason}`,
+            },
+          });
+          await this.stopAutomationWithReason(
+            latest,
+            "partially-successful",
+            "Automation stopped because Jeff marked the latest step as partially successful. Todd needs to write the follow-up plan before continuing.",
+          );
+        }
+        return false;
+      }
+
+      if (decision === "failure") {
+        const latest = await this.getAgentSession(session.projectId);
+        if (latest) {
+          await this.stopAutomationWithReason(
+            latest,
+            "failure",
+            latest.automation.pendingRevertCommitSha
+              ? "Automation stopped after a failure. A revert is available."
+              : "Automation stopped after a failure. Manual recovery is required.",
+          );
+        }
+        return false;
+      }
+      return true;
+    }
+
+    const nextUpdate = plan.updates
+      .filter((update) => automation.inScopeUpdateIds.includes(update.id))
+      .filter((update) => update.status === "pending" || update.status === "in_progress")
+      .slice()
+      .sort((left, right) => compareAutomationUpdates(left, right, plan.roadmapVersions))[0] ?? null;
+
+    if (!nextUpdate) {
+      const latestSession = await this.getAgentSession(session.projectId);
+      if (latestSession?.toddMemory.futureUpdatePlan.find((update) => update.id === targetUpdateId)?.status === "completed") {
+        await this.stopAutomationWithReason(
+          latestSession,
+          "target-completed",
+          `Reached the selected target update: ${latestSession.toddMemory.futureUpdatePlan.find((update) => update.id === targetUpdateId)?.title ?? "target"}.`,
+          "completed",
+        );
+        return false;
+      }
+      await this.stopAutomationWithReason(session, "no-next-update", "Automation stopped because there is no next in-scope update to run.");
+      return false;
+    }
+
+    if (nextUpdate.status === "in_progress") {
+      this.patchAutomationState(session, {
+        currentStep: "awaiting-report",
+        nextUpdateId: nextUpdate.id,
+      });
+      await this.saveAgentSession(session.projectId, session);
+      return true;
+    }
+
+    this.patchAutomationState(session, {
+      currentStep: "ping",
+      nextUpdateId: nextUpdate.id,
+    });
+    this.appendJeffSlackMessage(session, `Next step toward the target: "${nextUpdate.title}".`);
+    this.appendSlackAssistantMessage(
+      session,
+      "rd-director",
+      `I’m handing Ping one specific update: ${nextUpdate.title}. ${nextUpdate.description}`,
+      { status: "complete" },
+    );
+    await this.saveAgentSession(session.projectId, session);
+    await this.routeUpdateToProgrammingNow({
+      projectId: session.projectId,
+      updateId: nextUpdate.id,
+      provider: settings.advancedDefaults.provider,
+      model: settings.advancedDefaults.model,
+      claudeModel: settings.advancedDefaults.claudeModel,
+    });
+    return true;
   }
 
   private async refreshProjectNow(input: RefreshProjectInput): Promise<void> {
@@ -6280,6 +7264,7 @@ Return your response as a conversational summary of what you found.`;
       if (toddResponsePlaceholder) {
         toddResponsePlaceholder.content = sanitizeSlackResponseContent(toddParsed.response, "rd-director");
         toddResponsePlaceholder.status = "complete";
+        toddResponsePlaceholder.createdAt = new Date().toISOString();
         toddResponsePlaceholder.metadata = {
           type: "refresh-update",
           directorId: "rd-director",
@@ -6287,6 +7272,7 @@ Return your response as a conversational summary of what you found.`;
           updated: toddUpdated,
           summary: scanSummary,
         };
+        this.syncSlackMessageToAgentChat(session, "rd-director", toddResponsePlaceholder);
       }
       session.slackPresenceGuestId = null;
       await persistSession();
@@ -6295,7 +7281,9 @@ Return your response as a conversational summary of what you found.`;
       if (toddResponsePlaceholder) {
         toddResponsePlaceholder.content = errorMessage;
         toddResponsePlaceholder.status = "complete";
+        toddResponsePlaceholder.createdAt = new Date().toISOString();
         toddResponsePlaceholder.metadata = null;
+        this.syncSlackMessageToAgentChat(session, "rd-director", toddResponsePlaceholder);
       } else {
         this.appendSlackAssistantMessage(session, "rd-director", errorMessage, { status: "complete" });
       }
@@ -6336,12 +7324,16 @@ Be concise and conversational.`;
       const jeffParsed = cleanJson(jeffRaw);
       jeffWorkingMsg.content = sanitizeSlackResponseContent(jeffParsed.response, "project-manager");
       jeffWorkingMsg.status = "complete";
+      jeffWorkingMsg.createdAt = new Date().toISOString();
       jeffWorkingMsg.metadata = null;
+      this.syncSlackMessageToAgentChat(session, "project-manager", jeffWorkingMsg);
       await persistSession();
     } catch (error) {
       jeffWorkingMsg.content = `Summary encountered an error: ${error instanceof Error ? error.message : "Unknown error"}`;
       jeffWorkingMsg.status = "complete";
+      jeffWorkingMsg.createdAt = new Date().toISOString();
       jeffWorkingMsg.metadata = null;
+      this.syncSlackMessageToAgentChat(session, "project-manager", jeffWorkingMsg);
       await persistSession();
     }
   }
@@ -6424,11 +7416,6 @@ Be concise and conversational.`;
       await this.startPlanNow(payload.input as StartPlanInput);
       return session;
     }
-    if (action === "applyPendingUpdate") {
-      await this.saveAgentSession(projectId, session);
-      await this.applyPlannedUpdateNow(projectId);
-      return session;
-    }
     if (action === "generateOutlineReport") {
       await this.saveAgentSession(projectId, session);
       await this.generateOutlineReportNow(payload.input as GenerateProjectOutlineReportInput);
@@ -6462,9 +7449,51 @@ Be concise and conversational.`;
       await this.runSlackDirectorApproval(session, removed);
       return (await this.getAgentSession(projectId)) ?? session;
     }
+    if (action === "automationFailureRecovery") {
+      await this.runAutomationFailureRecovery(session, removed);
+      return (await this.getAgentSession(projectId)) ?? session;
+    }
 
     await this.saveAgentSession(projectId, session);
     throw new Error("Unsupported approval action.");
+  }
+
+  private async runAutomationFailureRecovery(session: AgentSession, approval: PendingApproval): Promise<void> {
+    const payload = approval.draftPayload ?? {};
+    const historyUpdateId = typeof payload.historyUpdateId === "string" ? payload.historyUpdateId : null;
+    if (!historyUpdateId) {
+      throw new Error("Recovery approval is missing the failed history update.");
+    }
+
+    await this.undoUpdate(session.projectId, historyUpdateId);
+    const latest = await this.getAgentSession(session.projectId);
+    if (!latest) {
+      return;
+    }
+
+    const failedOutcome = latest.jeffMemory.outcomeLog.find((entry) => entry.reportId === payload.reportId) ?? null;
+    if (failedOutcome?.updateId) {
+      const update = latest.toddMemory.futureUpdatePlan.find((item) => item.id === failedOutcome.updateId);
+      if (update) {
+        update.status = "pending";
+      }
+    }
+    this.patchAutomationState(latest, {
+      status: "paused",
+      stopReason: "awaiting-user",
+      stopSummary: "Recovery revert completed. Todd should replan from the last successful point before automation resumes.",
+      currentStep: "awaiting-user",
+      resumeRequired: true,
+      pendingRevertReportId: null,
+      pendingRevertHistoryUpdateId: null,
+      pendingRevertCommitSha: null,
+    });
+    this.appendJeffSlackMessage(
+      latest,
+      "Recovery revert completed. Todd should replan from the last successful point before automation resumes.",
+    );
+    latest.versionUpdates = [...latest.toddMemory.futureUpdatePlan];
+    await this.saveAgentSession(latest.projectId, latest);
   }
 
   private async applyStoredDataApproval(session: AgentSession, approval: PendingApproval): Promise<void> {
@@ -6486,7 +7515,11 @@ Be concise and conversational.`;
         const timestamp = new Date().toISOString();
         session.toddMemory.backupNotes = [
           ...(session.toddMemory.backupNotes ?? []),
-          ...session.toddMemory.notes.map((note) => `[${timestamp}] ${note}`),
+          ...session.toddMemory.notes.map((note) => ({
+            ...note,
+            tag: "likely-backup" as const,
+            content: `[${timestamp}] ${note.content}`,
+          })),
         ];
         session.toddMemory.notes = [];
       }
@@ -6502,7 +7535,11 @@ Be concise and conversational.`;
         const timestamp = new Date().toISOString();
         session.toddMemory.backupNotes = [
           ...(session.toddMemory.backupNotes ?? []),
-          ...session.toddMemory.notes.map((note) => `[${timestamp}] ${note}`),
+          ...session.toddMemory.notes.map((note) => ({
+            ...note,
+            tag: "likely-backup" as const,
+            content: `[${timestamp}] ${note.content}`,
+          })),
         ];
         session.toddMemory.notes = [];
       }
@@ -6556,7 +7593,7 @@ Be concise and conversational.`;
       session.danMemory.forgottenMemories = session.danMemory.forgottenMemories ?? [];
       const timestamp = new Date().toISOString();
       for (const note of session.danMemory.notes ?? []) {
-        session.danMemory.forgottenMemories.push(`[${timestamp} | confirmed] ${note}`);
+        session.danMemory.forgottenMemories.push(`[${timestamp} | confirmed] ${note.content}`);
       }
 
       archiveDanNotes(session, "dan draft confirmed", session.danMemory.notes ?? []);
@@ -6837,50 +7874,6 @@ Be concise and conversational.`;
     return session;
   }
 
-  async createPillarSubAgents(input: CreatePillarSubAgentsInput): Promise<AgentSession> {
-    await this.ensureInitialized();
-    const session = await this.store.getAgentSession(input.projectId);
-    if (!session) throw new Error("No agent session found for this project.");
-
-    const corePillars = session.corePillars.filter((p) => p.pillarType === "core");
-    if (corePillars.length === 0) throw new Error("No core pillars found. Define core pillars first.");
-
-    const departments: DirectorId[] = ["creative-director", "rd-director", "programming-director", "validation-director"];
-
-    for (const pillar of corePillars) {
-      for (const deptId of departments) {
-        // Skip if a sub-agent for this pillar+department already exists
-        const exists = session.dynamicSubAgents.some(
-          (sa) => sa.sourcePillarId === pillar.id && sa.departmentDirectorId === deptId,
-        );
-        if (exists) continue;
-
-        session.dynamicSubAgents.push({
-          id: randomUUID(),
-          skillId: "",
-          name: `${pillar.name} — ${DIRECTOR_LABELS[deptId]}`,
-          role: pillar.function?.summary ?? `Sub-agent for ${pillar.name}`,
-          assignedUpdates: [],
-          conversation: [],
-          sourcePillarId: pillar.id,
-          departmentDirectorId: deptId,
-          modelTier: "mini",
-        });
-      }
-    }
-
-    // Clean up orphaned sub-agents (source pillar no longer exists)
-    const pillarIds = new Set(session.corePillars.map((p) => p.id));
-    session.dynamicSubAgents = session.dynamicSubAgents.filter(
-      (sa) => !sa.sourcePillarId || pillarIds.has(sa.sourcePillarId),
-    );
-
-    session.updatedAt = new Date().toISOString();
-    await this.store.saveAgentSession(session);
-    this.emit({ type: "agent.session", projectId: input.projectId, session });
-    return session;
-  }
-
   async confirmAgentData(input: ConfirmAgentDataInput): Promise<AgentSession> {
     await this.ensureInitialized();
     const session = await this.store.getAgentSession(input.projectId);
@@ -6943,6 +7936,8 @@ Be concise and conversational.`;
     session.pingMemory.codebaseMapSummary = session.toddMemory.codebaseIndexedMap?.summary ?? null;
     session.pingMemory.latestRawReport = null;
     session.pingMemory.latestJeffReport = null;
+    session.slackActiveDirectorId = "programming-director";
+    session.slackPresenceGuestId = "programming-director";
 
     session.updatedAt = new Date().toISOString();
     await this.store.saveAgentSession(session);
@@ -6962,6 +7957,168 @@ Be concise and conversational.`;
 
   async routeUpdateToProgramming(input: RouteUpdateToProgrammingInput): Promise<{ started: true }> {
     return this.routeUpdateToProgrammingNow(input);
+  }
+
+  async recordJeffOutcome(input: {
+    projectId: string;
+    reportId: string;
+    decision: JeffOutcomeDecision;
+    summary: string;
+  }): Promise<void> {
+    const session = await this.store.getAgentSession(input.projectId);
+    if (!session) return;
+    syncAgentMemories(session);
+
+    const reportIndex = session.jeffMemory.pendingReports.findIndex((r) => r.id === input.reportId);
+    let report = reportIndex >= 0 ? session.jeffMemory.pendingReports[reportIndex] : null;
+    const validationIndex = session.jeffMemory.pendingValidations.findIndex((r) => r.id === input.reportId);
+    const validation = validationIndex >= 0 ? session.jeffMemory.pendingValidations[validationIndex] : null;
+    const linkedReportIndex = !report && validation?.updateId
+      ? session.jeffMemory.pendingReports.findIndex((item) => item.updateId === validation.updateId)
+      : -1;
+    if (!report && linkedReportIndex >= 0) {
+      report = session.jeffMemory.pendingReports[linkedReportIndex] ?? null;
+    }
+
+    if (reportIndex >= 0) {
+      session.jeffMemory.pendingReports.splice(reportIndex, 1);
+    } else if (linkedReportIndex >= 0) {
+      session.jeffMemory.pendingReports.splice(linkedReportIndex, 1);
+    }
+    if (validationIndex >= 0) {
+      session.jeffMemory.pendingValidations.splice(validationIndex, 1);
+    }
+
+    const updateId = report?.updateId ?? validation?.updateId ?? null;
+    const historyUpdateId = report?.historyUpdateId ?? validation?.historyUpdateId ?? null;
+    const commitSha = report?.commitSha ?? null;
+    const decisionStatus: PingRawReportStatus = input.decision === "successful"
+      ? report?.rawReport.status ?? "success"
+      : input.decision === "partially-successful"
+        ? "unexpected"
+        : report?.rawReport.status === "unexpected"
+          ? "unexpected"
+          : "blocked";
+
+    const outcomeEntry: JeffOutcomeEntry = {
+      id: randomUUID(),
+      updateId,
+      reportId: input.reportId,
+      decision: input.decision,
+      summary: input.summary,
+      revertTriggered: input.decision === "failure",
+      createdAt: new Date().toISOString(),
+    };
+    session.jeffMemory.outcomeLog.push(outcomeEntry);
+
+    if (input.decision === "successful" && updateId) {
+      const update = session.toddMemory.futureUpdatePlan.find((u) => u.id === updateId);
+      if (update) {
+        update.status = "completed";
+        session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
+      }
+      session.automation.lastSuccessfulUpdateId = updateId;
+      session.automation.lastSuccessfulHistoryUpdateId = historyUpdateId;
+      session.automation.pendingRevertReportId = null;
+      session.automation.pendingRevertHistoryUpdateId = null;
+      session.automation.pendingRevertCommitSha = null;
+    }
+
+    if (input.decision === "partially-successful") {
+      if (updateId) {
+        const update = session.toddMemory.futureUpdatePlan.find((u) => u.id === updateId);
+        if (update) {
+          update.status = "failed";
+          session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
+        }
+      }
+      session.toddMemory.troubleLog.push({
+        id: randomUUID(),
+        title: `Partial: ${report?.title ?? "Validation report"}`,
+        details: input.summary,
+        priority: "medium",
+        occurrences: 1,
+        lastSeenAt: new Date().toISOString(),
+        updateIds: updateId ? [updateId] : [],
+      });
+    }
+
+    if (input.decision === "failure") {
+      session.toddMemory.troubleLog.push({
+        id: randomUUID(),
+        title: `Failed: ${report?.title ?? "Validation report"}`,
+        details: input.summary,
+        priority: "high",
+        occurrences: 1,
+        lastSeenAt: new Date().toISOString(),
+        updateIds: updateId ? [updateId] : [],
+      });
+      if (updateId) {
+        const update = session.toddMemory.futureUpdatePlan.find((u) => u.id === updateId);
+        if (update) {
+          update.status = "failed";
+          session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
+        }
+      }
+      session.automation.pendingRevertReportId = commitSha && historyUpdateId ? input.reportId : null;
+      session.automation.pendingRevertHistoryUpdateId = historyUpdateId;
+      session.automation.pendingRevertCommitSha = commitSha;
+    }
+
+    if (updateId) {
+      session.toddMemory.previousUpdateLog.push({
+        id: randomUUID(),
+        updateId,
+        goal: report?.rawReport.goal ?? report?.title ?? validation?.summary ?? "Execution update",
+        outcome: input.summary,
+        status: decisionStatus,
+        reportId: input.reportId,
+        historyUpdateId,
+        commitSha,
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    this.appendJeffSlackMessage(
+      session,
+      input.decision === "successful"
+        ? `Marked as successful. ${input.summary}`
+        : input.decision === "partially-successful"
+          ? `Marked as partially successful. Todd needs a follow-up plan before this continues.`
+          : commitSha && historyUpdateId
+            ? `Marked as failure. Automation stopped and a revert is available if you want it.`
+            : `Marked as failure. Automation stopped and this needs manual recovery.`,
+      report ?? null,
+    );
+    session.slackActiveDirectorId = "project-manager";
+    session.slackPresenceGuestId = null;
+    session.automation.updatedAt = new Date().toISOString();
+
+    await this.saveAgentSession(input.projectId, session);
+  }
+
+  async assignPongValidation(input: {
+    projectId: string;
+    instruction: string;
+    updateId?: string | null;
+  }): Promise<void> {
+    const session = await this.store.getAgentSession(input.projectId);
+    if (!session) return;
+    syncAgentMemories(session);
+
+    session.pongMemory.jeffInstruction = input.instruction;
+    if (input.updateId) {
+      const update = session.toddMemory.futureUpdatePlan.find((item) => item.id === input.updateId) ?? null;
+      session.pongTaskContext = {
+        currentTask: update ? `Validate: ${update.title}` : "Validate the latest project state",
+        lastResult: session.pongTaskContext?.lastResult ?? null,
+        lastFailureReason: session.pongTaskContext?.lastFailureReason ?? null,
+        toddUpdateExplanation: update?.description ?? null,
+        relevantPillarIds: update?.pillarIds ?? [],
+      };
+    }
+    this.appendJeffSlackMessage(session, `Pong, validate this before I decide the outcome. ${input.instruction}`);
+    await this.saveAgentSession(input.projectId, session);
   }
 
   private async runValidationNow(input: RunValidationInput): Promise<ValidationResult> {
@@ -7007,9 +8164,12 @@ Be concise and conversational.`;
     const updateExplanation = session.pongTaskContext?.toddUpdateExplanation
       ? `\nTodd's explanation of what this update should achieve: ${session.pongTaskContext.toddUpdateExplanation}`
       : "";
+    const jeffInstruction = session.pongMemory.jeffInstruction
+      ? `\nJeff's validation instruction: ${session.pongMemory.jeffInstruction}`
+      : "";
     const validationPrompt = input.validationType === "visual"
-      ? `You are validating the visual output of "${project.name}". Compare the current state against the confirmed intended visual direction.\n${coreContext}${updateExplanation}\n${screenshotPaths.length > 0 ? `Screenshots taken: ${screenshotPaths.length}` : "No screenshots available."}\nDoes the current output match the intended visual direction? Report any mismatches.`
-      : `You are validating the functional output of "${project.name}". Test whether the latest update works correctly.\n${coreContext}${updateExplanation}\nDoes the feature work as intended? Report any issues.`;
+      ? `You are validating the visual output of "${project.name}". Compare the current state against the confirmed intended visual direction.\n${coreContext}${updateExplanation}${jeffInstruction}\n${screenshotPaths.length > 0 ? `Screenshots taken: ${screenshotPaths.length}` : "No screenshots available."}\nDoes the current output match the intended visual direction? Report any mismatches.`
+      : `You are validating the functional output of "${project.name}". Test whether the latest update works correctly.\n${coreContext}${updateExplanation}${jeffInstruction}\nDoes the feature work as intended? Report any issues.`;
 
     const service = this.aiService(input.provider);
     const model = input.provider === "claude" ? input.claudeModel : input.model;
@@ -7033,6 +8193,19 @@ Be concise and conversational.`;
       screenshotPaths,
       createdAt: new Date().toISOString(),
     };
+    const linkedJeffReport = input.updateId
+      ? session.jeffMemory.pendingReports.find((report) => report.updateId === input.updateId) ?? null
+      : null;
+    const validationReport: PongValidationReport = {
+      id: randomUUID(),
+      updateId: input.updateId,
+      historyUpdateId: linkedJeffReport?.historyUpdateId ?? null,
+      summary: result.summary,
+      passed: result.passed,
+      details: result.details || null,
+      screenshotPaths,
+      createdAt: result.createdAt,
+    };
 
     // Update Pong's short-horizon context with result
     if (session.pongTaskContext) {
@@ -7041,6 +8214,35 @@ Be concise and conversational.`;
     }
 
     session.validationResults.push(result);
+    session.jeffMemory.pendingValidations.push(validationReport);
+    session.pongMemory.previousValidationReports.push(validationReport);
+    session.pongMemory.latestValidationReport = validationReport;
+    session.pongMemory.screenshotPaths = [...screenshotPaths];
+    session.pongMemory.jeffInstruction = null;
+    this.appendSlackAssistantMessage(
+      session,
+      "validation-director",
+      typeof parsed.zhResponse === "string" && parsed.zhResponse.trim() ? parsed.zhResponse : parsed.response,
+      {
+        status: "complete",
+        metadata: buildTranslatedMessageMetadata(
+          typeof parsed.zhResponse === "string" && parsed.zhResponse.trim() ? parsed.zhResponse : parsed.response,
+          typeof parsed.enTranslation === "string" && parsed.enTranslation.trim()
+            ? parsed.enTranslation
+            : (typeof parsed.validationSummary === "string" && parsed.validationSummary.trim()
+              ? parsed.validationSummary
+              : parsed.response),
+        ),
+      },
+    );
+    this.appendJeffSlackMessage(
+      session,
+      result.passed
+        ? "Pong reports that the validation passed. I’m reviewing it now."
+        : "Pong found a problem in validation. I’m reviewing it now.",
+    );
+    session.slackActiveDirectorId = "project-manager";
+    session.slackPresenceGuestId = null;
     session.updatedAt = new Date().toISOString();
     await this.store.saveAgentSession(session);
     this.emit({ type: "agent.session", projectId: input.projectId, session });
@@ -7109,41 +8311,14 @@ Be concise and conversational.`;
 
     await this.git.initializeRepository(localPath, "main");
 
-    const flowchartPath = join(localPath, ".programs", "system-flow.mmd");
     const description = deriveProjectDescription(input.name, input.initialIdea);
-    const starterFlowchart = createStarterFlowchart(input.name);
     await writeTextFile(
       join(localPath, "README.md"),
       `# ${input.name}\n\n${description}\n`,
     );
-    await writeTextFile(flowchartPath, starterFlowchart);
-
-    let remoteUrl: string | null = null;
-    let defaultBranch = "main";
-    if (input.createRemote) {
-      const githubConfig = this.resolveGitHubClientConfig(settings);
-      const githubStatus = await this.github.getStatus(githubConfig);
-      if (!githubStatus.configured) {
-        throw new Error(this.githubConfigurationMessage());
-      }
-      if (!githubStatus.loggedIn) {
-        throw new Error("Connect GitHub before saving this program with online sync.");
-      }
-
-      const repo = await this.github.createRepository({
-        client: githubConfig,
-        name: slugifyRepositoryName(input.name),
-        description,
-        visibility: input.visibility,
-      });
-      remoteUrl = repo.remoteUrl;
-      defaultBranch = repo.defaultBranch || "main";
-      await this.git.configureRemote(localPath, remoteUrl);
-    }
 
     const runtimeConfig = await detectRuntimeConfig(localPath);
     runtimeConfig.initialIdea = input.initialIdea || null;
-    runtimeConfig.githubRepoName = slugifyRepositoryName(input.name);
 
     const project: Project = {
       id: randomUUID(),
@@ -7151,10 +8326,7 @@ Be concise and conversational.`;
       iconColor: input.iconColor,
       description,
       localPath,
-      remoteUrl,
-      defaultBranch,
       threadId: null,
-      flowchartPath,
       lastUpdatedAt: null,
       status: "idle",
       createdAt: new Date().toISOString(),
@@ -7163,13 +8335,7 @@ Be concise and conversational.`;
       lastError: null,
     };
 
-    const commitSha = await this.git.commitAll(localPath, `Initialize ${input.name}`);
-    if (remoteUrl && commitSha) {
-      await this.git.push(localPath, defaultBranch, {
-        remoteUrl,
-        token: await this.github.getStoredToken(),
-      });
-    }
+    await this.git.commitAll(localPath, `Initialize ${input.name}`);
 
     await this.store.createProject(project);
     this.emit({ type: "project.updated", project });
@@ -7196,33 +8362,9 @@ Be concise and conversational.`;
       await this.git.initializeRepository(input.localPath, "main");
     }
 
-    let remoteUrl = inspected.remoteUrl;
-    let defaultBranch = inspected.defaultBranch;
     const name = deriveAttachedProjectName(input.localPath);
 
-    if (!remoteUrl && input.createRemote) {
-      const githubConfig = this.resolveGitHubClientConfig(settings);
-      const githubStatus = await this.github.getStatus(githubConfig);
-      if (!githubStatus.configured) {
-        throw new Error(this.githubConfigurationMessage());
-      }
-      if (!githubStatus.loggedIn) {
-        throw new Error("Connect GitHub before saving this program with online sync.");
-      }
-
-      const repo = await this.github.createRepository({
-        client: githubConfig,
-        name: slugifyRepositoryName(name),
-        description: deriveProjectDescription(name),
-        visibility: input.visibility,
-      });
-      remoteUrl = repo.remoteUrl;
-      defaultBranch = repo.defaultBranch || defaultBranch;
-      await this.git.configureRemote(input.localPath, remoteUrl);
-    }
-
     const runtimeConfig = await detectRuntimeConfig(input.localPath);
-    runtimeConfig.githubRepoName = slugifyRepositoryName(name);
 
     const project: Project = {
       id: randomUUID(),
@@ -7230,10 +8372,7 @@ Be concise and conversational.`;
       iconColor: input.iconColor,
       description: deriveProjectDescription(name),
       localPath: input.localPath,
-      remoteUrl,
-      defaultBranch,
       threadId: null,
-      flowchartPath: join(input.localPath, ".programs", "system-flow.mmd"),
       lastUpdatedAt: null,
       status: "idle",
       createdAt: new Date().toISOString(),
@@ -7298,71 +8437,6 @@ Be concise and conversational.`;
       message: `${project.name} was removed from the dashboard.`,
     });
     return { removed: true };
-  }
-
-  async enableProjectSync(input: ProjectEnableSyncInput): Promise<Project> {
-    const settings = await this.store.readSettings();
-    let project = await this.requireProject(input.projectId);
-
-    if (project.remoteUrl) {
-      throw new Error("This project is already connected to GitHub.");
-    }
-
-    project = await this.updateProjectStatus(project, "syncing", null);
-
-    try {
-      const githubConfig = this.resolveGitHubClientConfig(settings);
-      if (!githubConfig) {
-        throw new Error(this.githubConfigurationMessage());
-      }
-
-      const githubStatus = await this.github.getStatus(githubConfig);
-      if (!githubStatus.loggedIn) {
-        throw new Error("Connect GitHub in Settings before enabling GitHub sync.");
-      }
-
-      const branch = (await this.git.getCurrentBranch(project.localPath)) || project.defaultBranch || "main";
-      const repo = await this.github.createRepository({
-        client: githubConfig,
-        name: project.runtimeConfig.githubRepoName || slugifyRepositoryName(project.name),
-        description: project.description,
-        visibility: input.visibility,
-      });
-
-      await this.git.configureRemote(project.localPath, repo.remoteUrl);
-
-      if (!(await this.git.hasCommit(project.localPath))) {
-        const commitSha = await this.git.commitAll(project.localPath, `Initialize ${project.name}`);
-        if (!commitSha) {
-          throw new Error("Add at least one file before enabling GitHub sync.");
-        }
-      }
-
-      await this.git.push(project.localPath, branch, {
-        remoteUrl: repo.remoteUrl,
-        token: await this.github.getStoredToken(),
-      });
-
-      project.remoteUrl = repo.remoteUrl;
-      project.defaultBranch = branch;
-      project.status = "idle";
-      project.lastError = null;
-      project.updatedAt = new Date().toISOString();
-      await this.store.updateProject(project);
-      this.emit({ type: "project.updated", project });
-      this.emit({
-        type: "toast",
-        level: "success",
-        message: "GitHub sync is enabled for this project.",
-      });
-
-      return project;
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "PROGRAMS could not connect this project to GitHub.";
-      await this.updateProjectStatus(project, "idle", message);
-      throw error;
-    }
   }
 
   async getCodexStatus(): Promise<CodexAuthStatus> {
@@ -7562,11 +8636,6 @@ Be concise and conversational.`;
     });
   }
 
-  async getGitHubStatus(): Promise<GitHubAuthStatus> {
-    const settings = await this.store.readSettings();
-    return this.github.getStatus(this.resolveGitHubClientConfig(settings));
-  }
-
   async inspectAttachPath(localPath: string): Promise<AttachPathInspection> {
     const normalizedPath = localPath.trim();
     if (!normalizedPath) {
@@ -7575,8 +8644,6 @@ Be concise and conversational.`;
         name: null,
         exists: false,
         isRepo: false,
-        remoteUrl: null,
-        defaultBranch: null,
       };
     }
 
@@ -7587,8 +8654,6 @@ Be concise and conversational.`;
         name: deriveAttachedProjectName(normalizedPath),
         exists: false,
         isRepo: false,
-        remoteUrl: null,
-        defaultBranch: null,
       };
     }
 
@@ -7598,26 +8663,7 @@ Be concise and conversational.`;
       name: deriveAttachedProjectName(normalizedPath),
       exists: true,
       isRepo: inspected.isRepo,
-      remoteUrl: inspected.remoteUrl,
-      defaultBranch: inspected.defaultBranch,
     };
-  }
-
-  async loginGitHub() {
-    const settings = await this.store.readSettings();
-    const client = this.resolveGitHubClientConfig(settings);
-    if (!client) {
-      throw new Error(this.githubConfigurationMessage());
-    }
-
-    return this.github.login(client);
-  }
-
-  async logoutGitHub(): Promise<GitHubAuthStatus> {
-    const settings = await this.store.readSettings();
-    const status = await this.github.logout(this.resolveGitHubClientConfig(settings));
-    await this.emitSetupUpdated(settings, undefined, undefined, status);
-    return status;
   }
 
   async readSetup(): Promise<SetupSnapshot> {
@@ -7731,7 +8777,7 @@ Be concise and conversational.`;
     project = await this.updateProjectStatus(project, "running", null);
 
     try {
-      await this.git.ensureRepository(project.localPath, null, project.defaultBranch);
+      await this.git.ensureRepository(project.localPath);
       await this.runner.install(project);
       return await this.runner.start(project);
     } catch (error) {
@@ -7821,105 +8867,148 @@ Be concise and conversational.`;
     }
   }
 
-  private resolveGitHubClientConfig(settings: Settings): GitHubClientConfig | null {
-    const overrideId = settings.githubClientIdOverride?.trim();
-    if (overrideId) {
-      return {
-        clientId: overrideId,
-        source: "override",
-      };
+  private async rollbackPingStartupState(projectId: string, message: string): Promise<void> {
+    const session = await this.store.getAgentSession(projectId);
+    if (!session) {
+      return;
     }
+    syncAgentMemories(session);
 
-    const bundledId = process.env.GITHUB_CLIENT_ID?.trim();
-    if (bundledId) {
-      return {
-        clientId: bundledId,
-        source: "bundled",
-      };
-    }
-
-    return null;
-  }
-
-  private getProgramsPlaywrightRunnerPath(settings: Settings): string {
-    const preferredRoot = settings.appSourcePath?.trim();
-    if (preferredRoot) {
-      return join(preferredRoot, "scripts", "programs-playwright-runner.mjs");
-    }
-
-    return this.playwright.getRunnerScriptPath();
-  }
-
-  private async getAttachedSkill(project: Project): Promise<Skill | null> {
-    const skillId = project.runtimeConfig.attachedSkillId ?? null;
-    if (!skillId) {
-      return null;
-    }
-
-    return this.store.readSkill(skillId);
-  }
-
-  private async buildProjectSkillInstructions(
-    project: Project,
-    provider: AiProvider,
-    settings: Settings,
-  ): Promise<string | null> {
-    const skill = await this.getAttachedSkill(project);
-    if (!skill) {
-      return null;
-    }
-
-    if (skill.sourceProvider === "claude" && provider !== "claude") {
-      return null;
-    }
-    if (skill.sourceProvider === "codex" && provider !== "codex") {
-      return null;
-    }
-
-    if (skill.sourceType === "plugin") {
-      if (provider !== "claude" || skill.installStatus !== "ready") {
-        return null;
+    const activeUpdateId = session.pingMemory.activeUpdateId;
+    if (activeUpdateId) {
+      const update = session.toddMemory.futureUpdatePlan.find((item) => item.id === activeUpdateId) ?? null;
+      if (update && update.status === "in_progress") {
+        update.status = "pending";
       }
-
-      return `Claude plugin "${skill.installSlug ?? skill.name}" is installed for this program. Use it when it is relevant to the task.`;
+      session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
     }
 
-    const runnerPath = this.getProgramsPlaywrightRunnerPath(settings);
-    return skill.instructions.replaceAll(USER_TESTING_RUNNER_PLACEHOLDER, runnerPath);
+    session.pingMemory.activeUpdateId = null;
+    session.pingMemory.activeTask = null;
+    session.pingMemory.context = null;
+    session.pingMemory.latestRawReport = null;
+    session.pingMemory.latestJeffReport = null;
+    session.pingTaskContext = null;
+    this.appendSlackAssistantMessage(session, "programming-director", message, { status: "complete" });
+    this.appendPingLifecycleMessage(session, "outro");
+    session.slackActiveDirectorId = "project-manager";
+    session.slackPresenceGuestId = null;
+    await this.saveAgentSession(projectId, session);
   }
 
-  private async appendProjectSkillInstructions(
-    prompt: string,
-    project: Project,
-    provider: AiProvider,
-    settings: Settings,
-  ): Promise<string> {
-    const skillInstructions = await this.buildProjectSkillInstructions(project, provider, settings);
-    if (!skillInstructions) {
-      return prompt;
-    }
-
-    return `${prompt}\n\nAttached skill instructions:\n${skillInstructions}`;
+  private async reconcileToddAfterDirectPingRun(
+    session: AgentSession,
+    report: PingExecutionReportSnapshot,
+  ): Promise<void> {
+    const matchedUpdate = findToddOverlapForDirectPingRun(session, report.task, report.rawReport);
+    const statusLabel = report.rawReport.status === "no_changes"
+      ? "did not need code changes"
+      : report.rawReport.status === "success"
+        ? "finished successfully"
+        : report.rawReport.status === "unexpected"
+          ? "finished with an unexpected outcome"
+          : "hit a blocker";
+    const note = matchedUpdate
+      ? `Todd note: Ping completed a direct request that appears to overlap with "${matchedUpdate.title}". Ping ${statusLabel}.`
+      : `Todd note: Ping completed a direct request that does not clearly map to an existing Todd plan item. Ping ${statusLabel}.`;
+    const indexedMap = session.toddMemory.codebaseIndexedMap ?? {
+      summary: session.pingMemory.codebaseMapSummary ?? null,
+      indexedAt: null,
+      featureAreas: [],
+      repoNotes: [],
+    };
+    indexedMap.indexedAt = new Date().toISOString();
+    indexedMap.repoNotes = Array.from(new Set([note, ...indexedMap.repoNotes]));
+    session.toddMemory.codebaseIndexedMap = indexedMap;
+    session.toddMemory.notes = mergeTaggedNotes(session.toddMemory.notes, [note], "general");
+    this.appendSlackAssistantMessage(session, "rd-director", note, { status: "complete" });
   }
 
   private async startPlanNow(input: StartPlanInput): Promise<{ started: true }> {
     const settings = await this.store.readSettings();
     await this.requireProviderReady(input.provider, settings);
     const project = await this.requireProject(input.projectId);
-    const skillInstructions = await this.buildProjectSkillInstructions(project, input.provider, settings);
-    const agentSession = await this.store.getAgentSession(input.projectId);
+    const agentSession = await this.getOrCreateAgentSession(input.projectId, input.provider);
     const coreDetailsContext = formatCoreDetails(agentSession);
+    const service = this.aiService(input.provider);
+    const seededTask = input.pingTaskSnapshot ?? buildPingTaskSnapshot({
+      source: "direct-ping-request",
+      projectId: input.projectId,
+      originalUserRequest: input.prompt,
+      toddExplanation: input.prompt,
+      toddCodebaseMapSummary: agentSession.toddMemory.codebaseIndexedMap?.summary ?? null,
+      coreDetailsContext: coreDetailsContext || null,
+      runtime: {
+        provider: input.provider,
+        model: input.model,
+        claudeModel: input.claudeModel,
+        reasoningEffort: input.reasoningEffort,
+        planningMode: input.planningMode,
+        contextPaths: [...input.contextPaths],
+      },
+    });
+    const pingTaskSnapshot: PingTaskSnapshot = {
+      ...seededTask,
+      coreDetailsContext: seededTask.coreDetailsContext ?? (coreDetailsContext || null),
+    };
     const enrichedInput: StartPlanInput = {
       ...input,
-      skillInstructions,
       coreDetailsContext: coreDetailsContext || null,
+      pingTaskSnapshot,
     };
-    const service = this.aiService(input.provider);
+    pingTaskSnapshot.planPrompt = service.previewPlanningPrompt(project, enrichedInput);
     const providerLabel = input.provider === "claude" ? "Claude" : "Codex";
+    const confirmLabel = pingTaskSnapshot.updateTitle ?? pingTaskSnapshot.originalUserRequest;
+    const confirmText = `I've received the task: ${
+      confirmLabel.length > 80 ? `${confirmLabel.slice(0, 77).trim()}...` : confirmLabel
+    }`;
+
+    agentSession.pingMemory.activeTask = pingTaskSnapshot.updateTitle ?? pingTaskSnapshot.originalUserRequest;
+    agentSession.pingMemory.context = pingTaskSnapshot.toddExplanation ?? pingTaskSnapshot.updateDescription ?? pingTaskSnapshot.originalUserRequest;
+    agentSession.pingMemory.codebaseMapSummary = pingTaskSnapshot.toddCodebaseMapSummary;
+    agentSession.pingMemory.latestRawReport = null;
+    agentSession.pingMemory.latestJeffReport = null;
+    agentSession.pingMemory.currentRun = {
+      task: pingTaskSnapshot,
+      plan: null,
+      report: null,
+    };
+    agentSession.slackActiveDirectorId = "programming-director";
+    agentSession.slackPresenceGuestId = "programming-director";
+    this.appendSlackAssistantMessage(agentSession, "programming-director", confirmText, {
+      status: "complete",
+      metadata: { type: "ping-task", task: pingTaskSnapshot },
+    });
+    agentSession.updatedAt = new Date().toISOString();
+    await this.store.saveAgentSession(agentSession);
+    this.emit({ type: "agent.session", projectId: input.projectId, session: agentSession });
 
     if (input.planningMode === "none") {
       const executingProject = await this.updateProjectStatus(project, "executing", null);
       const draft = service.createDirectExecutionDraft(executingProject, enrichedInput);
+      const latestSession = await this.store.getAgentSession(input.projectId);
+      if (latestSession) {
+        const plan = buildPingPlanSnapshot(draft);
+        if (latestSession.pingMemory.currentRun) {
+          latestSession.pingMemory.currentRun.plan = plan;
+        }
+        this.appendSlackAssistantMessage(
+          latestSession,
+          "programming-director",
+          draft.explanation || "Plan skipped by request. Ping is building now.",
+          {
+            status: "complete",
+            metadata: {
+              type: "ping-plan-summary",
+              summary: draft.explanation || "Plan skipped by request.",
+              plan,
+            },
+          },
+        );
+        latestSession.updatedAt = new Date().toISOString();
+        await this.store.saveAgentSession(latestSession);
+        this.emit({ type: "agent.session", projectId: input.projectId, session: latestSession });
+      }
       void this.executePlan(executingProject, settings, draft).catch(() => undefined);
       return { started: true };
     }
@@ -7934,6 +9023,23 @@ Be concise and conversational.`;
         latest.updatedAt = new Date().toISOString();
         await this.store.updateProject(latest);
         this.emit({ type: "project.updated", project: latest });
+
+        // Announce plan completion in Slack
+        const latestSession = await this.store.getAgentSession(input.projectId);
+        if (latestSession) {
+          const plan = buildPingPlanSnapshot(draft);
+          const planSummary = draft.explanation || draft.summary || "Plan completed.";
+          if (latestSession.pingMemory.currentRun) {
+            latestSession.pingMemory.currentRun.plan = plan;
+          }
+          this.appendSlackAssistantMessage(latestSession, "programming-director", planSummary, {
+            status: "complete",
+            metadata: { type: "ping-plan-summary", summary: planSummary, plan },
+          });
+          latestSession.updatedAt = new Date().toISOString();
+          await this.store.saveAgentSession(latestSession);
+          this.emit({ type: "agent.session", projectId: input.projectId, session: latestSession });
+        }
 
         if (draft.autoApprove) {
           await this.executePlan(latest, settings, draft);
@@ -7956,6 +9062,12 @@ Be concise and conversational.`;
           "error",
           error instanceof Error ? error.message : `PROGRAMS could not create a plan with ${providerLabel}.`,
         );
+        if (isPingStartupFailure(error)) {
+          await this.rollbackPingStartupState(
+            project.id,
+            error instanceof Error ? error.message : `PROGRAMS could not create a plan with ${providerLabel}.`,
+          );
+        }
       });
 
     return { started: true };
@@ -7967,7 +9079,7 @@ Be concise and conversational.`;
     const approval = this.queueApproval(session, {
       kind: "plan",
       requestedByDirectorId: null,
-      targetDirectorId: null,
+      targetDirectorId: "programming-director",
       summary: this.buildApprovalSummary("Confirm planning run", input.prompt),
       draftMessage: input.prompt,
       draftPayload: {
@@ -8023,22 +9135,19 @@ Be concise and conversational.`;
     }
 
     project = await this.updateProjectStatus(project, "executing");
-    await this.git.ensureRepository(project.localPath, null, project.defaultBranch);
+    await this.git.ensureRepository(project.localPath);
     const revertSha = await this.git.revertCommit(project.localPath, target.commitSha);
 
     target.status = "reverted";
     target.errorMessage = null;
     await this.store.updateHistoryRecord(target);
 
-    const flowchart = await this.readFlowchart(project);
     const undoRecord: UpdateRecord = {
       id: randomUUID(),
       projectId: project.id,
       prompt: `Undo ${target.summary}`,
       summary: `Undid: ${target.summary}`,
       commitSha: revertSha,
-      flowchart: flowchart.flowchart,
-      flowchartGraph: flowchart.flowchartGraph,
       createdAt: new Date().toISOString(),
       kind: "undo",
       status: "saved",
@@ -8056,32 +9165,14 @@ Be concise and conversational.`;
     return { started: true };
   }
 
-  async retrySync(input: RetrySyncInput): Promise<{ started: true }> {
-    const project = await this.requireProject(input.projectId);
-    const updates = await this.store.readHistory(input.projectId);
-    const target = updates.find((item) => item.id === input.updateId);
-    if (!target || target.status !== "pendingSync") {
-      throw new Error("That update is not waiting to sync.");
-    }
-
-    target.status = "saved";
-    target.errorMessage = null;
-    await this.store.updateHistoryRecord(target);
-    project.status = "idle";
-    project.lastError = null;
-    project.lastUpdatedAt = target.createdAt;
-    project.updatedAt = new Date().toISOString();
-    await this.store.updateProject(project);
-    this.emit({ type: "project.updated", project });
-    await this.emitHistory(project.id);
-    return { started: true };
-  }
-
   private async finalizePingExecutionOutcome(projectId: string, input: {
     status: PingRawReportStatus;
     summary: string;
+    changedFiles?: string[] | null;
     blocker?: string | null;
     toddFollowUpReason?: string | null;
+    historyUpdateId?: string | null;
+    commitSha?: string | null;
   }): Promise<void> {
     const session = await this.store.getAgentSession(projectId);
     if (!session) return;
@@ -8091,28 +9182,43 @@ Be concise and conversational.`;
     const activeUpdate = activeUpdateId
       ? session.toddMemory.futureUpdatePlan.find((update) => update.id === activeUpdateId) ?? null
       : null;
+    const currentRun = session.pingMemory.currentRun;
     const rawReport = buildPingRawReport({
       status: input.status,
       updateId: activeUpdateId ?? null,
-      goal: activeUpdate?.description ?? session.pingMemory.context ?? null,
+      goal: activeUpdate?.description
+        ?? currentRun?.task.updateDescription
+        ?? currentRun?.task.originalUserRequest
+        ?? session.pingMemory.context
+        ?? null,
       summary: input.summary,
+      changedFiles: input.changedFiles ?? [],
       blocker: input.blocker ?? null,
       unexpectedNotes: input.toddFollowUpReason ? [input.toddFollowUpReason] : [],
     });
     const toddFollowUpNeeded = input.status === "blocked" || input.status === "unexpected";
     const jeffReport = buildJeffExecutionReport({
       rawReport,
-      title: activeUpdate ? `Update report: ${activeUpdate.title}` : "Update report",
+      title: activeUpdate
+        ? `Project Status Report: ${activeUpdate.title}`
+        : currentRun?.task.updateTitle
+          ? `Project Status Report: ${currentRun.task.updateTitle}`
+          : "Project Status Report",
       summary: activeUpdate
         ? `${activeUpdate.title}: ${input.summary}`
+        : currentRun?.task.updateTitle
+          ? `${currentRun.task.updateTitle}: ${input.summary}`
         : input.summary,
       outcome: input.summary,
       toddFollowUpNeeded,
       toddFollowUpReason: input.toddFollowUpReason ?? input.blocker ?? null,
+      historyUpdateId: input.historyUpdateId ?? null,
+      commitSha: input.commitSha ?? null,
     });
 
     session.pingMemory.latestRawReport = rawReport;
     session.pingMemory.latestJeffReport = jeffReport;
+    session.jeffMemory.pendingReports.push(jeffReport);
     session.pingTaskContext = {
       currentTask: session.pingMemory.activeTask,
       lastResult: rawReport.summary,
@@ -8121,78 +9227,43 @@ Be concise and conversational.`;
       relevantPillarIds: activeUpdate?.pillarIds ?? [],
     };
 
-    session.toddMemory.previousUpdateLog.push({
-      id: randomUUID(),
-      updateId: activeUpdateId ?? null,
-      goal: activeUpdate?.description ?? session.pingMemory.context ?? "Execution update",
-      outcome: input.summary,
-      status: input.status,
-      reportId: jeffReport.id,
-      createdAt: new Date().toISOString(),
-    });
-
-    if (activeUpdate) {
-      activeUpdate.status = input.status === "blocked" || input.status === "unexpected"
-        ? "failed"
-        : "completed";
-    }
-
-    if (toddFollowUpNeeded && activeUpdate) {
-      const followUpReason = input.toddFollowUpReason ?? input.blocker ?? input.summary;
-      const existingTrouble = session.toddMemory.troubleLog.find((entry) => entry.details === followUpReason);
-      if (existingTrouble) {
-        existingTrouble.occurrences += 1;
-        existingTrouble.lastSeenAt = new Date().toISOString();
-        if (!existingTrouble.updateIds.includes(activeUpdate.id)) {
-          existingTrouble.updateIds.push(activeUpdate.id);
-        }
-      } else {
-        session.toddMemory.troubleLog.push({
-          id: randomUUID(),
-          title: `Follow-up for ${activeUpdate.title}`,
-          details: followUpReason,
-          priority: "medium",
-          occurrences: 1,
-          lastSeenAt: new Date().toISOString(),
-          updateIds: [activeUpdate.id],
-        });
-      }
-
-      const followUpId = `${activeUpdate.id}-followup`;
-      if (!session.toddMemory.futureUpdatePlan.some((update) => update.id === followUpId)) {
-        session.toddMemory.futureUpdatePlan.push({
-          id: followUpId,
-          versionId: activeUpdate.versionId,
-          title: `Follow-up: ${activeUpdate.title}`,
-          description: followUpReason,
-          order: session.toddMemory.futureUpdatePlan.length,
-          status: "pending",
-          dependencies: [activeUpdate.id],
-          pillarIds: activeUpdate.pillarIds ?? [],
-          skillsNeeded: activeUpdate.skillsNeeded ?? [],
-        });
-      }
-    }
-
     session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
+    const reportSnapshot = currentRun?.task
+      ? buildPingExecutionReportSnapshot({
+          task: currentRun.task,
+          plan: currentRun.plan,
+          rawReport,
+          historyUpdateId: input.historyUpdateId ?? null,
+          commitSha: input.commitSha ?? null,
+          jeffReportId: jeffReport.id,
+          jeffSummary: jeffReport.summary,
+        })
+      : null;
+    if (currentRun) {
+      session.pingMemory.currentRun = {
+        ...currentRun,
+        report: reportSnapshot,
+      };
+    }
     this.appendSlackAssistantMessage(session, "programming-director", rawReport.zhResponse, {
       status: "complete",
       metadata: buildPingStatusTranslationMetadata(rawReport.status),
     });
-    this.appendSlackAssistantMessage(
+    this.appendSlackAssistantMessage(session, "programming-director", rawReport.summary, {
+      status: "complete",
+      metadata: { type: "ping-update-report", rawReport, report: reportSnapshot },
+    });
+    this.appendPingLifecycleMessage(session, "outro");
+    this.appendJeffSlackMessage(
       session,
-      "project-manager",
       toddFollowUpNeeded
-        ? `Ping hit an issue. I logged the report and flagged Todd for follow-up planning.`
-        : `Nice work, Ping. ${activeUpdate?.title ?? "The update"} completed cleanly.`,
-      {
-        status: "complete",
-        metadata: {
-          type: "execution-report",
-          report: jeffReport,
-        },
-      },
+        ? `Ping finished the step with an issue. I’m reviewing the report before anyone moves forward.`
+        : `Ping finished the step. I’m reviewing the report before anyone moves forward.`,
+      jeffReport,
     );
+    if (reportSnapshot && reportSnapshot.task.source === "direct-ping-request") {
+      await this.reconcileToddAfterDirectPingRun(session, reportSnapshot);
+    }
     session.slackActiveDirectorId = "project-manager";
     session.slackPresenceGuestId = null;
     session.pingMemory.activeUpdateId = null;
@@ -8211,11 +9282,7 @@ Be concise and conversational.`;
       .executeApprovedPlan(executingProject, settings, draft)
       .then(async (result) => {
         let latest = await this.requireProject(executingProject.id);
-        await this.git.ensureRepository(latest.localPath, null, latest.defaultBranch);
-        await this.writeFlowchart(latest, {
-          flowchart: result.flowchart,
-          flowchartGraph: result.flowchartGraph,
-        });
+        await this.git.ensureRepository(latest.localPath);
         latest.description = result.description;
         latest.threadId = result.draft.threadId;
         latest.updatedAt = new Date().toISOString();
@@ -8225,7 +9292,8 @@ Be concise and conversational.`;
         this.emit({ type: "project.updated", project: latest });
 
         result.draft.verifyingStatus = "in_progress";
-        result.draft.verificationDetails = "Updating flowchart and preparing the local save.";
+        result.draft.verificationDetails = "Preparing the local save.";
+        const changedFiles = await this.git.readWorkingTreeChangedFiles(latest.localPath);
         result.draft.diffStats = await this.git.readWorkingTreeDiffStats(latest.localPath);
         service.syncDraft(result.draft);
 
@@ -8243,6 +9311,9 @@ Be concise and conversational.`;
           await this.finalizePingExecutionOutcome(latest.id, {
             status: "no_changes",
             summary: "No local file changes were needed.",
+            changedFiles: [],
+            historyUpdateId: null,
+            commitSha: null,
           });
           this.emit({
             type: "toast",
@@ -8258,8 +9329,6 @@ Be concise and conversational.`;
           prompt: draft.prompt,
           summary: result.summary,
           commitSha,
-          flowchart: result.flowchart,
-          flowchartGraph: result.flowchartGraph,
           createdAt: new Date().toISOString(),
           kind: "update",
           status: "saved",
@@ -8287,6 +9356,9 @@ Be concise and conversational.`;
         await this.finalizePingExecutionOutcome(latest.id, {
           status: "success",
           summary: result.summary || "Update saved locally.",
+          changedFiles,
+          historyUpdateId: historyRecord.id,
+          commitSha,
         });
         this.emit({
           type: "toast",
@@ -8317,11 +9389,21 @@ Be concise and conversational.`;
           "error",
           error instanceof Error ? error.message : `PROGRAMS could not finish the update with ${providerLabel}.`,
         );
+        if (isPingStartupFailure(error)) {
+          await this.rollbackPingStartupState(
+            latest.id,
+            error instanceof Error ? error.message : `PROGRAMS could not finish the update with ${providerLabel}.`,
+          );
+          return;
+        }
         await this.finalizePingExecutionOutcome(latest.id, {
           status: "blocked",
           summary: error instanceof Error ? error.message : `PROGRAMS could not finish the update with ${providerLabel}.`,
+          changedFiles: [],
           blocker: error instanceof Error ? error.message : `PROGRAMS could not finish the update with ${providerLabel}.`,
           toddFollowUpReason: error instanceof Error ? error.message : `PROGRAMS could not finish the update with ${providerLabel}.`,
+          historyUpdateId: null,
+          commitSha: null,
         });
       });
   }
@@ -8346,6 +9428,7 @@ Be concise and conversational.`;
     const settings = await this.store.readSettings();
     const projects = await this.store.listProjects();
     await this.runner.restorePersistedRuntimes(projects, settings.appSourcePath, process.env.ELECTRON_RENDERER_URL ?? null);
+    await this.normalizeAutomationSessionsOnStartup(projects);
     await this.reconcileProjectStatuses(projects, false);
   }
 
@@ -8436,7 +9519,7 @@ Be concise and conversational.`;
 
   private resolveRuntimeBackedStatus(status: Project["status"], runtimeRunning: boolean): Project["status"] {
     if (runtimeRunning) {
-      if (status === "executing" || status === "syncing" || status === "planning" || status === "awaitingApproval") {
+      if (status === "executing" || status === "planning" || status === "awaitingApproval") {
         return status;
       }
 
@@ -8463,8 +9546,6 @@ Be concise and conversational.`;
       openUrl: detected.openUrl ?? project.runtimeConfig.openUrl,
       lastRunUrl: project.runtimeConfig.lastRunUrl,
       initialIdea: project.runtimeConfig.initialIdea,
-      githubRepoName: project.runtimeConfig.githubRepoName ?? detected.githubRepoName,
-      attachedSkillId: project.runtimeConfig.attachedSkillId ?? null,
     };
 
     if (JSON.stringify(nextRuntimeConfig) === JSON.stringify(project.runtimeConfig)) {
@@ -8479,14 +9560,6 @@ Be concise and conversational.`;
     return nextProject;
   }
 
-  private async readFlowchart(project: Project): Promise<GenerateFlowchartResult> {
-    return readFlowchartSnapshot(project);
-  }
-
-  private async writeFlowchart(project: Project, snapshot: GenerateFlowchartResult): Promise<void> {
-    await writeFlowchartSnapshot(project, snapshot);
-  }
-
   private async emitHistory(projectId: string): Promise<void> {
     const updates = await this.store.readHistory(projectId);
     this.emit({ type: "project.history", projectId, updates });
@@ -8496,9 +9569,8 @@ Be concise and conversational.`;
     settings?: Settings,
     codex?: CodexAuthStatus,
     claudeStatus?: ClaudeAuthStatus,
-    github?: GitHubAuthStatus,
   ): Promise<void> {
-    const snapshot = await this.buildSetupSnapshot(settings, codex, claudeStatus, github);
+    const snapshot = await this.buildSetupSnapshot(settings, codex, claudeStatus);
     this.emit({ type: "setup.updated", setup: snapshot });
   }
 
@@ -8506,20 +9578,16 @@ Be concise and conversational.`;
     settingsArg?: Settings,
     codexArg?: CodexAuthStatus,
     claudeArg?: ClaudeAuthStatus,
-    githubArg?: GitHubAuthStatus,
   ): Promise<SetupSnapshot> {
     const settings = settingsArg ?? (await this.store.readSettings());
-    const githubConfig = this.resolveGitHubClientConfig(settings);
-    const [setupState, gitVersion, codex, claudeStatus, githubStatus] = await Promise.all([
+    const [setupState, gitVersion, codex, claudeStatus] = await Promise.all([
       this.store.readSetupState(),
       this.git.getVersion(),
       codexArg ? Promise.resolve(codexArg) : this.codex.getAuthStatus(settings),
       claudeArg ? Promise.resolve(claudeArg) : this.claude.getAuthStatus(settings),
-      githubArg ? Promise.resolve(githubArg) : this.github.getStatus(githubConfig),
     ]);
 
     const isPackagedBuild = app.isPackaged;
-    const githubConfigured = Boolean(githubConfig);
     const codexInstalled = codex.available && Boolean(codex.binaryPath);
     const claudeInstalled = claudeStatus.available && Boolean(claudeStatus.binaryPath);
     const gitInstalled = Boolean(gitVersion);
@@ -8660,35 +9728,6 @@ Be concise and conversational.`;
         secondaryActionTarget: null,
         required: true,
       },
-      {
-        id: "githubConnect",
-        section: "assistant",
-        label: "Connect GitHub",
-        status: !githubConfigured
-          ? "info"
-          : githubStatus.loggedIn
-            ? "confirmed"
-            : githubStatus.hasStoredToken
-              ? "action_required"
-              : "info",
-        version: null,
-        detail: !githubConfigured
-          ? "Add a GitHub OAuth client ID in Settings first."
-          : githubStatus.loggedIn
-            ? githubStatus.login
-              ? `Confirmed as ${githubStatus.login}. Sync uses HTTPS with the stored app token.`
-              : "Confirmed and ready for HTTPS sync."
-            : githubStatus.hasStoredToken
-              ? githubStatus.errorMessage ?? "Reconnect GitHub to refresh the stored permissions."
-              : "Connect GitHub so PROGRAMS can create and sync private repositories.",
-        actionLabel: !githubConfigured ? "Open Settings" : githubStatus.loggedIn ? null : "Connect",
-        actionKind: !githubConfigured ? "openSettings" : githubStatus.loggedIn ? "none" : "githubLogin",
-        actionTarget: null,
-        secondaryActionLabel: githubConfigured && !githubStatus.loggedIn ? "Configure App" : null,
-        secondaryActionKind: githubConfigured && !githubStatus.loggedIn ? "openExternal" : "none",
-        secondaryActionTarget: githubConfigured && !githubStatus.loggedIn ? "https://github.com/settings/developers" : null,
-        required: false,
-      },
     ];
 
     const isSetupComplete = checks.every((check) => !check.required || check.status === "confirmed");
@@ -8701,7 +9740,6 @@ Be concise and conversational.`;
       showSetupOnLaunch: false,
       currentCheckId,
       isPackagedBuild,
-      githubConfigured,
     };
   }
 
@@ -9355,12 +10393,6 @@ Be concise and conversational.`;
     return `${baseMessage} Built app: ${candidateAppPath}`;
   }
 
-  private githubConfigurationMessage(): string {
-    return app.isPackaged
-      ? "GitHub sign-in is not bundled in this build of PROGRAMS."
-      : "GitHub sign-in is not configured for this development build yet. Add a GitHub client ID override in Developer settings or bundle GITHUB_CLIENT_ID.";
-  }
-
   private async updateProjectStatus(
     project: Project,
     status: Project["status"],
@@ -9374,215 +10406,10 @@ Be concise and conversational.`;
     return project;
   }
 
-  // --- Git Sync ---
-
-  async syncProjectToGitHub(input: GitSyncInput): Promise<GitSyncResult> {
-    await this.ensureInitialized();
-    const project = await this.requireProject(input.projectId);
-
-    if (!project.remoteUrl) {
-      return { committed: false, pushed: false, commitSha: null, error: "No remote URL configured. Connect this project to GitHub first." };
-    }
-
-    const settings = await this.store.readSettings();
-    const githubStatus = await this.github.getStatus(this.resolveGitHubClientConfig(settings));
-    if (!githubStatus.loggedIn) {
-      return { committed: false, pushed: false, commitSha: null, error: "Sign in to GitHub before syncing." };
-    }
-
-    try {
-      const auth = {
-        remoteUrl: project.remoteUrl,
-        token: await this.github.getStoredToken(),
-      };
-      const message = input.commitMessage || `Sync: ${new Date().toISOString()}`;
-      const commitSha = await this.git.commitAll(project.localPath, message);
-
-      if (!commitSha) {
-        // No changes to commit — check if there are unpushed commits
-        try {
-          await this.git.push(project.localPath, project.defaultBranch, auth);
-          return { committed: false, pushed: true, commitSha: null, error: null };
-        } catch {
-          return { committed: false, pushed: false, commitSha: null, error: null };
-        }
-      }
-
-      await this.git.push(project.localPath, project.defaultBranch, auth);
-      return { committed: true, pushed: true, commitSha, error: null };
-    } catch (error) {
-      return {
-        committed: false,
-        pushed: false,
-        commitSha: null,
-        error: error instanceof Error ? error.message : "Sync failed.",
-      };
-    }
-  }
-
   async readProjectDiffStats(projectId: string): Promise<DiffStats | null> {
     await this.ensureInitialized();
     const project = await this.requireProject(projectId);
     return this.git.readWorkingTreeDiffStats(project.localPath);
-  }
-
-  // --- Skills ---
-
-  async listSkills(): Promise<Skill[]> {
-    await this.ensureInitialized();
-    return this.store.listSkills();
-  }
-
-  async readSkill(id: string): Promise<Skill | null> {
-    await this.ensureInitialized();
-    return this.store.readSkill(id);
-  }
-
-  async downloadSkill(input: DownloadSkillInput): Promise<Skill> {
-    await this.ensureInitialized();
-    const { readFile } = await import("node:fs/promises");
-    const content = await readFile(input.filePath, "utf8");
-
-    // Parse markdown skill file
-    const lines = content.split(/\r?\n/);
-    let name = input.name || "";
-    let description = "";
-    let instructions = "";
-    let currentSection = "";
-
-    for (const line of lines) {
-      const headingMatch = line.match(/^#+\s+(.+)/);
-      if (headingMatch) {
-        const heading = headingMatch[1].trim().toLowerCase();
-        if (!name && heading) {
-          name = headingMatch[1].trim();
-        }
-        if (heading.includes("description") || heading.includes("about")) {
-          currentSection = "description";
-        } else if (heading.includes("instruction") || heading.includes("prompt") || heading.includes("rules") || heading.includes("system")) {
-          currentSection = "instructions";
-        } else {
-          currentSection = "instructions"; // default to instructions for unknown sections
-        }
-        continue;
-      }
-
-      if (currentSection === "description") {
-        description += `${line}\n`;
-      } else if (currentSection === "instructions") {
-        instructions += `${line}\n`;
-      } else {
-        // Before any section heading, treat as instructions
-        instructions += `${line}\n`;
-      }
-    }
-
-    if (!name) {
-      const { basename } = await import("node:path");
-      name = basename(input.filePath, ".md");
-    }
-
-    const skill: Skill = {
-      id: randomUUID(),
-      name: name.trim(),
-      description: description.trim(),
-      sourceProvider: "claude",
-      sourceType: "skill",
-      instructions: instructions.trim() || content.trim(),
-      originalFilePath: input.filePath,
-      isUniversal: false,
-      installStatus: "ready",
-      installSlug: null,
-      installPath: input.filePath,
-      lastError: null,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    this.store.saveSkill(skill);
-    return skill;
-  }
-
-  async installSkillCatalogItem(input: InstallSkillCatalogInput): Promise<Skill> {
-    await this.ensureInitialized();
-    const now = new Date().toISOString();
-    const existing = this.store.listSkills().find((skill) => skill.installSlug === input.catalogId);
-    const baseId = existing?.id ?? randomUUID();
-    const createdAt = existing?.createdAt ?? now;
-
-    const skill = buildCatalogSkill(input.catalogId, {
-      id: baseId,
-      createdAt,
-      updatedAt: now,
-      installStatus: "ready",
-      installPath:
-        input.catalogId === "user-testing-universal"
-          ? this.getProgramsPlaywrightRunnerPath(await this.store.readSettings())
-          : null,
-    });
-    this.store.saveSkill(skill);
-    return skill;
-  }
-
-  async convertSkillToUniversal(input: ConvertSkillInput): Promise<Skill> {
-    await this.ensureInitialized();
-    const skill = this.store.readSkill(input.skillId);
-    if (!skill) throw new Error("Skill not found.");
-
-    // Strip Claude-specific references
-    let instructions = skill.instructions;
-    instructions = instructions.replace(/\b(Claude|Anthropic|Claude Code)\b/gi, "AI assistant");
-    instructions = instructions.replace(/\b(claude-sonnet|claude-opus|claude-haiku)\b/gi, "model");
-
-    const updated: Skill = {
-      ...skill,
-      sourceProvider: "universal",
-      sourceType: "skill",
-      isUniversal: true,
-      instructions,
-      installStatus: "ready",
-      updatedAt: new Date().toISOString(),
-    };
-
-    this.store.saveSkill(updated);
-    return updated;
-  }
-
-  async deleteSkill(id: string): Promise<void> {
-    await this.ensureInitialized();
-    this.store.deleteSkill(id);
-  }
-
-  async attachSkillToProject(input: AttachSkillInput): Promise<Project> {
-    await this.ensureInitialized();
-    const project = await this.requireProject(input.projectId);
-    project.runtimeConfig = {
-      ...project.runtimeConfig,
-      attachedSkillId: input.skillId,
-    };
-    project.updatedAt = new Date().toISOString();
-    await this.store.updateProject(project);
-    this.emit({ type: "project.updated", project });
-    return project;
-  }
-
-  async runPlaywrightTest(input: PlaywrightRunInput): Promise<PlaywrightRunResult> {
-    await this.ensureInitialized();
-    const project = await this.requireProject(input.projectId);
-    const runtime = await this.runner.validateRuntime(project.id);
-    const url = input.url?.trim() || runtime.url || project.runtimeConfig.lastRunUrl || project.runtimeConfig.openUrl;
-    if (!url) {
-      throw new Error("Run the project first or provide a URL before using the user-testing runner.");
-    }
-
-    return this.playwright.run({
-      projectId: project.id,
-      cwd: project.localPath,
-      url,
-      actions: input.actions ?? [],
-      headless: input.headless ?? true,
-      settleMs: input.settleMs ?? 1200,
-    });
   }
 
 }

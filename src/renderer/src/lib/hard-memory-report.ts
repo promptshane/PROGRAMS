@@ -8,9 +8,9 @@ export const resolveDanHardMemoryReportDraft = (
     return null;
   }
 
-  if (report.reportStage === "soft") {
-    return report.draftCoreDetails ?? session?.danMemory?.draftConcept ?? session?.danDraftCoreDetails ?? null;
+  if (report.draftCoreDetails) {
+    return report.draftCoreDetails;
   }
 
-  return report.draftCoreDetails;
+  return session?.danMemory.draftConcept ?? session?.danDraftCoreDetails ?? null;
 };

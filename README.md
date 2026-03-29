@@ -5,7 +5,7 @@ PROGRAMS is a macOS-first Electron desktop app for AI-assisted coding with:
 - Codex plan-first updates
 - local-first project management
 - local run / kill / open controls
-- a user-facing update history and Mermaid project flowchart
+- a user-facing update history
 
 ## Setup
 

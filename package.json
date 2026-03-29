@@ -8,7 +8,6 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "test:flowchart": "node --test --experimental-strip-types tests/flowchart.test.ts",
     "icons:mac": "node scripts/generate-mac-icon.mjs",
     "package:mac": "npm run icons:mac && npm run build && electron-builder --mac dir",
     "package:dmg": "npm run icons:mac && npm run build && electron-builder --mac dmg",
@@ -16,10 +15,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@dagrejs/dagre": "^2.0.4",
-    "@types/dagre": "^0.7.54",
     "dotenv": "^16.4.7",
-    "mermaid": "^11.12.0",
     "playwright": "^1.58.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

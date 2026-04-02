@@ -1,10 +1,20 @@
 import type { AgentSession, DirectorId, RdFocusMode, VersionUpdate } from "@shared/types";
+import { getDanConflictQuestionCount } from "./session-helpers";
 
 export type AgentAlertTone = "white" | "red";
+export type AgentAlertAction =
+  | "refresh-project"
+  | "review-jeff-work"
+  | "review-dan-memory"
+  | "reconcile-dan-memory"
+  | "review-todd-memory"
+  | "run-ping-update"
+  | "run-pong-validation";
 
 export interface AgentAlertState {
   tone: AgentAlertTone;
   warningTargetDirectorId: DirectorId | null;
+  action: AgentAlertAction;
 }
 
 export const hasDanActionableMemory = (session: AgentSession | null): boolean =>
@@ -44,6 +54,9 @@ export const hasJeffPendingWork = (session: AgentSession | null): boolean =>
 export const hasPongPendingWork = (session: AgentSession | null): boolean =>
   Boolean(session?.pongMemory?.jeffInstruction);
 
+export const needsProjectRefresh = (session: AgentSession | null): boolean =>
+  session?.knowledgeStatus === "stale" || session?.knowledgeStatus === "needs-initial-refresh";
+
 export const getNextPendingProgrammingUpdate = (session: AgentSession | null): VersionUpdate | null => {
   if (!session) {
     return null;
@@ -69,18 +82,29 @@ export const resolveAgentAlertState = (
   session: AgentSession | null,
 ): AgentAlertState | null => {
   if (directorId === "project-manager") {
+    if (needsProjectRefresh(session)) {
+      return {
+        tone: hasPingPendingUpdate(session) || hasPingActiveTask(session) ? "red" : "white",
+        warningTargetDirectorId: null,
+        action: "refresh-project",
+      };
+    }
     if (!hasJeffPendingWork(session)) {
       return null;
     }
     return {
       tone: hasPingActiveTask(session) ? "red" : "white",
       warningTargetDirectorId: hasPingActiveTask(session) ? "programming-director" : null,
+      action: "review-jeff-work",
     };
   }
 
   if (directorId === "creative-director") {
+    if (getDanConflictQuestionCount(session) > 0) {
+      return { tone: "white", warningTargetDirectorId: null, action: "reconcile-dan-memory" };
+    }
     return hasDanActionableMemory(session)
-      ? { tone: "white", warningTargetDirectorId: null }
+      ? { tone: "white", warningTargetDirectorId: null, action: "review-dan-memory" }
       : null;
   }
 
@@ -91,6 +115,7 @@ export const resolveAgentAlertState = (
     return {
       tone: hasDanActionableMemory(session) ? "red" : "white",
       warningTargetDirectorId: hasDanActionableMemory(session) ? "creative-director" : null,
+      action: "review-todd-memory",
     };
   }
 
@@ -99,8 +124,13 @@ export const resolveAgentAlertState = (
       return null;
     }
     return {
-      tone: hasToddActionableMemory(session) ? "red" : "white",
-      warningTargetDirectorId: hasToddActionableMemory(session) ? "rd-director" : null,
+      tone: needsProjectRefresh(session) || hasToddActionableMemory(session) ? "red" : "white",
+      warningTargetDirectorId: needsProjectRefresh(session)
+        ? "project-manager"
+        : hasToddActionableMemory(session)
+          ? "rd-director"
+          : null,
+      action: "run-ping-update",
     };
   }
 
@@ -111,6 +141,7 @@ export const resolveAgentAlertState = (
     return {
       tone: hasPingActiveTask(session) ? "red" : "white",
       warningTargetDirectorId: hasPingActiveTask(session) ? "programming-director" : null,
+      action: "run-pong-validation",
     };
   }
 

@@ -152,6 +152,7 @@ const buildToddCodebaseIndexedMap = (session: {
     indexedAt: existing?.indexedAt ?? null,
     featureAreas: existing?.featureAreas?.length ? existing.featureAreas : featureAreas,
     repoNotes: existing?.repoNotes?.length ? existing.repoNotes : repoNotes,
+    lastIndexedFingerprint: existing?.lastIndexedFingerprint ?? null,
   };
 };
 
@@ -171,10 +172,13 @@ const buildDanMemory = (session: {
   return {
     confirmedConcept,
     draftConcept: session.danMemory?.draftConcept ?? session.danDraftCoreDetails ?? null,
+    derivedConcept: session.danMemory?.derivedConcept ?? null,
     notes: session.danMemory?.notes ?? (session.danInternalNotes ?? []).map((n, i): TaggedNote => typeof n === "string" ? { id: `legacy-${i}`, content: n, tag: "general", createdAt: new Date(0).toISOString() } : n),
+    derivedNotes: session.danMemory?.derivedNotes ?? [],
     sideNotes: session.danMemory?.sideNotes ?? session.danSideNotes ?? [],
     draftChangeSummary: session.danMemory?.draftChangeSummary ?? session.danDraftChangeSummary ?? [],
     draftStatus: session.danMemory?.draftStatus ?? session.danDraftStatus ?? null,
+    derivedUpdatedAt: session.danMemory?.derivedUpdatedAt ?? null,
     fullExperienceDescription: session.danMemory?.fullExperienceDescription
       ?? confirmedConcept?.fullFlow?.summary
       ?? null,
@@ -1147,6 +1151,7 @@ export class ProjectStore {
       pingTaskContext: JSON.parse((r.ping_task_context_json as string) || "null"),
       pongTaskContext: JSON.parse((r.pong_task_context_json as string) || "null"),
       projectCategory: ((r.project_category as string) || "general-project") as ProjectCategory,
+      // Legacy storage-backed Slack field names remain until a dedicated migration updates the session schema.
       slackMessages,
       slackActiveDirectorId: ((r.slack_active_director_id as string) || "project-manager") as DirectorId,
       slackPresenceGuestId: ((r.slack_presence_guest_id as string | null) ?? null) as DirectorId | null,
@@ -1255,6 +1260,7 @@ export class ProjectStore {
         prepared.danDraftStatus,
         prepared.projectCategory,
         prepared.activeDirectorId,
+        // Legacy storage-backed Slack column names remain until a dedicated migration updates persisted sessions.
         JSON.stringify(prepared.slackMessages ?? []),
         prepared.slackActiveDirectorId ?? "project-manager",
         JSON.stringify(prepared.pendingApprovals ?? []),

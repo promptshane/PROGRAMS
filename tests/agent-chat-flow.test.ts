@@ -1,52 +1,52 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  buildSlackApprovalDescriptor,
-  buildSlackProviderAttemptPlan,
-  canAutoRouteSlackDirector,
-  normalizeSlackDirectorMode,
-  resolveSlackDirectorMode,
-  validateSlackTurnParsedResponse,
-} from "../src/main/utils/slack-flow.ts";
+  buildAgentChatApprovalDescriptor,
+  buildAgentChatProviderAttemptPlan,
+  canAutoRouteAgentChatDirector,
+  normalizeAgentChatDirectorMode,
+  resolveAgentChatDirectorMode,
+  validateAgentChatTurnParsedResponse,
+} from "../src/main/utils/agent-chat-flow.ts";
 
 test("Todd keeps repo-review requests in codebase-analysis", () => {
   assert.equal(
-    resolveSlackDirectorMode("rd-director", "Check the backend and explain the current architecture."),
+    resolveAgentChatDirectorMode("rd-director", "Check the backend and explain the current architecture."),
     "codebase-analysis",
   );
 });
 
 test("Todd switches to internet-research only for explicit external research requests", () => {
   assert.equal(
-    resolveSlackDirectorMode("rd-director", "Search the web for the latest competitor pricing and docs."),
+    resolveAgentChatDirectorMode("rd-director", "Search the web for the latest competitor pricing and docs."),
     "internet-research",
   );
 });
 
 test("Todd switches to version-planning for roadmap and version requests", () => {
   assert.equal(
-    resolveSlackDirectorMode("rd-director", "Check the backend and draw the v0.1 completion roadmap."),
+    resolveAgentChatDirectorMode("rd-director", "Check the backend and draw the v0.1 completion roadmap."),
     "version-planning",
   );
 });
 
 test("Todd switches to update-planning for grouped implementation planning requests", () => {
   assert.equal(
-    resolveSlackDirectorMode("rd-director", "Break this into grouped updates and write the implementation plan."),
+    resolveAgentChatDirectorMode("rd-director", "Break this into grouped updates and write the implementation plan."),
     "update-planning",
   );
 });
 
 test("mode normalization keeps legacy internet-research payloads working only for Todd", () => {
-  assert.equal(normalizeSlackDirectorMode("rd-director", undefined, true), "internet-research");
-  assert.equal(normalizeSlackDirectorMode("rd-director", "codebase-analysis", true), "codebase-analysis");
-  assert.equal(normalizeSlackDirectorMode("rd-director", "version-planning", false), "version-planning");
-  assert.equal(normalizeSlackDirectorMode("rd-director", "update-planning", false), "update-planning");
-  assert.equal(normalizeSlackDirectorMode("programming-director", "internet-research", true), "codebase-analysis");
+  assert.equal(normalizeAgentChatDirectorMode("rd-director", undefined, true), "internet-research");
+  assert.equal(normalizeAgentChatDirectorMode("rd-director", "codebase-analysis", true), "codebase-analysis");
+  assert.equal(normalizeAgentChatDirectorMode("rd-director", "version-planning", false), "version-planning");
+  assert.equal(normalizeAgentChatDirectorMode("rd-director", "update-planning", false), "update-planning");
+  assert.equal(normalizeAgentChatDirectorMode("programming-director", "internet-research", true), "codebase-analysis");
 });
 
 test("approval descriptors keep Todd repo-analysis handoffs out of internet-research", () => {
-  const descriptor = buildSlackApprovalDescriptor({
+  const descriptor = buildAgentChatApprovalDescriptor({
     targetDirectorId: "rd-director",
     provider: "codex",
     model: "gpt-5.4",
@@ -61,14 +61,14 @@ test("approval descriptors keep Todd repo-analysis handoffs out of internet-rese
 });
 
 test("approval descriptors preserve Todd roadmap and update-planning handoffs", () => {
-  const roadmapDescriptor = buildSlackApprovalDescriptor({
+  const roadmapDescriptor = buildAgentChatApprovalDescriptor({
     targetDirectorId: "rd-director",
     provider: "codex",
     model: "gpt-5.4",
     claudeModel: "sonnet",
     message: "Create the V1 to V3 roadmap for this product.",
   });
-  const updateDescriptor = buildSlackApprovalDescriptor({
+  const updateDescriptor = buildAgentChatApprovalDescriptor({
     targetDirectorId: "rd-director",
     provider: "codex",
     model: "gpt-5.4",
@@ -84,16 +84,16 @@ test("approval descriptors preserve Todd roadmap and update-planning handoffs", 
   assert.equal(updateDescriptor.payload.mode, "update-planning");
 });
 
-test("automatic Slack routing excludes Pong for this pass", () => {
-  assert.equal(canAutoRouteSlackDirector("project-manager"), true);
-  assert.equal(canAutoRouteSlackDirector("creative-director"), true);
-  assert.equal(canAutoRouteSlackDirector("rd-director"), true);
-  assert.equal(canAutoRouteSlackDirector("programming-director"), true);
-  assert.equal(canAutoRouteSlackDirector("validation-director"), false);
+test("automatic agent-chat routing excludes Pong for this pass", () => {
+  assert.equal(canAutoRouteAgentChatDirector("project-manager"), true);
+  assert.equal(canAutoRouteAgentChatDirector("creative-director"), true);
+  assert.equal(canAutoRouteAgentChatDirector("rd-director"), true);
+  assert.equal(canAutoRouteAgentChatDirector("programming-director"), true);
+  assert.equal(canAutoRouteAgentChatDirector("validation-director"), false);
 });
 
 test("approval descriptors mark explicit Todd web research as internet-research", () => {
-  const descriptor = buildSlackApprovalDescriptor({
+  const descriptor = buildAgentChatApprovalDescriptor({
     targetDirectorId: "rd-director",
     provider: "claude",
     model: "gpt-5.4-mini",
@@ -108,7 +108,7 @@ test("approval descriptors mark explicit Todd web research as internet-research"
 });
 
 test("provider attempt plan retries the fallback provider when the requested provider is unavailable", () => {
-  const plan = buildSlackProviderAttemptPlan("claude", {
+  const plan = buildAgentChatProviderAttemptPlan("claude", {
     claude: "Claude is not connected.",
     codex: null,
   });
@@ -120,7 +120,7 @@ test("provider attempt plan retries the fallback provider when the requested pro
 });
 
 test("provider attempt plan keeps requested provider first when both providers are ready", () => {
-  const plan = buildSlackProviderAttemptPlan("codex", {
+  const plan = buildAgentChatProviderAttemptPlan("codex", {
     codex: null,
     claude: null,
   });
@@ -128,9 +128,9 @@ test("provider attempt plan keeps requested provider first when both providers a
   assert.deepEqual(plan.attemptedProviders, ["codex", "claude"]);
 });
 
-test("blank Slack responses are treated as runtime failures", () => {
+test("blank agent-chat responses are treated as runtime failures", () => {
   assert.throws(
-    () => validateSlackTurnParsedResponse({
+    () => validateAgentChatTurnParsedResponse({
       response: "   ",
       handoffTo: null,
       handoffReason: null,
@@ -141,9 +141,9 @@ test("blank Slack responses are treated as runtime failures", () => {
   );
 });
 
-test("missing required Slack schema fields are rejected", () => {
+test("missing required agent-chat schema fields are rejected", () => {
   assert.throws(
-    () => validateSlackTurnParsedResponse({
+    () => validateAgentChatTurnParsedResponse({
       response: "Looks good.",
       handoffTo: null,
       handoffReason: null,
@@ -153,9 +153,9 @@ test("missing required Slack schema fields are rejected", () => {
   );
 });
 
-test("Dan Slack responses require draftCoreDetails when ready-to-confirm", () => {
+test("Dan agent-chat responses require draftCoreDetails when ready-to-confirm", () => {
   assert.throws(
-    () => validateSlackTurnParsedResponse({
+    () => validateAgentChatTurnParsedResponse({
       response: "I have a draft.",
       handoffTo: null,
       handoffReason: null,
@@ -173,9 +173,9 @@ test("Dan Slack responses require draftCoreDetails when ready-to-confirm", () =>
   );
 });
 
-test("Todd version-planning Slack responses require confirmationSuggested and valid versions", () => {
+test("Todd version-planning agent-chat responses require confirmationSuggested and valid versions", () => {
   assert.throws(
-    () => validateSlackTurnParsedResponse({
+    () => validateAgentChatTurnParsedResponse({
       response: "Roadmap ready.",
       handoffTo: null,
       handoffReason: null,
@@ -187,9 +187,9 @@ test("Todd version-planning Slack responses require confirmationSuggested and va
   );
 });
 
-test("Todd update-planning Slack responses reject missing required update item fields", () => {
+test("Todd update-planning agent-chat responses reject missing required update item fields", () => {
   assert.throws(
-    () => validateSlackTurnParsedResponse({
+    () => validateAgentChatTurnParsedResponse({
       response: "Update plan ready.",
       handoffTo: null,
       handoffReason: null,
@@ -211,7 +211,7 @@ test("Todd update-planning Slack responses reject missing required update item f
 });
 
 test("Jeff to Todd to Ping handoff chain preserves actual work summary", () => {
-  const toddDescriptor = buildSlackApprovalDescriptor({
+  const toddDescriptor = buildAgentChatApprovalDescriptor({
     targetDirectorId: "rd-director",
     provider: "codex",
     model: "gpt-5.4",
@@ -219,7 +219,7 @@ test("Jeff to Todd to Ping handoff chain preserves actual work summary", () => {
     message: "Please re-scan the backend and map the remaining roadmap for V1.",
   });
 
-  const pingDescriptor = buildSlackApprovalDescriptor({
+  const pingDescriptor = buildAgentChatApprovalDescriptor({
     targetDirectorId: "programming-director",
     provider: toddDescriptor.payload.provider,
     model: toddDescriptor.payload.model,

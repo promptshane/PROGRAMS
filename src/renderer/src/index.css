@@ -517,6 +517,10 @@ code {
   flex-shrink: 0;
 }
 
+.sidebarProjectDot--agent {
+  background: color-mix(in srgb, var(--text) 24%, transparent);
+}
+
 .sidebarProjectName {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2996,7 +3000,7 @@ select {
 
 .tileGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 180px));
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: 18px;
   align-content: start;
 }
@@ -3355,49 +3359,62 @@ select {
   transition: transform 160ms ease, border-color 160ms ease;
 }
 
-.usageCardGrid {
+.usageOverviewLayout {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-rows: auto auto minmax(0, 1fr);
   gap: 16px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
-.usageProviderSection {
+.usagePanelSection {
   display: grid;
   gap: 14px;
-  margin-bottom: 18px;
   padding: 20px;
   border-radius: 22px;
   background: var(--panel-soft);
   border: 1px solid var(--border);
+  min-height: 0;
 }
 
 .usageProviderHeader {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px 16px;
+  align-items: start;
 }
 
-.usageProviderHeader h4 {
+.usageProviderCopy,
+.usageAutomationCopy {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.usageProviderHeader h4,
+.usagePanelSection h4 {
   margin: 0;
   font-size: 1.08rem;
   letter-spacing: -0.03em;
 }
 
-.usageProviderHeader p {
-  margin: 6px 0 0;
+.usageProviderHeader p,
+.usagePanelSection p {
+  margin: 0;
   color: var(--muted);
 }
 
 .usageProviderToggle {
-  display: inline-flex;
-  align-items: center;
+  display: inline-grid;
+  grid-template-columns: repeat(2, 7rem);
   gap: 6px;
   padding: 4px;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.04);
-  width: fit-content;
+  width: max-content;
+  justify-self: end;
 }
 
 .usageProviderOption {
@@ -3410,6 +3427,10 @@ select {
   font-weight: 700;
   letter-spacing: 0.01em;
   cursor: pointer;
+  min-width: 0;
+  width: 100%;
+  text-align: center;
+  white-space: nowrap;
 }
 
 .usageProviderOption.active {
@@ -3422,14 +3443,44 @@ select {
   opacity: 0.6;
 }
 
+.usageCardGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+  align-content: start;
+  min-height: 0;
+}
+
 .usageCard,
 .usageEmptyState {
-  display: grid;
-  gap: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
   padding: 20px;
   border-radius: 22px;
   background: var(--panel-soft);
   border: 1px solid var(--border);
+  min-height: 0;
+}
+
+.usageCard {
+  justify-content: flex-start;
+  appearance: none;
+  width: 100%;
+  text-align: left;
+}
+
+.usageCard:disabled {
+  cursor: default;
+}
+
+.usageCard-selected {
+  border-color: rgba(255, 255, 255, 0.84);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.72), inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
+.usageCard-loading {
+  position: relative;
 }
 
 .usageCard-codex {
@@ -3445,6 +3496,11 @@ select {
   margin: 0;
   font-size: 1.08rem;
   letter-spacing: -0.03em;
+}
+
+.usageCardHead h4 {
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 .usageCard p,
@@ -3465,9 +3521,38 @@ select {
   letter-spacing: 0.12em;
 }
 
+.usageCardHead .usagePreviewLabel {
+  flex: 0 0 auto;
+  width: auto;
+  white-space: nowrap;
+}
+
+.usagePreviewLabelTimestamp {
+  text-transform: none;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.usagePreviewLabelPlaceholder {
+  min-width: 176px;
+  color: transparent;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.04) 0%, rgba(255, 255, 255, 0.14) 50%, rgba(255, 255, 255, 0.04) 100%);
+  background-size: 220% 100%;
+  animation: usageSkeletonShimmer 1.8s ease-in-out infinite;
+}
+
 .usageMetricList {
   display: grid;
   gap: 14px;
+}
+
+.usageCardBody {
+  display: grid;
+  gap: 14px;
+  flex: 1 1 auto;
+  min-height: 0;
+  align-content: start;
 }
 
 .usageMetric {
@@ -3487,6 +3572,10 @@ select {
   --usage-accent-soft: rgba(255, 255, 255, 0.08);
 }
 
+.usageMetric-loading {
+  gap: 10px;
+}
+
 .usageMetric-onTrack {
   --usage-accent: #f5b858;
   --usage-accent-soft: rgba(245, 184, 88, 0.18);
@@ -3504,6 +3593,53 @@ select {
   font-size: 0.92rem;
 }
 
+.usageSkeleton {
+  display: block;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.04) 0%, rgba(255, 255, 255, 0.13) 50%, rgba(255, 255, 255, 0.04) 100%);
+  background-size: 220% 100%;
+  animation: usageSkeletonShimmer 1.8s ease-in-out infinite;
+}
+
+.usageSkeletonLabel {
+  width: 86px;
+  height: 12px;
+}
+
+.usageSkeletonValue {
+  width: 54px;
+  height: 14px;
+}
+
+.usageSkeletonDetail {
+  width: 126px;
+  height: 10px;
+}
+
+.usageSkeletonLabel-short {
+  width: 68px;
+}
+
+.usageSkeletonLabel-long {
+  width: 102px;
+}
+
+.usageSkeletonValue-short {
+  width: 40px;
+}
+
+.usageSkeletonValue-long {
+  width: 60px;
+}
+
+.usageSkeletonDetail-short {
+  width: 110px;
+}
+
+.usageSkeletonDetail-long {
+  width: 150px;
+}
+
 .usageMetricHead strong {
   font-size: 1rem;
   color: var(--usage-accent);
@@ -3517,6 +3653,10 @@ select {
   background: rgba(255, 255, 255, 0.1);
 }
 
+.usageBar-loading {
+  background: rgba(255, 255, 255, 0.06);
+}
+
 .usageBarWhite {
   display: block;
   height: 100%;
@@ -3524,6 +3664,20 @@ select {
   flex-shrink: 0;
   border-radius: 999px 0 0 999px;
   transition: width 300ms ease;
+}
+
+.usageBarWhite-loading {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.07) 0%, rgba(255, 255, 255, 0.18) 50%, rgba(255, 255, 255, 0.07) 100%);
+  background-size: 220% 100%;
+  animation: usageSkeletonShimmer 1.8s ease-in-out infinite;
+}
+
+.usageBarWhite-loading-short {
+  width: 32%;
+}
+
+.usageBarWhite-loading-long {
+  width: 58%;
 }
 
 .usageBarWhite:only-child {
@@ -3552,7 +3706,35 @@ select {
 }
 
 .usageEmptyState {
+  flex: 1;
+  min-height: 0;
   justify-items: start;
+  align-content: start;
+  overflow-y: auto;
+}
+
+.usageAutomationSection {
+  min-height: 0;
+  align-content: start;
+}
+
+@keyframes usageSkeletonShimmer {
+  0% {
+    background-position: 0% 50%;
+  }
+
+  100% {
+    background-position: 100% 50%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .usageCard-loading::after,
+  .usagePreviewLabelPlaceholder,
+  .usageSkeleton,
+  .usageBarWhite-loading {
+    animation: none;
+  }
 }
 
 .projectOptionsList {
@@ -3875,28 +4057,28 @@ select {
     right: 16px;
   }
 
-  .slackTopBar {
+  .agentTopBar {
     gap: 10px;
   }
 
-  .slackTopBarPrimary {
+  .agentTopBarPrimary {
     flex-wrap: wrap;
   }
 
-  .slackTopBarSpacer {
+  .agentTopBarSpacer {
     display: none;
   }
 
-  .slackDetailsButton {
+  .agentDetailsButton {
     margin-left: auto;
   }
 
-  .slackDetailsProgressGrid,
-  .slackDetailsCoreGrid {
+  .agentDetailsProgressGrid,
+  .agentDetailsCoreGrid {
     grid-template-columns: 1fr;
   }
 
-  .slackDetailsCard {
+  .agentDetailsCard {
     padding: 16px;
   }
 
@@ -4019,8 +4201,23 @@ select {
   }
 
   .usageCardHead {
-    align-items: flex-start;
-    flex-direction: column;
+    align-items: center;
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .usageProviderHeader {
+    grid-template-columns: 1fr;
+  }
+
+  .usageProviderToggle {
+    width: 100%;
+    justify-self: start;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .usageProviderOption {
+    min-width: 0;
   }
 }
 
@@ -4385,7 +4582,7 @@ select {
   --conversation-toolbar-height: 28px;
   --conversation-divider-gap: 8px;
   --conversation-viewport-gap: 8px;
-  padding-top: 0;
+  padding-top: var(--page-chrome-divider-offset);
 }
 
 .conversationViewportShell {
@@ -4398,8 +4595,12 @@ select {
   gap: var(--conversation-viewport-gap);
 }
 
-.slackConversationViewportShell {
+.agentChatConversationViewportShell {
   --conversation-viewport-gap: 0;
+}
+
+.agentsPage-conversation .conversationViewportShell {
+  padding-top: 0;
 }
 
 .conversationApprovalShelf {
@@ -4420,12 +4621,12 @@ select {
   min-width: 0;
 }
 
-.slackTopBar {
+.agentTopBar {
   align-items: center;
   flex-wrap: wrap;
 }
 
-.slackTopBarPrimary {
+.agentTopBarPrimary {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -4433,12 +4634,12 @@ select {
   min-width: 0;
 }
 
-.slackTopBarSpacer {
+.agentTopBarSpacer {
   flex: 1 1 auto;
   min-width: 12px;
 }
 
-.slackTopBarButton {
+.agentTopBarButton {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -4461,16 +4662,16 @@ select {
   transition: border-color 140ms ease, background 140ms ease, color 140ms ease;
 }
 
-.slackTopBarButton:hover {
+.agentTopBarButton:hover {
   background: color-mix(in srgb, var(--text) 8%, transparent);
 }
 
-.slackTopBarButton:focus-visible {
+.agentTopBarButton:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--text) 30%, transparent);
   outline-offset: 2px;
 }
 
-.slackDetailsButton {
+.agentDetailsButton {
   padding: 0 14px;
 }
 
@@ -4533,20 +4734,7 @@ select {
   outline-offset: 4px;
 }
 
-.agentLandingCard--active .agentLandingTile {
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.34), 0 18px 40px rgba(0, 0, 0, 0.28);
-}
-
-.agentLandingCard--active .agentLandingTile::before {
-  opacity: 1;
-  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.9), inset 0 0 28px rgba(255, 255, 255, 0.08);
-}
-
-.agentLandingCard--active .agentLandingTile::after {
-  background: rgba(255, 255, 255, 0.09);
-}
-
-.agentLandingCard--active .agentLandingFooter {
+.agentLandingCard--present .agentLandingFooter {
   color: rgba(248, 251, 253, 0.96);
 }
 
@@ -4554,7 +4742,7 @@ select {
   filter: saturate(0.25) brightness(0.88);
 }
 
-.agentLandingCard--active .agentLandingTile {
+.agentLandingCard--present .agentLandingTile {
   filter: none;
 }
 
@@ -4571,6 +4759,8 @@ select {
   min-width: 0;
   width: 100%;
   min-height: 84px;
+  transition: filter 240ms ease, opacity 240ms ease, transform 180ms ease;
+  will-change: filter;
 }
 
 .agentLandingTileChrome {
@@ -4641,6 +4831,7 @@ select {
   letter-spacing: 0.01em;
   color: rgba(248, 251, 253, 0.84);
   text-shadow: 0 1px 8px rgba(0, 0, 0, 0.28);
+  transition: color 220ms ease;
 }
 
 .agentProgrammingLane {
@@ -4724,12 +4915,6 @@ select {
 }
 
 .modalFrame.fullscreen .settingsStack {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.modalFrame.fullscreen .usageCardGrid {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -4834,7 +5019,7 @@ select {
   scroll-padding-bottom: 8px;
 }
 
-.slackChatScroll {
+.agentChatScroll {
   scroll-padding-top: 0;
 }
 
@@ -4843,12 +5028,12 @@ select {
   flex-shrink: 0;
 }
 
-.slackComposerFooter {
+.agentChatComposerFooter {
   padding: 0;
   flex-shrink: 0;
 }
 
-.slackComposerShellCompact {
+.agentChatComposerShellCompact {
   flex-direction: row;
   align-items: center;
   gap: 6px;
@@ -4856,13 +5041,13 @@ select {
   border-radius: 24px;
 }
 
-.slackComposerInputCompact {
+.agentChatComposerInputCompact {
   min-height: 34px;
   padding: 9px 14px 5px;
   line-height: 1.3;
 }
 
-.slackComposerShellCompact .composerControlRow {
+.agentChatComposerShellCompact .composerControlRow {
   flex: 0 0 auto;
   width: auto;
   align-items: center;
@@ -4870,11 +5055,11 @@ select {
   gap: 0;
 }
 
-.slackComposerShellCompact .composerControlCluster {
+.agentChatComposerShellCompact .composerControlCluster {
   display: none;
 }
 
-.slackComposerShellCompact .composerSubmitButton {
+.agentChatComposerShellCompact .composerSubmitButton {
   flex: 0 0 44px;
   width: 44px;
   min-width: 44px;
@@ -4882,7 +5067,7 @@ select {
   margin-top: 0;
 }
 
-.slackComposerBar {
+.agentChatComposerBar {
   display: flex;
   align-items: center;
   gap: 4px;
@@ -4893,7 +5078,7 @@ select {
   box-shadow: 0 8px 20px rgba(0, 0, 0, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
-.slackComposerInput {
+.agentChatComposerInput {
   flex: 1;
   border: none !important;
   background: transparent !important;
@@ -4905,18 +5090,18 @@ select {
   min-width: 0;
 }
 
-.slackComposerInput::placeholder {
+.agentChatComposerInput::placeholder {
   color: var(--muted);
   opacity: 0.6;
 }
 
-.slackAttachBtn,
-.slackSendBtn {
+.agentChatAttachBtn,
+.agentChatSendBtn {
   flex-shrink: 0;
   opacity: 0.6;
 }
 
-.slackSendBtn:not(:disabled) {
+.agentChatSendBtn:not(:disabled) {
   opacity: 1;
   background: color-mix(in srgb, var(--text) 12%, transparent);
 }
@@ -5650,11 +5835,6 @@ select {
     grid-template-columns: 1fr;
   }
 
-  .usageProviderHeader {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
   .agentContentLayout {
     flex-direction: column;
   }
@@ -5663,7 +5843,7 @@ select {
     min-height: 52vh;
   }
 
-  .slackResearchPanel {
+  .agentChatPanel {
     width: 100%;
     min-width: 0;
     max-width: none;
@@ -6318,20 +6498,24 @@ select {
   flex: 0 0 auto;
 }
 
-.slackConversationItem {
+.agentChatConversationItem {
   display: flex;
   flex-direction: column;
 }
 
-.slackConversationItem--continuation {
+.agentChatConversationItem--continuation {
   margin-top: -5px;
 }
 
-.slackConversationItem--user::before {
+.agentChatConversationItem--user::before {
   content: "";
   display: block;
   height: 0.625rem;
   margin: 6px 0 4px;
+}
+
+.agentChatConversationItem--userDayStart .agentConvoMessage-user {
+  margin-top: 10px;
 }
 
 .agentConvoMessage {
@@ -6367,27 +6551,27 @@ select {
   font-style: italic;
 }
 
-/* --- Slack Typing Dots Animation --- */
-.slackTypingDots {
+/* --- Agent Chat Typing Dots Animation --- */
+.agentChatTypingDots {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   padding: 4px 0;
 }
-.slackDot {
+.agentChatDot {
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: rgba(255, 255, 255, 0.7);
-  animation: slackBounce 1.4s ease-in-out infinite;
+  animation: agentChatBounce 1.4s ease-in-out infinite;
 }
-.slackDot:nth-child(2) {
+.agentChatDot:nth-child(2) {
   animation-delay: 0.2s;
 }
-.slackDot:nth-child(3) {
+.agentChatDot:nth-child(3) {
   animation-delay: 0.4s;
 }
-@keyframes slackBounce {
+@keyframes agentChatBounce {
   0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
   30% { transform: translateY(-6px); opacity: 1; }
 }
@@ -6406,18 +6590,18 @@ select {
   50% { opacity: 0.8; }
 }
 
-/* --- Slack Dev Mode --- */
-.slackDevButton--active {
+/* --- Agent Chat Dev Mode --- */
+.agentChatDevButton--active {
   background: color-mix(in srgb, #ef4444 12%, transparent);
   border-color: #ef4444;
   color: #ef4444;
 }
-.slackMessageDeleteSelected {
+.agentChatMessageDeleteSelected {
   outline: 2px solid #ef4444;
   outline-offset: -2px;
   opacity: 0.7;
 }
-.slackDeleteSelectedButton {
+.agentChatDeleteSelectedButton {
   background: #ef4444;
   color: #fff;
   border: none;
@@ -6429,8 +6613,8 @@ select {
   display: block;
 }
 
-/* --- Slack Message Timestamps --- */
-.slackMessageTimestamp {
+/* --- Agent Chat Message Timestamps --- */
+.agentChatMessageTimestamp {
   font-size: 0.625rem;
   opacity: 0.45;
   margin-left: auto;
@@ -6439,29 +6623,29 @@ select {
   flex: 0 0 auto;
 }
 
-.slackMessageMetaRow {
+.agentChatMessageMetaRow {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-top: 6px;
 }
 
-.slackMessageMetaActions {
+.agentChatMessageMetaActions {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
 }
 
-/* --- Slack Message Sender Label --- */
-.slackMessageSender {
+/* --- Agent Chat Message Sender Label --- */
+.agentChatMessageSender {
   font-size: 0.6875rem;
   font-weight: 600;
   opacity: 0.8;
   margin-bottom: 2px;
 }
 
-.slackMessageLabel {
+.agentChatMessageLabel {
   font-size: 0.625rem;
   font-weight: 600;
   letter-spacing: 0.03em;
@@ -6472,7 +6656,7 @@ select {
   margin: 6px 0 4px;
 }
 
-.slackDaySeparator {
+.agentChatDaySeparator {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -6482,15 +6666,15 @@ select {
   opacity: 0.9;
 }
 
-.slackDaySeparator::before,
-.slackDaySeparator::after {
+.agentChatDaySeparator::before,
+.agentChatDaySeparator::after {
   content: "";
   flex: 1 1 auto;
   height: 1px;
   background: color-mix(in srgb, var(--border-strong) 34%, transparent);
 }
 
-.slackDaySeparatorLabel {
+.agentChatDaySeparatorLabel {
   flex: 0 0 auto;
   font-size: 0.68rem;
   font-weight: 600;
@@ -6498,14 +6682,14 @@ select {
   white-space: nowrap;
 }
 
-/* --- Slack Message Click Highlight --- */
-.slackMessageSelected {
+/* --- Agent Chat Message Click Highlight --- */
+.agentChatMessageSelected {
   outline: 2px solid rgba(255, 255, 255, 0.8);
   outline-offset: 2px;
 }
 
-/* --- Slack Director Presence Chips --- */
-.slackDirectorPresence {
+/* --- Agent Presence Chips --- */
+.agentPresence {
   display: flex;
   gap: 6px;
   align-items: center;
@@ -6514,7 +6698,7 @@ select {
   min-width: 0;
   padding-bottom: 0;
 }
-.slackDirectorChip {
+.agentPresenceChip {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -6531,43 +6715,43 @@ select {
   box-sizing: border-box;
   transition: background 0.15s, border-color 0.15s, color 0.15s;
 }
-.slackDirectorChip:hover {
+.agentPresenceChip:hover {
   background: rgba(255, 255, 255, 0.06);
 }
-.slackDirectorChip--current {
+.agentPresenceChip--current {
   background: color-mix(in srgb, currentColor 14%, transparent);
 }
-.slackDirectorChip--current:hover {
+.agentPresenceChip--current:hover {
   background: color-mix(in srgb, currentColor 18%, transparent);
 }
-.slackDirectorChip--alerted {
+.agentPresenceChip--alerted {
   background: rgba(255, 255, 255, 0.12);
 }
 
-/* --- Slack Details Modal --- */
-.slackDetailsModalContent {
+/* --- Agent Details Modal --- */
+.agentDetailsModalContent {
   display: grid;
   gap: 18px;
   padding: 12px 0 24px;
 }
 
-.slackDetailsModalContent-static {
+.agentDetailsModalContent-static {
   overflow-y: hidden;
 }
 
-.slackDetailsSection {
+.agentDetailsSection {
   display: grid;
   gap: 10px;
 }
 
-.slackDetailsSectionHeader {
+.agentDetailsSectionHeader {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
 
-.slackDetailsSectionHeader h4 {
+.agentDetailsSectionHeader h4 {
   margin: 0;
   font-size: 0.78rem;
   font-weight: 700;
@@ -6576,7 +6760,7 @@ select {
   color: var(--text-muted);
 }
 
-.slackDetailsSectionToggle {
+.agentDetailsSectionToggle {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -6589,7 +6773,7 @@ select {
   text-align: left;
 }
 
-.slackDetailsSectionToggleLabel {
+.agentDetailsSectionToggleLabel {
   font-size: 0.78rem;
   font-weight: 700;
   text-transform: uppercase;
@@ -6597,13 +6781,13 @@ select {
   color: var(--text-muted);
 }
 
-.slackDetailsSectionToggleHint {
+.agentDetailsSectionToggleHint {
   font-size: 0.78rem;
   font-weight: 600;
   color: var(--text-muted);
 }
 
-.slackDetailsCard {
+.agentDetailsCard {
   display: grid;
   gap: 14px;
   padding: 18px;
@@ -6613,41 +6797,41 @@ select {
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
 }
 
-.slackDetailsDescription {
+.agentDetailsDescription {
   margin: 0;
   font-size: 0.96rem;
   line-height: 1.6;
   color: var(--text);
 }
 
-.slackDetailsToggle {
+.agentDetailsToggle {
   width: fit-content;
   padding: 0;
 }
 
-.slackDetailsCoreGrid {
+.agentDetailsCoreGrid {
   margin-top: 2px;
   padding: 0;
   border-bottom: none;
 }
 
-.slackDetailsPillarList {
+.agentDetailsPillarList {
   display: grid;
   gap: 10px;
 }
 
-.slackDetailsPillarExpanded {
+.agentDetailsPillarExpanded {
   margin-top: 0;
 }
 
-.slackDetailsPillarHeading {
+.agentDetailsPillarHeading {
   font-size: 0.85rem;
   font-weight: 700;
   color: var(--text);
   margin-bottom: 8px;
 }
 
-.slackDetailsPillarChildren {
+.agentDetailsPillarChildren {
   display: grid;
   gap: 10px;
 }
@@ -6741,38 +6925,38 @@ select {
 .refreshButton:hover { opacity: 0.9; }
 .refreshButton:disabled { opacity: 0.5; cursor: not-allowed; }
 
-.slackDetailsProgressGrid {
+.agentDetailsProgressGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
 }
 
-.slackDetailsProgressCard {
+.agentDetailsProgressCard {
   display: flex;
   flex-direction: column;
   min-height: 220px;
 }
 
-.slackDetailsSubsectionHead {
+.agentDetailsSubsectionHead {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
 
-.slackDetailsSubsectionHead h5 {
+.agentDetailsSubsectionHead h5 {
   margin: 0;
   font-size: 0.95rem;
   color: var(--text);
 }
 
-.slackDetailsProgressCardBody {
+.agentDetailsProgressCardBody {
   flex: 1;
   display: flex;
   align-items: flex-start;
 }
 
-.slackDetailsProgressCardFooter {
+.agentDetailsProgressCardFooter {
   margin-top: auto;
   display: flex;
   justify-content: flex-start;
@@ -6807,7 +6991,7 @@ select {
   color: var(--muted);
 }
 
-.slackDetailsSegmentedControl {
+.agentDetailsSegmentedControl {
   display: inline-flex;
   align-items: center;
   gap: 4px;
@@ -6817,7 +7001,7 @@ select {
   background: color-mix(in srgb, var(--panel) 74%, transparent);
 }
 
-.slackDetailsSegment {
+.agentDetailsSegment {
   border: none;
   background: transparent;
   color: var(--text-muted);
@@ -6828,62 +7012,62 @@ select {
   letter-spacing: 0.01em;
 }
 
-.slackDetailsSegment.active {
+.agentDetailsSegment.active {
   background: color-mix(in srgb, var(--text) 10%, transparent);
   color: var(--text);
 }
 
-.slackDetailsPlaceholder {
+.agentDetailsPlaceholder {
   display: grid;
   gap: 14px;
   align-content: start;
 }
 
-.slackDetailsPlaceholderBars {
+.agentDetailsPlaceholderBars {
   display: grid;
   gap: 10px;
 }
 
-.slackDetailsPlaceholderBars span {
+.agentDetailsPlaceholderBars span {
   display: block;
   height: 10px;
   border-radius: 999px;
   background: color-mix(in srgb, var(--text) 12%, transparent);
 }
 
-.slackDetailsPlaceholderBars span:nth-child(1) {
+.agentDetailsPlaceholderBars span:nth-child(1) {
   width: 82%;
 }
 
-.slackDetailsPlaceholderBars span:nth-child(2) {
+.agentDetailsPlaceholderBars span:nth-child(2) {
   width: 68%;
 }
 
-.slackDetailsPlaceholderBars span:nth-child(3) {
+.agentDetailsPlaceholderBars span:nth-child(3) {
   width: 54%;
 }
 
-.slackDetailsPlaceholderCopy {
+.agentDetailsPlaceholderCopy {
   margin: 0;
   font-size: 0.8125rem;
   color: var(--text-muted);
 }
 
-.slackDetailsAgentFlow {
+.agentDetailsAgentFlow {
   display: grid;
   gap: 14px;
   align-content: start;
   justify-items: center;
 }
 
-.slackDetailsAgentNode {
-  --slack-agent-color: var(--accent);
+.agentDetailsAgentNode {
+  --agent-details-color: var(--accent);
   appearance: none;
   width: min(360px, 100%);
   padding: 14px 18px;
   border-radius: 16px;
-  border: 1px solid color-mix(in srgb, var(--slack-agent-color) 50%, var(--border));
-  background: color-mix(in srgb, var(--slack-agent-color) 14%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--agent-details-color) 50%, var(--border));
+  background: color-mix(in srgb, var(--agent-details-color) 14%, var(--panel));
   display: grid;
   gap: 4px;
   justify-items: center;
@@ -6893,37 +7077,37 @@ select {
   transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
 }
 
-.slackDetailsAgentNode:hover {
+.agentDetailsAgentNode:hover {
   transform: translateY(-1px);
-  background: color-mix(in srgb, var(--slack-agent-color) 18%, var(--panel));
+  background: color-mix(in srgb, var(--agent-details-color) 18%, var(--panel));
 }
 
-.slackDetailsAgentNode:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--slack-agent-color) 82%, white 18%);
+.agentDetailsAgentNode:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--agent-details-color) 82%, white 18%);
   outline-offset: 2px;
 }
 
-.slackDetailsAgentRole {
+.agentDetailsAgentRole {
   font-size: 0.84rem;
   font-weight: 700;
   color: var(--text);
 }
 
-.slackDetailsAgentName {
+.agentDetailsAgentName {
   font-size: 0.74rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
-  color: color-mix(in srgb, var(--slack-agent-color) 72%, white 18%);
+  color: color-mix(in srgb, var(--agent-details-color) 72%, white 18%);
 }
 
-.slackDetailsAgentArrow {
+.agentDetailsAgentArrow {
   position: relative;
   width: 18px;
   height: 28px;
   color: color-mix(in srgb, var(--text) 42%, transparent);
 }
 
-.slackDetailsAgentArrow::before {
+.agentDetailsAgentArrow::before {
   content: "";
   position: absolute;
   left: 50%;
@@ -6935,7 +7119,7 @@ select {
   background: currentColor;
 }
 
-.slackDetailsAgentArrow::after {
+.agentDetailsAgentArrow::after {
   content: "";
   position: absolute;
   left: 50%;
@@ -6947,9 +7131,9 @@ select {
   transform: translateX(-50%) rotate(45deg);
 }
 
-/* --- Slack Handoff Banner --- */
-/* --- Slack System Messages (handoff transitions) --- */
-.slackSystemMessage {
+/* --- Agent Chat Handoff Banner --- */
+/* --- Agent Chat System Messages (handoff transitions) --- */
+.agentChatSystemMessage {
   font-size: 0.75rem;
   color: var(--muted, #888);
   text-align: center;
@@ -6959,8 +7143,8 @@ select {
   opacity: 0.7;
 }
 
-/* --- Slack View Research Button --- */
-.slackViewMoreButton {
+/* --- Agent Chat View Research Button --- */
+.agentChatViewMoreButton {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -6973,42 +7157,42 @@ select {
   cursor: pointer;
   transition: background 0.15s;
 }
-.slackViewMoreButton:hover {
+.agentChatViewMoreButton:hover {
   background: rgba(255, 255, 255, 0.2);
 }
 
-.slackViewMoreButton--report {
+.agentChatViewMoreButton--report {
   background: color-mix(in srgb, #ef4444 18%, transparent);
   border-color: color-mix(in srgb, #ef4444 70%, transparent);
   color: #fff;
 }
 
-.slackViewMoreButton--report:hover {
+.agentChatViewMoreButton--report:hover {
   background: color-mix(in srgb, #ef4444 26%, transparent);
 }
 
-.slackViewMoreButton--soft-report {
+.agentChatViewMoreButton--soft-report {
   background: rgba(156, 163, 175, 0.18);
   border-color: rgba(156, 163, 175, 0.5);
   color: #d1d5db;
 }
 
-.slackViewMoreButton--soft-report:hover {
+.agentChatViewMoreButton--soft-report:hover {
   background: rgba(156, 163, 175, 0.28);
 }
 
-.slackViewMoreButton--hard-report {
+.agentChatViewMoreButton--hard-report {
   background: rgba(255, 255, 255, 0.14);
   border-color: rgba(255, 255, 255, 0.5);
   color: #fff;
 }
 
-.slackViewMoreButton--hard-report:hover {
+.agentChatViewMoreButton--hard-report:hover {
   background: rgba(255, 255, 255, 0.24);
 }
 
-/* --- Slack Research Panel --- */
-.slackResearchPanel {
+/* --- Agent Chat Panel --- */
+.agentChatPanel {
   width: 380px;
   min-width: 380px;
   height: 100%;
@@ -7018,19 +7202,19 @@ select {
   flex-direction: column;
   overflow-y: auto;
 }
-.slackResearchPanelHeader {
+.agentChatPanelHeader {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 12px 16px;
   border-bottom: 1px solid var(--border, #333);
 }
-.slackResearchPanelHeader h3 {
+.agentChatPanelHeader h3 {
   margin: 0;
   font-size: 0.9rem;
   color: #0E7490;
 }
-.slackResearchPanelBody {
+.agentChatPanelBody {
   padding: 16px;
   display: flex;
   flex-direction: column;
@@ -7038,21 +7222,21 @@ select {
   font-size: 0.82rem;
   line-height: 1.5;
 }
-.slackResearchPanelBody h4 {
+.agentChatPanelBody h4 {
   margin: 0 0 4px;
   font-size: 0.7rem;
   color: var(--muted, #888);
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
-.slackResearchPanelBody section {
+.agentChatPanelBody section {
   padding-bottom: 12px;
   border-bottom: 1px solid var(--border, #333);
 }
-.slackResearchPanelBody section:last-child {
+.agentChatPanelBody section:last-child {
   border-bottom: none;
 }
-.slackResearchPanelBody p {
+.agentChatPanelBody p {
   margin: 0;
 }
 
@@ -7112,17 +7296,17 @@ select {
   line-height: 1.45;
 }
 
-.slackUpdateList {
+.agentChatUpdateList {
   margin: 0;
   padding-left: 18px;
   list-style: disc;
 }
-.slackUpdateList li {
+.agentChatUpdateList li {
   margin-bottom: 4px;
 }
 
-/* --- Slack Inline Code --- */
-.slackInlineCode {
+/* --- Agent Chat Inline Code --- */
+.agentChatInlineCode {
   background: rgba(255, 255, 255, 0.1);
   padding: 1px 4px;
   border-radius: 3px;
@@ -7769,11 +7953,25 @@ select {
   border: 1px solid color-mix(in srgb, var(--warning, #e8a735) 30%, transparent);
 }
 
+.memoryHandoffBadge--question {
+  background: color-mix(in srgb, #c96c1f 16%, transparent);
+  color: #c96c1f;
+  border: 1px solid color-mix(in srgb, #c96c1f 28%, transparent);
+}
+
 .memoryPendingHandoffCard {
   padding: 10px 12px;
   border-radius: 10px;
   border: 1px solid color-mix(in srgb, var(--warning, #e8a735) 30%, transparent);
   background: color-mix(in srgb, var(--warning, #e8a735) 8%, var(--panel-soft));
+}
+
+.memoryQuestionCard {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, #c96c1f 26%, transparent);
+  background: color-mix(in srgb, #c96c1f 6%, var(--panel-soft));
+  margin-bottom: 12px;
 }
 
 .directorProfileAvatar {

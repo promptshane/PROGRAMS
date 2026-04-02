@@ -71,7 +71,7 @@ const shell = { openExternal: async () => {}, showItemInFolder: async () => {}, 
     return `from ${JSON.stringify(pathToFileURL(resolvedPath).href)};`;
   });
 
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), "programs-backend-slack-"));
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "programs-backend-agent-chat-"));
   const tempPath = path.join(tempDir, "backend.test.ts");
   await writeFile(tempPath, source, "utf8");
 
@@ -84,19 +84,21 @@ const shell = { openExternal: async () => {}, showItemInFolder: async () => {}, 
 
 const { ProgramsBackend } = await loadBackendModule();
 
-const createBackend = () => {
+const createBackend = (settingsOverride?: Record<string, unknown>) => {
   const settings = {
     advancedDefaults: {
       provider: "codex",
       model: "gpt-5.4",
       claudeModel: "sonnet",
     },
+    defaultSpeed: "normal",
+    ...settingsOverride,
   };
   const store = {
     readSettings: async () => settings,
     getAgentSession: async () => null,
     saveAgentSession: async () => {},
-    getProject: async () => ({ id: "project-1", name: "Slack Quarantine Project" }),
+    getProject: async () => ({ id: "project-1", name: "Agent Chat Quarantine Project" }),
   };
   const stub = {};
   const backend = new ProgramsBackend(
@@ -108,20 +110,20 @@ const createBackend = () => {
     stub as never,
     () => {},
   );
-  (backend as Record<string, unknown>).getSlackProviderPreflightErrors = async () => ({ codex: null, claude: null });
+  (backend as Record<string, unknown>).getAgentChatProviderPreflightErrors = async () => ({ codex: null, claude: null });
 
   return backend;
 };
 
-test("Slack stays visible in the app shell when enabled", () => {
-  assert.equal(getVisibleAppPageOptions().some((page) => page.id === "slack"), true);
-  assert.equal(resolveVisibleAppPage("slack"), "slack");
+test("Agents stays visible in the app shell when enabled", () => {
+  assert.equal(getVisibleAppPageOptions().some((page) => page.id === "agents"), true);
+  assert.equal(resolveVisibleAppPage("agents"), "agents");
 });
 
-test("Slack chat no longer fails fast behind the quarantine gate", async () => {
+test("Agent chat no longer fails fast behind the quarantine gate", async () => {
   const backend = createBackend() as Record<string, unknown>;
   (backend.ensureInitialized as Function) = async () => {};
-  (backend.requireProject as Function) = async () => ({ id: "project-1", name: "Slack Enabled Project" });
+  (backend.requireProject as Function) = async () => ({ id: "project-1", name: "Agent Chat Enabled Project" });
   (backend.getOrCreateAgentSession as Function) = async () => (backend.createEmptyAgentSession as Function)("project-1", "codex");
   (backend.runSlackDirectorTurn as Function) = async () => ({
     assistantMessage: {
@@ -138,12 +140,12 @@ test("Slack chat no longer fails fast behind the quarantine gate", async () => {
     },
   });
 
-  const response = await (backend.slackChat as Function)({
+  const response = await (backend.agentChat as Function)({
     projectId: "project-1",
     provider: "codex",
     model: "gpt-5.4",
     claudeModel: "sonnet",
-    message: "Hello Slack.",
+    message: "Hello team.",
     targetDirectorId: null,
   });
 
@@ -151,10 +153,10 @@ test("Slack chat no longer fails fast behind the quarantine gate", async () => {
   assert.equal(response.message.content, "Ready.");
 });
 
-test("Slack Ping with an active update skips the read-only chat turn and starts execution", async () => {
+test("Agent chat Ping with an active update skips the read-only chat turn and starts execution", async () => {
   const backend = createBackend() as Record<string, unknown>;
   (backend.ensureInitialized as Function) = async () => {};
-  (backend.requireProject as Function) = async () => ({ id: "project-1", name: "Slack Enabled Project" });
+  (backend.requireProject as Function) = async () => ({ id: "project-1", name: "Agent Chat Enabled Project" });
 
   const session = (backend.createEmptyAgentSession as Function)("project-1", "codex") as AgentSession;
   session.toddMemory.futureUpdatePlan = [
@@ -162,7 +164,7 @@ test("Slack Ping with an active update skips the read-only chat turn and starts 
       id: "update-1",
       versionId: "version-1",
       title: "Ship Ping update",
-      description: "Apply the latest update in Slack.",
+      description: "Apply the latest update in agent chat.",
       order: 0,
       status: "pending",
       dependencies: [],
@@ -210,10 +212,10 @@ test("Slack Ping with an active update skips the read-only chat turn and starts 
   assert.equal(session.slackMessages.at(-1)?.content, "Handing this to Ping to update the code now.");
 });
 
-test("Slack approval replay also routes Ping directly when an active update exists", async () => {
+test("Agent chat approval replay also routes Ping directly when an active update exists", async () => {
   const backend = createBackend() as Record<string, unknown>;
   (backend.ensureInitialized as Function) = async () => {};
-  (backend.requireProject as Function) = async () => ({ id: "project-1", name: "Slack Enabled Project" });
+  (backend.requireProject as Function) = async () => ({ id: "project-1", name: "Agent Chat Enabled Project" });
 
   const session = (backend.createEmptyAgentSession as Function)("project-1", "codex") as AgentSession;
   session.toddMemory.futureUpdatePlan = [
@@ -221,7 +223,7 @@ test("Slack approval replay also routes Ping directly when an active update exis
       id: "update-1",
       versionId: "version-1",
       title: "Ship Ping update",
-      description: "Apply the latest update in Slack.",
+      description: "Apply the latest update in agent chat.",
       order: 0,
       status: "pending",
       dependencies: [],
@@ -265,10 +267,10 @@ test("Slack approval replay also routes Ping directly when an active update exis
   assert.equal(session.slackMessages.at(-1)?.content, "Handing this to Ping to update the code now.");
 });
 
-test("Slack Ping falls back to the normal chat turn when the active update is stale", async () => {
+test("Agent chat Ping falls back to the normal chat turn when the active update is stale", async () => {
   const backend = createBackend() as Record<string, unknown>;
   (backend.ensureInitialized as Function) = async () => {};
-  (backend.requireProject as Function) = async () => ({ id: "project-1", name: "Slack Enabled Project" });
+  (backend.requireProject as Function) = async () => ({ id: "project-1", name: "Agent Chat Enabled Project" });
 
   const session = (backend.createEmptyAgentSession as Function)("project-1", "codex") as AgentSession;
   session.pingMemory.activeUpdateId = "missing-update";
@@ -313,4 +315,133 @@ test("Slack Ping falls back to the normal chat turn when the active update is st
   assert.equal(response.directorId, "programming-director");
   assert.equal(response.message.content, "I'll look at the implementation...");
   assert.equal(session.slackMessages.some((msg) => msg.content === "Handing this to Ping to update the code now."), false);
+});
+
+test("Direct Ping updates plan with the big Claude model and keep the small Claude model for execution runtime", async () => {
+  const backend = createBackend({
+    advancedDefaults: {
+      provider: "claude",
+      model: "gpt-5.4-mini",
+      claudeModel: "sonnet",
+    },
+  }) as Record<string, unknown>;
+  (backend.ensureInitialized as Function) = async () => {};
+  (backend.requireProject as Function) = async () => ({ id: "project-1", name: "Ping Model Project" });
+
+  const session = (backend.createEmptyAgentSession as Function)("project-1", "claude") as AgentSession;
+  (backend.getOrCreateAgentSession as Function) = async () => session;
+
+  let capturedInput: Record<string, any> | null = null;
+  (backend.startPlanNow as Function) = async (input: Record<string, any>) => {
+    capturedInput = input;
+    return { started: true };
+  };
+
+  await (backend.startPingDirectUpdate as Function)({
+    projectId: "project-1",
+    message: "Implement the next approved update.",
+    runMode: "auto",
+  });
+
+  assert.ok(capturedInput);
+  assert.equal(capturedInput?.provider, "claude");
+  assert.equal(capturedInput?.claudeModel, "opus");
+  assert.equal(capturedInput?.pingTaskSnapshot?.runtime?.provider, "claude");
+  assert.equal(capturedInput?.pingTaskSnapshot?.runtime?.claudeModel, "sonnet");
+});
+
+test("Ping execution switches the approved plan draft to the small execution runtime", async () => {
+  const backend = createBackend() as Record<string, unknown>;
+  (backend.requireProviderReady as Function) = async () => {};
+  (backend.updateProjectStatus as Function) = async (project: Record<string, unknown>) => project;
+
+  let capturedDraft: Record<string, unknown> | null = null;
+  (backend.aiService as Function) = () => ({
+    executeApprovedPlan: async (_project: unknown, _settings: unknown, draft: Record<string, unknown>) => {
+      capturedDraft = {
+        provider: draft.provider,
+        model: draft.model,
+        claudeModel: draft.claudeModel,
+        reasoningEffort: draft.reasoningEffort,
+        contextPaths: draft.contextPaths,
+      };
+      return new Promise(() => {});
+    },
+  });
+
+  const project = {
+    id: "project-1",
+    name: "Ping Execution Project",
+    localPath: projectRoot,
+  };
+  const draft = {
+    projectId: "project-1",
+    provider: "codex",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    prompt: "Ship the approved update.",
+    speed: "normal",
+    model: "gpt-5.4",
+    claudeModel: "opus",
+    reasoningEffort: "high",
+    planningMode: "auto",
+    autoApprove: true,
+    contextPaths: [],
+    skillInstructions: null,
+    coreDetailsContext: null,
+    pingTaskSnapshot: {
+      source: "direct-ping-request",
+      projectId: "project-1",
+      updateId: null,
+      updateTitle: null,
+      updateDescription: null,
+      originalUserRequest: "Ship the approved update.",
+      toddExplanation: "Ship the approved update.",
+      relevantPillarIds: [],
+      toddCodebaseMapSummary: null,
+      coreDetailsContext: null,
+      runtime: {
+        provider: "codex",
+        model: "gpt-5.4-mini",
+        claudeModel: "sonnet",
+        reasoningEffort: "high",
+        planningMode: "auto",
+        contextPaths: ["src/main/backend.ts"],
+      },
+      planPrompt: "Plan prompt",
+      createdAt: new Date().toISOString(),
+    },
+    status: "awaitingApproval",
+    thinkingStatus: "completed",
+    planningStatus: "completed",
+    buildingStatus: "pending",
+    verifyingStatus: "pending",
+    explanation: "Apply the approved implementation plan.",
+    steps: [],
+    summary: null,
+    impact: null,
+    diff: null,
+    diffStats: null,
+    finalText: null,
+    verificationDetails: null,
+    errorMessage: null,
+    lastUpdatedAt: new Date().toISOString(),
+  };
+
+  await (backend.executePlan as Function)(project, {
+    advancedDefaults: {
+      provider: "codex",
+      model: "gpt-5.4",
+      claudeModel: "sonnet",
+    },
+    defaultSpeed: "normal",
+  }, draft);
+
+  assert.deepEqual(capturedDraft, {
+    provider: "codex",
+    model: "gpt-5.4-mini",
+    claudeModel: "sonnet",
+    reasoningEffort: "high",
+    contextPaths: ["src/main/backend.ts"],
+  });
 });

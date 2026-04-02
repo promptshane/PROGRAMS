@@ -10,8 +10,8 @@ import type {
   DirectorChatInput,
   DirectorFocusMode,
   DirectorId,
-  SlackChatInput,
-  DeleteSlackMessagesInput,
+  AgentChatInput,
+  DeleteAgentMessagesInput,
   DirectorSettingsOverride,
   DirectoryPickMode,
   GenerateProjectOutlineReportInput,
@@ -95,7 +95,9 @@ export const registerIpc = (backend: ProgramsBackend): void => {
     backend.directorChat(input));
   ipcMain.handle("directors.ping.start", (_event, input: StartPingDirectUpdateInput) =>
     backend.startPingDirectUpdate(input));
-  ipcMain.handle("slack.chat", (_event, input: SlackChatInput) =>
+  ipcMain.handle("agents.chat", (_event, input: AgentChatInput) =>
+    backend.agentChat(input));
+  ipcMain.handle("slack.chat", (_event, input: AgentChatInput) =>
     backend.slackChat(input));
   ipcMain.handle("approvals.list", (_event, input: ListPendingApprovalsInput) =>
     backend.listPendingApprovals(input));
@@ -107,10 +109,16 @@ export const registerIpc = (backend: ProgramsBackend): void => {
     backend.deferPendingApproval(input));
   ipcMain.handle("approvals.dismiss", (_event, input: UpdatePendingApprovalStatusInput) =>
     backend.dismissPendingApproval(input));
-  ipcMain.handle("slack.deleteMessages", (_event, input: DeleteSlackMessagesInput) =>
+  ipcMain.handle("agents.deleteMessages", (_event, input: DeleteAgentMessagesInput) =>
+    backend.deleteAgentMessages(input));
+  ipcMain.handle("slack.deleteMessages", (_event, input: DeleteAgentMessagesInput) =>
     backend.deleteSlackMessages(input));
+  ipcMain.handle("agents.clearMessages", (_event, projectId: string) =>
+    backend.clearAgentMessages(projectId));
   ipcMain.handle("slack.clearAll", (_event, projectId: string) =>
     backend.clearSlackMessages(projectId));
+  ipcMain.handle("agents.refreshProject", (_event, input: import("@shared/types").RefreshProjectInput) =>
+    backend.refreshProject(input));
   ipcMain.handle("slack.refreshProject", (_event, input: import("@shared/types").RefreshProjectInput) =>
     backend.refreshProject(input));
   ipcMain.handle("automation.targets", (_event, input: ListAutomationTargetsInput) =>

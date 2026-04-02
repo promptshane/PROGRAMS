@@ -1,6 +1,6 @@
 import { buildStrictObjectSchema, toddVersionItemSchema, toddUpdateItemSchema, pingRawReportSchema } from "./shared-schema.ts";
 
-export const directorSlackSchema = buildStrictObjectSchema({
+export const directorAgentChatSchema = buildStrictObjectSchema({
   response: { type: "string" },
   handoffTo: { type: ["string", "null"] },
   handoffReason: { type: ["string", "null"] },
@@ -8,7 +8,7 @@ export const directorSlackSchema = buildStrictObjectSchema({
   idealState: { type: ["string", "null"] },
 });
 
-export const researchSlackSchema = buildStrictObjectSchema({
+export const researchAgentChatSchema = buildStrictObjectSchema({
   response: { type: "string" },
   generalSummary: { type: ["string", "null"] },
   projectSummary: { type: ["string", "null"] },
@@ -22,7 +22,7 @@ export const researchSlackSchema = buildStrictObjectSchema({
   },
 });
 
-export const toddVersionSlackSchema = buildStrictObjectSchema({
+export const toddVersionAgentChatSchema = buildStrictObjectSchema({
   response: { type: "string" },
   handoffTo: { type: ["string", "null"] },
   handoffReason: { type: ["string", "null"] },
@@ -39,7 +39,7 @@ export const toddVersionSlackSchema = buildStrictObjectSchema({
   },
 });
 
-export const toddUpdateSlackSchema = buildStrictObjectSchema({
+export const toddUpdateAgentChatSchema = buildStrictObjectSchema({
   response: { type: "string" },
   handoffTo: { type: ["string", "null"] },
   handoffReason: { type: ["string", "null"] },
@@ -137,7 +137,7 @@ const danDraftOperationSchema = {
   },
 };
 
-export const danSlackSchema = buildStrictObjectSchema({
+export const danAgentChatSchema = buildStrictObjectSchema({
   response: { type: "string" },
   handoffTo: { type: ["string", "null"] },
   handoffReason: { type: ["string", "null"] },
@@ -177,7 +177,7 @@ export const danSlackSchema = buildStrictObjectSchema({
   },
 });
 
-export const pingSlackSchema = buildStrictObjectSchema({
+export const pingAgentChatSchema = buildStrictObjectSchema({
   response: { type: "string" },
   handoffTo: { type: ["string", "null"] },
   handoffReason: { type: ["string", "null"] },

@@ -6,9 +6,9 @@ import {
   resolveVisibleAppPage,
 } from "../src/shared/app-shell.ts";
 
-test("Slack is visible in the app shell", () => {
+test("Agents is visible in the app shell", () => {
   const visiblePageIds = getVisibleAppPageOptions().map((page) => page.id);
-  assert.equal(visiblePageIds.includes("slack"), true);
-  assert.equal(resolveVisibleAppPage("slack"), "slack");
-  assert.equal(APP_PAGE_OPTIONS.some((page) => page.id === "slack"), true);
+  assert.equal(visiblePageIds.includes("agents"), true);
+  assert.equal(resolveVisibleAppPage("agents"), "agents");
+  assert.equal(APP_PAGE_OPTIONS.some((page) => page.id === "agents"), true);
 });

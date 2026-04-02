@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildSlackConversationRenderItems } from "../src/renderer/src/lib/slack-message-grouping.ts";
+import { buildAgentChatConversationRenderItems } from "../src/renderer/src/lib/agent-chat-grouping.ts";
 
-test("Slack conversation grouping shows the sender label only on the first bubble in a contiguous run", () => {
-  const items = buildSlackConversationRenderItems([
+test("Agent chat grouping shows the sender label only on the first bubble in a contiguous run", () => {
+  const items = buildAgentChatConversationRenderItems([
     {
       id: "1",
       role: "assistant",
@@ -25,8 +25,8 @@ test("Slack conversation grouping shows the sender label only on the first bubbl
   assert.equal(items[1].dayLabel, null);
 });
 
-test("Slack conversation grouping resets the sender label when the sender changes or a user message breaks the run", () => {
-  const items = buildSlackConversationRenderItems([
+test("Agent chat grouping resets the sender label when the sender changes or a user message breaks the run", () => {
+  const items = buildAgentChatConversationRenderItems([
     {
       id: "1",
       role: "assistant",
@@ -75,8 +75,8 @@ test("Slack conversation grouping resets the sender label when the sender change
   assert.deepEqual(items.map((item) => item.isSenderContinuation), [false, true, false, true, false, false]);
 });
 
-test("Slack conversation grouping resets the sender label on a new day", () => {
-  const items = buildSlackConversationRenderItems([
+test("Agent chat grouping resets the sender label on a new day", () => {
+  const items = buildAgentChatConversationRenderItems([
     {
       id: "1",
       role: "assistant",

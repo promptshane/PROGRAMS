@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { access, mkdtemp, readdir, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, extname, join, relative, sep } from "node:path";
 import { app, shell } from "electron";
 import {
   CLAUDE_DOWNLOAD_URL,
@@ -29,25 +29,25 @@ import { getProviderPreflightError } from "@main/utils/provider-auth";
 import { parseEnvEntries, parseProjectOutlineReportResponse, serializeEnvEntries } from "@main/utils/project-outline";
 import { detectRuntimeConfig, deriveAttachedProjectName, deriveProjectDescription } from "@main/utils/project";
 import {
-  buildSlackApprovalDescriptor,
-  buildSlackProviderAttemptPlan,
-  canAutoRouteSlackDirector,
-  buildSlackResponseContract,
-  normalizeSlackDirectorMode,
-  resolveSlackDirectRoute,
-  resolveSlackDirectorMode,
-  validateSlackTurnParsedResponse,
-} from "@main/utils/slack-flow";
+  buildAgentChatApprovalDescriptor,
+  buildAgentChatProviderAttemptPlan,
+  canAutoRouteAgentChatDirector,
+  buildAgentChatResponseContract,
+  normalizeAgentChatDirectorMode,
+  resolveAgentChatDirectRoute,
+  resolveAgentChatDirectorMode,
+  validateAgentChatTurnParsedResponse,
+} from "@main/utils/agent-chat-flow";
 import { resolveDirectorChatFocusMode } from "@main/utils/director-chat-mode";
 import {
-  danSlackSchema,
-  directorSlackSchema,
-  pingSlackSchema,
+  danAgentChatSchema,
+  directorAgentChatSchema,
+  pingAgentChatSchema,
   refreshScanSchema,
-  researchSlackSchema,
-  toddUpdateSlackSchema,
-  toddVersionSlackSchema,
-} from "@main/utils/slack-schema";
+  researchAgentChatSchema,
+  toddUpdateAgentChatSchema,
+  toddVersionAgentChatSchema,
+} from "@main/utils/agent-chat-schema";
 import {
   directorPongCompareSchema,
   directorPongGoalSchema,
@@ -105,6 +105,8 @@ import type {
   AgentChatInput,
   AgentChatMessage,
   AgentChatResponse,
+  AgentChatDirectorApprovalPayload,
+  AgentChatDirectorMode,
   AgentConfirmStageInput,
   AgentCoreDetails,
   DirectorChatRuntimeStage,
@@ -172,6 +174,8 @@ import type {
   PingTaskSnapshot,
   PingTaskSource,
   ProjectCategory,
+  ProjectKnowledgeFingerprint,
+  ProjectKnowledgeStatus,
   ProjectDirectorProgress,
   RdFocusMode,
   ValidationFocusMode,
@@ -214,11 +218,7 @@ import type {
   ClaudeConnectionTestResult,
   ConfirmAutomationFailureRecoveryInput,
   RequestAutomationFailureRecoveryInput,
-  SlackChatInput,
-  SlackChatResponse,
-  SlackChatMessage,
-  SlackDirectorApprovalPayload,
-  SlackDirectorMode,
+  DeleteAgentMessagesInput,
   DeleteSlackMessagesInput,
   ApprovePendingApprovalInput,
   RevisePendingApprovalInput,
@@ -226,6 +226,9 @@ import type {
   DirectorStateSnapshot,
   RefreshProjectInput,
   CorePillar,
+  StageAgentChatInput,
+  StageAgentChatResponse,
+  StageAgentMessage,
   StartAutomationRunInput,
   StopAutomationRunInput,
   UpdatePendingApprovalStatusInput,
@@ -262,6 +265,53 @@ function resolveDirectorRequestedModels(
   };
 }
 
+function resolvePingRunModelSelections(
+  session: AgentSession | null,
+  provider: AiProvider,
+  model: StartPlanInput["model"],
+  claudeModel: StartPlanInput["claudeModel"],
+): {
+  planning: ReturnType<typeof resolveDirectorModelSelection>;
+  execution: ReturnType<typeof resolveDirectorModelSelection>;
+} {
+  const requestedModels = resolveDirectorRequestedModels(
+    session,
+    "programming-director",
+    model,
+    claudeModel,
+  );
+
+  return {
+    planning: resolveDirectorModelSelection(
+      "programming-director",
+      provider,
+      requestedModels.model,
+      requestedModels.claudeModel,
+      "planning",
+    ),
+    execution: resolveDirectorModelSelection(
+      "programming-director",
+      provider,
+      requestedModels.model,
+      requestedModels.claudeModel,
+      "execution",
+    ),
+  };
+}
+
+function applyPingExecutionRuntimeToDraft(draft: PlanDraft): void {
+  const runtime = draft.pingTaskSnapshot?.runtime;
+  if (!runtime) {
+    return;
+  }
+
+  draft.provider = runtime.provider;
+  draft.model = runtime.model;
+  draft.claudeModel = runtime.claudeModel;
+  draft.reasoningEffort = runtime.reasoningEffort;
+  draft.contextPaths = [...runtime.contextPaths];
+}
+
 function isPingStartupFailure(error: unknown): error is Error & {
   startupFailed: true;
   replacementThreadId?: string | null;
@@ -289,7 +339,7 @@ function resolveToddMemoryProcessingFocusMode(session: AgentSession): RdFocusMod
 
 function resolveDirectorModelUseCase(
   directorId: DirectorId,
-  focusMode: DirectorFocusMode | SlackDirectorMode | null,
+  focusMode: DirectorFocusMode | AgentChatDirectorMode | null,
   runtimeStage: DirectorChatRuntimeStage | undefined,
 ): DirectorModelUseCase {
   if (directorId === "programming-director") {
@@ -316,12 +366,20 @@ function shouldAllowDanHardMemory(runtimeStage: DirectorChatRuntimeStage | undef
 }
 
 function shouldConsumeToddPendingHandoff(
-  focusMode: DirectorFocusMode | SlackDirectorMode | null,
+  focusMode: DirectorFocusMode | AgentChatDirectorMode | null,
   runtimeStage: DirectorChatRuntimeStage | undefined,
 ): boolean {
   return runtimeStage === "memory-processing"
     || focusMode === "version-planning"
     || focusMode === "update-planning";
+}
+
+function requiresApprovalForSlackDirectorRun(
+  directorId: DirectorId,
+  mode: AgentChatDirectorMode,
+): boolean {
+  return directorId === "rd-director"
+    && (mode === "internet-research" || mode === "version-planning" || mode === "update-planning");
 }
 
 const APP_UPDATE_FRESHNESS_WINDOW_MS = 1000;
@@ -340,6 +398,310 @@ const APP_UPDATE_SOURCE_FILES = [
 const SLACK_DIRECTOR_INTRO_DELAY_MS = 0;
 const SLACK_DIRECTOR_POST_INTRO_DELAY_MS = 0;
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+const PROJECT_KNOWLEDGE_IGNORED_DIRS = new Set([
+  ".git",
+  "node_modules",
+  "dist",
+  "out",
+  "coverage",
+  ".next",
+  ".nuxt",
+  ".svelte-kit",
+  ".turbo",
+  ".vercel",
+  ".cache",
+  ".parcel-cache",
+  ".vite",
+  ".yarn",
+  "logs",
+  "log",
+  "screenshots",
+  "__snapshots__",
+  "__image_snapshots__",
+  "tmp",
+  "temp",
+]);
+
+const PROJECT_KNOWLEDGE_MONITORED_EXTENSIONS = new Set([
+  ".astro",
+  ".bash",
+  ".cjs",
+  ".conf",
+  ".config",
+  ".css",
+  ".cts",
+  ".env",
+  ".gql",
+  ".go",
+  ".graphql",
+  ".h",
+  ".hpp",
+  ".html",
+  ".ini",
+  ".java",
+  ".js",
+  ".json",
+  ".jsx",
+  ".kt",
+  ".less",
+  ".mjs",
+  ".mts",
+  ".php",
+  ".prisma",
+  ".proto",
+  ".ps1",
+  ".py",
+  ".rb",
+  ".rs",
+  ".sass",
+  ".scala",
+  ".scss",
+  ".sh",
+  ".sql",
+  ".svelte",
+  ".swift",
+  ".toml",
+  ".ts",
+  ".tsx",
+  ".vue",
+  ".xml",
+  ".yaml",
+  ".yml",
+  ".zsh",
+]);
+
+const PROJECT_KNOWLEDGE_MONITORED_FILENAMES = new Set([
+  ".env",
+  ".env.development",
+  ".env.development.local",
+  ".env.local",
+  ".env.production",
+  ".env.production.local",
+  ".env.test",
+  ".gitignore",
+  ".npmrc",
+  ".nvmrc",
+  ".prettierignore",
+  ".prettierrc",
+  ".prettierrc.json",
+  ".prettierrc.js",
+  ".prettierrc.cjs",
+  "dockerfile",
+  "docker-compose.yml",
+  "docker-compose.yaml",
+  "makefile",
+  "package-lock.json",
+  "package.json",
+  "pnpm-lock.yaml",
+  "pnpm-workspace.yaml",
+  "requirements.txt",
+  "tsconfig.json",
+  "tsconfig.base.json",
+  "tsconfig.app.json",
+  "tsconfig.node.json",
+  "vite.config.ts",
+  "vite.config.js",
+  "vitest.config.ts",
+  "vitest.config.js",
+  "webpack.config.js",
+  "webpack.config.ts",
+  "yarn.lock",
+]);
+
+const normalizeProjectKnowledgePath = (rootPath: string, fullPath: string): string =>
+  relative(rootPath, fullPath).split(sep).join("/");
+
+const shouldSkipProjectKnowledgeDirectory = (relativePath: string): boolean =>
+  relativePath.split("/").some((segment) => PROJECT_KNOWLEDGE_IGNORED_DIRS.has(segment.toLowerCase()));
+
+const shouldMonitorProjectKnowledgeFile = (relativePath: string): boolean => {
+  const normalized = relativePath.trim().toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  const parts = normalized.split("/");
+  if (parts.some((segment) => PROJECT_KNOWLEDGE_IGNORED_DIRS.has(segment))) {
+    return false;
+  }
+
+  const filename = parts.at(-1) ?? normalized;
+  if (PROJECT_KNOWLEDGE_MONITORED_FILENAMES.has(filename)) {
+    return true;
+  }
+  if (filename.startsWith(".env")) {
+    return true;
+  }
+  if (/^dockerfile(\.[a-z0-9_-]+)?$/i.test(filename)) {
+    return true;
+  }
+  if (/^tsconfig(\.[a-z0-9_-]+)?\.json$/i.test(filename)) {
+    return true;
+  }
+
+  return PROJECT_KNOWLEDGE_MONITORED_EXTENSIONS.has(extname(filename));
+};
+
+const readProjectHeadSha = async (localPath: string): Promise<string | null> => {
+  const result = await execCommand("git rev-parse --verify HEAD", localPath);
+  return result.code === 0 && result.stdout.trim() ? result.stdout.trim() : null;
+};
+
+const collectProjectKnowledgeFiles = async (
+  rootPath: string,
+): Promise<Array<{ path: string; size: number; mtimeMs: number }>> => {
+  const files: Array<{ path: string; size: number; mtimeMs: number }> = [];
+  const queue = [rootPath];
+
+  while (queue.length > 0) {
+    const currentPath = queue.pop();
+    if (!currentPath) {
+      continue;
+    }
+
+    let entries;
+    try {
+      entries = await readdir(currentPath, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const fullPath = join(currentPath, entry.name);
+      const relativePath = normalizeProjectKnowledgePath(rootPath, fullPath);
+      if (!relativePath || relativePath === ".") {
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        if (!shouldSkipProjectKnowledgeDirectory(relativePath)) {
+          queue.push(fullPath);
+        }
+        continue;
+      }
+
+      if (!entry.isFile() || !shouldMonitorProjectKnowledgeFile(relativePath)) {
+        continue;
+      }
+
+      try {
+        const metadata = await stat(fullPath);
+        files.push({
+          path: relativePath,
+          size: metadata.size,
+          mtimeMs: Math.floor(metadata.mtimeMs),
+        });
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  files.sort((left, right) => left.path.localeCompare(right.path));
+  return files;
+};
+
+const buildProjectKnowledgeFingerprint = async (localPath: string): Promise<ProjectKnowledgeFingerprint | null> => {
+  if (!(await pathExists(localPath))) {
+    return null;
+  }
+
+  const [headSha, files] = await Promise.all([
+    readProjectHeadSha(localPath),
+    collectProjectKnowledgeFiles(localPath),
+  ]);
+
+  if (!headSha && files.length === 0) {
+    return null;
+  }
+
+  const hasher = createHash("sha1");
+  hasher.update(headSha ?? "no-head");
+  let totalBytes = 0;
+  let latestMtimeMs: number | null = null;
+  for (const file of files) {
+    totalBytes += file.size;
+    latestMtimeMs = latestMtimeMs == null ? file.mtimeMs : Math.max(latestMtimeMs, file.mtimeMs);
+    hasher.update(`\n${file.path}|${file.size}|${file.mtimeMs}`);
+  }
+
+  return {
+    headSha,
+    digest: hasher.digest("hex"),
+    fileCount: files.length,
+    totalBytes,
+    latestMtimeMs,
+    generatedAt: new Date().toISOString(),
+  };
+};
+
+const compareProjectKnowledgeFingerprint = (
+  currentFingerprint: ProjectKnowledgeFingerprint | null,
+  indexedFingerprint: ProjectKnowledgeFingerprint | null,
+): string[] => {
+  if (!currentFingerprint && !indexedFingerprint) {
+    return [];
+  }
+
+  if (currentFingerprint && !indexedFingerprint) {
+    return ["Todd has not indexed the current source/config state yet."];
+  }
+
+  if (!currentFingerprint || !indexedFingerprint) {
+    return ["Todd's indexed fingerprint no longer matches the current source/config state."];
+  }
+
+  if (currentFingerprint.digest === indexedFingerprint.digest) {
+    return [];
+  }
+
+  const reasons: string[] = [];
+  if (currentFingerprint.headSha !== indexedFingerprint.headSha) {
+    reasons.push("Git HEAD changed since Todd's last codebase scan.");
+  }
+  if (currentFingerprint.fileCount !== indexedFingerprint.fileCount) {
+    reasons.push("The monitored source/config file count changed.");
+  }
+  if (currentFingerprint.totalBytes !== indexedFingerprint.totalBytes) {
+    reasons.push("The monitored source/config size changed.");
+  }
+  if (
+    currentFingerprint.latestMtimeMs != null
+    && indexedFingerprint.latestMtimeMs != null
+    && currentFingerprint.latestMtimeMs !== indexedFingerprint.latestMtimeMs
+  ) {
+    reasons.push("At least one monitored source/config file changed after Todd's last scan.");
+  }
+
+  return reasons.length > 0
+    ? reasons
+    : ["Todd's indexed fingerprint no longer matches the current source/config state."];
+};
+
+const resolveProjectKnowledgeState = (
+  currentFingerprint: ProjectKnowledgeFingerprint | null,
+  indexedFingerprint: ProjectKnowledgeFingerprint | null,
+): { status: ProjectKnowledgeStatus; reasons: string[] } => {
+  if (!indexedFingerprint) {
+    return currentFingerprint
+      ? {
+          status: "needs-initial-refresh",
+          reasons: ["This project has monitored source/config files, but Todd has not indexed them yet."],
+        }
+      : {
+          status: "fresh",
+          reasons: [],
+        };
+  }
+
+  const reasons = compareProjectKnowledgeFingerprint(currentFingerprint, indexedFingerprint);
+  return {
+    status: reasons.length > 0 ? "stale" : "fresh",
+    reasons,
+  };
+};
+
 interface AppUpdateWorkspaceInfo {
   workspacePath: string | null;
   workspaceExists: boolean;
@@ -572,7 +934,7 @@ const agentCascadeSchema = {
 
 type DanConversationStatus = "gathering" | "ready-to-confirm";
 
-interface DanSlackDraftPillar {
+interface DanAgentChatDraftPillar {
   name: string;
   pillarType: string;
   parentName: string | null;
@@ -586,11 +948,11 @@ interface DanSlackDraftPillar {
   connectedPillarNames: string[];
 }
 
-interface DanSlackDraftCoreDetails {
+interface DanAgentChatDraftCoreDetails {
   function: string | null;
   thesis: string | null;
   fullFlow: string | null;
-  pillars: DanSlackDraftPillar[];
+  pillars: DanAgentChatDraftPillar[];
 }
 
 type DanNormalizedDraftOperation = DanDraftOperation;
@@ -684,7 +1046,7 @@ const mergeTrimmedNotes = (...noteGroups: Array<string[] | null | undefined>): s
   return merged;
 };
 
-const buildRecentSlackHistory = (session: AgentSession, limit = SLACK_HISTORY_LIMIT): string => {
+const buildRecentAgentChatHistory = (session: AgentSession, limit = SLACK_HISTORY_LIMIT): string => {
   const history = (session.slackMessages ?? []).slice(-limit).map((message) => {
     if (message.role === "system") {
       return `[System: ${message.content}]`;
@@ -695,7 +1057,7 @@ const buildRecentSlackHistory = (session: AgentSession, limit = SLACK_HISTORY_LI
     return `${message.directorId ? DIRECTOR_NAMES[message.directorId] : "Agent"}: ${message.content}`;
   }).join("\n\n");
 
-  return history ? `\nSlack channel history:\n${history}\n` : "";
+  return history ? `\nAgent chat history:\n${history}\n` : "";
 };
 
 const buildToddCodebaseSummary = (session: AgentSession): string => {
@@ -816,13 +1178,13 @@ const selectRelevantDanSideNotes = (message: string, sideNotes: string[]): strin
     .map((entry) => entry.note);
 };
 
-const normalizeDanDraftCoreDetails = (value: unknown): DanSlackDraftCoreDetails | null => {
+const normalizeDanDraftCoreDetails = (value: unknown): DanAgentChatDraftCoreDetails | null => {
   if (!isRecord(value)) {
     return null;
   }
 
   const rawPillars = Array.isArray(value.pillars) ? value.pillars : [];
-  const pillars: DanSlackDraftPillar[] = rawPillars
+  const pillars: DanAgentChatDraftPillar[] = rawPillars
     .filter((item): item is Record<string, unknown> => isRecord(item))
     .map((item, index) => ({
       name: normalizeNonEmptyString(item.name) ?? `Pillar ${index + 1}`,
@@ -1080,6 +1442,45 @@ const cloneAgentCoreDetails = (concept: AgentCoreDetails): AgentCoreDetails => (
   fullFlow: cloneAgentDetail(concept.fullFlow),
   threads: [...(concept.threads ?? [])],
 });
+
+const buildGeneratedCoreDetailsConcept = (input: {
+  function: string;
+  thesis: string;
+  corePillars: Array<{ name: string; function: string; thesis: string }>;
+  fullFlow: string;
+}): AgentCoreDetails => ({
+  function: input.function ? { summary: input.function, status: "assumed" } : null,
+  thesis: input.thesis ? { summary: input.thesis, status: "assumed" } : null,
+  corePillars: input.corePillars.map((pillar, index) => ({
+    id: randomUUID(),
+    name: pillar.name,
+    pillarType: "core",
+    function: pillar.function ? { summary: pillar.function, status: "assumed" } : null,
+    thesis: pillar.thesis ? { summary: pillar.thesis, status: "assumed" } : null,
+    corePillars: [],
+    fullFlow: null,
+    description: null,
+    connectedPillarIds: [],
+    assumptionText: "Derived from the current codebase state and pending user confirmation.",
+    assumptionSource: null,
+    order: index,
+    threadMemberships: [],
+    endState: null,
+  })),
+  fullFlow: input.fullFlow ? { summary: input.fullFlow, status: "assumed" } : null,
+  threads: [],
+});
+
+const buildDanDerivedNotesFromRefresh = (input: {
+  scanSummary: string;
+  detectedFeatures: string[];
+  updatedAreas: string[];
+}): TaggedNote[] =>
+  migrateToTaggedNotes([
+    input.scanSummary ? `Refresh summary: ${input.scanSummary}` : "",
+    input.detectedFeatures.length > 0 ? `Detected current feature areas: ${input.detectedFeatures.join(", ")}` : "",
+    input.updatedAreas.length > 0 ? `Todd flagged codebase changes around: ${input.updatedAreas.join(", ")}` : "",
+  ].filter((note): note is string => note.trim().length > 0));
 
 const collectPillarNamesById = (
   pillars: CorePillar[],
@@ -1348,6 +1749,7 @@ const buildToddCodebaseMapFromSession = (
     indexedAt: existing?.indexedAt ?? null,
     featureAreas: existing?.featureAreas?.length ? existing.featureAreas : featureAreas,
     repoNotes: existing?.repoNotes?.length ? existing.repoNotes : repoNotes,
+    lastIndexedFingerprint: existing?.lastIndexedFingerprint ?? null,
   };
 };
 
@@ -1393,10 +1795,13 @@ const syncAgentMemories = (session: AgentSession): AgentSession => {
   const danMemory: DanMemory = {
     confirmedConcept: confirmedConcept ?? session.danMemory?.confirmedConcept ?? null,
     draftConcept: hasDanMemory ? session.danMemory!.draftConcept : session.danDraftCoreDetails ?? null,
+    derivedConcept: hasDanMemory ? session.danMemory!.derivedConcept ?? null : null,
     notes: migrateToTaggedNotes(hasDanMemory ? [...session.danMemory!.notes] : (session.danInternalNotes ?? [])),
+    derivedNotes: migrateToTaggedNotes(hasDanMemory ? [...(session.danMemory!.derivedNotes ?? [])] : []),
     sideNotes: hasDanMemory ? [...session.danMemory!.sideNotes] : session.danSideNotes ?? [],
     draftChangeSummary: hasDanMemory ? [...session.danMemory!.draftChangeSummary] : session.danDraftChangeSummary ?? [],
     draftStatus: hasDanMemory ? session.danMemory!.draftStatus : session.danDraftStatus ?? null,
+    derivedUpdatedAt: hasDanMemory ? session.danMemory!.derivedUpdatedAt ?? null : null,
     fullExperienceDescription: session.danMemory?.fullExperienceDescription
       ?? confirmedConcept?.fullFlow?.summary
       ?? null,
@@ -1913,7 +2318,7 @@ const summarizeDanDraftIdealState = (
 
 const buildDanDraftCoreDetailsState = (
   session: AgentSession,
-  draft: DanSlackDraftCoreDetails,
+  draft: DanAgentChatDraftCoreDetails,
 ): AgentCoreDetails => {
   const draftSource = getDanDraftSourceConcept(session);
   const seedPillars = draftSource?.corePillars?.length
@@ -2163,21 +2568,29 @@ function formatDanHardMemory(session: AgentSession): string {
     : "Hard Memory (Ideal Creative Truth):\n- None yet.";
 }
 
-function formatDanDraftCoreDetails(draft: AgentCoreDetails | null): string {
-  if (!draft) {
-    return "Dan's working draft:\n- None yet.";
+function formatDanCoreDetailsSnapshot(label: string, concept: AgentCoreDetails | null): string {
+  if (!concept) {
+    return `${label}:\n- None yet.`;
   }
 
   const parts: string[] = [];
-  if (draft.function?.summary) parts.push(`- Function draft: ${draft.function.summary}`);
-  if (draft.thesis?.summary) parts.push(`- Thesis draft: ${draft.thesis.summary}`);
-  if (draft.corePillars.length > 0) {
-    parts.push("Draft concept:");
-    parts.push(...formatConceptItems(draft.corePillars));
+  if (concept.function?.summary) parts.push(`- Function: ${concept.function.summary}`);
+  if (concept.thesis?.summary) parts.push(`- Thesis: ${concept.thesis.summary}`);
+  if (concept.corePillars.length > 0) {
+    parts.push("Concept structure:");
+    parts.push(...formatConceptItems(concept.corePillars));
   }
-  if (draft.fullFlow?.summary) parts.push(`- Full-flow draft: ${draft.fullFlow.summary}`);
+  if (concept.fullFlow?.summary) parts.push(`- Full-flow: ${concept.fullFlow.summary}`);
 
-  return parts.length > 0 ? `Dan's working draft:\n${parts.join("\n")}` : "Dan's working draft:\n- None yet.";
+  return parts.length > 0 ? `${label}:\n${parts.join("\n")}` : `${label}:\n- None yet.`;
+}
+
+function formatDanDraftCoreDetails(draft: AgentCoreDetails | null): string {
+  return formatDanCoreDetailsSnapshot("Discussed Soft Memory", draft);
+}
+
+function formatDanDerivedCoreDetails(derived: AgentCoreDetails | null): string {
+  return formatDanCoreDetailsSnapshot("Derived Soft Memory (from project refresh)", derived);
 }
 
 function buildDanFocusHint(): string {
@@ -2226,10 +2639,15 @@ function buildDanSharedPrompt(args: {
   const { projectName, session, focusMode, surface, conversationSection, currentMessage } = args;
   const hardMemorySection = formatDanHardMemory(session);
   const draftContext = formatDanDraftCoreDetails(session.danMemory?.draftConcept ?? session.danDraftCoreDetails);
+  const derivedContext = formatDanDerivedCoreDetails(session.danMemory?.derivedConcept ?? null);
   const softNotes = session.danMemory?.notes ?? [];
   const softNotesSection = softNotes.length > 0
-    ? `Soft Memory (Session Notes):\n${softNotes.map((note) => `- ${typeof note === "string" ? note : note.content}`).join("\n")}`
-    : "Soft Memory (Session Notes):\n- None yet.";
+    ? `Discussed Support Notes:\n${softNotes.map((note) => `- ${typeof note === "string" ? note : note.content}`).join("\n")}`
+    : "Discussed Support Notes:\n- None yet.";
+  const derivedNotes = session.danMemory?.derivedNotes ?? [];
+  const derivedNotesSection = derivedNotes.length > 0
+    ? `Derived Support Notes:\n${derivedNotes.map((note) => `- ${typeof note === "string" ? note : note.content}`).join("\n")}`
+    : "Derived Support Notes:\n- None yet.";
   const toddHandoffNotes = session.danMemory?.toddHandoffNotes ?? [];
   const toddHandoffSection = toddHandoffNotes.length > 0
     ? `\nTodd-Bound Handoff Notes (planning items to pass to Todd):\n${toddHandoffNotes.map((note) => `- ${typeof note === "string" ? note : note.content}`).join("\n")}`
@@ -2249,12 +2667,13 @@ Core operating rules:
 - Lock down the global core-details first: Function, Thesis, the main concept areas (pillars), and the Full-Flow.
 - Work one unresolved part of the idea at a time. If the user jumps, switch immediately and keep the earlier thread recoverable.
 - If the user adds detail while ignoring your question, still capture it and place it under the right part of the idea.
-- Keep "notesToAppend" lean and durable. These are soft memory notes for this session only — cleared when you leave.
+- Keep "notesToAppend" lean and durable. These are Discussed soft-memory notes that persist until the user confirms hard memory.
 - Use "rawMemoriesToAppend" to capture important raw user inputs and link them to relevant pillars by name. These persist as back-up memory.
 - Ask questions only when they materially sharpen the concept. Be minimalist and guide where the user is already going.
 - While gathering, prefer compact "draftOperations" that update the existing working draft instead of re-sending the full draft snapshot.
 - Use "draftCoreDetails" only when you are ready to confirm the full synthesized draft, or when a full rebuild is genuinely necessary.
 - Do not write draft changes into confirmed project state directly from conversation.
+- Treat Discussed soft memory as stronger than Derived refresh memory. Derived memory is advisory current-state context until the user confirms a synthesis into hard memory.
 - Keep assumptions internal while gathering. Do not present them piecemeal. Mark assumptions clearly with assumptionSource and assumptionText.
 - When you reach a natural stopping point and the user has nothing else to add, set "conversationStatus" to "ready-to-confirm".
 - In that ready state, include the full "draftCoreDetails". "response" should present the synthesized update, name what changed in concise terms, and ask the user to confirm.
@@ -2265,7 +2684,7 @@ Core operating rules:
 - Set "presenceAction" to "stay" unless you are explicitly stepping out.
 - When you reach a natural pause in concept work, end your response with a brief completion line: "[Done: <1-sentence summary of what you explored or settled and any next step>]"
 - Recognize when the user mentions roadmap thinking, build-order logic, implementation sequencing, dependency logic, or "first do X then Y then Z". These belong to Todd's world.
-- Use "toddHandoffNotesToAppend" to capture these Todd-bound planning observations. Do NOT store them in "notesToAppend". They will be packaged and handed to Todd when you exit or confirm.
+- Use "toddHandoffNotesToAppend" to capture these Todd-bound planning observations. Do NOT store them in "notesToAppend". They will be packaged and handed to Todd only when the user confirms hard memory.
 - Continue the creative conversation normally — do not ignore Todd-bound information, just route it correctly.
 
 Creative hierarchy management:
@@ -2329,10 +2748,12 @@ ${buildDanFocusHint()}
 
 ${hardMemorySection}
 ${draftContext}
-${softNotesSection}${toddHandoffSection}
+${derivedContext}
+${softNotesSection}
+${derivedNotesSection}${toddHandoffSection}
 ${backupSection}
 ${conversationSection}
-${buildSlackResponseContract("creative-director", "codebase-analysis")}`.trim();
+${buildAgentChatResponseContract("creative-director", "codebase-analysis")}`.trim();
 }
 
 function buildAssumedStateSummary(session: AgentSession): string {
@@ -2610,7 +3031,7 @@ function getSchemaForDirector(directorId: DirectorId, focusMode: DirectorFocusMo
   switch (directorId) {
     case "project-manager": return directorPmSchema;
     case "creative-director":
-      return danSlackSchema;
+      return danAgentChatSchema;
     case "rd-director":
       if (focusMode === "research") return directorToddResearchSchema;
       if (focusMode === "version-planning") return directorToddVersionSchema;
@@ -2654,12 +3075,12 @@ function formatDirectorStatus(session: AgentSession): string {
   return parts.join("\n");
 }
 
-function buildSlackDirectorPrompt(
+function buildAgentChatDirectorPrompt(
   directorId: DirectorId,
   projectName: string,
   session: AgentSession,
   opts: {
-    mode?: SlackDirectorMode;
+    mode?: AgentChatDirectorMode;
   } = {},
 ): string {
   const directorName = DIRECTOR_NAMES[directorId];
@@ -2668,7 +3089,7 @@ function buildSlackDirectorPrompt(
   const statusContext = formatDirectorStatus(session);
   const mode = opts.mode ?? "codebase-analysis";
   const allowInternetResearch = directorId === "rd-director" && mode === "internet-research";
-  const conversationSection = buildRecentSlackHistory(session);
+  const conversationSection = buildRecentAgentChatHistory(session);
 
   // Build director state context if available
   const directorState = session.directorStateMap?.[directorId];
@@ -2694,7 +3115,7 @@ function buildSlackDirectorPrompt(
     const assumedSummary = buildAssumedStateSummary(session);
 
     return `You are Jeff, the Project Manager for "${projectName}".
-You are in a team Slack channel with the user and all directors.
+You are in a team agent chat with the user and all directors.
 You are the central coordinator. Your role:
 - Handle general user conversation about the project
 - If the user's request requires a specialist, set handoffTo to the appropriate director ID and explain why in handoffReason
@@ -2718,7 +3139,7 @@ ${unconfirmedSection}${assumedSummary}
 ${coreContext}
 ${stateContext}
 ${conversationSection}
-${buildSlackResponseContract(directorId, mode)}`;
+${buildAgentChatResponseContract(directorId, mode)}`;
   }
 
   if (directorId === "rd-director") {
@@ -2728,7 +3149,7 @@ ${buildSlackResponseContract(directorId, mode)}`;
       ? `\nPlanning Notes (working assumptions):\n${session.toddMemory!.notes.map((note) => `- ${typeof note === "string" ? note : note.content}`).join("\n")}`
       : "";
     return `You are Todd, the R&D Director for "${projectName}".
-You are in a team Slack channel. Your role:
+You are in a team agent chat. Your role:
 - Analyze technical questions, repo architecture, update planning, best practices, and product direction
 - ${allowInternetResearch
     ? "You have access to web search and web fetch tools for this turn — use them to find real, up-to-date information from the internet when needed"
@@ -2757,7 +3178,7 @@ ${statusContext}
 ${toddCoreContext}
 ${stateContext}${toddPendingHandoff}${toddNotesSection}
 ${conversationSection}
-${buildSlackResponseContract(directorId, mode)}`;
+${buildAgentChatResponseContract(directorId, mode)}`;
   }
 
   if (directorId === "creative-director") {
@@ -2775,7 +3196,7 @@ ${buildSlackResponseContract(directorId, mode)}`;
         }).join("\n")}\n`
       : "";
     return `You are Dan, the Creative Director for "${projectName}".
-You are in a team Slack channel. Your role:
+You are in a team agent chat. Your role:
 - Shape the product concept, clarify core details, and manage the pillar structure
 - You track both CURRENT confirmed core-details and IDEAL confirmed core-details
 - While gathering, prefer compact "draftOperations" that update the existing working draft instead of re-sending the full draft snapshot
@@ -2812,7 +3233,7 @@ ${pillarContext}${currentPillarContext}
 ${danCoreContext}
 ${stateContext}
 ${conversationSection}
-${buildSlackResponseContract(directorId, mode)}`;
+${buildAgentChatResponseContract(directorId, mode)}`;
   }
 
   if (directorId === "programming-director") {
@@ -2830,7 +3251,7 @@ ${buildSlackResponseContract(directorId, mode)}`;
       : "";
 
     return `You are Ping, the Programming Director for "${projectName}".
-You are in a team Slack channel. Your role:
+You are in a team agent chat. Your role:
 - Implement updates from the confirmed plan
 - You only receive confirmed core details relevant to your current task
 - If something feels missing, ask Todd or Jeff
@@ -2847,7 +3268,7 @@ ${pingCoreContext}
 ${taskSection}${updatesSection}
 ${stateContext}
 ${conversationSection}
-${buildSlackResponseContract(directorId, mode)}`;
+${buildAgentChatResponseContract(directorId, mode)}`;
   }
 
   if (directorId === "validation-director") {
@@ -2864,7 +3285,7 @@ ${buildSlackResponseContract(directorId, mode)}`;
       : "";
 
     return `You are Pong, the Validation Director for "${projectName}".
-You are in a team Slack channel. Your role:
+You are in a team agent chat. Your role:
 - Validate current behavior against confirmed intended results
 - You only receive confirmed core details relevant to your current validation
 - Compare implementation output against the intended goal
@@ -2881,12 +3302,12 @@ ${pongCoreContext}
 ${taskSection}${validationSection}
 ${stateContext}
 ${conversationSection}
-${buildSlackResponseContract(directorId, mode)}`;
+${buildAgentChatResponseContract(directorId, mode)}`;
   }
 
   // Generic fallback for any future directors
   return `You are ${directorName}, the ${directorLabel} for "${projectName}".
-You have just joined the team Slack channel. The user or another director invited you.
+You have just joined the team agent chat. The user or another director invited you.
 Respond to the user's latest message directly and helpfully.
 If you need to hand off to another specialist, set handoffTo to their director ID. Otherwise set handoffTo to null.
 Be conversational and collaborative.
@@ -2904,15 +3325,15 @@ ${statusContext}
 ${coreContext}
 ${stateContext}
 ${conversationSection}
-${buildSlackResponseContract(directorId, mode)}`;
+${buildAgentChatResponseContract(directorId, mode)}`;
 }
 
-function buildReworkedSlackDirectorPrompt(
+function buildReworkedAgentChatDirectorPrompt(
   directorId: DirectorId,
   projectName: string,
   session: AgentSession,
   opts: {
-    mode?: SlackDirectorMode;
+    mode?: AgentChatDirectorMode;
   } = {},
 ): string {
   const directorName = DIRECTOR_NAMES[directorId];
@@ -2921,7 +3342,7 @@ function buildReworkedSlackDirectorPrompt(
   const statusContext = formatDirectorStatus(session);
   const mode = opts.mode ?? "codebase-analysis";
   const allowInternetResearch = directorId === "rd-director" && mode === "internet-research";
-  const conversationSection = buildRecentSlackHistory(session);
+  const conversationSection = buildRecentAgentChatHistory(session);
 
   const directorState = session.directorStateMap?.[directorId];
   const stateContext = directorState
@@ -2964,7 +3385,7 @@ function buildReworkedSlackDirectorPrompt(
       : "";
 
     return `You are Jeff, the Project Manager for "${projectName}".
-You are in a team Slack channel with the user and all directors.
+You are in a team agent chat with the user and all directors.
 You are the central coordinator and orchestrator.${presenceNote}
 Your role:
 - You are the team lead — your job is to route work to the right people, not to do their work yourself
@@ -2981,7 +3402,7 @@ Your role:
 - If the user asks "anything for me to confirm?" or similar, present unresolved assumptions, assumed state, and pending confirmations clearly
 - Only confirmed information should move downstream for actual planning/building/testing
 - Pong stays manual for now; do not hand off automatically to the validation director in this pass
-- Be conversational and direct — talk like a real project lead in Slack, not a robot
+- Be conversational and direct — talk like a real project lead in the team chat, not a robot
 - When handing work to Todd, make the handoffReason explicit enough that PROGRAMS can tell whether this is codebase analysis, version planning, update planning, or internet research
 - If the user asks about prior creative iterations or what changed previously, reference Dan's creative update history below
 
@@ -2995,7 +3416,7 @@ ${statusContext}
 ${unconfirmedSection}${assumedSummary}${creativeHistorySection}
 ${coreContext}
 ${conversationSection}
-${buildSlackResponseContract(directorId, mode)}`;
+${buildAgentChatResponseContract(directorId, mode)}`;
   }
 
   if (directorId === "rd-director") {
@@ -3021,7 +3442,7 @@ ${buildSlackResponseContract(directorId, mode)}`;
 
     if (mode === "internet-research") {
       return `You are Todd, the R&D Director for "${projectName}".
-You are in a team Slack channel. Your role:
+You are in a team agent chat. Your role:
 - Analyze technical questions using confirmed concept details plus your own codebase map and logs
 - You have access to web search and web fetch tools for this turn. Use them when the request depends on current external facts.
 - Keep "response" conversational and direct
@@ -3041,12 +3462,12 @@ ${codebaseSummary}
 ${toddCoreContext}
 ${stateContext}
 ${conversationSection}
-${buildSlackResponseContract(directorId, mode)}`;
+${buildAgentChatResponseContract(directorId, mode)}`;
     }
 
     if (mode === "version-planning") {
       return `You are Todd, the R&D Director for "${projectName}".
-You are in a team Slack channel. Your role:
+You are in a team agent chat. Your role:
 - Turn confirmed concept details into a technical roadmap
 - Plan only from confirmed concept details plus your own codebase map and logs
 - Do not plan from Dan draft notes, side-notes, or unconfirmed concept changes
@@ -3068,12 +3489,12 @@ ${codebaseSummary}
 ${toddCoreContext}
 ${stateContext}
 ${conversationSection}
-${buildSlackResponseContract(directorId, mode)}`;
+${buildAgentChatResponseContract(directorId, mode)}`;
     }
 
     if (mode === "update-planning") {
       return `You are Todd, the R&D Director for "${projectName}".
-You are in a team Slack channel. Your role:
+You are in a team agent chat. Your role:
 - Turn the confirmed roadmap into the one future update plan Ping will execute from
 - Plan only from confirmed concept details plus your own codebase map and logs
 - Do not plan from Dan draft notes, side-notes, or unconfirmed concept changes
@@ -3095,12 +3516,12 @@ ${codebaseSummary}
 ${toddCoreContext}
 ${stateContext}
 ${conversationSection}
-${buildSlackResponseContract(directorId, mode)}`;
+${buildAgentChatResponseContract(directorId, mode)}`;
     }
 
     const toddPendingHandoff = formatToddPendingHandoffPrompt(session.toddMemory?.pendingHandoff ?? null);
     return `You are Todd, the R&D Director for "${projectName}".
-You are in a team Slack channel. Your role:
+You are in a team agent chat. Your role:
 - Analyze technical questions, repo architecture, and implementation risks
 - You do not have internet access for this turn. Focus on the repo, confirmed project context, and your codebase understanding. If live external research is needed, say so plainly and explain what should be researched next.
 - Assess feasibility and make recommendations
@@ -3124,7 +3545,7 @@ ${codebaseSummary}
 ${toddCoreContext}${toddPendingHandoff}
 ${stateContext}
 ${conversationSection}
-${buildSlackResponseContract(directorId, mode)}`;
+${buildAgentChatResponseContract(directorId, mode)}`;
   }
 
   if (directorId === "creative-director") {
@@ -3134,7 +3555,7 @@ ${buildSlackResponseContract(directorId, mode)}`;
       session,
       focusMode: session.creativeFocusMode,
       surface: "slack",
-      conversationSection: buildRecentSlackHistory(session, 10),
+      conversationSection: buildRecentAgentChatHistory(session, 10),
       currentMessage,
     });
   }
@@ -3161,7 +3582,7 @@ ${buildSlackResponseContract(directorId, mode)}`;
       : "";
 
     return `You are Ping, the Programming Director for "${projectName}".
-You are in a team Slack channel. Your role:
+You are in a team agent chat. Your role:
 - Implement updates from the confirmed plan
 - Return only short execution status. Do not brainstorm, plan, or explain at length.
 - Always think and respond first in concise Mandarin, then provide a simple literal English translation.
@@ -3210,7 +3631,7 @@ Return ONLY strict JSON with exactly these fields:
       : "";
 
     return `You are Pong, the Validation Director for "${projectName}".
-You are in a team Slack channel. Your role:
+You are in a team agent chat. Your role:
 - Validate current behavior against confirmed intended results
 - You only receive confirmed core details relevant to your current validation
 - Compare implementation output against the intended goal
@@ -3227,11 +3648,11 @@ ${pongCoreContext}
 ${taskSection}${jeffInstructionSection}${validationSection}
 ${stateContext}
 ${conversationSection}
-${buildSlackResponseContract(directorId, mode)}`;
+${buildAgentChatResponseContract(directorId, mode)}`;
   }
 
   return `You are ${directorName}, the ${directorLabel} for "${projectName}".
-You have just joined the team Slack channel. The user or another director invited you.
+You have just joined the team agent chat. The user or another director invited you.
 Respond to the user's latest message directly and helpfully.
 If you need to hand off to another specialist, set handoffTo to their director ID. Otherwise set handoffTo to null.
 Be conversational and collaborative.
@@ -3249,7 +3670,7 @@ ${statusContext}
 ${coreContext}
 ${stateContext}
 ${conversationSection}
-${buildSlackResponseContract(directorId, mode)}`;
+${buildAgentChatResponseContract(directorId, mode)}`;
 }
 
 function buildDirectorPrompt(
@@ -3887,6 +4308,57 @@ export class ProgramsBackend {
 
   // --- Agent System ---
 
+  private async decorateAgentSessionKnowledgeState(
+    session: AgentSession,
+  ): Promise<AgentSession> {
+    try {
+      const project = await this.store.readProject(session.projectId);
+      if (!project) {
+        session.knowledgeStatus = "fresh";
+        session.knowledgeReasons = [];
+        return session;
+      }
+
+      const currentFingerprint = await buildProjectKnowledgeFingerprint(project.localPath);
+      const indexedFingerprint = session.toddMemory.codebaseIndexedMap?.lastIndexedFingerprint ?? null;
+      const knowledgeState = resolveProjectKnowledgeState(currentFingerprint, indexedFingerprint);
+      session.knowledgeStatus = knowledgeState.status;
+      session.knowledgeReasons = knowledgeState.reasons;
+      return session;
+    } catch (error) {
+      session.knowledgeStatus = "stale";
+      session.knowledgeReasons = [
+        error instanceof Error
+          ? `PROGRAMS could not verify Todd's source/config fingerprint: ${error.message}`
+          : "PROGRAMS could not verify Todd's source/config fingerprint.",
+      ];
+      return session;
+    }
+  }
+
+  private async resolveAgentSessionKnowledgeState(
+    session: AgentSession,
+  ): Promise<{ status: ProjectKnowledgeStatus; reasons: string[] }> {
+    const project = await this.requireProject(session.projectId);
+    const currentFingerprint = await buildProjectKnowledgeFingerprint(project.localPath);
+    return resolveProjectKnowledgeState(
+      currentFingerprint,
+      session.toddMemory.codebaseIndexedMap?.lastIndexedFingerprint ?? null,
+    );
+  }
+
+  private async assertFreshProjectKnowledge(session: AgentSession): Promise<void> {
+    const knowledgeState = await this.resolveAgentSessionKnowledgeState(session);
+    if (knowledgeState.status === "fresh") {
+      return;
+    }
+
+    throw new Error(
+      `${knowledgeState.reasons[0]
+        ?? "Todd's technical understanding is stale."} Ask Jeff to refresh the project before starting Ping.`,
+    );
+  }
+
   async getAgentSession(projectId: string): Promise<AgentSession | null> {
     await this.ensureInitialized();
     const session = await this.store.getAgentSession(projectId);
@@ -3908,6 +4380,7 @@ export class ProgramsBackend {
         ? session.danDraftStatus
         : null;
       syncAgentMemories(session);
+      await this.decorateAgentSessionKnowledgeState(session);
     }
     return session;
   }
@@ -3976,10 +4449,13 @@ export class ProgramsBackend {
       danMemory: {
         confirmedConcept: null,
         draftConcept: null,
+        derivedConcept: null,
         notes: [],
+        derivedNotes: [],
         sideNotes: [],
         draftChangeSummary: [],
         draftStatus: null,
+        derivedUpdatedAt: null,
         fullExperienceDescription: null,
         archivedNotes: [],
         deletedNotes: [],
@@ -4096,6 +4572,20 @@ export class ProgramsBackend {
     return createPendingApproval(session, input);
   }
 
+  private findPendingApprovalByAction(
+    session: AgentSession,
+    action: string,
+    predicate?: (payload: Record<string, unknown>) => boolean,
+  ): PendingApproval | null {
+    return session.pendingApprovals.find((approval) => {
+      const payload = approval.draftPayload;
+      if (!payload || payload.action !== action) {
+        return false;
+      }
+      return predicate ? predicate(payload) : true;
+    }) ?? null;
+  }
+
   private parseDraftPayloadText(text: string | null | undefined): Record<string, unknown> | null {
     if (text == null) {
       return null;
@@ -4112,8 +4602,8 @@ export class ProgramsBackend {
     return parsed as Record<string, unknown>;
   }
 
-  private appendSlackSystemMessage(session: AgentSession, content: string): SlackChatMessage {
-    const message: SlackChatMessage = {
+  private appendSlackSystemMessage(session: AgentSession, content: string): AgentChatMessage {
+    const message: AgentChatMessage = {
       id: randomUUID(),
       role: "system",
       directorId: null,
@@ -4130,13 +4620,13 @@ export class ProgramsBackend {
       requestedByDirectorId: DirectorId;
       targetDirectorId: DirectorId;
       provider: AiProvider;
-      model: SlackDirectorApprovalPayload["model"];
-      claudeModel: SlackDirectorApprovalPayload["claudeModel"];
+      model: AgentChatDirectorApprovalPayload["model"];
+      claudeModel: AgentChatDirectorApprovalPayload["claudeModel"];
       message: string;
-      mode?: SlackDirectorMode;
+      mode?: AgentChatDirectorMode;
     },
   ): PendingApproval {
-    const descriptor = buildSlackApprovalDescriptor({
+    const descriptor = buildAgentChatApprovalDescriptor({
       targetDirectorId: input.targetDirectorId,
       provider: input.provider,
       model: input.model,
@@ -4155,7 +4645,7 @@ export class ProgramsBackend {
     });
   }
 
-  private async getSlackProviderPreflightErrors(settings: Settings): Promise<Record<AiProvider, string | null>> {
+  private async getAgentChatProviderPreflightErrors(settings: Settings): Promise<Record<AiProvider, string | null>> {
     const [codexStatus, claudeStatus] = await Promise.all([
       this.codex.getAuthStatus(settings),
       this.claude.getAuthStatus(settings),
@@ -4172,11 +4662,11 @@ export class ProgramsBackend {
     directorId: DirectorId,
     content: string,
     extra: {
-      status?: SlackChatMessage["status"];
-      metadata?: SlackChatMessage["metadata"];
+      status?: AgentChatMessage["status"];
+      metadata?: AgentChatMessage["metadata"];
     } = {},
-  ): SlackChatMessage {
-    const message: SlackChatMessage = {
+  ): AgentChatMessage {
+    const message: AgentChatMessage = {
       id: randomUUID(),
       role: "assistant",
       directorId,
@@ -4196,16 +4686,16 @@ export class ProgramsBackend {
   private mirrorSlackMessageToAgentChat(
     session: AgentSession,
     directorId: DirectorId,
-    slackMsg: SlackChatMessage,
+    slackMsg: AgentChatMessage,
   ): void {
     const conv = ensureDirectorConversationRecord(session, directorId);
-    const agentMsg: AgentChatMessage = {
+    const agentMsg: StageAgentMessage = {
       id: slackMsg.id,
       role: "assistant",
       content: slackMsg.content,
       createdAt: slackMsg.createdAt,
       status: slackMsg.status,
-      metadata: (slackMsg.metadata as AgentChatMessage["metadata"]) ?? null,
+      metadata: (slackMsg.metadata as StageAgentMessage["metadata"]) ?? null,
     };
     conv.messages.push(agentMsg);
     session.unifiedMessages.push(agentMsg);
@@ -4214,8 +4704,8 @@ export class ProgramsBackend {
   private replaceDirectorConversationMessage(
     session: AgentSession,
     directorId: DirectorId,
-    nextMessage: AgentChatMessage,
-  ): AgentChatMessage {
+    nextMessage: StageAgentMessage,
+  ): StageAgentMessage {
     const conv = ensureDirectorConversationRecord(session, directorId);
     const convIndex = conv.messages.findIndex((message) => message.id === nextMessage.id);
     if (convIndex >= 0) {
@@ -4231,8 +4721,8 @@ export class ProgramsBackend {
   private replaceSlackAssistantMessage(
     session: AgentSession,
     directorId: DirectorId,
-    nextMessage: SlackChatMessage,
-  ): SlackChatMessage {
+    nextMessage: AgentChatMessage,
+  ): AgentChatMessage {
     const slackIndex = session.slackMessages.findIndex((message) => message.id === nextMessage.id);
     if (slackIndex >= 0) {
       session.slackMessages[slackIndex] = nextMessage;
@@ -4243,7 +4733,7 @@ export class ProgramsBackend {
       content: nextMessage.content,
       createdAt: nextMessage.createdAt,
       status: nextMessage.status,
-      metadata: (nextMessage.metadata as AgentChatMessage["metadata"]) ?? null,
+      metadata: (nextMessage.metadata as StageAgentMessage["metadata"]) ?? null,
     });
     return nextMessage;
   }
@@ -4252,7 +4742,7 @@ export class ProgramsBackend {
   private syncSlackMessageToAgentChat(
     session: AgentSession,
     directorId: DirectorId,
-    slackMsg: SlackChatMessage,
+    slackMsg: AgentChatMessage,
   ): void {
     const conv = ensureDirectorConversationRecord(session, directorId);
     const mirror = conv.messages.find((m) => m.id === slackMsg.id);
@@ -4260,13 +4750,13 @@ export class ProgramsBackend {
     mirror.content = slackMsg.content;
     mirror.status = slackMsg.status;
     mirror.createdAt = slackMsg.createdAt;
-    mirror.metadata = (slackMsg.metadata as AgentChatMessage["metadata"]) ?? null;
+    mirror.metadata = (slackMsg.metadata as StageAgentMessage["metadata"]) ?? null;
   }
 
   private appendPingLifecycleMessage(
     session: AgentSession,
     phase: "intro" | "outro",
-  ): SlackChatMessage {
+  ): AgentChatMessage {
     const text = phase === "intro"
       ? getDirectorMetadata("programming-director").introMessage
       : getDirectorMetadata("programming-director").outroMessage;
@@ -4280,7 +4770,7 @@ export class ProgramsBackend {
     session: AgentSession,
     content: string,
     report?: JeffExecutionReport | null,
-  ): SlackChatMessage {
+  ): AgentChatMessage {
     return this.appendSlackAssistantMessage(session, "project-manager", content, {
       status: "complete",
       metadata: report ? { type: "execution-report", report } : null,
@@ -4294,7 +4784,7 @@ export class ProgramsBackend {
     model: string;
     claudeModel: string;
     directorId: DirectorId;
-  }): Promise<SlackChatMessage | null> {
+  }): Promise<AgentChatMessage | null> {
     const {
       session,
       project,
@@ -4316,28 +4806,43 @@ export class ProgramsBackend {
       return null;
     }
 
-    const executionMessage = this.appendSlackSystemMessage(session, "Handing this to Ping to update the code now.");
+    const existingApproval = this.findPendingApprovalByAction(
+      session,
+      "routeUpdateToProgramming",
+      (payload) => {
+        const payloadInput = isRecord(payload.input) ? payload.input : null;
+        return payloadInput?.updateId === update.id;
+      },
+    );
+    if (!existingApproval) {
+      this.queueApproval(session, {
+        kind: "agent-update",
+        requestedByDirectorId: "programming-director",
+        targetDirectorId: "programming-director",
+        summary: this.buildApprovalSummary("Confirm Ping update run", `${update.title}: ${update.description}`),
+        draftMessage: `Ping is lined up to implement "${update.title}". Confirm before PROGRAMS spends tokens on the planning + coding pass.`,
+        draftPayload: {
+          action: "routeUpdateToProgramming",
+          input: {
+            projectId: project.id,
+            updateId: update.id,
+            provider,
+            model,
+            claudeModel,
+          } satisfies RouteUpdateToProgrammingInput,
+        },
+      });
+    }
+
+    const executionMessage = this.appendSlackAssistantMessage(
+      session,
+      "programming-director",
+      `I can take "${update.title}" next. Confirm and I'll start the planning + code pass.`,
+      { status: "complete" },
+    );
     session.slackActiveDirectorId = "programming-director";
     session.slackPresenceGuestId = "programming-director";
     await this.saveAgentSession(project.id, session);
-
-    try {
-      await this.routeUpdateToProgrammingNow({
-        projectId: project.id,
-        updateId: update.id,
-        provider,
-        model,
-        claudeModel,
-      });
-    } catch (error) {
-      // Post the error to Slack instead of crashing the chat
-      const errorText = error instanceof Error ? error.message : "Something went wrong starting the update.";
-      this.appendSlackAssistantMessage(session, "programming-director", errorText, { status: "complete" });
-      this.appendPingLifecycleMessage(session, "outro");
-      session.slackPresenceGuestId = null;
-      session.slackActiveDirectorId = "project-manager";
-      await this.saveAgentSession(project.id, session);
-    }
 
     return executionMessage;
   }
@@ -4346,7 +4851,7 @@ export class ProgramsBackend {
     session: AgentSession,
     projectId: string,
     directorId: DirectorId,
-  ): Promise<SlackChatMessage> {
+  ): Promise<AgentChatMessage> {
     const introPlaceholder = this.appendSlackAssistantMessage(session, directorId, "", { status: "working" });
     await this.saveAgentSession(projectId, session);
     await delay(SLACK_DIRECTOR_INTRO_DELAY_MS);
@@ -4488,19 +4993,10 @@ export class ProgramsBackend {
     });
     session.danMemory.fullExperienceDescription = idealState;
 
-    // Session-end processing: when Dan exits, move soft notes to forgotten memories
-    if (presenceAction === "exit" && session.danMemory.notes.length > 0) {
-      session.danMemory.forgottenMemories = session.danMemory.forgottenMemories ?? [];
-      const timestamp = new Date().toISOString();
-      session.danMemory.forgottenMemories.push(
-        ...session.danMemory.notes.map((note) => `[${timestamp}] ${note.content}`),
-      );
-      session.danMemory.notes = [];
-    }
-
-    // When Dan exits or confirms, package Todd-bound handoff notes for Todd
+    // Only package Todd-bound handoff notes during an explicit hard-memory pass.
     if (
-      (presenceAction === "exit" || (allowHardMemoryProcessing && conversationStatus === "ready-to-confirm"))
+      allowHardMemoryProcessing
+      && conversationStatus === "ready-to-confirm"
       && (session.danMemory.toddHandoffNotes ?? []).length > 0
     ) {
       session.toddMemory.pendingHandoff = buildToddHandoffPackage(
@@ -4539,9 +5035,9 @@ export class ProgramsBackend {
     claudeModel: string;
     directorId: DirectorId;
     userMessage: string;
-    mode?: SlackDirectorMode;
+    mode?: AgentChatDirectorMode;
   }): Promise<{
-    assistantMessage: SlackChatMessage;
+    assistantMessage: AgentChatMessage;
     parsed: Record<string, unknown>;
   }> {
     const {
@@ -4574,17 +5070,17 @@ export class ProgramsBackend {
     const versionPlanningMode = isTodd && mode === "version-planning";
     const updatePlanningMode = isTodd && mode === "update-planning";
     const schema = directorId === "creative-director"
-      ? danSlackSchema
+      ? danAgentChatSchema
       : directorId === "programming-director"
-        ? pingSlackSchema
+        ? pingAgentChatSchema
       : versionPlanningMode
-        ? toddVersionSlackSchema
+        ? toddVersionAgentChatSchema
       : updatePlanningMode
-        ? toddUpdateSlackSchema
+        ? toddUpdateAgentChatSchema
       : researchMode
-        ? researchSlackSchema
-        : directorSlackSchema;
-    const prompt = buildReworkedSlackDirectorPrompt(directorId, project.name, session, { mode });
+        ? researchAgentChatSchema
+        : directorAgentChatSchema;
+    const prompt = buildReworkedAgentChatDirectorPrompt(directorId, project.name, session, { mode });
     let hardMemoryReportMetadata: HardMemoryReportMetadata | null = null;
 
     const responsePlaceholder = directorId === "programming-director"
@@ -4606,8 +5102,8 @@ export class ProgramsBackend {
       codex: "Codex",
       claude: "Claude",
     };
-    const preflightErrors = await this.getSlackProviderPreflightErrors(settings);
-    const attemptPlan = buildSlackProviderAttemptPlan(provider, preflightErrors);
+    const preflightErrors = await this.getAgentChatProviderPreflightErrors(settings);
+    const attemptPlan = buildAgentChatProviderAttemptPlan(provider, preflightErrors);
     const failures: Array<{ provider: AiProvider; reason: string }> = [];
     const reasoningEffort = resolveDirectorRuntime(session, directorId).reasoningEffort;
     const allowDanHardMemoryProcessing = false;
@@ -4644,11 +5140,11 @@ export class ProgramsBackend {
           reasoningEffort,
           attemptProvider === "claude" ? toddClaudeOpts : toddCodexOpts,
         );
-        const parsed = validateSlackTurnParsedResponse(cleanJson(rawResult), directorId, mode);
+        const parsed = validateAgentChatTurnParsedResponse(cleanJson(rawResult), directorId, mode);
         const response = sanitizeSlackResponseContent(parsed.response, directorId);
         const responseCreatedAt = new Date().toISOString();
         let assistantContent = response;
-        let assistantMetadata: SlackChatMessage["metadata"] = null;
+        let assistantMetadata: AgentChatMessage["metadata"] = null;
         let danPresenceAction: DanPresenceAction = "exit";
 
         if (directorId === "creative-director") {
@@ -4921,18 +5417,18 @@ export class ProgramsBackend {
     claudeModel: string;
     directorId: DirectorId;
     userMessage: string;
-    mode?: SlackDirectorMode;
+    mode?: AgentChatDirectorMode;
   }): Promise<{
-    message: SlackChatMessage;
+    message: AgentChatMessage;
     handoffTo: DirectorId | null;
     handoffReason: string | null;
-    chainedMessages: SlackChatMessage[];
+    chainedMessages: AgentChatMessage[];
   }> {
     let currentDirectorId = args.directorId;
     let currentMessage = args.userMessage;
-    let currentMode = args.mode ?? resolveSlackDirectorMode(currentDirectorId, currentMessage);
-    let primaryMessage: SlackChatMessage | null = null;
-    const chainedMessages: SlackChatMessage[] = [];
+    let currentMode = args.mode ?? resolveAgentChatDirectorMode(currentDirectorId, currentMessage);
+    let primaryMessage: AgentChatMessage | null = null;
+    const chainedMessages: AgentChatMessage[] = [];
     let lastHandoffTo: DirectorId | null = null;
     let lastHandoffReason: string | null = null;
 
@@ -4958,22 +5454,18 @@ export class ProgramsBackend {
       lastHandoffTo = normalizeDirectorId(typeof parsed.handoffTo === "string" ? parsed.handoffTo : null);
       lastHandoffReason = typeof parsed.handoffReason === "string" ? parsed.handoffReason : null;
 
-      if (!lastHandoffTo || !canAutoRouteSlackDirector(lastHandoffTo) || lastHandoffTo === currentDirectorId) {
+      if (!lastHandoffTo || !canAutoRouteAgentChatDirector(lastHandoffTo) || lastHandoffTo === currentDirectorId) {
         break;
       }
 
       currentDirectorId = lastHandoffTo;
       currentMessage = lastHandoffReason ?? assistantMessage.content;
-      currentMode = resolveSlackDirectorMode(currentDirectorId, currentMessage);
+      currentMode = resolveAgentChatDirectorMode(currentDirectorId, currentMessage);
     }
 
     if (!primaryMessage) {
       throw new Error("Slack director chain did not produce a response.");
     }
-
-    args.session.slackPresenceGuestId = null;
-    args.session.slackActiveDirectorId = "project-manager";
-    await this.saveAgentSession(args.project.id, args.session);
 
     return {
       message: primaryMessage,
@@ -4986,10 +5478,9 @@ export class ProgramsBackend {
   private async generateProjectCoreDetails(project: Project, settings: Settings, provider: AiProvider): Promise<void> {
     const existing = await this.store.getAgentSession(project.id);
     if (
-      existing?.stages.function.confirmed &&
-      existing?.stages.thesis.confirmed &&
-      existing?.stages.core_pillars.confirmed &&
-      existing?.stages.full_flow.confirmed
+      existing?.danMemory?.confirmedConcept
+      || existing?.danMemory?.draftConcept
+      || existing?.danMemory?.derivedConcept
     ) {
       return;
     }
@@ -5021,29 +5512,16 @@ Your final answer must be ONLY strict JSON (no markdown fences) matching:
     const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
 
     const session = existing ?? this.createEmptyAgentSession(project.id, provider);
-    session.stages.function.confirmed = { summary: parsed.function, status: "assumed" };
-    session.stages.thesis.confirmed = { summary: parsed.thesis, status: "assumed" };
-    session.stages.full_flow.confirmed = { summary: parsed.fullFlow, status: "assumed" };
-    session.stages.core_pillars.confirmed = {
-      summary: `${parsed.corePillars.length} pillars`,
-      status: "assumed",
-    };
-    session.corePillars = (parsed.corePillars as { name: string; function: string; thesis: string }[]).map((p, idx) => ({
-      id: randomUUID(),
-      name: p.name,
-      pillarType: "core" as const,
-      function: { summary: p.function, status: "assumed" as const },
-      thesis: { summary: p.thesis, status: "assumed" as const },
-      corePillars: [],
-      fullFlow: null,
-      description: null,
-      connectedPillarIds: [],
-      assumptionText: null,
-      assumptionSource: null,
-      order: idx,
-      threadMemberships: [],
-      endState: null,
-    }));
+    session.danMemory.derivedConcept = buildGeneratedCoreDetailsConcept({
+      function: parsed.function,
+      thesis: parsed.thesis,
+      corePillars: parsed.corePillars as Array<{ name: string; function: string; thesis: string }>,
+      fullFlow: parsed.fullFlow,
+    });
+    session.danMemory.derivedNotes = migrateToTaggedNotes([
+      "Auto-derived from the current codebase to give Dan baseline project context.",
+    ]);
+    session.danMemory.derivedUpdatedAt = new Date().toISOString();
     session.updatedAt = new Date().toISOString();
 
     await this.store.saveAgentSession(session);
@@ -5076,7 +5554,7 @@ Your final answer must be ONLY strict JSON (no markdown fences) matching:
     return session;
   }
 
-  async agentChat(input: AgentChatInput): Promise<AgentChatResponse> {
+  async stageAgentChat(input: StageAgentChatInput): Promise<StageAgentChatResponse> {
     await this.ensureInitialized();
     const settings = await this.store.readSettings();
     await this.requireProviderReady(input.provider, settings);
@@ -5090,7 +5568,7 @@ Your final answer must be ONLY strict JSON (no markdown fences) matching:
 
     const stage = input.stage ?? session.currentStage;
 
-    const userMessage = {
+    const userMessage: StageAgentMessage = {
       id: randomUUID(),
       role: "user" as const,
       content: input.message,
@@ -5571,23 +6049,16 @@ Instructions:
 
     const programmingDefaults = resolveDirectorRuntime(session, "programming-director");
     const planningMode = options.planningMode ?? programmingDefaults.planningMode;
-    const requestedModels = resolveDirectorRequestedModels(
+    const pingModelSelections = resolvePingRunModelSelections(
       session,
-      "programming-director",
+      input.provider,
       input.model,
       input.claudeModel,
     );
-    const modelSelection = resolveDirectorModelSelection(
-      "programming-director",
-      input.provider,
-      requestedModels.model,
-      requestedModels.claudeModel,
-      "execution",
-    );
     const pingRuntime: PingRuntimeSnapshot = {
       provider: input.provider,
-      model: modelSelection.model,
-      claudeModel: modelSelection.claudeModel,
+      model: pingModelSelections.execution.model,
+      claudeModel: pingModelSelections.execution.claudeModel,
       reasoningEffort: programmingDefaults.reasoningEffort,
       planningMode,
       contextPaths: [],
@@ -5597,8 +6068,8 @@ Instructions:
       provider: input.provider,
       prompt,
       speed: "normal",
-      model: modelSelection.model,
-      claudeModel: modelSelection.claudeModel,
+      model: pingModelSelections.planning.model,
+      claudeModel: pingModelSelections.planning.claudeModel,
       reasoningEffort: programmingDefaults.reasoningEffort,
       planningMode,
       autoApprove: planningMode === "auto",
@@ -5635,23 +6106,30 @@ Instructions:
     }
 
     const session = await this.getOrCreateAgentSession(input.projectId, settings.advancedDefaults.provider);
+    await this.decorateAgentSessionKnowledgeState(session);
+    if (session.knowledgeStatus !== "fresh") {
+      throw new Error(session.knowledgeReasons?.[0] ?? "Todd's technical understanding is stale. Refresh the project from Jeff before sending Ping.");
+    }
     const pingDefaults = resolveDirectorRuntime(session, "programming-director");
-    const autoModels = resolveDirectorRequestedModels(
+    const runProvider = input.runMode === "manual"
+      ? input.provider ?? settings.advancedDefaults.provider
+      : settings.advancedDefaults.provider;
+    const requestedModel = input.runMode === "manual"
+      ? input.model ?? settings.advancedDefaults.model
+      : settings.advancedDefaults.model;
+    const requestedClaudeModel = input.runMode === "manual"
+      ? input.claudeModel ?? settings.advancedDefaults.claudeModel
+      : settings.advancedDefaults.claudeModel;
+    const pingModelSelections = resolvePingRunModelSelections(
       session,
-      "programming-director",
-      settings.advancedDefaults.model,
-      settings.advancedDefaults.claudeModel,
+      runProvider,
+      requestedModel,
+      requestedClaudeModel,
     );
     const runtime: PingRuntimeSnapshot = {
-      provider: input.runMode === "manual"
-        ? input.provider ?? settings.advancedDefaults.provider
-        : settings.advancedDefaults.provider,
-      model: input.runMode === "manual"
-        ? input.model ?? autoModels.model
-        : autoModels.model,
-      claudeModel: input.runMode === "manual"
-        ? input.claudeModel ?? autoModels.claudeModel
-        : autoModels.claudeModel,
+      provider: runProvider,
+      model: pingModelSelections.execution.model,
+      claudeModel: pingModelSelections.execution.claudeModel,
       reasoningEffort: input.runMode === "manual"
         ? input.reasoningEffort ?? pingDefaults.reasoningEffort
         : pingDefaults.reasoningEffort,
@@ -5664,7 +6142,7 @@ Instructions:
     session.provider = runtime.provider;
     session.activeDirectorId = "programming-director";
     const conversation = ensureDirectorConversationRecord(session, "programming-director");
-    const userMessage: AgentChatMessage = {
+    const userMessage: StageAgentMessage = {
       id: randomUUID(),
       role: "user",
       content: message,
@@ -5677,17 +6155,13 @@ Instructions:
       session.directorProgress.programming = "in-progress";
       session.directorProgress.currentDirector = "programming-director";
     }
-    session.updatedAt = userMessage.createdAt;
-    await this.store.saveAgentSession(session);
-    this.emit({ type: "agent.session", projectId: input.projectId, session });
-
-    return this.startPlanNow({
+    const planInput: StartPlanInput = {
       projectId: project.id,
       provider: runtime.provider,
       prompt: message,
       speed: runtime.provider === "codex" ? settings.defaultSpeed : "normal",
-      model: runtime.model,
-      claudeModel: runtime.claudeModel,
+      model: pingModelSelections.planning.model,
+      claudeModel: pingModelSelections.planning.claudeModel,
       reasoningEffort: runtime.reasoningEffort,
       planningMode: runtime.planningMode,
       autoApprove: runtime.planningMode === "auto",
@@ -5700,7 +6174,40 @@ Instructions:
         coreDetailsContext: formatCoreDetails(session) || null,
         runtime,
       }),
-    });
+    };
+
+    const existingApproval = this.findPendingApprovalByAction(
+      session,
+      "startPlan",
+      (payload) => {
+        const payloadInput = isRecord(payload.input) ? payload.input : null;
+        return payloadInput?.projectId === project.id
+          && payloadInput?.prompt === message;
+      },
+    );
+    if (!existingApproval) {
+      this.queueApproval(session, {
+        kind: "agent-update",
+        requestedByDirectorId: "programming-director",
+        targetDirectorId: "programming-director",
+        summary: this.buildApprovalSummary("Confirm direct Ping update", message),
+        draftMessage: "Ping is ready to start the planning and code pass for this direct request. Confirm before PROGRAMS spends tokens on the big-model run.",
+        draftPayload: {
+          action: "startPlan",
+          input: planInput,
+        },
+      });
+      this.appendSlackAssistantMessage(
+        session,
+        "programming-director",
+        "I can take that update next. Confirm and I'll start the planning + code pass.",
+        { status: "complete" },
+      );
+    }
+
+    session.updatedAt = userMessage.createdAt;
+    await this.saveAgentSession(input.projectId, session);
+    return { started: true };
   }
 
   async agentResetStage(projectId: string, stage: AgentStage): Promise<AgentSession> {
@@ -6279,7 +6786,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     const schema = getSchemaForDirector(input.directorId, resolvedFocusMode);
 
     // Emit intro message before AI call
-    const introMsg: AgentChatMessage = {
+    const introMsg: StageAgentMessage = {
       id: randomUUID(),
       role: "assistant" as const,
       content: "",
@@ -6302,14 +6809,14 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     );
     const parsedJson = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
     const parsed = input.directorId === "creative-director" || input.directorId === "validation-director"
-      ? validateSlackTurnParsedResponse(parsedJson, input.directorId, resolvedFocusMode as any)
+      ? validateAgentChatTurnParsedResponse(parsedJson, input.directorId, resolvedFocusMode as any)
       : parsedJson;
 
     const assistantCreatedAt = new Date().toISOString();
     let assistantContent = input.directorId === "validation-director" && typeof parsed.zhResponse === "string"
       ? parsed.zhResponse
       : sanitizeSlackResponseContent(parsed.response, input.directorId);
-    let assistantMetadata: AgentChatMessage["metadata"] = input.directorId === "validation-director"
+    let assistantMetadata: StageAgentMessage["metadata"] = input.directorId === "validation-director"
       ? buildTranslatedMessageMetadata(
         assistantContent,
         typeof parsed.enTranslation === "string" ? parsed.enTranslation : parsed.response,
@@ -6634,7 +7141,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     return this.directorChat(input);
   }
 
-  async slackChat(input: SlackChatInput): Promise<SlackChatResponse> {
+  async agentChat(input: AgentChatInput): Promise<AgentChatResponse> {
 
     await this.ensureInitialized();
     const settings = await this.store.readSettings();
@@ -6649,7 +7156,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     session.directorStateMap = session.directorStateMap ?? {};
     session.provider = input.provider;
 
-    const userMessage: SlackChatMessage = {
+    const userMessage: AgentChatMessage = {
       id: randomUUID(),
       role: "user",
       directorId: null,
@@ -6661,10 +7168,52 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     const currentDirectorId: DirectorId =
       input.targetDirectorId && input.targetDirectorId !== "project-manager"
         ? input.targetDirectorId
-        : resolveSlackDirectRoute(input.message, session.slackPresenceGuestId) ?? "project-manager";
+        : resolveAgentChatDirectRoute(input.message, session.slackPresenceGuestId) ?? "project-manager";
     const initialMode = currentDirectorId === "project-manager"
       ? "codebase-analysis"
-      : resolveSlackDirectorMode(currentDirectorId, input.message);
+      : resolveAgentChatDirectorMode(currentDirectorId, input.message);
+    if (requiresApprovalForSlackDirectorRun(currentDirectorId, initialMode)) {
+      const existingApproval = this.findPendingApprovalByAction(
+        session,
+        "runSlackDirector",
+        (payload) =>
+          payload.directorId === currentDirectorId
+          && payload.mode === initialMode
+          && payload.message === input.message,
+      );
+      if (!existingApproval) {
+        this.queueSlackDirectorApproval(session, {
+          requestedByDirectorId: currentDirectorId,
+          targetDirectorId: currentDirectorId,
+          provider: input.provider,
+          model: input.model,
+          claudeModel: input.claudeModel,
+          message: input.message,
+          mode: initialMode,
+        });
+      }
+      const queuedMessage = this.appendSlackAssistantMessage(
+        session,
+        currentDirectorId,
+        initialMode === "internet-research"
+          ? "I can research that next. Confirm and I'll run the internet + codebase pass."
+          : initialMode === "version-planning"
+            ? "I can lock down the next version plan. Confirm and I'll run the roadmap pass."
+            : "I can break this into the next concrete update plan. Confirm and I'll run the planning pass.",
+        { status: "complete" },
+      );
+      session.slackActiveDirectorId = currentDirectorId;
+      session.slackPresenceGuestId = currentDirectorId === "project-manager" ? null : currentDirectorId;
+      await this.saveAgentSession(project.id, session);
+      return {
+        sessionId: session.id,
+        directorId: currentDirectorId,
+        message: queuedMessage,
+        handoffTo: null,
+        handoffReason: null,
+        chainedMessages: [],
+      };
+    }
     const executionMessage = await this.tryStartSlackPingExecution({
       session,
       project,
@@ -6697,12 +7246,56 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     const message = firstTurn.assistantMessage;
     const handoffTo = normalizeDirectorId(typeof firstTurn.parsed.handoffTo === "string" ? firstTurn.parsed.handoffTo : null);
     const handoffReason = typeof firstTurn.parsed.handoffReason === "string" ? firstTurn.parsed.handoffReason : null;
-    const chainedMessages: SlackChatMessage[] = [];
-    if (handoffTo && canAutoRouteSlackDirector(handoffTo) && handoffTo !== currentDirectorId) {
+    const chainedMessages: AgentChatMessage[] = [];
+    if (handoffTo && canAutoRouteAgentChatDirector(handoffTo) && handoffTo !== currentDirectorId) {
+      const nextMessage = handoffReason ?? message.content;
+      const handoffMode = resolveAgentChatDirectorMode(handoffTo, nextMessage);
       this.appendJeffSlackMessage(
         session,
-        `Handing this to ${DIRECTOR_NAMES[handoffTo]}${handoffReason ? `: ${handoffReason}` : "."}`,
+        `${DIRECTOR_NAMES[handoffTo]}, let's lock this down around ${clipMemoryText(nextMessage, 220)}.`,
       );
+      if (requiresApprovalForSlackDirectorRun(handoffTo, handoffMode)) {
+        const existingApproval = this.findPendingApprovalByAction(
+          session,
+          "runSlackDirector",
+          (payload) =>
+            payload.directorId === handoffTo
+            && payload.mode === handoffMode
+            && payload.message === nextMessage,
+        );
+        if (!existingApproval) {
+          this.queueSlackDirectorApproval(session, {
+            requestedByDirectorId: "project-manager",
+            targetDirectorId: handoffTo,
+            provider: input.provider,
+            model: input.model,
+            claudeModel: input.claudeModel,
+            message: nextMessage,
+            mode: handoffMode,
+          });
+        }
+        this.appendSlackAssistantMessage(
+          session,
+          handoffTo,
+          handoffMode === "internet-research"
+            ? "I can take that research pass next. Confirm and I'll start."
+            : handoffMode === "version-planning"
+              ? "I can take that version-planning pass next. Confirm and I'll start."
+              : "I can take that update-planning pass next. Confirm and I'll start.",
+          { status: "complete" },
+        );
+        session.slackActiveDirectorId = handoffTo;
+        session.slackPresenceGuestId = handoffTo;
+        await this.saveAgentSession(project.id, session);
+        return {
+          sessionId: session.id,
+          directorId: currentDirectorId,
+          message,
+          handoffTo,
+          handoffReason,
+          chainedMessages,
+        };
+      }
       await this.saveAgentSession(project.id, session);
       const handoffExecutionMessage = await this.tryStartSlackPingExecution({
         session,
@@ -6715,7 +7308,6 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       if (handoffExecutionMessage) {
         chainedMessages.push(handoffExecutionMessage);
       } else {
-        const nextMessage = handoffReason ?? message.content;
         const secondTurn = await this.runSlackDirectorTurn({
           session,
           project,
@@ -6725,12 +7317,14 @@ Your response must be ONLY strict JSON (no markdown fences).`;
           claudeModel: input.claudeModel,
           directorId: handoffTo,
           userMessage: nextMessage,
-          mode: resolveSlackDirectorMode(handoffTo, nextMessage),
+          mode: resolveAgentChatDirectorMode(handoffTo, nextMessage),
         });
         chainedMessages.push(secondTurn.assistantMessage);
       }
-      session.slackPresenceGuestId = null;
-      session.slackActiveDirectorId = "project-manager";
+      this.appendJeffSlackMessage(
+        session,
+        `Locked in so far: ${DIRECTOR_NAMES[handoffTo]} wrapped the current step. Let me know if you want anything else before we move on.`,
+      );
       await this.saveAgentSession(project.id, session);
     }
 
@@ -6744,7 +7338,12 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     };
   }
 
-  async deleteSlackMessages(input: DeleteSlackMessagesInput): Promise<void> {
+  /** @deprecated Use agentChat */
+  async slackChat(input: AgentChatInput): Promise<AgentChatResponse> {
+    return this.agentChat(input);
+  }
+
+  async deleteAgentMessages(input: DeleteAgentMessagesInput): Promise<void> {
 
     await this.ensureInitialized();
     const session = await this.store.getAgentSession(input.projectId);
@@ -6756,7 +7355,12 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     this.emit({ type: "agent.session", projectId: input.projectId, session });
   }
 
-  async clearSlackMessages(projectId: string): Promise<void> {
+  /** @deprecated Use deleteAgentMessages */
+  async deleteSlackMessages(input: DeleteSlackMessagesInput): Promise<void> {
+    return this.deleteAgentMessages(input);
+  }
+
+  async clearAgentMessages(projectId: string): Promise<void> {
 
     await this.ensureInitialized();
     const session = await this.store.getAgentSession(projectId);
@@ -6767,6 +7371,11 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     session.updatedAt = new Date().toISOString();
     await this.store.saveAgentSession(session);
     this.emit({ type: "agent.session", projectId, session });
+  }
+
+  /** @deprecated Use clearAgentMessages */
+  async clearSlackMessages(projectId: string): Promise<void> {
+    return this.clearAgentMessages(projectId);
   }
 
   private patchAutomationState(
@@ -7250,6 +7859,9 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     session.directorStateMap = session.directorStateMap ?? {};
     session.currentCorePillars = session.currentCorePillars ?? [];
     session.danArchivedNotes = session.danArchivedNotes ?? [];
+    session.danMemory.derivedConcept = session.danMemory.derivedConcept ?? null;
+    session.danMemory.derivedNotes = session.danMemory.derivedNotes ?? [];
+    session.danMemory.derivedUpdatedAt = session.danMemory.derivedUpdatedAt ?? null;
     session.slackPresenceGuestId = null;
     session.provider = input.provider;
 
@@ -7281,7 +7893,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     // --- STEP 1: Todd scans the codebase ---
     session.slackPresenceGuestId = "rd-director";
     session.slackActiveDirectorId = "rd-director";
-    let toddResponsePlaceholder: SlackChatMessage | null = null;
+    let toddResponsePlaceholder: AgentChatMessage | null = null;
     toddResponsePlaceholder = await this.stageSlackDirectorIntroSequence(session, input.projectId, "rd-director");
 
     let scanSummary = "";
@@ -7289,10 +7901,12 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     let toddSame: string[] = [];
     let toddUpdated: string[] = [];
     let refreshedToddCurrentState: string | null = null;
+    let latestFingerprint: ProjectKnowledgeFingerprint | null = null;
+    let outlineReport: ProjectOutlineReport | null = null;
 
     try {
       // Generate outline report for file tree
-      const outlineReport = await this.generateOutlineReportNow({
+      outlineReport = await this.generateOutlineReportNow({
         projectId: input.projectId,
         provider: input.provider,
         model: input.model,
@@ -7333,11 +7947,13 @@ Return your response as a conversational summary of what you found.`;
       toddSame = Array.isArray(toddParsed.same) ? toddParsed.same : [];
       toddUpdated = Array.isArray(toddParsed.updated) ? toddParsed.updated : [];
       refreshedToddCurrentState = typeof toddParsed.currentState === "string" ? toddParsed.currentState : scanSummary;
+      latestFingerprint = await buildProjectKnowledgeFingerprint(project.localPath);
       session.toddMemory.codebaseIndexedMap = {
         summary: refreshedToddCurrentState,
         indexedAt: new Date().toISOString(),
         featureAreas: detectedFeatures,
         repoNotes: toddUpdated,
+        lastIndexedFingerprint: latestFingerprint,
       };
       persistDirectorStateSnapshot(session, "rd-director", {
         currentState: refreshedToddCurrentState,
@@ -7377,56 +7993,133 @@ Return your response as a conversational summary of what you found.`;
       return;
     }
 
-    // --- STEP 2: Jeff summarizes the refresh ---
-    const jeffWorkingMsg = this.appendSlackAssistantMessage(session, "project-manager", "", { status: "working" });
+    // --- STEP 2: Dan receives a derived current-state snapshot in soft memory only ---
+    let derivedRefreshStatus = "Dan's derived soft memory could not be refreshed.";
+    const danWorkingMsg = this.appendSlackAssistantMessage(session, "creative-director", "", { status: "working" });
+    session.slackActiveDirectorId = "creative-director";
+    session.slackPresenceGuestId = "creative-director";
+    await persistSession();
+
+    try {
+      const derivedPrompt = `Analyze the current codebase state for "${project.name}" and derive provisional core-details for Dan.
+
+This output is NOT confirmed product truth. It is only a derived current-state snapshot from the codebase.
+It must help Dan understand the existing implementation without overwriting the user's discussed ideal concept.
+
+Todd's scan summary:
+${scanSummary}
+
+Detected feature areas:
+${detectedFeatures.join(", ") || "(none found)"}
+
+Recent codebase changes Todd flagged:
+${toddUpdated.join(", ") || "(none found)"}
+
+Known discussed/confirmed concept context for naming only:
+${formatCoreDetails(session) || "No confirmed Dan core-details yet."}
+
+Return ONLY strict JSON matching:
+{"function": string, "thesis": string, "corePillars": [{"name": string, "function": string, "thesis": string}], "fullFlow": string}`;
+
+      const derivedRaw = await service.runOneShot(
+        project,
+        settings,
+        derivedPrompt,
+        model,
+        generateCoreDetailsSchema,
+        "high",
+      );
+      const derivedParsed = cleanJson(derivedRaw) as {
+        function: string;
+        thesis: string;
+        corePillars: Array<{ name: string; function: string; thesis: string }>;
+        fullFlow: string;
+      };
+      session.danMemory.derivedConcept = buildGeneratedCoreDetailsConcept(derivedParsed);
+      session.danMemory.derivedNotes = buildDanDerivedNotesFromRefresh({
+        scanSummary,
+        detectedFeatures,
+        updatedAreas: toddUpdated,
+      });
+      session.danMemory.derivedUpdatedAt = new Date().toISOString();
+      derivedRefreshStatus = "Dan's derived soft memory was refreshed from the current codebase without touching hard memory.";
+      danWorkingMsg.content = "I loaded a derived current-state snapshot into soft memory so we can compare it against the discussed concept without overwriting Dan's hard memory.";
+      danWorkingMsg.status = "complete";
+      danWorkingMsg.createdAt = new Date().toISOString();
+      danWorkingMsg.metadata = null;
+      this.syncSlackMessageToAgentChat(session, "creative-director", danWorkingMsg);
+      await persistSession();
+    } catch (error) {
+      derivedRefreshStatus = `Dan's derived soft memory refresh failed: ${error instanceof Error ? error.message : "Unknown error"}`;
+      danWorkingMsg.content = derivedRefreshStatus;
+      danWorkingMsg.status = "complete";
+      danWorkingMsg.createdAt = new Date().toISOString();
+      danWorkingMsg.metadata = null;
+      this.syncSlackMessageToAgentChat(session, "creative-director", danWorkingMsg);
+      await persistSession();
+    }
+
+    // --- STEP 3: Jeff closes the loop ---
+    const jeffMessage = this.appendSlackAssistantMessage(session, "project-manager", "", { status: "working" });
     session.slackActiveDirectorId = "project-manager";
     session.slackPresenceGuestId = null;
     await persistSession();
 
-    try {
-      const jeffPrompt = `You are Jeff, the Project Manager for "${project.name}".
-A project refresh was just completed. Here's what happened:
-
-Todd's Scan Summary: ${scanSummary}
-${toddUpdated.length > 0 ? `Todd found updates: ${toddUpdated.join(", ")}` : "Todd found no changes from his previous understanding."}
-Detected feature areas: ${detectedFeatures.join(", ") || "(none found)"}
-
-Your task:
-1. Present a clear, friendly summary to the user of what the refresh found
-2. Explain that refresh updates Todd's technical map only, not Dan's confirmed concept.
-3. Let them know they can click "View Update" on Todd's message to inspect the technical refresh details.
-
-Be concise and conversational.`;
-
-      const jeffRaw = await service.runOneShot(
-        project,
-        settings,
-        jeffPrompt,
-        model,
-        directorSlackSchema,
-        "high",
-      );
-      const jeffParsed = cleanJson(jeffRaw);
-      jeffWorkingMsg.content = sanitizeSlackResponseContent(jeffParsed.response, "project-manager");
-      jeffWorkingMsg.status = "complete";
-      jeffWorkingMsg.createdAt = new Date().toISOString();
-      jeffWorkingMsg.metadata = null;
-      this.syncSlackMessageToAgentChat(session, "project-manager", jeffWorkingMsg);
-      await persistSession();
-    } catch (error) {
-      jeffWorkingMsg.content = `Summary encountered an error: ${error instanceof Error ? error.message : "Unknown error"}`;
-      jeffWorkingMsg.status = "complete";
-      jeffWorkingMsg.createdAt = new Date().toISOString();
-      jeffWorkingMsg.metadata = null;
-      this.syncSlackMessageToAgentChat(session, "project-manager", jeffWorkingMsg);
-      await persistSession();
-    }
+    const refreshLead = toddUpdated.length > 0
+      ? `Todd flagged source/config drift around ${toddUpdated.join(", ")}.`
+      : "Todd did not find any source/config drift from the last indexed understanding.";
+    const featureLead = detectedFeatures.length > 0
+      ? `His refreshed technical map now covers ${detectedFeatures.join(", ")}.`
+      : "His refreshed technical map did not identify any clear feature buckets yet.";
+    const fingerprintLead = latestFingerprint
+      ? `Todd's source/config fingerprint was updated at ${session.toddMemory.codebaseIndexedMap?.indexedAt ?? new Date().toISOString()}.`
+      : "Todd's scan completed, but PROGRAMS could not persist a new source/config fingerprint.";
+    jeffMessage.content = [
+      "Refresh complete.",
+      refreshLead,
+      featureLead,
+      fingerprintLead,
+      `${derivedRefreshStatus} Discussed core-details still win over derived context until you confirm hard memory.`,
+    ].join(" ");
+    jeffMessage.status = "complete";
+    jeffMessage.createdAt = new Date().toISOString();
+    jeffMessage.metadata = null;
+    this.syncSlackMessageToAgentChat(session, "project-manager", jeffMessage);
+    await persistSession();
   }
 
   async refreshProject(input: RefreshProjectInput): Promise<void> {
-
     await this.ensureInitialized();
-    await this.refreshProjectNow(input);
+    const settings = await this.store.readSettings();
+    const project = await this.requireProject(input.projectId);
+    const session = await this.getOrCreateAgentSession(input.projectId, input.provider);
+    if (this.findPendingApprovalByAction(session, "refreshProject")) {
+      await this.saveAgentSession(input.projectId, session);
+      return;
+    }
+
+    const needsInitialRefresh = session.knowledgeStatus === "needs-initial-refresh" || !session.toddMemory.codebaseIndexedMap?.lastIndexedFingerprint;
+    this.queueApproval(session, {
+      kind: "codebase-scan",
+      requestedByDirectorId: "project-manager",
+      targetDirectorId: "rd-director",
+      summary: needsInitialRefresh
+        ? `Confirm initial project refresh for ${project.name}`
+        : `Confirm project refresh for ${project.name}`,
+      draftMessage: needsInitialRefresh
+        ? "Jeff is ready to process this project into the agents' current understanding. Todd will refresh his technical map and Dan will only receive derived soft-memory until you confirm hard memory."
+        : "Jeff is ready to refresh the project. Todd will rescan the current source/config state and Dan will only receive derived soft-memory. Confirm before PROGRAMS spends tokens on the refresh.",
+      draftPayload: {
+        action: "refreshProject",
+        input: {
+          ...input,
+          provider: input.provider ?? settings.advancedDefaults.provider,
+          model: input.model ?? settings.advancedDefaults.model,
+          claudeModel: input.claudeModel ?? settings.advancedDefaults.claudeModel,
+        },
+      },
+    });
+    await this.saveAgentSession(input.projectId, session);
   }
 
   async listPendingApprovals(input: ListPendingApprovalsInput): Promise<PendingApproval[]> {
@@ -7680,13 +8373,30 @@ Be concise and conversational.`;
       for (const note of session.danMemory.notes ?? []) {
         session.danMemory.forgottenMemories.push(`[${timestamp} | confirmed] ${note.content}`);
       }
+      for (const note of session.danMemory.derivedNotes ?? []) {
+        session.danArchivedNotes.push(`[${timestamp} | derived confirmed] ${note.content}`);
+      }
+
+      if ((session.danMemory.toddHandoffNotes ?? []).length > 0) {
+        session.toddMemory.pendingHandoff = buildToddHandoffPackage(
+          [
+            ...(session.toddMemory.pendingHandoff?.rawInputs ?? []),
+            ...extractNoteContents(session.danMemory.toddHandoffNotes),
+          ],
+          session.danMemory.fullExperienceDescription ?? session.toddMemory.pendingHandoff?.context ?? "Creative confirmation handoff",
+        );
+      }
 
       archiveDanNotes(session, "dan draft confirmed", session.danMemory.notes ?? []);
       session.danMemory.archivedNotes = session.danArchivedNotes;
       session.danMemory.notes = [];
       session.danMemory.draftConcept = null;
+      session.danMemory.derivedConcept = null;
+      session.danMemory.derivedNotes = [];
+      session.danMemory.derivedUpdatedAt = null;
       session.danMemory.draftChangeSummary = [];
       session.danMemory.draftStatus = null;
+      session.danMemory.toddHandoffNotes = [];
       session.danInternalNotes = [];
       session.danDraftCoreDetails = null;
       session.danDraftChangeSummary = [];
@@ -7720,28 +8430,30 @@ Be concise and conversational.`;
       if (Array.isArray(payload.currentCorePillars)) {
         session.currentCorePillars = payload.currentCorePillars as CorePillar[];
       }
-      if (Array.isArray(payload.corePillars) && session.corePillars.length === 0) {
-        session.corePillars = (payload.corePillars as CorePillar[]).map((p) => ({
-          ...p,
-          assumptionSource: p.assumptionSource ?? ("dan" as const),
-          assumptionText: p.assumptionText ?? "Bootstrapped from codebase scan — pending user review",
+      if (Array.isArray(payload.corePillars)) {
+        const derivedPillars = (payload.corePillars as CorePillar[]).map((p, index) => ({
+          ...cloneCorePillarDeep(p),
+          assumptionSource: p.assumptionSource ?? null,
+          assumptionText: p.assumptionText ?? "Derived from a project refresh and pending confirmation.",
+          order: p.order ?? index,
         }));
-        // Bootstrap Dan's confirmed concept and record history
-        session.danMemory.confirmedConcept = buildConfirmedConceptFromSession(session);
-        session.danMemory.creativeHistory = session.danMemory.creativeHistory ?? [];
-        session.danMemory.creativeHistory.push({
-          id: randomUUID(),
-          action: "bootstrapped",
-          summary: "Initial pillars bootstrapped from Todd's codebase scan (assumptions pending review)",
-          affectedPillarIds: session.corePillars.map((p) => p.id),
-          createdAt: new Date().toISOString(),
-        });
-      }
-      if (payload.corePillarsSummary && typeof payload.corePillarsSummary === "string") {
-        session.stages.core_pillars.confirmed = {
-          summary: payload.corePillarsSummary,
-          status: "assumed",
+        session.danMemory.derivedConcept = {
+          function: typeof payload.functionSummary === "string"
+            ? { summary: payload.functionSummary, status: "assumed" }
+            : session.danMemory.derivedConcept?.function ?? null,
+          thesis: typeof payload.thesisSummary === "string"
+            ? { summary: payload.thesisSummary, status: "assumed" }
+            : session.danMemory.derivedConcept?.thesis ?? null,
+          corePillars: derivedPillars,
+          fullFlow: typeof payload.fullFlowSummary === "string"
+            ? { summary: payload.fullFlowSummary, status: "assumed" }
+            : session.danMemory.derivedConcept?.fullFlow ?? null,
+          threads: session.danMemory.derivedConcept?.threads ?? [],
         };
+        session.danMemory.derivedNotes = migrateToTaggedNotes([
+          typeof payload.corePillarsSummary === "string" ? payload.corePillarsSummary : "",
+        ].filter((item): item is string => item.trim().length > 0));
+        session.danMemory.derivedUpdatedAt = new Date().toISOString();
       }
       if (Array.isArray(payload.directorStateUpdates)) {
         for (const rawUpdate of payload.directorStateUpdates as Array<Record<string, unknown>>) {
@@ -7777,7 +8489,7 @@ Be concise and conversational.`;
     const payload = approval.draftPayload ?? {};
     const directorId = normalizeDirectorId(typeof payload.directorId === "string" ? payload.directorId : null);
     if (!directorId) {
-      throw new Error("Slack approval is missing a target director.");
+      throw new Error("Agent chat approval is missing a target director.");
     }
 
     const project = await this.requireProject(session.projectId);
@@ -7786,7 +8498,7 @@ Be concise and conversational.`;
     const model = typeof payload.model === "string" ? payload.model : settings.advancedDefaults.model;
     const claudeModel = typeof payload.claudeModel === "string" ? payload.claudeModel : settings.advancedDefaults.claudeModel;
     const userMessage = typeof payload.message === "string" ? payload.message : approval.draftMessage ?? "";
-    const mode = normalizeSlackDirectorMode(
+    const mode = normalizeAgentChatDirectorMode(
       directorId,
       payload.mode,
       payload.allowInternetResearch,
@@ -7804,10 +8516,19 @@ Be concise and conversational.`;
       return;
     }
 
-    this.appendSlackSystemMessage(
-      session,
-      `Approval confirmed. Handing this to ${DIRECTOR_NAMES[directorId]}.`,
-    );
+    if (approval.requestedByDirectorId === "project-manager" && directorId !== "project-manager") {
+      this.appendJeffSlackMessage(
+        session,
+        `${DIRECTOR_NAMES[directorId]}, let's lock this down around ${clipMemoryText(userMessage, 220)}.`,
+      );
+    } else {
+      this.appendSlackAssistantMessage(
+        session,
+        directorId,
+        "Confirmed. I'll take it from here.",
+        { status: "complete" },
+      );
+    }
     await this.saveAgentSession(project.id, session);
 
     const { handoffTo, handoffReason } = await this.runSlackDirectorChain({
@@ -7821,10 +8542,19 @@ Be concise and conversational.`;
       userMessage,
       mode,
     });
-    if (handoffTo && !canAutoRouteSlackDirector(handoffTo)) {
+    if (handoffTo && !canAutoRouteAgentChatDirector(handoffTo)) {
       this.appendSlackSystemMessage(
         session,
         `${DIRECTOR_NAMES[directorId]} suggested a manual handoff to ${DIRECTOR_NAMES[handoffTo]}${handoffReason ? `: ${handoffReason}` : ""}`,
+      );
+      await this.saveAgentSession(project.id, session);
+      return;
+    }
+
+    if (approval.requestedByDirectorId === "project-manager" && directorId !== "project-manager") {
+      this.appendJeffSlackMessage(
+        session,
+        `Locked in so far: ${DIRECTOR_NAMES[directorId]} finished this pass${handoffTo ? ` and pointed next at ${DIRECTOR_NAMES[handoffTo]}` : ""}.`,
       );
       await this.saveAgentSession(project.id, session);
     }
@@ -7941,6 +8671,7 @@ Be concise and conversational.`;
     await this.ensureInitialized();
     const session = await this.store.getAgentSession(input.projectId);
     if (!session) throw new Error("No agent session found for this program.");
+    await this.assertFreshProjectKnowledge(session);
 
     // Confirmation flow enforcement: block build if core pillars are still assumed
     const hasUnconfirmedPillars = session.corePillars.some((p) =>
@@ -7990,7 +8721,38 @@ Be concise and conversational.`;
   }
 
   async routeUpdateToProgramming(input: RouteUpdateToProgrammingInput): Promise<{ started: true }> {
-    return this.routeUpdateToProgrammingNow(input);
+    await this.ensureInitialized();
+    const session = await this.store.getAgentSession(input.projectId);
+    if (!session) throw new Error("No agent session found for this program.");
+
+    const update = resolveNextProgrammingUpdate(session, input.updateId);
+    if (!update) {
+      throw new Error("No pending programming update found.");
+    }
+
+    const existingApproval = this.findPendingApprovalByAction(
+      session,
+      "routeUpdateToProgramming",
+      (payload) => {
+        const payloadInput = isRecord(payload.input) ? payload.input : null;
+        return payloadInput?.updateId === update.id;
+      },
+    );
+    if (!existingApproval) {
+      this.queueApproval(session, {
+        kind: "agent-update",
+        requestedByDirectorId: "programming-director",
+        targetDirectorId: "programming-director",
+        summary: this.buildApprovalSummary("Confirm Ping update run", `${update.title}: ${update.description}`),
+        draftMessage: `Ping is ready to plan and execute "${update.title}". Confirm before PROGRAMS spends tokens on the big-model update run.`,
+        draftPayload: {
+          action: "routeUpdateToProgramming",
+          input,
+        },
+      });
+      await this.saveAgentSession(input.projectId, session);
+    }
+    return { started: true };
   }
 
   async recordJeffOutcome(input: {
@@ -8372,6 +9134,7 @@ Be concise and conversational.`;
     await this.git.commitAll(localPath, `Initialize ${input.name}`);
 
     await this.store.createProject(project);
+    await this.store.saveAgentSession(this.createEmptyAgentSession(project.id, settings.advancedDefaults.provider));
     this.emit({ type: "project.updated", project });
     await this.syncSelfRuntime(settings, [...existingProjects, project], true);
     return project;
@@ -8950,6 +9713,7 @@ Be concise and conversational.`;
       indexedAt: null,
       featureAreas: [],
       repoNotes: [],
+      lastIndexedFingerprint: null,
     };
     indexedMap.indexedAt = new Date().toISOString();
     indexedMap.repoNotes = Array.from(new Set([note, ...indexedMap.repoNotes]));
@@ -9058,7 +9822,7 @@ Be concise and conversational.`;
         await this.store.updateProject(latest);
         this.emit({ type: "project.updated", project: latest });
 
-        // Announce plan completion in Slack
+        // Announce plan completion in agent chat
         const latestSession = await this.store.getAgentSession(input.projectId);
         if (latestSession) {
           const plan = buildPingPlanSnapshot(draft);
@@ -9307,6 +10071,7 @@ Be concise and conversational.`;
   }
 
   private async executePlan(project: Project, settings: Settings, draft: PlanDraft): Promise<void> {
+    applyPingExecutionRuntimeToDraft(draft);
     await this.requireProviderReady(draft.provider, settings);
     const executingProject = await this.updateProjectStatus(project, "executing", null);
     const service = this.aiService(draft.provider);
@@ -9369,9 +10134,6 @@ Be concise and conversational.`;
           errorMessage: null,
         };
         await this.store.addUpdateRecord(historyRecord);
-        void this.generateProjectCoreDetails(latest, settings, draft.provider).catch((err) => {
-          console.warn("[core-details] Auto-generation failed:", err);
-        });
         latest.lastUpdatedAt = historyRecord.createdAt;
         latest.status = "idle";
         latest.updatedAt = new Date().toISOString();

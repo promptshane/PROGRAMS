@@ -4,7 +4,7 @@ import type {
   RdFocusMode,
   ValidationFocusMode,
 } from "../../shared/types.ts";
-import { resolveSlackDirectorMode } from "./slack-flow.ts";
+import { resolveAgentChatDirectorMode } from "./agent-chat-flow.ts";
 
 const matchesAny = (text: string, patterns: readonly RegExp[]): boolean =>
   patterns.some((pattern) => pattern.test(text));
@@ -47,7 +47,7 @@ const VALIDATION_GOAL_PATTERNS = [
 ] as const;
 
 const resolveRdDirectorFocusMode = (message: string): RdFocusMode => {
-  const slackMode = resolveSlackDirectorMode("rd-director", message);
+  const slackMode = resolveAgentChatDirectorMode("rd-director", message);
   if (slackMode === "version-planning") {
     return "version-planning";
   }

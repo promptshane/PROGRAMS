@@ -502,13 +502,13 @@ export const AGENT_STAGE_LABELS: Record<AgentStage, string> = {
   execution: "Execution",
 };
 
-export interface AgentChatMessage {
+export interface StageAgentMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
   createdAt: string;
   status?: "working" | "complete";
-  metadata?: SlackMessageMetadata | null;
+  metadata?: AgentChatMessageMetadata | null;
 }
 
 export type HardMemoryReportDataType = "danDraftCoreDetails" | "versions" | "versionUpdates";
@@ -577,7 +577,7 @@ export type DanDraftOperation =
       name: string;
     };
 
-export type SlackMessageMetadata =
+export type AgentChatMessageMetadata =
   | {
       type: "research-result";
       researchPrompt: string;
@@ -612,15 +612,19 @@ export type SlackMessageMetadata =
   | HardMemoryReportMetadata
   | PingTranslationMetadata;
 
-export interface SlackChatMessage {
+export type SlackMessageMetadata = AgentChatMessageMetadata;
+
+export interface AgentChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
   directorId: DirectorId | null;
   content: string;
   createdAt: string;
   status?: "working" | "complete";
-  metadata?: SlackMessageMetadata | null;
+  metadata?: AgentChatMessageMetadata | null;
 }
+
+export type SlackChatMessage = AgentChatMessage;
 
 export interface ScratchpadItem {
   id: string;
@@ -745,7 +749,7 @@ export interface PillarThreadRole {
 export interface DirectorConversation {
   directorId: DirectorId;
   focusMode: DirectorFocusMode | null;
-  messages: AgentChatMessage[];
+  messages: StageAgentMessage[];
   lastActiveAt: string | null;
 }
 
@@ -886,7 +890,7 @@ export interface FlowStep {
 }
 
 export interface AgentStageData {
-  messages: AgentChatMessage[];
+  messages: StageAgentMessage[];
   confirmed: AgentStageConfirmation | null;
 }
 
@@ -1002,10 +1006,13 @@ export interface DanHistoryLogEntry {
 export interface DanMemory {
   confirmedConcept: AgentCoreDetails | null;
   draftConcept: AgentCoreDetails | null;
+  derivedConcept: AgentCoreDetails | null;
   notes: TaggedNote[];
+  derivedNotes: TaggedNote[];
   sideNotes: string[];
   draftChangeSummary: string[];
   draftStatus: DanDraftStatus | null;
+  derivedUpdatedAt: string | null;
   fullExperienceDescription: string | null;
   archivedNotes: string[];
   deletedNotes: string[];
@@ -1016,11 +1023,23 @@ export interface DanMemory {
   threads: PillarThread[];
 }
 
+export interface ProjectKnowledgeFingerprint {
+  headSha: string | null;
+  digest: string;
+  fileCount: number;
+  totalBytes: number;
+  latestMtimeMs: number | null;
+  generatedAt: string;
+}
+
+export type ProjectKnowledgeStatus = "fresh" | "stale" | "needs-initial-refresh";
+
 export interface ToddCodebaseIndexedMap {
   summary: string | null;
   indexedAt: string | null;
   featureAreas: string[];
   repoNotes: string[];
+  lastIndexedFingerprint: ProjectKnowledgeFingerprint | null;
 }
 
 export interface ToddUpdateLogEntry {
@@ -1221,12 +1240,12 @@ export interface AgentSession {
   currentStage: AgentStage;
   conversationMode: "guided" | "general";
   stages: Record<AgentStage, AgentStageData>;
-  unifiedMessages: AgentChatMessage[];
+  unifiedMessages: StageAgentMessage[];
   scratchpad: ScratchpadItem[];
   plannedUpdates: AgentPlannedUpdate[];
   corePillars: CorePillar[];
   currentCorePillars: CorePillar[];
-  coreDetailsChatHistory: AgentChatMessage[];
+  coreDetailsChatHistory: StageAgentMessage[];
   attachedMaterials: string[];
   miscMaterials: string[];
   cascadePending: CascadeProposal | null;
@@ -1255,6 +1274,7 @@ export interface AgentSession {
   pingTaskContext: ShortHorizonContext | null;
   pongTaskContext: ShortHorizonContext | null;
   projectCategory: ProjectCategory;
+  // Legacy storage-backed names kept for compatibility until a dedicated migration.
   slackMessages: SlackChatMessage[];
   slackActiveDirectorId: DirectorId;
   slackPresenceGuestId: DirectorId | null;
@@ -1267,9 +1287,11 @@ export interface AgentSession {
   jeffMemory: JeffMemory;
   pongMemory: PongMemory;
   automation: AutomationRunState;
+  knowledgeStatus?: ProjectKnowledgeStatus;
+  knowledgeReasons?: string[];
 }
 
-export interface AgentChatInput {
+export interface StageAgentChatInput {
   projectId: string;
   stage: AgentStage;
   provider: AiProvider;
@@ -1278,9 +1300,9 @@ export interface AgentChatInput {
   message: string;
 }
 
-export interface AgentChatResponse {
+export interface StageAgentChatResponse {
   sessionId: string;
-  message: AgentChatMessage;
+  message: StageAgentMessage;
   confirmationSuggested: boolean;
   suggestedConfirmation: AgentStageConfirmation | null;
 }
@@ -1306,7 +1328,7 @@ export interface AgentSubmitTodosInput {
 export interface AgentSubmitTodosResponse {
   sessionId: string;
   plannedUpdates: AgentPlannedUpdate[];
-  message: AgentChatMessage;
+  message: StageAgentMessage;
 }
 
 export interface AgentReorderUpdatesInput {
@@ -1386,7 +1408,7 @@ export interface CoreDetailsChatInput {
 }
 
 export interface CoreDetailsChatResponse {
-  message: AgentChatMessage;
+  message: StageAgentMessage;
   updatedCoreDetails: AgentCoreDetails | null;
 }
 
@@ -1469,7 +1491,7 @@ export interface DirectorChatInput {
 export interface DirectorChatResponse {
   sessionId: string;
   directorId: DirectorId;
-  message: AgentChatMessage;
+  message: StageAgentMessage;
   routeSuggestion: { directorId: DirectorId; reason: string } | null;
   structuredData: DirectorStructuredData | null;
   internalNotes: string[] | null;
@@ -1498,7 +1520,7 @@ export type DirectorStructuredData =
   | { type: "goalSummary"; summary: string; pillarIds: string[] }
   | { type: "comparison"; passed: boolean; improvementAreas: string[]; summary: string };
 
-export interface SlackChatInput {
+export interface AgentChatInput {
   projectId: string;
   provider: AiProvider;
   model: CodexModel;
@@ -1507,30 +1529,38 @@ export interface SlackChatInput {
   targetDirectorId?: DirectorId | null;
 }
 
-export type SlackDirectorMode =
+export type SlackChatInput = AgentChatInput;
+
+export type AgentChatDirectorMode =
   | "codebase-analysis"
   | "internet-research"
   | "version-planning"
   | "update-planning";
 
-export interface SlackDirectorApprovalPayload {
+export type SlackDirectorMode = AgentChatDirectorMode;
+
+export interface AgentChatDirectorApprovalPayload {
   action: "runSlackDirector";
   provider: AiProvider;
   model: CodexModel;
   claudeModel: ClaudeModel;
   directorId: DirectorId;
   message: string;
-  mode: SlackDirectorMode;
+  mode: AgentChatDirectorMode;
 }
 
-export interface SlackChatResponse {
+export type SlackDirectorApprovalPayload = AgentChatDirectorApprovalPayload;
+
+export interface AgentChatResponse {
   sessionId: string;
   directorId: DirectorId;
-  message: SlackChatMessage;
+  message: AgentChatMessage;
   handoffTo: DirectorId | null;
   handoffReason: string | null;
-  chainedMessages?: SlackChatMessage[];
+  chainedMessages?: AgentChatMessage[];
 }
+
+export type SlackChatResponse = AgentChatResponse;
 
 export interface ListPendingApprovalsInput {
   projectId: string;
@@ -1559,6 +1589,8 @@ export interface DeleteSlackMessagesInput {
   projectId: string;
   messageIds: string[];
 }
+
+export type DeleteAgentMessagesInput = DeleteSlackMessagesInput;
 
 export interface ConfirmAgentDataInput {
   projectId: string;

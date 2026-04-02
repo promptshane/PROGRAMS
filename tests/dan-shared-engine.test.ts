@@ -150,10 +150,13 @@ const createSession = (): AgentSession => {
     danMemory: {
       confirmedConcept: null,
       draftConcept: null,
+      derivedConcept: null,
       notes: [],
+      derivedNotes: [],
       sideNotes: [],
       draftChangeSummary: [],
       draftStatus: null,
+      derivedUpdatedAt: null,
       fullExperienceDescription: null,
       archivedNotes: [],
       deletedNotes: [],
@@ -161,6 +164,7 @@ const createSession = (): AgentSession => {
       forgottenMemories: [],
       creativeHistory: [],
       toddHandoffNotes: [],
+      threads: [],
     },
     toddMemory: {
       confirmedConcept: null,
@@ -180,6 +184,7 @@ const createSession = (): AgentSession => {
       codebaseMapSummary: null,
       latestRawReport: null,
       latestJeffReport: null,
+      currentRun: null,
     },
     jeffMemory: {
       pendingReports: [],
@@ -541,6 +546,7 @@ const createBackendHarness = (responses: Array<Record<string, unknown>>) => {
   backend.ensureInitialized = async () => {};
   backend.requireProviderReady = async () => {};
   backend.requireProject = async () => project;
+  backend.getAgentChatProviderPreflightErrors = async () => ({ codex: null, claude: null });
   backend.getSlackProviderPreflightErrors = async () => ({ codex: null, claude: null });
   backend.saveAgentSession = async (_projectId: string, session: AgentSession) => {
     savedSessions.push(cloneSession(session));
@@ -800,8 +806,8 @@ test("Dan prompt keeps concept structure private and surfaces only concept memor
 
   const prompt = harness.prompts[0] ?? "";
   assert.match(prompt, /Hard Memory \(Ideal Creative Truth\):/);
-  assert.match(prompt, /Dan's working draft:/);
-  assert.match(prompt, /Function draft:/);
+  assert.match(prompt, /Discussed Soft Memory:/);
+  assert.match(prompt, /- Function:/);
   assert.match(prompt, /Onboarding/);
   assert.match(prompt, /Ambient Support/);
   assert.match(prompt, /Experimental Split View/);
@@ -1374,8 +1380,8 @@ test("Dan uses the same reducer path in DM and Slack, and Slack presence changes
   assert.equal(chainResult.message.directorId, "creative-director");
   assert.equal(chainResult.chainedMessages.length, 1);
   assert.equal(chainResult.chainedMessages[0]?.directorId, "rd-director");
-  assert.equal(handoffSession.slackPresenceGuestId, null);
-  assert.equal(handoffSession.slackActiveDirectorId, "project-manager");
+  assert.equal(handoffSession.slackPresenceGuestId, "rd-director");
+  assert.equal(handoffSession.slackActiveDirectorId, "rd-director");
   assert.ok(handoffSession.slackMessages.some((message) => message.directorId === "rd-director"));
 
   const exitSession = createSession();

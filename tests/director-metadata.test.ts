@@ -32,7 +32,8 @@ test("stage-aware model tier resolution keeps Dan and Todd small for conversatio
   assert.equal(resolveDirectorModelTier("creative-director", "synthesis"), "big");
   assert.equal(resolveDirectorModelTier("rd-director", "conversation"), "small");
   assert.equal(resolveDirectorModelTier("rd-director", "synthesis"), "big");
-  assert.equal(resolveDirectorModelTier("programming-director", "execution"), null);
+  assert.equal(resolveDirectorModelTier("programming-director", "planning"), "big");
+  assert.equal(resolveDirectorModelTier("programming-director", "execution"), "small");
   assert.equal(resolveDirectorModelTier("project-manager", "conversation"), null);
 });
 
@@ -56,6 +57,28 @@ test("model selection swaps only the tier while preserving the active provider",
       model: BIG_CODEX_MODEL,
       claudeModel: BIG_CLAUDE_MODEL,
       activeModel: BIG_CLAUDE_MODEL,
+    },
+  );
+
+  assert.deepEqual(
+    resolveDirectorModelSelection("programming-director", "claude", SMALL_CODEX_MODEL, SMALL_CLAUDE_MODEL, "planning"),
+    {
+      tier: "big",
+      provider: "claude",
+      model: BIG_CODEX_MODEL,
+      claudeModel: BIG_CLAUDE_MODEL,
+      activeModel: BIG_CLAUDE_MODEL,
+    },
+  );
+
+  assert.deepEqual(
+    resolveDirectorModelSelection("programming-director", "codex", BIG_CODEX_MODEL, BIG_CLAUDE_MODEL, "execution"),
+    {
+      tier: "small",
+      provider: "codex",
+      model: SMALL_CODEX_MODEL,
+      claudeModel: SMALL_CLAUDE_MODEL,
+      activeModel: SMALL_CODEX_MODEL,
     },
   );
 

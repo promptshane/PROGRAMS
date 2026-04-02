@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DEFAULT_MODEL_CATALOG } from "../src/shared/types.ts";
 import { selectPreferredCodexModels } from "../src/main/utils/codex-model-catalog.ts";
-import { buildSlackResponseContract } from "../src/main/utils/slack-flow.ts";
+import { buildAgentChatResponseContract } from "../src/main/utils/agent-chat-flow.ts";
 import {
   directorPongCompareSchema,
   directorPongGoalSchema,
@@ -14,24 +14,24 @@ import {
   directorToddVersionSchema,
 } from "../src/main/utils/director-chat-schema.ts";
 import {
-  danSlackSchema,
-  directorSlackSchema,
-  pingSlackSchema,
+  danAgentChatSchema,
+  directorAgentChatSchema,
+  pingAgentChatSchema,
   refreshMappingSchema,
   refreshScanSchema,
-  researchSlackSchema,
-  toddUpdateSlackSchema,
-  toddVersionSlackSchema,
-} from "../src/main/utils/slack-schema.ts";
+  researchAgentChatSchema,
+  toddUpdateAgentChatSchema,
+  toddVersionAgentChatSchema,
+} from "../src/main/utils/agent-chat-schema.ts";
 
-test("Slack strict schemas require every declared property", () => {
+test("Agent chat strict schemas require every declared property", () => {
   const schemaPairs = [
-    ["dan", danSlackSchema],
-    ["director", directorSlackSchema],
-    ["ping", pingSlackSchema],
-    ["research", researchSlackSchema],
-    ["todd-version", toddVersionSlackSchema],
-    ["todd-update", toddUpdateSlackSchema],
+    ["dan", danAgentChatSchema],
+    ["director", directorAgentChatSchema],
+    ["ping", pingAgentChatSchema],
+    ["research", researchAgentChatSchema],
+    ["todd-version", toddVersionAgentChatSchema],
+    ["todd-update", toddUpdateAgentChatSchema],
     ["refresh-scan", refreshScanSchema],
     ["refresh-mapping", refreshMappingSchema],
   ] as const;
@@ -70,8 +70,8 @@ test("Todd nested planning schemas require every declared item property", () => 
   const dmResearchItem = directorToddResearchSchema.properties.feasibilityAssessments.items;
   const dmVersionItem = directorToddVersionSchema.properties.versions.items;
   const dmUpdateItem = directorToddUpdateSchema.properties.updates.items;
-  const slackVersionItem = toddVersionSlackSchema.properties.versions.items;
-  const slackUpdateItem = toddUpdateSlackSchema.properties.updates.items;
+  const agentChatVersionItem = toddVersionAgentChatSchema.properties.versions.items;
+  const agentChatUpdateItem = toddUpdateAgentChatSchema.properties.updates.items;
 
   assert.deepEqual(
     [...dmResearchItem.required].sort(),
@@ -86,36 +86,36 @@ test("Todd nested planning schemas require every declared item property", () => 
     Object.keys(dmUpdateItem.properties).sort(),
   );
   assert.deepEqual(
-    [...slackVersionItem.required].sort(),
-    Object.keys(slackVersionItem.properties).sort(),
+    [...agentChatVersionItem.required].sort(),
+    Object.keys(agentChatVersionItem.properties).sort(),
   );
   assert.deepEqual(
-    [...slackUpdateItem.required].sort(),
-    Object.keys(slackUpdateItem.properties).sort(),
+    [...agentChatUpdateItem.required].sort(),
+    Object.keys(agentChatUpdateItem.properties).sort(),
   );
 });
 
-test("Slack response contract stays synchronized with standard and specialized schemas", () => {
+test("Agent chat response contract stays synchronized with standard and specialized schemas", () => {
   const contracts = [
     {
-      contract: buildSlackResponseContract("creative-director", "codebase-analysis"),
-      required: [...danSlackSchema.required].sort(),
+      contract: buildAgentChatResponseContract("creative-director", "codebase-analysis"),
+      required: [...danAgentChatSchema.required].sort(),
     },
     {
-      contract: buildSlackResponseContract("project-manager", "codebase-analysis"),
-      required: [...directorSlackSchema.required].sort(),
+      contract: buildAgentChatResponseContract("project-manager", "codebase-analysis"),
+      required: [...directorAgentChatSchema.required].sort(),
     },
     {
-      contract: buildSlackResponseContract("rd-director", "internet-research"),
-      required: [...researchSlackSchema.required].sort(),
+      contract: buildAgentChatResponseContract("rd-director", "internet-research"),
+      required: [...researchAgentChatSchema.required].sort(),
     },
     {
-      contract: buildSlackResponseContract("rd-director", "version-planning"),
-      required: [...toddVersionSlackSchema.required].sort(),
+      contract: buildAgentChatResponseContract("rd-director", "version-planning"),
+      required: [...toddVersionAgentChatSchema.required].sort(),
     },
     {
-      contract: buildSlackResponseContract("rd-director", "update-planning"),
-      required: [...toddUpdateSlackSchema.required].sort(),
+      contract: buildAgentChatResponseContract("rd-director", "update-planning"),
+      required: [...toddUpdateAgentChatSchema.required].sort(),
     },
   ] as const;
 
@@ -126,14 +126,14 @@ test("Slack response contract stays synchronized with standard and specialized s
 });
 
 test("Todd codebase-analysis contract does not ask for research-only summaries", () => {
-  const contract = buildSlackResponseContract("rd-director", "codebase-analysis");
+  const contract = buildAgentChatResponseContract("rd-director", "codebase-analysis");
 
   assert.ok(!contract.includes('"generalSummary"'));
   assert.ok(!contract.includes('"projectSummary"'));
 });
 
 test("Dan contract includes notes and draft lifecycle fields", () => {
-  const contract = buildSlackResponseContract("creative-director", "codebase-analysis");
+  const contract = buildAgentChatResponseContract("creative-director", "codebase-analysis");
 
   assert.ok(contract.includes('"notesToAppend"'));
   assert.ok(contract.includes('"rawMemoriesToAppend"'));
@@ -145,8 +145,8 @@ test("Dan contract includes notes and draft lifecycle fields", () => {
 });
 
 test("Todd planning contracts include confirmation and plan arrays", () => {
-  const versionContract = buildSlackResponseContract("rd-director", "version-planning");
-  const updateContract = buildSlackResponseContract("rd-director", "update-planning");
+  const versionContract = buildAgentChatResponseContract("rd-director", "version-planning");
+  const updateContract = buildAgentChatResponseContract("rd-director", "update-planning");
 
   assert.ok(versionContract.includes('"confirmationSuggested"'));
   assert.ok(versionContract.includes('"versions"'));

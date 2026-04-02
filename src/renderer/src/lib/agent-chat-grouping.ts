@@ -1,31 +1,31 @@
-import type { SlackChatMessage } from "@shared/types";
+import type { AgentChatMessage } from "@shared/types";
 
-export interface SlackConversationRenderItem {
-  message: SlackChatMessage;
+export interface AgentChatConversationRenderItem {
+  message: AgentChatMessage;
   dayLabel: string | null;
   showSenderLabel: boolean;
   isSenderContinuation: boolean;
 }
 
-const slackWeekdayFormatter = new Intl.DateTimeFormat(undefined, {
+const agentChatWeekdayFormatter = new Intl.DateTimeFormat(undefined, {
   weekday: "long",
 });
 
-const slackMonthDayFormatter = new Intl.DateTimeFormat(undefined, {
+const agentChatMonthDayFormatter = new Intl.DateTimeFormat(undefined, {
   month: "short",
   day: "numeric",
 });
 
-const slackMonthDayYearFormatter = new Intl.DateTimeFormat(undefined, {
+const agentChatMonthDayYearFormatter = new Intl.DateTimeFormat(undefined, {
   month: "short",
   day: "numeric",
   year: "numeric",
 });
 
-const getSlackDayStamp = (value: Date): number =>
+const getAgentChatDayStamp = (value: Date): number =>
   Date.UTC(value.getFullYear(), value.getMonth(), value.getDate());
 
-export const getSlackDayKey = (iso: string): string => {
+export const getAgentChatDayKey = (iso: string): string => {
   const value = new Date(iso);
   if (Number.isNaN(value.getTime())) {
     return `invalid-${iso}`;
@@ -34,13 +34,13 @@ export const getSlackDayKey = (iso: string): string => {
   return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
 };
 
-export const formatSlackDaySeparator = (iso: string, now = new Date()): string => {
+export const formatAgentChatDaySeparator = (iso: string, now = new Date()): string => {
   const value = new Date(iso);
   if (Number.isNaN(value.getTime())) {
     return "";
   }
 
-  const dayDelta = Math.round((getSlackDayStamp(now) - getSlackDayStamp(value)) / 86_400_000);
+  const dayDelta = Math.round((getAgentChatDayStamp(now) - getAgentChatDayStamp(value)) / 86_400_000);
   if (dayDelta === 0) {
     return "Today";
   }
@@ -48,16 +48,16 @@ export const formatSlackDaySeparator = (iso: string, now = new Date()): string =
     return "Yesterday";
   }
   if (dayDelta >= 2 && dayDelta < 7) {
-    return slackWeekdayFormatter.format(value);
+    return agentChatWeekdayFormatter.format(value);
   }
   if (value.getFullYear() === now.getFullYear()) {
-    return slackMonthDayFormatter.format(value);
+    return agentChatMonthDayFormatter.format(value);
   }
 
-  return slackMonthDayYearFormatter.format(value);
+  return agentChatMonthDayYearFormatter.format(value);
 };
 
-const getSlackSenderKey = (message: SlackChatMessage): string | null => {
+const getAgentChatSenderKey = (message: AgentChatMessage): string | null => {
   if (message.role === "assistant" && message.directorId) {
     return `assistant:${message.directorId}`;
   }
@@ -67,24 +67,24 @@ const getSlackSenderKey = (message: SlackChatMessage): string | null => {
   return null;
 };
 
-export const buildSlackConversationRenderItems = (
-  messages: SlackChatMessage[],
+export const buildAgentChatConversationRenderItems = (
+  messages: AgentChatMessage[],
   options: { now?: Date } = {},
-): SlackConversationRenderItem[] => {
+): AgentChatConversationRenderItem[] => {
   const now = options.now ?? new Date();
-  const items: SlackConversationRenderItem[] = [];
+  const items: AgentChatConversationRenderItem[] = [];
   let previousDayKey: string | null = null;
   let previousSenderKey: string | null = null;
 
   for (const message of messages) {
-    const dayKey = getSlackDayKey(message.createdAt);
-    const senderKey = getSlackSenderKey(message);
+    const dayKey = getAgentChatDayKey(message.createdAt);
+    const senderKey = getAgentChatSenderKey(message);
     const isAssistant = message.role === "assistant" && Boolean(message.directorId);
     const isSenderContinuation = dayKey === previousDayKey && senderKey !== null && senderKey === previousSenderKey;
 
     items.push({
       message,
-      dayLabel: dayKey === previousDayKey ? null : formatSlackDaySeparator(message.createdAt, now) || null,
+      dayLabel: dayKey === previousDayKey ? null : formatAgentChatDaySeparator(message.createdAt, now) || null,
       showSenderLabel: Boolean(isAssistant && (dayKey !== previousDayKey || senderKey !== previousSenderKey)),
       isSenderContinuation,
     });

@@ -129,7 +129,7 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     name: DIRECTOR_NAMES["programming-director"],
     label: DIRECTOR_LABELS["programming-director"],
     shortDescription: "Executes Todd-approved updates, reports the result, and returns to waiting.",
-    modelBehaviorNote: "Uses the selected provider plus Ping's project-level runtime defaults unless the current run overrides them.",
+    modelBehaviorNote: "Uses the big model to plan the change, then switches to the small model to execute the approved code update.",
     introMessage: "I'll look at the implementation...",
     outroMessage: "I’m stepping back out of the code thread.",
     runtimeDefaults: {
@@ -185,7 +185,7 @@ export const getDirectorRuntimeDefaults = (directorId: DirectorId): DirectorRunt
   DIRECTOR_METADATA[directorId].runtimeDefaults;
 
 export type DirectorModelTier = "small" | "big";
-export type DirectorModelUseCase = "conversation" | "synthesis" | "execution";
+export type DirectorModelUseCase = "conversation" | "synthesis" | "planning" | "execution";
 
 export interface DirectorModelSelection {
   tier: DirectorModelTier | null;
@@ -208,6 +208,16 @@ export const resolveDirectorModelTier = (
   directorId: DirectorId,
   useCase: DirectorModelUseCase,
 ): DirectorModelTier | null => {
+  if (directorId === "programming-director") {
+    if (useCase === "planning") {
+      return "big";
+    }
+    if (useCase === "execution") {
+      return "small";
+    }
+    return null;
+  }
+
   if (directorId === "creative-director" || directorId === "rd-director") {
     return useCase === "conversation" ? "small" : "big";
   }

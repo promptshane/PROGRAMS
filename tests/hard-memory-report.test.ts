@@ -8,16 +8,20 @@ const createDraft = (summary: string): AgentCoreDetails => ({
   thesis: null,
   corePillars: [],
   fullFlow: null,
+  threads: [],
 });
 
 const createSession = (): AgentSession => ({
   danMemory: {
     confirmedConcept: null,
     draftConcept: createDraft("Live draft from session"),
+    derivedConcept: null,
     notes: [],
+    derivedNotes: [],
     sideNotes: [],
     draftChangeSummary: [],
     draftStatus: "gathering",
+    derivedUpdatedAt: null,
     fullExperienceDescription: null,
     archivedNotes: [],
     deletedNotes: [],
@@ -25,6 +29,7 @@ const createSession = (): AgentSession => ({
     forgottenMemories: [],
     creativeHistory: [],
     toddHandoffNotes: [],
+    threads: [],
   },
   danDraftCoreDetails: createDraft("Legacy live draft alias"),
 } as AgentSession);

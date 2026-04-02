@@ -7,13 +7,13 @@ import type {
   DirectorChatResponse,
   DirectorFocusMode,
   DirectorId,
-  SlackChatInput,
-  SlackChatResponse,
+  AgentChatInput,
+  AgentChatResponse,
   PendingApproval,
   ApprovePendingApprovalInput,
   RevisePendingApprovalInput,
   UpdatePendingApprovalStatusInput,
-  DeleteSlackMessagesInput,
+  DeleteAgentMessagesInput,
   DirectorSettingsOverride,
   ProjectCategory,
   RouteUpdateToProgrammingInput,
@@ -122,7 +122,9 @@ const api = {
     ipcRenderer.invoke("directors.chat", input),
   startPingDirectUpdate: (input: StartPingDirectUpdateInput): Promise<{ started: true }> =>
     ipcRenderer.invoke("directors.ping.start", input),
-  slackChat: (input: SlackChatInput): Promise<SlackChatResponse> =>
+  agentChat: (input: AgentChatInput): Promise<AgentChatResponse> =>
+    ipcRenderer.invoke("agents.chat", input),
+  slackChat: (input: AgentChatInput): Promise<AgentChatResponse> =>
     ipcRenderer.invoke("slack.chat", input),
   listPendingApprovals: (input: ListPendingApprovalsInput): Promise<PendingApproval[]> =>
     ipcRenderer.invoke("approvals.list", input),
@@ -134,10 +136,16 @@ const api = {
     ipcRenderer.invoke("approvals.defer", input),
   dismissPendingApproval: (input: UpdatePendingApprovalStatusInput): Promise<AgentSession> =>
     ipcRenderer.invoke("approvals.dismiss", input),
-  deleteSlackMessages: (input: DeleteSlackMessagesInput): Promise<void> =>
+  deleteAgentMessages: (input: DeleteAgentMessagesInput): Promise<void> =>
+    ipcRenderer.invoke("agents.deleteMessages", input),
+  deleteSlackMessages: (input: DeleteAgentMessagesInput): Promise<void> =>
     ipcRenderer.invoke("slack.deleteMessages", input),
+  clearAgentMessages: (projectId: string): Promise<void> =>
+    ipcRenderer.invoke("agents.clearMessages", projectId),
   clearSlackMessages: (projectId: string): Promise<void> =>
     ipcRenderer.invoke("slack.clearAll", projectId),
+  refreshAgentProject: (input: import("@shared/types").RefreshProjectInput): Promise<void> =>
+    ipcRenderer.invoke("agents.refreshProject", input),
   refreshProject: (input: import("@shared/types").RefreshProjectInput): Promise<void> =>
     ipcRenderer.invoke("slack.refreshProject", input),
   listAutomationTargets: (input: ListAutomationTargetsInput): Promise<ListAutomationTargetsResponse> =>

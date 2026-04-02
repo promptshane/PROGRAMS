@@ -3,12 +3,12 @@ import type {
   AiProvider,
   DirectorId,
   PendingApprovalKind,
-  SlackDirectorApprovalPayload,
-  SlackDirectorMode,
+  AgentChatDirectorApprovalPayload,
+  AgentChatDirectorMode,
   ValidationFocusMode,
 } from "../../shared/types.ts";
 
-export const STANDARD_SLACK_RESPONSE_FIELDS = [
+export const STANDARD_AGENT_CHAT_RESPONSE_FIELDS = [
   "response",
   "handoffTo",
   "handoffReason",
@@ -16,29 +16,29 @@ export const STANDARD_SLACK_RESPONSE_FIELDS = [
   "idealState",
 ] as const;
 
-export const RESEARCH_SLACK_RESPONSE_FIELDS = [
-  ...STANDARD_SLACK_RESPONSE_FIELDS,
+export const RESEARCH_AGENT_CHAT_RESPONSE_FIELDS = [
+  ...STANDARD_AGENT_CHAT_RESPONSE_FIELDS,
   "generalSummary",
   "projectSummary",
   "notesToAppend",
 ] as const;
 
-export const TODD_VERSION_SLACK_RESPONSE_FIELDS = [
-  ...STANDARD_SLACK_RESPONSE_FIELDS,
+export const TODD_VERSION_AGENT_CHAT_RESPONSE_FIELDS = [
+  ...STANDARD_AGENT_CHAT_RESPONSE_FIELDS,
   "confirmationSuggested",
   "versions",
   "notesToAppend",
 ] as const;
 
-export const TODD_UPDATE_SLACK_RESPONSE_FIELDS = [
-  ...STANDARD_SLACK_RESPONSE_FIELDS,
+export const TODD_UPDATE_AGENT_CHAT_RESPONSE_FIELDS = [
+  ...STANDARD_AGENT_CHAT_RESPONSE_FIELDS,
   "confirmationSuggested",
   "updates",
   "notesToAppend",
 ] as const;
 
-export const DAN_SLACK_RESPONSE_FIELDS = [
-  ...STANDARD_SLACK_RESPONSE_FIELDS,
+export const DAN_AGENT_CHAT_RESPONSE_FIELDS = [
+  ...STANDARD_AGENT_CHAT_RESPONSE_FIELDS,
   "notesToAppend",
   "rawMemoriesToAppend",
   "conversationStatus",
@@ -49,24 +49,24 @@ export const DAN_SLACK_RESPONSE_FIELDS = [
   "toddHandoffNotesToAppend",
 ] as const;
 
-export const PING_SLACK_RESPONSE_FIELDS = [
-  ...STANDARD_SLACK_RESPONSE_FIELDS,
+export const PING_AGENT_CHAT_RESPONSE_FIELDS = [
+  ...STANDARD_AGENT_CHAT_RESPONSE_FIELDS,
   "status",
   "zhResponse",
   "enTranslation",
   "rawReport",
 ] as const;
 
-export const PONG_GOAL_SLACK_RESPONSE_FIELDS = [
-  ...STANDARD_SLACK_RESPONSE_FIELDS,
+export const PONG_GOAL_AGENT_CHAT_RESPONSE_FIELDS = [
+  ...STANDARD_AGENT_CHAT_RESPONSE_FIELDS,
   "zhResponse",
   "enTranslation",
   "goalSummary",
   "relevantPillarIds",
 ] as const;
 
-export const PONG_TEST_SLACK_RESPONSE_FIELDS = [
-  ...STANDARD_SLACK_RESPONSE_FIELDS,
+export const PONG_TEST_AGENT_CHAT_RESPONSE_FIELDS = [
+  ...STANDARD_AGENT_CHAT_RESPONSE_FIELDS,
   "zhResponse",
   "enTranslation",
   "validationPassed",
@@ -74,8 +74,8 @@ export const PONG_TEST_SLACK_RESPONSE_FIELDS = [
   "validationDetails",
 ] as const;
 
-export const PONG_COMPARE_SLACK_RESPONSE_FIELDS = [
-  ...STANDARD_SLACK_RESPONSE_FIELDS,
+export const PONG_COMPARE_AGENT_CHAT_RESPONSE_FIELDS = [
+  ...STANDARD_AGENT_CHAT_RESPONSE_FIELDS,
   "zhResponse",
   "enTranslation",
   "passed",
@@ -83,7 +83,7 @@ export const PONG_COMPARE_SLACK_RESPONSE_FIELDS = [
   "comparisonSummary",
 ] as const;
 
-const AUTO_ROUTED_SLACK_DIRECTORS: DirectorId[] = [
+const AUTO_ROUTED_AGENT_CHAT_DIRECTORS: DirectorId[] = [
   "project-manager",
   "creative-director",
   "rd-director",
@@ -109,7 +109,7 @@ const DIRECT_ROUTE_PATTERNS: { pattern: RegExp; directorId: DirectorId }[] = [
  * Returns the target DirectorId, or null if the message is ambiguous
  * and Jeff should orchestrate.
  */
-export const resolveSlackDirectRoute = (
+export const resolveAgentChatDirectRoute = (
   message: string,
   presenceGuestId: DirectorId | null,
 ): DirectorId | null => {
@@ -179,12 +179,12 @@ const validateNullableStringField = (
   field: string,
 ): void => {
   if (!hasOwn(parsed, field)) {
-    throw new Error(`Slack structured output is missing "${field}".`);
+    throw new Error(`Agent chat structured output is missing "${field}".`);
   }
 
   const value = parsed[field];
   if (value !== null && typeof value !== "string") {
-    throw new Error(`Slack structured output has an invalid "${field}" field.`);
+    throw new Error(`Agent chat structured output has an invalid "${field}" field.`);
   }
 };
 
@@ -193,12 +193,12 @@ const validateNullableBooleanField = (
   field: string,
 ): void => {
   if (!hasOwn(parsed, field)) {
-    throw new Error(`Slack structured output is missing "${field}".`);
+    throw new Error(`Agent chat structured output is missing "${field}".`);
   }
 
   const value = parsed[field];
   if (value !== null && typeof value !== "boolean") {
-    throw new Error(`Slack structured output has an invalid "${field}" field.`);
+    throw new Error(`Agent chat structured output has an invalid "${field}" field.`);
   }
 };
 
@@ -207,18 +207,18 @@ const validateNullableStringArrayField = (
   field: string,
 ): void => {
   if (!hasOwn(parsed, field)) {
-    throw new Error(`Slack structured output is missing "${field}".`);
+    throw new Error(`Agent chat structured output is missing "${field}".`);
   }
 
   const value = parsed[field];
   if (value !== null) {
     if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
-      throw new Error(`Slack structured output has an invalid "${field}" field.`);
+      throw new Error(`Agent chat structured output has an invalid "${field}" field.`);
     }
   }
 };
 
-export const resolveToddSlackMode = (text: string): SlackDirectorMode => {
+export const resolveToddAgentChatMode = (text: string): AgentChatDirectorMode => {
   const normalized = text.trim();
   if (!normalized) {
     return "codebase-analysis";
@@ -236,16 +236,16 @@ export const resolveToddSlackMode = (text: string): SlackDirectorMode => {
   return "codebase-analysis";
 };
 
-export const resolveSlackDirectorMode = (
+export const resolveAgentChatDirectorMode = (
   directorId: DirectorId,
   text: string,
-): SlackDirectorMode => directorId === "rd-director" ? resolveToddSlackMode(text) : "codebase-analysis";
+): AgentChatDirectorMode => directorId === "rd-director" ? resolveToddAgentChatMode(text) : "codebase-analysis";
 
-export const normalizeSlackDirectorMode = (
+export const normalizeAgentChatDirectorMode = (
   directorId: DirectorId,
   mode: unknown,
   legacyAllowInternetResearch?: unknown,
-): SlackDirectorMode => {
+): AgentChatDirectorMode => {
   if (directorId !== "rd-director") {
     return "codebase-analysis";
   }
@@ -269,17 +269,17 @@ export const normalizeSlackDirectorMode = (
   return legacyAllowInternetResearch ? "internet-research" : "codebase-analysis";
 };
 
-export const resolveSlackApprovalKind = (
+export const resolveAgentChatApprovalKind = (
   directorId: DirectorId,
-  mode: SlackDirectorMode,
+  mode: AgentChatDirectorMode,
 ): PendingApprovalKind => directorId === "rd-director" && mode === "internet-research" ? "internet-research" : "handoff";
 
-export const canAutoRouteSlackDirector = (directorId: DirectorId): boolean =>
-  AUTO_ROUTED_SLACK_DIRECTORS.includes(directorId);
+export const canAutoRouteAgentChatDirector = (directorId: DirectorId): boolean =>
+  AUTO_ROUTED_AGENT_CHAT_DIRECTORS.includes(directorId);
 
-export const buildSlackResponseContract = (
+export const buildAgentChatResponseContract = (
   directorId: DirectorId,
-  mode: SlackDirectorMode | ValidationFocusMode,
+  mode: AgentChatDirectorMode | ValidationFocusMode,
 ): string => {
   const isResearchMode = directorId === "rd-director" && mode === "internet-research";
   const isToddVersionPlanning = directorId === "rd-director" && mode === "version-planning";
@@ -288,22 +288,22 @@ export const buildSlackResponseContract = (
   const isPongTestMode = directorId === "validation-director" && mode === "test-current-state";
   const isPongCompareMode = directorId === "validation-director" && mode === "compare";
   const fields = directorId === "creative-director"
-    ? DAN_SLACK_RESPONSE_FIELDS
+    ? DAN_AGENT_CHAT_RESPONSE_FIELDS
     : directorId === "programming-director"
-      ? PING_SLACK_RESPONSE_FIELDS
+      ? PING_AGENT_CHAT_RESPONSE_FIELDS
       : isPongGoalMode
-        ? PONG_GOAL_SLACK_RESPONSE_FIELDS
+        ? PONG_GOAL_AGENT_CHAT_RESPONSE_FIELDS
       : isPongTestMode
-        ? PONG_TEST_SLACK_RESPONSE_FIELDS
+        ? PONG_TEST_AGENT_CHAT_RESPONSE_FIELDS
       : isPongCompareMode
-        ? PONG_COMPARE_SLACK_RESPONSE_FIELDS
+        ? PONG_COMPARE_AGENT_CHAT_RESPONSE_FIELDS
       : isToddVersionPlanning
-        ? TODD_VERSION_SLACK_RESPONSE_FIELDS
+        ? TODD_VERSION_AGENT_CHAT_RESPONSE_FIELDS
       : isToddUpdatePlanning
-        ? TODD_UPDATE_SLACK_RESPONSE_FIELDS
+        ? TODD_UPDATE_AGENT_CHAT_RESPONSE_FIELDS
       : isResearchMode
-        ? RESEARCH_SLACK_RESPONSE_FIELDS
-        : STANDARD_SLACK_RESPONSE_FIELDS;
+        ? RESEARCH_AGENT_CHAT_RESPONSE_FIELDS
+        : STANDARD_AGENT_CHAT_RESPONSE_FIELDS;
 
   const descriptions = fields.map((field) => {
     switch (field) {
@@ -342,7 +342,7 @@ export const buildSlackResponseContract = (
       case "draftCoreDetails":
         return `- "draftCoreDetails": object|null. Required for Dan only. Use null during gathering unless a full snapshot is explicitly needed. When "conversationStatus" is "ready-to-confirm", this must contain the full working draft.`;
       case "presenceAction":
-        return `- "presenceAction": string. Required for Dan only. Use "stay" when Dan should remain present in Slack after replying, or "exit" when Dan is explicitly stepping out.`;
+        return `- "presenceAction": string. Required for Dan only. Use "stay" when Dan should remain present in agent chat after replying, or "exit" when Dan is explicitly stepping out.`;
       case "status":
         return `- "status": string. Required for Ping only. Use "success", "blocked", "unexpected", or "no_changes".`;
       case "zhResponse":
@@ -379,18 +379,18 @@ ${descriptions}
 Use null for any optional field that does not apply. Do not omit fields.`;
 };
 
-export const validateSlackTurnParsedResponse = (
+export const validateAgentChatTurnParsedResponse = (
   parsed: Record<string, unknown>,
   directorId: DirectorId,
-  mode: SlackDirectorMode | ValidationFocusMode,
+  mode: AgentChatDirectorMode | ValidationFocusMode,
 ): Record<string, unknown> => {
-  for (const field of STANDARD_SLACK_RESPONSE_FIELDS) {
+  for (const field of STANDARD_AGENT_CHAT_RESPONSE_FIELDS) {
     validateNullableStringField(parsed, field);
   }
 
   const response = parsed.response;
   if (typeof response !== "string" || !response.trim()) {
-    throw new Error(`Slack structured output returned an empty "response" for ${DIRECTOR_NAMES[directorId]}.`);
+    throw new Error(`Agent chat structured output returned an empty "response" for ${DIRECTOR_NAMES[directorId]}.`);
   }
 
   if (directorId === "rd-director" && mode === "internet-research") {
@@ -401,27 +401,27 @@ export const validateSlackTurnParsedResponse = (
 
   if (directorId === "rd-director" && (mode === "version-planning" || mode === "update-planning")) {
     if (!hasOwn(parsed, "confirmationSuggested") || typeof parsed.confirmationSuggested !== "boolean") {
-      throw new Error(`Slack structured output is missing "confirmationSuggested" for ${DIRECTOR_NAMES[directorId]}.`);
+      throw new Error(`Agent chat structured output is missing "confirmationSuggested" for ${DIRECTOR_NAMES[directorId]}.`);
     }
   }
 
   if (directorId === "rd-director" && mode === "version-planning") {
     if (!hasOwn(parsed, "versions")) {
-      throw new Error(`Slack structured output is missing "versions" for ${DIRECTOR_NAMES[directorId]}.`);
+      throw new Error(`Agent chat structured output is missing "versions" for ${DIRECTOR_NAMES[directorId]}.`);
     }
     if (parsed.versions !== null) {
       if (!Array.isArray(parsed.versions)) {
-        throw new Error(`Slack structured output has an invalid "versions" field for ${DIRECTOR_NAMES[directorId]}.`);
+        throw new Error(`Agent chat structured output has an invalid "versions" field for ${DIRECTOR_NAMES[directorId]}.`);
       }
       for (const item of parsed.versions) {
         if (!isRecord(item)) {
-          throw new Error(`Slack structured output has an invalid "versions" item for ${DIRECTOR_NAMES[directorId]}.`);
+          throw new Error(`Agent chat structured output has an invalid "versions" item for ${DIRECTOR_NAMES[directorId]}.`);
         }
         if (typeof item.label !== "string" || typeof item.description !== "string") {
-          throw new Error(`Slack structured output has an invalid "versions" item for ${DIRECTOR_NAMES[directorId]}.`);
+          throw new Error(`Agent chat structured output has an invalid "versions" item for ${DIRECTOR_NAMES[directorId]}.`);
         }
         if (!Array.isArray(item.goals) || !item.goals.every((goal) => typeof goal === "string")) {
-          throw new Error(`Slack structured output has an invalid "versions.goals" field for ${DIRECTOR_NAMES[directorId]}.`);
+          throw new Error(`Agent chat structured output has an invalid "versions.goals" field for ${DIRECTOR_NAMES[directorId]}.`);
         }
       }
     }
@@ -429,31 +429,31 @@ export const validateSlackTurnParsedResponse = (
 
   if (directorId === "rd-director" && mode === "update-planning") {
     if (!hasOwn(parsed, "updates")) {
-      throw new Error(`Slack structured output is missing "updates" for ${DIRECTOR_NAMES[directorId]}.`);
+      throw new Error(`Agent chat structured output is missing "updates" for ${DIRECTOR_NAMES[directorId]}.`);
     }
     if (parsed.updates !== null) {
       if (!Array.isArray(parsed.updates)) {
-        throw new Error(`Slack structured output has an invalid "updates" field for ${DIRECTOR_NAMES[directorId]}.`);
+        throw new Error(`Agent chat structured output has an invalid "updates" field for ${DIRECTOR_NAMES[directorId]}.`);
       }
       for (const item of parsed.updates) {
         if (!isRecord(item)) {
-          throw new Error(`Slack structured output has an invalid "updates" item for ${DIRECTOR_NAMES[directorId]}.`);
+          throw new Error(`Agent chat structured output has an invalid "updates" item for ${DIRECTOR_NAMES[directorId]}.`);
         }
         if (
           typeof item.title !== "string"
           || typeof item.description !== "string"
           || typeof item.versionLabel !== "string"
         ) {
-          throw new Error(`Slack structured output has an invalid "updates" item for ${DIRECTOR_NAMES[directorId]}.`);
+          throw new Error(`Agent chat structured output has an invalid "updates" item for ${DIRECTOR_NAMES[directorId]}.`);
         }
         if (!Array.isArray(item.dependencies) || !item.dependencies.every((dependency) => typeof dependency === "string")) {
-          throw new Error(`Slack structured output has an invalid "updates.dependencies" field for ${DIRECTOR_NAMES[directorId]}.`);
+          throw new Error(`Agent chat structured output has an invalid "updates.dependencies" field for ${DIRECTOR_NAMES[directorId]}.`);
         }
         if (item.area !== null && typeof item.area !== "string") {
-          throw new Error(`Slack structured output has an invalid "updates.area" field for ${DIRECTOR_NAMES[directorId]}.`);
+          throw new Error(`Agent chat structured output has an invalid "updates.area" field for ${DIRECTOR_NAMES[directorId]}.`);
         }
         if (!Array.isArray(item.skillsNeeded) || !item.skillsNeeded.every((skill) => typeof skill === "string")) {
-          throw new Error(`Slack structured output has an invalid "updates.skillsNeeded" field for ${DIRECTOR_NAMES[directorId]}.`);
+          throw new Error(`Agent chat structured output has an invalid "updates.skillsNeeded" field for ${DIRECTOR_NAMES[directorId]}.`);
         }
       }
     }
@@ -461,94 +461,94 @@ export const validateSlackTurnParsedResponse = (
 
   if (directorId === "creative-director") {
     if (!hasOwn(parsed, "notesToAppend") || !Array.isArray(parsed.notesToAppend)) {
-      throw new Error(`Slack structured output is missing a valid "notesToAppend" field for ${DIRECTOR_NAMES[directorId]}.`);
+      throw new Error(`Agent chat structured output is missing a valid "notesToAppend" field for ${DIRECTOR_NAMES[directorId]}.`);
     }
     if (!parsed.notesToAppend.every((item) => typeof item === "string")) {
-      throw new Error(`Slack structured output has an invalid "notesToAppend" field for ${DIRECTOR_NAMES[directorId]}.`);
+      throw new Error(`Agent chat structured output has an invalid "notesToAppend" field for ${DIRECTOR_NAMES[directorId]}.`);
     }
 
     if (hasOwn(parsed, "rawMemoriesToAppend") && parsed.rawMemoriesToAppend !== null && !Array.isArray(parsed.rawMemoriesToAppend)) {
-      throw new Error(`Slack structured output has an invalid "rawMemoriesToAppend" field for ${DIRECTOR_NAMES[directorId]}.`);
+      throw new Error(`Agent chat structured output has an invalid "rawMemoriesToAppend" field for ${DIRECTOR_NAMES[directorId]}.`);
     }
 
     if (!hasOwn(parsed, "conversationStatus")) {
-      throw new Error(`Slack structured output is missing "conversationStatus" for ${DIRECTOR_NAMES[directorId]}.`);
+      throw new Error(`Agent chat structured output is missing "conversationStatus" for ${DIRECTOR_NAMES[directorId]}.`);
     }
     if (parsed.conversationStatus !== "gathering" && parsed.conversationStatus !== "ready-to-confirm") {
-      throw new Error(`Slack structured output has an invalid "conversationStatus" for ${DIRECTOR_NAMES[directorId]}.`);
+      throw new Error(`Agent chat structured output has an invalid "conversationStatus" for ${DIRECTOR_NAMES[directorId]}.`);
     }
 
     if (!hasOwn(parsed, "draftChangeSummary") || !Array.isArray(parsed.draftChangeSummary)) {
-      throw new Error(`Slack structured output is missing a valid "draftChangeSummary" field for ${DIRECTOR_NAMES[directorId]}.`);
+      throw new Error(`Agent chat structured output is missing a valid "draftChangeSummary" field for ${DIRECTOR_NAMES[directorId]}.`);
     }
     if (!parsed.draftChangeSummary.every((item) => typeof item === "string")) {
-      throw new Error(`Slack structured output has an invalid "draftChangeSummary" field for ${DIRECTOR_NAMES[directorId]}.`);
+      throw new Error(`Agent chat structured output has an invalid "draftChangeSummary" field for ${DIRECTOR_NAMES[directorId]}.`);
     }
 
     if (!hasOwn(parsed, "draftOperations") || !Array.isArray(parsed.draftOperations)) {
-      throw new Error(`Slack structured output is missing a valid "draftOperations" field for ${DIRECTOR_NAMES[directorId]}.`);
+      throw new Error(`Agent chat structured output is missing a valid "draftOperations" field for ${DIRECTOR_NAMES[directorId]}.`);
     }
     if (!parsed.draftOperations.every((item) => isRecord(item) && typeof item.type === "string")) {
-      throw new Error(`Slack structured output has an invalid "draftOperations" field for ${DIRECTOR_NAMES[directorId]}.`);
+      throw new Error(`Agent chat structured output has an invalid "draftOperations" field for ${DIRECTOR_NAMES[directorId]}.`);
     }
 
     if (!hasOwn(parsed, "draftCoreDetails")) {
-      throw new Error(`Slack structured output is missing "draftCoreDetails" for ${DIRECTOR_NAMES[directorId]}.`);
+      throw new Error(`Agent chat structured output is missing "draftCoreDetails" for ${DIRECTOR_NAMES[directorId]}.`);
     }
     if (parsed.draftCoreDetails !== null && !isRecord(parsed.draftCoreDetails)) {
-      throw new Error(`Slack structured output has an invalid "draftCoreDetails" field for ${DIRECTOR_NAMES[directorId]}.`);
+      throw new Error(`Agent chat structured output has an invalid "draftCoreDetails" field for ${DIRECTOR_NAMES[directorId]}.`);
     }
 
     if (!hasOwn(parsed, "presenceAction")) {
-      throw new Error(`Slack structured output is missing "presenceAction" for ${DIRECTOR_NAMES[directorId]}.`);
+      throw new Error(`Agent chat structured output is missing "presenceAction" for ${DIRECTOR_NAMES[directorId]}.`);
     }
     if (parsed.presenceAction !== "stay" && parsed.presenceAction !== "exit") {
-      throw new Error(`Slack structured output has an invalid "presenceAction" for ${DIRECTOR_NAMES[directorId]}.`);
+      throw new Error(`Agent chat structured output has an invalid "presenceAction" for ${DIRECTOR_NAMES[directorId]}.`);
     }
 
     if (parsed.conversationStatus === "ready-to-confirm" && !isRecord(parsed.draftCoreDetails)) {
-      throw new Error(`Slack structured output must include "draftCoreDetails" when ${DIRECTOR_NAMES[directorId]} is ready to confirm.`);
+      throw new Error(`Agent chat structured output must include "draftCoreDetails" when ${DIRECTOR_NAMES[directorId]} is ready to confirm.`);
     }
   }
 
   if (directorId === "programming-director") {
     if (!hasOwn(parsed, "status") || typeof parsed.status !== "string") {
-      throw new Error(`Slack structured output is missing "status" for ${DIRECTOR_NAMES[directorId]}.`);
+      throw new Error(`Agent chat structured output is missing "status" for ${DIRECTOR_NAMES[directorId]}.`);
     }
     if (!hasOwn(parsed, "zhResponse") || typeof parsed.zhResponse !== "string" || !parsed.zhResponse.trim()) {
-      throw new Error(`Slack structured output is missing "zhResponse" for ${DIRECTOR_NAMES[directorId]}.`);
+      throw new Error(`Agent chat structured output is missing "zhResponse" for ${DIRECTOR_NAMES[directorId]}.`);
     }
     if (!hasOwn(parsed, "enTranslation") || typeof parsed.enTranslation !== "string" || !parsed.enTranslation.trim()) {
-      throw new Error(`Slack structured output is missing "enTranslation" for ${DIRECTOR_NAMES[directorId]}.`);
+      throw new Error(`Agent chat structured output is missing "enTranslation" for ${DIRECTOR_NAMES[directorId]}.`);
     }
     if (!hasOwn(parsed, "rawReport")) {
-      throw new Error(`Slack structured output is missing "rawReport" for ${DIRECTOR_NAMES[directorId]}.`);
+      throw new Error(`Agent chat structured output is missing "rawReport" for ${DIRECTOR_NAMES[directorId]}.`);
     }
     if (parsed.rawReport !== null) {
       if (!isRecord(parsed.rawReport)) {
-        throw new Error(`Slack structured output has an invalid "rawReport" field for ${DIRECTOR_NAMES[directorId]}.`);
+        throw new Error(`Agent chat structured output has an invalid "rawReport" field for ${DIRECTOR_NAMES[directorId]}.`);
       }
       if (typeof parsed.rawReport.summary !== "string") {
-        throw new Error(`Slack structured output is missing "rawReport.summary" for ${DIRECTOR_NAMES[directorId]}.`);
+        throw new Error(`Agent chat structured output is missing "rawReport.summary" for ${DIRECTOR_NAMES[directorId]}.`);
       }
       if (!Array.isArray(parsed.rawReport.changedFiles) || !parsed.rawReport.changedFiles.every((item) => typeof item === "string")) {
-        throw new Error(`Slack structured output has an invalid "rawReport.changedFiles" field for ${DIRECTOR_NAMES[directorId]}.`);
+        throw new Error(`Agent chat structured output has an invalid "rawReport.changedFiles" field for ${DIRECTOR_NAMES[directorId]}.`);
       }
       if (parsed.rawReport.blocker !== null && typeof parsed.rawReport.blocker !== "string") {
-        throw new Error(`Slack structured output has an invalid "rawReport.blocker" field for ${DIRECTOR_NAMES[directorId]}.`);
+        throw new Error(`Agent chat structured output has an invalid "rawReport.blocker" field for ${DIRECTOR_NAMES[directorId]}.`);
       }
       if (!Array.isArray(parsed.rawReport.unexpectedNotes) || !parsed.rawReport.unexpectedNotes.every((item) => typeof item === "string")) {
-        throw new Error(`Slack structured output has an invalid "rawReport.unexpectedNotes" field for ${DIRECTOR_NAMES[directorId]}.`);
+        throw new Error(`Agent chat structured output has an invalid "rawReport.unexpectedNotes" field for ${DIRECTOR_NAMES[directorId]}.`);
       }
     }
   }
 
   if (directorId === "validation-director") {
     if (!hasOwn(parsed, "zhResponse") || typeof parsed.zhResponse !== "string" || !parsed.zhResponse.trim()) {
-      throw new Error(`Slack structured output is missing "zhResponse" for ${DIRECTOR_NAMES[directorId]}.`);
+      throw new Error(`Agent chat structured output is missing "zhResponse" for ${DIRECTOR_NAMES[directorId]}.`);
     }
     if (!hasOwn(parsed, "enTranslation") || typeof parsed.enTranslation !== "string" || !parsed.enTranslation.trim()) {
-      throw new Error(`Slack structured output is missing "enTranslation" for ${DIRECTOR_NAMES[directorId]}.`);
+      throw new Error(`Agent chat structured output is missing "enTranslation" for ${DIRECTOR_NAMES[directorId]}.`);
     }
 
     if (mode === "identify-goal") {
@@ -572,7 +572,7 @@ export const validateSlackTurnParsedResponse = (
   return parsed;
 };
 
-export interface SlackProviderAttemptPlan {
+export interface AgentChatProviderAttemptPlan {
   requestedProvider: AiProvider;
   attemptedProviders: AiProvider[];
   requestedProviderError: string | null;
@@ -580,10 +580,10 @@ export interface SlackProviderAttemptPlan {
   fallbackProviderError: string | null;
 }
 
-export const buildSlackProviderAttemptPlan = (
+export const buildAgentChatProviderAttemptPlan = (
   requestedProvider: AiProvider,
   preflightErrors: Record<AiProvider, string | null>,
-): SlackProviderAttemptPlan => {
+): AgentChatProviderAttemptPlan => {
   const fallbackProvider: AiProvider = requestedProvider === "claude" ? "codex" : "claude";
   const attemptedProviders: AiProvider[] = [];
 
@@ -603,26 +603,26 @@ export const buildSlackProviderAttemptPlan = (
   };
 };
 
-export interface SlackApprovalDescriptor {
+export interface AgentChatApprovalDescriptor {
   kind: PendingApprovalKind;
-  mode: SlackDirectorMode;
+  mode: AgentChatDirectorMode;
   summaryPrefix: string;
-  payload: SlackDirectorApprovalPayload;
+  payload: AgentChatDirectorApprovalPayload;
 }
 
-export const buildSlackApprovalDescriptor = (input: {
+export const buildAgentChatApprovalDescriptor = (input: {
   targetDirectorId: DirectorId;
   provider: AiProvider;
-  model: SlackDirectorApprovalPayload["model"];
-  claudeModel: SlackDirectorApprovalPayload["claudeModel"];
+  model: AgentChatDirectorApprovalPayload["model"];
+  claudeModel: AgentChatDirectorApprovalPayload["claudeModel"];
   message: string;
-  mode?: SlackDirectorMode;
-}): SlackApprovalDescriptor => {
-  const mode = normalizeSlackDirectorMode(
+  mode?: AgentChatDirectorMode;
+}): AgentChatApprovalDescriptor => {
+  const mode = normalizeAgentChatDirectorMode(
     input.targetDirectorId,
-    input.mode ?? resolveSlackDirectorMode(input.targetDirectorId, input.message),
+    input.mode ?? resolveAgentChatDirectorMode(input.targetDirectorId, input.message),
   );
-  const kind = resolveSlackApprovalKind(input.targetDirectorId, mode);
+  const kind = resolveAgentChatApprovalKind(input.targetDirectorId, mode);
   const summaryPrefix =
     input.targetDirectorId === "rd-director" && mode === "internet-research"
       ? "Confirm Todd internet-research handoff"

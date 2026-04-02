@@ -9,11 +9,16 @@ import {
 
 const createSession = (): AgentSession => ({
   danMemory: {
+    confirmedConcept: null,
     notes: [],
     toddHandoffNotes: [],
     draftConcept: null,
+    derivedConcept: null,
+    derivedNotes: [],
+    derivedUpdatedAt: null,
   },
   toddMemory: {
+    confirmedConcept: null,
     pendingHandoff: null,
     futureUpdatePlan: [],
     versionPlan: {
@@ -21,6 +26,20 @@ const createSession = (): AgentSession => ({
       v2: null,
       v3: null,
     },
+    previousUpdateLog: [],
+    troubleLog: [],
+    codebaseIndexedMap: null,
+    notes: [],
+    backupNotes: [],
+  },
+  pingMemory: {
+    activeUpdateId: null,
+    activeTask: null,
+    context: null,
+    codebaseMapSummary: null,
+    latestRawReport: null,
+    latestJeffReport: null,
+    currentRun: null,
   },
   versions: [],
 }) as AgentSession;
@@ -32,6 +51,7 @@ test("Dan alert appears when Dan still has actionable soft memory", () => {
   assert.deepEqual(resolveAgentAlertState("creative-director", session), {
     tone: "white",
     warningTargetDirectorId: null,
+    action: "review-dan-memory",
   });
 });
 
@@ -54,6 +74,7 @@ test("Todd alert turns red when Dan still has actionable memory upstream", () =>
   assert.deepEqual(resolveAgentAlertState("rd-director", session), {
     tone: "red",
     warningTargetDirectorId: "creative-director",
+    action: "review-todd-memory",
   });
 });
 
@@ -76,6 +97,7 @@ test("Ping alert is white when Todd has a pending update and no upstream memory 
   assert.deepEqual(resolveAgentAlertState("programming-director", session), {
     tone: "white",
     warningTargetDirectorId: null,
+    action: "run-ping-update",
   });
 });
 
@@ -104,6 +126,19 @@ test("Ping alert turns red when Todd still has memory to process before executio
   assert.deepEqual(resolveAgentAlertState("programming-director", session), {
     tone: "red",
     warningTargetDirectorId: "rd-director",
+    action: "run-ping-update",
+  });
+});
+
+test("Jeff alert becomes the refresh owner when Todd's project knowledge is stale", () => {
+  const session = createSession();
+  session.knowledgeStatus = "stale";
+  session.knowledgeReasons = ["Todd's fingerprint is stale."];
+
+  assert.deepEqual(resolveAgentAlertState("project-manager", session), {
+    tone: "white",
+    warningTargetDirectorId: null,
+    action: "refresh-project",
   });
 });
 

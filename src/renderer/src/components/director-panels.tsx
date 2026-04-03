@@ -14,6 +14,8 @@ import {
   formatDate,
   labelForReasoningEffort,
   labelForPlanningMode,
+  labelForToddSimplificationMode,
+  labelForToddUpdateKind,
   providerLabel,
   labelForDirectorStageStatus,
 } from "../lib/formatting";
@@ -42,8 +44,6 @@ import type {
   VersionPlan,
   VersionUpdate,
   JeffExecutionReport,
-  JeffOutcomeDecision,
-  PongValidationReport,
 } from "@shared/types";
 import { DIRECTOR_NAMES } from "@shared/types";
 
@@ -535,6 +535,22 @@ export function DirectorInfoPanel({
                         <div className="updateContent">
                           <div className="updateTitle">{u.title}</div>
                           <div className="updateDescription">{u.description}</div>
+                          {u.updateKind || u.simplificationMode ? (
+                            <div className="flowStepPillars" style={{ marginTop: 8 }}>
+                              {labelForToddUpdateKind(u.updateKind) ? (
+                                <span className="flowStepPillarTag">{labelForToddUpdateKind(u.updateKind)}</span>
+                              ) : null}
+                              {labelForToddSimplificationMode(u.simplificationMode) ? (
+                                <span className="flowStepPillarTag">{labelForToddSimplificationMode(u.simplificationMode)}</span>
+                              ) : null}
+                            </div>
+                          ) : null}
+                          {u.structuralReason ? (
+                            <p className="helperText" style={{ marginTop: 8 }}>{u.structuralReason}</p>
+                          ) : null}
+                          {u.supportsNextStep ? (
+                            <p className="helperText" style={{ marginTop: 4 }}>Supports next: {u.supportsNextStep}</p>
+                          ) : null}
                           {u.skillsNeeded.length > 0 ? (
                             <div className="flowStepPillars" style={{ marginTop: 8 }}>
                               {u.skillsNeeded.map((skill) => (
@@ -1173,27 +1189,6 @@ export function DirectorMemoryPanel({
   if (directorId === "project-manager") {
     const stateEntries = Object.entries(session.directorStateMap ?? {}).filter(([, state]) => Boolean(state));
     const pendingReports = session.jeffMemory.pendingReports ?? [];
-    const pendingValidations = session.jeffMemory.pendingValidations ?? [];
-    const handleValidationDecision = async (report: PongValidationReport, decision: JeffOutcomeDecision) => {
-      if (!projectId || !onSessionUpdate || !pushToast) {
-        return;
-      }
-      try {
-        await window.programs.recordJeffOutcome({
-          projectId,
-          reportId: report.id,
-          decision,
-          summary: report.summary,
-        });
-        const refreshed = await window.programs.getAgentSession(projectId);
-        if (refreshed) {
-          onSessionUpdate(refreshed);
-        }
-        pushToast(`Jeff marked the validation as ${decision}.`, decision === "failure" ? "error" : "success");
-      } catch (error) {
-        pushToast(error instanceof Error ? error.message : "Could not record the validation outcome.", "error");
-      }
-    };
     return (
       <div className="agentInfoPanel agentSummaryPanel">
         <div className="agentSummaryGrid">
@@ -1218,11 +1213,14 @@ export function DirectorMemoryPanel({
                 ) : null}
                 {pendingReports.length > 0 ? (
                   <div style={{ marginTop: 12 }}>
-                    <span className="pmStatusLabel">Pending Update Reports</span>
+                    <span className="pmStatusLabel">Failure Reports Awaiting User Recovery Decision</span>
                     <div className="validationResultsList" style={{ marginTop: 8 }}>
                       {pendingReports.map((report) => (
-                        <div key={report.id} className="validationResultCard validationResultCard--pass">
+                        <div key={report.id} className={`validationResultCard validationResultCard--${report.decision === "failure" ? "fail" : "pass"}`}>
                           <span className="validationResultType">{report.title}</span>
+                          <span className="validationResultStatus">
+                            {report.decision ? report.decision.replace(/_/g, " ") : "review"}
+                          </span>
                           <p style={{ gridColumn: "1 / -1" }}>{report.summary}</p>
                           {onViewExecutionReport ? (
                             <button
@@ -1238,36 +1236,11 @@ export function DirectorMemoryPanel({
                       ))}
                     </div>
                   </div>
-                ) : null}
-                {pendingValidations.length > 0 ? (
-                  <div style={{ marginTop: 12 }}>
-                    <span className="pmStatusLabel">Pending Validation Reports</span>
-                    <div className="validationResultsList" style={{ marginTop: 8 }}>
-                      {pendingValidations.map((report) => (
-                        <div key={report.id} className={`validationResultCard validationResultCard--${report.passed === false ? "fail" : "pass"}`}>
-                          <span className="validationResultType">Pong validation</span>
-                          <span className={`validationResultStatus${report.passed ? " pmStatusDone" : ""}`}>
-                            {report.passed === null ? "REVIEW" : report.passed ? "PASS" : "FAIL"}
-                          </span>
-                          <p style={{ gridColumn: "1 / -1" }}>{report.summary}</p>
-                          {projectId && onSessionUpdate && pushToast ? (
-                            <div className="proposalActions" style={{ marginTop: 8 }}>
-                              <button className="primaryButton" onClick={() => void handleValidationDecision(report, "successful")}>
-                                Successful
-                              </button>
-                              <button className="secondaryButton" onClick={() => void handleValidationDecision(report, "partially-successful")}>
-                                Partially-successful
-                              </button>
-                              <button className="secondaryButton" onClick={() => void handleValidationDecision(report, "failure")}>
-                                Failure
-                              </button>
-                            </div>
-                          ) : null}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
+                ) : (
+                  <p className="coreDetailEmpty" style={{ marginTop: 12 }}>
+                    Jeff does not have any failure reports waiting on a recovery decision.
+                  </p>
+                )}
               </div>
             </details>
           </section>

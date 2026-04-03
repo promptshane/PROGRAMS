@@ -127,6 +127,18 @@ const normalizeVersionUpdate = (update: VersionUpdate, index: number): VersionUp
   dependencies: Array.isArray(update.dependencies) ? update.dependencies : [],
   pillarIds: Array.isArray(update.pillarIds) ? update.pillarIds : [],
   skillsNeeded: Array.isArray(update.skillsNeeded) ? update.skillsNeeded.filter((item): item is string => typeof item === "string") : [],
+  updateKind: update.updateKind === "create" || update.updateKind === "expand" || update.updateKind === "refine" || update.updateKind === "simplify"
+    ? update.updateKind
+    : null,
+  simplificationMode: update.simplificationMode === "inline" || update.simplificationMode === "staged" || update.simplificationMode === "overhaul"
+    ? update.simplificationMode
+    : null,
+  structuralReason: typeof update.structuralReason === "string" && update.structuralReason.trim().length > 0
+    ? update.structuralReason.trim()
+    : null,
+  supportsNextStep: typeof update.supportsNextStep === "string" && update.supportsNextStep.trim().length > 0
+    ? update.supportsNextStep.trim()
+    : null,
 });
 
 const findRoadmapVersion = (versions: VersionPlan[], label: "v1" | "v2" | "v3"): VersionPlan | null =>

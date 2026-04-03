@@ -390,6 +390,12 @@ export interface UsageSnapshot {
   updatedAt: string;
 }
 
+export interface UsageCapture {
+  provider: AiProvider;
+  capturedAt: string;
+  windows: UsageWindow[];
+}
+
 export interface AppUpdateStatus {
   supported: boolean;
   available: boolean;
@@ -453,6 +459,7 @@ export interface StartPlanInput {
   skillInstructions?: string | null;
   coreDetailsContext?: string | null;
   pingTaskSnapshot?: PingTaskSnapshot | null;
+  usageBefore?: UsageCapture | null;
 }
 
 export interface ApprovePlanInput {
@@ -521,6 +528,10 @@ export interface HardMemoryReportUpdate {
   dependencies: string[];
   area: string | null;
   skillsNeeded: string[];
+  updateKind: ToddUpdateKind | null;
+  simplificationMode: ToddSimplificationMode | null;
+  structuralReason: string | null;
+  supportsNextStep: string | null;
 }
 
 export interface HardMemoryReportMetadata {
@@ -772,6 +783,10 @@ export interface VersionPlan {
   order: number;
 }
 
+export type ToddUpdateKind = "create" | "expand" | "refine" | "simplify";
+export type ToddSimplificationMode = "inline" | "staged" | "overhaul";
+export type ToddUpdatePlanSource = "manual" | "post-run-structural-check";
+
 export interface VersionUpdate {
   id: string;
   versionId: string;
@@ -782,6 +797,10 @@ export interface VersionUpdate {
   dependencies: string[];
   pillarIds: string[];
   skillsNeeded: string[];
+  updateKind: ToddUpdateKind | null;
+  simplificationMode: ToddSimplificationMode | null;
+  structuralReason: string | null;
+  supportsNextStep: string | null;
 }
 
 export interface ValidationResult {
@@ -952,6 +971,8 @@ export interface PongValidationReport {
   passed: boolean | null;
   details: string | null;
   screenshotPaths: string[];
+  usageBefore?: UsageCapture | null;
+  usageAfter?: UsageCapture | null;
   createdAt: string;
 }
 
@@ -1166,7 +1187,16 @@ export interface JeffExecutionReport {
   outcome: string;
   toddFollowUpNeeded: boolean;
   toddFollowUpReason: string | null;
+  toddReplanNeeded: boolean;
+  toddReplanReason: string | null;
+  toddReplanApprovalId: string | null;
   rawReport: PingRawReport;
+  decision?: JeffOutcomeDecision | null;
+  pingReport?: PingExecutionReportSnapshot | null;
+  validationReport?: PongValidationReport | null;
+  revertAvailable?: boolean;
+  revertHistoryUpdateId?: string | null;
+  revertCommitSha?: string | null;
   createdAt: string;
 }
 
@@ -1196,6 +1226,8 @@ export interface PingExecutionReportSnapshot {
   task: PingTaskSnapshot;
   plan: PingPlanSnapshot | null;
   rawReport: PingRawReport;
+  usageBefore?: UsageCapture | null;
+  usageAfter?: UsageCapture | null;
   historyUpdateId: string | null;
   commitSha: string | null;
   jeffReportId: string | null;
@@ -1207,6 +1239,9 @@ export interface PingRunSnapshot {
   task: PingTaskSnapshot;
   plan: PingPlanSnapshot | null;
   report: PingExecutionReportSnapshot | null;
+  usageBefore?: UsageCapture | null;
+  usageAfter?: UsageCapture | null;
+  validationReport?: PongValidationReport | null;
 }
 
 export interface PingMemory {
@@ -1550,6 +1585,16 @@ export interface AgentChatDirectorApprovalPayload {
 }
 
 export type SlackDirectorApprovalPayload = AgentChatDirectorApprovalPayload;
+
+export interface ToddUpdatePlanDraftPayload extends Record<string, unknown> {
+  action: "applyStoredData";
+  dataType: "versionUpdates";
+  updates: VersionUpdate[];
+  currentState?: string | null;
+  idealState?: string | null;
+  planSource?: ToddUpdatePlanSource;
+  supersedesConfirmedPlan?: boolean;
+}
 
 export interface AgentChatResponse {
   sessionId: string;

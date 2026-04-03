@@ -183,6 +183,46 @@ test("next programming update chooses the first pending Todd update by order", (
   assert.equal(getNextPendingProgrammingUpdate(session)?.id, "update-1");
 });
 
+test("superseding Todd structural replan blocks the next pending programming update", () => {
+  const session = createSession();
+  session.toddMemory.futureUpdatePlan = [
+    {
+      id: "update-1",
+      versionId: "version-1",
+      title: "Next update",
+      description: "Do this first.",
+      order: 0,
+      status: "pending",
+      dependencies: [],
+      pillarIds: [],
+      skillsNeeded: [],
+    },
+  ];
+  session.pendingApprovals = [
+    {
+      id: "approval-1",
+      kind: "store-data",
+      status: "pending",
+      requestedByDirectorId: "rd-director",
+      targetDirectorId: "rd-director",
+      summary: "Confirm structural replan",
+      draftMessage: "Todd recommends simplifying before the next expansion.",
+      draftPayload: {
+        action: "applyStoredData",
+        dataType: "versionUpdates",
+        planSource: "post-run-structural-check",
+        supersedesConfirmedPlan: true,
+        updates: [],
+      },
+      createdAt: "2026-03-25T10:15:00.000Z",
+      updatedAt: "2026-03-25T10:15:00.000Z",
+    },
+  ];
+
+  assert.equal(getNextPendingProgrammingUpdate(session), null);
+  assert.equal(resolveAgentAlertState("programming-director", session), null);
+});
+
 test("Todd memory-processing focus switches from version planning to update planning once a roadmap exists", () => {
   const session = createSession();
   assert.equal(getToddMemoryProcessingFocusMode(session), "version-planning");

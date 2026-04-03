@@ -30,6 +30,16 @@ export const toddUpdateItemSchema = buildStrictObjectSchema({
     type: "array" as const,
     items: { type: "string" },
   },
+  updateKind: {
+    type: "string",
+    enum: ["create", "expand", "refine", "simplify"],
+  },
+  simplificationMode: {
+    type: ["string", "null"] as const,
+    enum: ["inline", "staged", "overhaul", null],
+  },
+  structuralReason: { type: ["string", "null"] },
+  supportsNextStep: { type: ["string", "null"] },
 });
 
 export const pingRawReportSchema = buildStrictObjectSchema({

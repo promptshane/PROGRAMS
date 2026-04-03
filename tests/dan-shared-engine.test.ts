@@ -300,6 +300,37 @@ const createToddPayload = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+const createToddUpdatePlanItem = (overrides: Record<string, unknown> = {}) => ({
+  title: "Expand onboarding shell",
+  description: "Build the next onboarding slice.",
+  versionLabel: "V1",
+  dependencies: [],
+  area: null,
+  skillsNeeded: [],
+  updateKind: "expand",
+  simplificationMode: null,
+  structuralReason: null,
+  supportsNextStep: null,
+  ...overrides,
+});
+
+const createVersionUpdate = (overrides: Record<string, unknown> = {}) => ({
+  id: "update-default",
+  versionId: "version-1",
+  title: "Ship onboarding shell",
+  description: "Build the first onboarding pass.",
+  order: 0,
+  status: "pending" as const,
+  dependencies: [],
+  pillarIds: [],
+  skillsNeeded: [],
+  updateKind: null,
+  simplificationMode: null,
+  structuralReason: null,
+  supportsNextStep: null,
+  ...overrides,
+});
+
 const createDetail = (summary: string, status: "confirmed" | "assumed" | "edited" = "confirmed") => ({
   summary,
   status,
@@ -508,6 +539,7 @@ const createBackendHarness = (responses: Array<Record<string, unknown>>) => {
   };
   const codex = {
     getAuthStatus: async () => ({ authenticated: true }),
+    getUsage: async () => ({ status: "ready", windows: [], note: null }),
     runOneShot: async (
       _project: unknown,
       _settings: unknown,
@@ -523,6 +555,7 @@ const createBackendHarness = (responses: Array<Record<string, unknown>>) => {
   };
   const claude = {
     getAuthStatus: async () => ({ authenticated: true }),
+    getUsage: async () => ({ status: "ready", windows: [], note: null }),
     runOneShot: async (
       _project: unknown,
       _settings: unknown,
@@ -1251,14 +1284,15 @@ test("Todd Slack update-planning turns attach hard-memory report metadata and ke
       idealState: "We have grouped updates with clear dependencies.",
       confirmationSuggested: true,
       updates: [
-        {
+        createToddUpdatePlanItem({
           title: "Ship the onboarding shell",
           description: "Build the first pass of the onboarding experience.",
-          versionLabel: "V1",
           dependencies: ["Navigation"],
           area: "Onboarding",
           skillsNeeded: ["React", "Routing"],
-        },
+          updateKind: "create",
+          supportsNextStep: "Expands the onboarding flow safely.",
+        }),
       ],
       notesToAppend: [],
     },
@@ -1647,28 +1681,17 @@ test("Todd DM prompt receives the codebase map and confirmed concept memory with
 test("Ping routed Slack updates auto-approve planning for the next pending update", async () => {
   const session = createSession();
   session.toddMemory.futureUpdatePlan = [
-    {
+    createVersionUpdate({
       id: "update-1",
-      versionId: "version-1",
       title: "Ship later update",
       description: "Apply the later update in Slack.",
       order: 1,
-      status: "pending",
-      dependencies: [],
-      pillarIds: [],
-      skillsNeeded: [],
-    },
-    {
+    }),
+    createVersionUpdate({
       id: "update-0",
-      versionId: "version-1",
       title: "Ship Ping update",
       description: "Apply the latest update in Slack.",
-      order: 0,
-      status: "pending",
-      dependencies: [],
-      pillarIds: [],
-      skillsNeeded: [],
-    },
+    }),
   ];
 
   const harness = createBackendHarness([]);
@@ -1809,17 +1832,7 @@ test("Automation targets fall back to Todd's live draft update plan when no conf
       action: "applyStoredData",
       dataType: "versionUpdates",
       updates: [
-        {
-          id: "update-1",
-          versionId: "version-1",
-          title: "Ship onboarding shell",
-          description: "Build the first onboarding pass.",
-          order: 0,
-          status: "pending",
-          dependencies: [],
-          pillarIds: [],
-          skillsNeeded: [],
-        },
+        createVersionUpdate({ id: "update-1" }),
       ],
     },
     createdAt: NOW,
@@ -1841,20 +1854,129 @@ test("Automation targets fall back to Todd's live draft update plan when no conf
   assert.equal(response.candidates[0]?.draft, true);
 });
 
+test("Todd review can finalize success and queue a superseding structural replan draft", async () => {
+  const session = createSession();
+  session.toddMemory.versionPlan.v1 = {
+    id: "version-1",
+    label: "V1",
+    description: "Ship the onboarding baseline.",
+    goals: ["Land the first confirmed experience."],
+    status: "confirmed",
+    order: 0,
+  };
+  session.toddMemory.futureUpdatePlan = [
+    createVersionUpdate({
+      id: "update-1",
+      title: "Ship onboarding shell",
+      description: "Build the first onboarding pass.",
+      status: "in_progress",
+    }),
+    createVersionUpdate({
+      id: "update-2",
+      title: "Expand onboarding logic",
+      description: "Layer the next onboarding capability.",
+      order: 1,
+      updateKind: "expand",
+      supportsNextStep: "Extends the onboarding flow.",
+    }),
+  ];
+
+  const harness = createBackendHarness([
+    {
+      response: "The current step is done, but the next one needs a cleaner structure first.",
+      nextAction: "finalize_success",
+      finalDecision: "successful",
+      finalSummary: "The current update landed cleanly.",
+      retryInstruction: null,
+      validationInstruction: null,
+      replanNeeded: true,
+      replanReason: "Simplify onboarding structure before the next expansion so Ping does not edit around mixed responsibilities.",
+      replanCurrentState: "The onboarding shell works, but the current module split will make the next expansion messy.",
+      replanIdealState: "The next expansion lands on a cleaner onboarding split with clear boundaries.",
+      replanUpdates: [
+        createToddUpdatePlanItem({
+          title: "Simplify onboarding structure before expanding onboarding logic",
+          description: "Split the onboarding shell into cleaner boundaries before layering the next capability.",
+          updateKind: "simplify",
+          simplificationMode: "staged",
+          structuralReason: "The current onboarding module carries mixed responsibilities that would make the next expansion messy.",
+          supportsNextStep: "Lets the next onboarding expansion land cleanly.",
+        }),
+        createToddUpdatePlanItem({
+          title: "Expand onboarding logic",
+          description: "Layer the next onboarding capability on top of the simplified structure.",
+          dependencies: ["Simplify onboarding structure before expanding onboarding logic"],
+          updateKind: "expand",
+          supportsNextStep: "Continues the onboarding roadmap on the cleaner split.",
+        }),
+      ],
+    },
+  ]);
+  harness.setStoredSession(session);
+
+  await (harness.backend.reviewPingExecutionWithTodd as Function)(session.projectId, {
+    task: {
+      source: "todd-approved-update",
+      projectId: session.projectId,
+      updateId: "update-1",
+      updateTitle: "Ship onboarding shell",
+      updateDescription: "Build the first onboarding pass.",
+      originalUserRequest: "Ship onboarding shell",
+      toddExplanation: "Build the first onboarding pass.",
+      relevantPillarIds: [],
+      toddCodebaseMapSummary: "Onboarding shell is in one module.",
+      coreDetailsContext: null,
+      runtime: {
+        provider: "codex",
+        model: "gpt-5.4",
+        claudeModel: "sonnet",
+        reasoningEffort: "high",
+        planningMode: "auto",
+        contextPaths: [],
+      },
+      planPrompt: "Plan the onboarding shell update.",
+      createdAt: NOW,
+    },
+    plan: null,
+    rawReport: {
+      status: "success",
+      updateId: "update-1",
+      goal: "Build the first onboarding pass.",
+      summary: "The onboarding shell is now in place.",
+      zhResponse: "已完成。修改已保存。",
+      enTranslation: "Done. Changes saved.",
+      changedFiles: ["src/onboarding.tsx"],
+      blocker: null,
+      unexpectedNotes: [],
+      createdAt: NOW,
+    },
+    usageBefore: null,
+    usageAfter: null,
+    historyUpdateId: "history-1",
+    commitSha: "abc123",
+    jeffReportId: null,
+    jeffSummary: null,
+    createdAt: NOW,
+  });
+
+  const latest = harness.getStoredSession();
+  assert.ok(latest);
+  assert.equal(latest?.toddMemory.futureUpdatePlan[0]?.status, "completed");
+  assert.equal(latest?.toddMemory.futureUpdatePlan[1]?.status, "pending");
+  assert.equal(latest?.pendingApprovals.length, 1);
+  assert.equal(latest?.pendingApprovals[0]?.draftPayload?.planSource, "post-run-structural-check");
+  assert.equal(latest?.pendingApprovals[0]?.draftPayload?.supersedesConfirmedPlan, true);
+  assert.equal(latest?.pingMemory.latestJeffReport?.toddReplanNeeded, true);
+  assert.equal(
+    latest?.pingMemory.latestJeffReport?.toddReplanApprovalId,
+    latest?.pendingApprovals[0]?.id ?? null,
+  );
+});
+
 test("Automation step marks the run completed when the selected target is already done", async () => {
   const session = createSession();
   session.toddMemory.futureUpdatePlan = [
-    {
-      id: "update-1",
-      versionId: "version-1",
-      title: "Ship onboarding shell",
-      description: "Build the first onboarding pass.",
-      order: 0,
-      status: "completed",
-      dependencies: [],
-      pillarIds: [],
-      skillsNeeded: [],
-    },
+    createVersionUpdate({ id: "update-1", status: "completed" }),
   ];
   session.automation = {
     ...session.automation,
@@ -1878,17 +2000,7 @@ test("Automation step marks the run completed when the selected target is alread
 test("Automation step stops outside the allowed work hours", async () => {
   const session = createSession();
   session.toddMemory.futureUpdatePlan = [
-    {
-      id: "update-1",
-      versionId: "version-1",
-      title: "Ship onboarding shell",
-      description: "Build the first onboarding pass.",
-      order: 0,
-      status: "pending",
-      dependencies: [],
-      pillarIds: [],
-      skillsNeeded: [],
-    },
+    createVersionUpdate({ id: "update-1" }),
   ];
   const nowHour = new Date().getHours();
   session.automation = {
@@ -1921,17 +2033,12 @@ test("Automation step stops outside the allowed work hours", async () => {
 test("Automation step consumes a successful Jeff report and marks the update complete", async () => {
   const session = createSession();
   session.toddMemory.futureUpdatePlan = [
-    {
+    createVersionUpdate({
       id: "update-1",
-      versionId: "version-1",
       title: "Ship backend patch",
       description: "Apply the backend fix.",
-      order: 0,
       status: "in_progress",
-      dependencies: [],
-      pillarIds: [],
-      skillsNeeded: [],
-    },
+    }),
   ];
   session.jeffMemory.pendingReports.push({
     id: "report-1",
@@ -1943,6 +2050,9 @@ test("Automation step consumes a successful Jeff report and marks the update com
     outcome: "Ship backend patch completed cleanly.",
     toddFollowUpNeeded: false,
     toddFollowUpReason: null,
+    toddReplanNeeded: false,
+    toddReplanReason: null,
+    toddReplanApprovalId: null,
     rawReport: {
       status: "success",
       updateId: "update-1",

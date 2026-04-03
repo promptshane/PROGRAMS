@@ -31,8 +31,8 @@ export interface JeffPresenceState {
 const DIRECT_ROUTE_PATTERNS: { pattern: RegExp; directorId: DirectorId }[] = [
   { pattern: /^(?:hey\s+|@)?dan\b[,:\s]/i, directorId: "creative-director" },
   { pattern: /^(?:hey\s+|@)?todd\b[,:\s]/i, directorId: "rd-director" },
-  { pattern: /^(?:hey\s+|@)?ping\b[,:\s]/i, directorId: "programming-director" },
-  { pattern: /^(?:hey\s+|@)?pong\b[,:\s]/i, directorId: "validation-director" },
+  { pattern: /^(?:hey\s+|@)?ping\b[,:\s]/i, directorId: "rd-director" },
+  { pattern: /^(?:hey\s+|@)?pong\b[,:\s]/i, directorId: "rd-director" },
   { pattern: /^(?:hey\s+|@)?jeff\b[,:\s]/i, directorId: "project-manager" },
 ];
 

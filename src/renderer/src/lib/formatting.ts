@@ -11,6 +11,8 @@ import type {
   RuntimeState,
   Settings,
   SpeedMode,
+  ToddSimplificationMode,
+  ToddUpdateKind,
   UsageWindow,
 } from "@shared/types";
 
@@ -202,6 +204,12 @@ export const formatDirectorFocusModeLabel = (mode: DirectorFocusMode): string =>
       return mode.split("-").map((word: string) => word.charAt(0).toUpperCase() + word.slice(1)).join(" ");
   }
 };
+
+export const labelForToddUpdateKind = (kind: ToddUpdateKind | null): string | null =>
+  kind ? titleCaseWord(kind) : null;
+
+export const labelForToddSimplificationMode = (mode: ToddSimplificationMode | null): string | null =>
+  mode ? titleCaseWord(mode) : null;
 
 export const labelForRuntimeSource = (source: RuntimeState["source"]): string => {
   if (source === "managed") {

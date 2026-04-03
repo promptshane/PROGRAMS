@@ -1,5 +1,5 @@
 import type { AgentSession, DirectorId, RdFocusMode, VersionUpdate } from "@shared/types";
-import { getDanConflictQuestionCount } from "./session-helpers";
+import { getDanConflictQuestionCount, hasToddSupersedingDraftUpdatePlan } from "./session-helpers";
 
 export type AgentAlertTone = "white" | "red";
 export type AgentAlertAction =
@@ -37,7 +37,11 @@ export const hasToddActionableMemory = (session: AgentSession | null): boolean =
   );
 
 export const hasPingPendingUpdate = (session: AgentSession | null): boolean =>
-  Boolean(session?.toddMemory.futureUpdatePlan.some((update) => update.status === "pending"));
+  Boolean(
+    session
+    && !hasToddSupersedingDraftUpdatePlan(session)
+    && session.toddMemory.futureUpdatePlan.some((update) => update.status === "pending"),
+  );
 
 export const hasPingActiveTask = (session: AgentSession | null): boolean =>
   Boolean(session?.pingMemory.activeTask);
@@ -45,10 +49,7 @@ export const hasPingActiveTask = (session: AgentSession | null): boolean =>
 export const hasJeffPendingWork = (session: AgentSession | null): boolean =>
   Boolean(
     session
-    && (
-      (session.jeffMemory?.pendingReports?.length ?? 0) > 0
-      || (session.jeffMemory?.pendingValidations?.length ?? 0) > 0
-    ),
+    && (session.jeffMemory?.pendingReports?.length ?? 0) > 0,
   );
 
 export const hasPongPendingWork = (session: AgentSession | null): boolean =>
@@ -59,6 +60,9 @@ export const needsProjectRefresh = (session: AgentSession | null): boolean =>
 
 export const getNextPendingProgrammingUpdate = (session: AgentSession | null): VersionUpdate | null => {
   if (!session) {
+    return null;
+  }
+  if (hasToddSupersedingDraftUpdatePlan(session)) {
     return null;
   }
   return session.toddMemory.futureUpdatePlan

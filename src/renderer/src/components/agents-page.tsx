@@ -325,7 +325,7 @@ export function AgentsPage({
 
   const NAME_TO_DIRECTOR: Record<string, DirectorId> = {
     jeff: "project-manager", dan: "creative-director",
-    todd: "rd-director", ping: "programming-director", pong: "validation-director",
+    todd: "rd-director", ping: "rd-director", pong: "rd-director",
   };
 
   const handleSend = async () => {
@@ -352,7 +352,9 @@ export function AgentsPage({
       }
     }
     if (!targetDirectorId && alertedDirectorId && alertedDirectorId !== "project-manager") {
-      targetDirectorId = alertedDirectorId;
+      targetDirectorId = alertedDirectorId === "programming-director" || alertedDirectorId === "validation-director"
+        ? "rd-director"
+        : alertedDirectorId;
     }
     const effectiveDirectorId = targetDirectorId
       ?? resolveAgentChatRouteForRenderer(msg, presenceGuestId);
@@ -516,6 +518,25 @@ export function AgentsPage({
       return;
     }
 
+    if (alertState.action === "run-pong-validation") {
+      setIsLoading(true);
+      try {
+        const latestPingReport = agentSession?.pingMemory.currentRun?.report ?? null;
+        await window.programs.assignPongValidation({
+          projectId: agentSelectedProjectId,
+          instruction: latestPingReport?.rawReport.summary ?? "Validate the latest project state.",
+          updateId: latestPingReport?.task.updateId ?? null,
+        });
+        const refreshed = await window.programs.getAgentSession(agentSelectedProjectId);
+        if (refreshed) onSessionUpdate(refreshed);
+      } catch (error) {
+        pushToast(error instanceof Error ? error.message : "Something went wrong.", "error");
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
     // For other directors, send a memory-processing message via agent chat
     const promptMessage = alertState.action === "reconcile-dan-memory"
       ? "@dan Let's reconcile the discussed and derived core-details before we confirm hard memory."
@@ -523,9 +544,7 @@ export function AgentsPage({
         ? "@dan Let's review and process the notes we've gathered."
         : directorId === "project-manager"
           ? "Let's review the pending update reports and decide outcomes."
-          : directorId === "validation-director"
-            ? "@pong Let's run the assigned validation check."
-            : "@todd Let's review and process the pending handoff from Dan.";
+          : "@todd Let's review and process the pending handoff from Dan.";
 
     const optimisticUserMsg: AgentChatMessage = {
       id: `opt-${Date.now()}`,

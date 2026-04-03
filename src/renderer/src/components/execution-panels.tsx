@@ -4,7 +4,6 @@ import { providerLabel, labelForReasoningEffort, labelForPlanningMode } from "..
 import { humanizeSnakeCase } from "../lib/labels";
 import type {
   JeffExecutionReport,
-  JeffOutcomeDecision,
   PingTaskSnapshot,
   PingPlanSnapshot,
   PingExecutionReportSnapshot,
@@ -15,8 +14,78 @@ import type {
   CorePillar,
   CascadeProposal,
   AgentChatMessage,
+  PongValidationReport,
+  UsageCapture,
 } from "@shared/types";
 import { AGENT_STAGE_LABELS } from "@shared/types";
+
+function UsageSnapshotSection({
+  title,
+  usage,
+}: {
+  title: string;
+  usage: UsageCapture | null | undefined;
+}) {
+  return (
+    <section>
+      <h4>{title}</h4>
+      {usage ? (
+        <>
+          <p>
+            Provider: {providerLabel(usage.provider)} | Captured: {new Date(usage.capturedAt).toLocaleString()}
+          </p>
+          {usage.windows.length > 0 ? (
+            <ul className="agentChatUpdateList">
+              {usage.windows.map((window) => (
+                <li key={`${usage.capturedAt}-${window.label}`}>
+                  {window.label}: {window.usedPercent != null ? `${window.usedPercent}% used` : "usage unavailable"}
+                  {window.valueLabel ? ` | ${window.valueLabel}` : ""}
+                  {window.resetsAt ? ` | resets ${new Date(window.resetsAt).toLocaleString()}` : ""}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="helperText">No provider windows were returned.</p>
+          )}
+        </>
+      ) : (
+        <p className="helperText">Not captured.</p>
+      )}
+    </section>
+  );
+}
+
+function ValidationEvidenceSection({
+  report,
+}: {
+  report: PongValidationReport;
+}) {
+  return (
+    <section>
+      <h4>Pong Validation</h4>
+      <p>Status: {report.passed == null ? "reviewed" : report.passed ? "pass" : "fail"}</p>
+      <AgentChatMarkdown text={report.summary} />
+      {report.details ? (
+        <>
+          <h4>Validation Details</h4>
+          <AgentChatMarkdown text={report.details} />
+        </>
+      ) : null}
+      {report.screenshotPaths.length > 0 ? (
+        <>
+          <h4>Screenshots</h4>
+          <ul className="agentChatUpdateList">
+            {report.screenshotPaths.map((path) => (
+              <li key={path}>{path}</li>
+            ))}
+          </ul>
+        </>
+      ) : null}
+      <UsageSnapshotSection title="Validation Usage Before" usage={report.usageBefore} />
+      <UsageSnapshotSection title="Validation Usage After" usage={report.usageAfter} />
+    </section>
+  );
+}
 
 export function ExecutionReportPanel({
   report,
@@ -33,58 +102,23 @@ export function ExecutionReportPanel({
   pushToast: (message: string, level: "info" | "success" | "error") => void;
   onClose: () => void;
 }) {
-  const [decisionSummary, setDecisionSummary] = useState(report.summary);
-  const [busyAction, setBusyAction] = useState<"successful" | "partially-successful" | "failure" | "pong" | null>(null);
+  const [busyAction, setBusyAction] = useState<"recovery" | null>(null);
   const isPending = session?.jeffMemory.pendingReports.some((pendingReport) => pendingReport.id === report.id) ?? false;
 
-  useEffect(() => {
-    setDecisionSummary(report.summary);
-  }, [report.id, report.summary]);
-
-  const handleJeffDecision = async (decision: JeffOutcomeDecision) => {
+  const handleQueueRecovery = async () => {
     if (!projectId) {
       return;
     }
-    setBusyAction(decision);
+    setBusyAction("recovery");
     try {
-      await window.programs.recordJeffOutcome({
-        projectId,
-        reportId: report.id,
-        decision,
-        summary: decisionSummary.trim() || report.summary,
-      });
+      await window.programs.requestAutomationFailureRecovery({ projectId });
       const refreshed = await window.programs.getAgentSession(projectId);
       if (refreshed) {
         onSessionUpdate(refreshed);
       }
-      pushToast(`Jeff marked the update as ${decision}.`, decision === "failure" ? "error" : "success");
-      onClose();
+      pushToast("Jeff queued the failure recovery revert for confirmation.", "success");
     } catch (error) {
-      pushToast(error instanceof Error ? error.message : "Could not record Jeff's outcome.", "error");
-    } finally {
-      setBusyAction(null);
-    }
-  };
-
-  const handleSendToPong = async () => {
-    if (!projectId) {
-      return;
-    }
-    setBusyAction("pong");
-    try {
-      await window.programs.assignPongValidation({
-        projectId,
-        instruction: decisionSummary.trim() || report.summary,
-        updateId: report.updateId,
-      });
-      const refreshed = await window.programs.getAgentSession(projectId);
-      if (refreshed) {
-        onSessionUpdate(refreshed);
-      }
-      pushToast("Jeff handed the report to Pong for validation.", "info");
-      onClose();
-    } catch (error) {
-      pushToast(error instanceof Error ? error.message : "Could not send the report to Pong.", "error");
+      pushToast(error instanceof Error ? error.message : "Could not queue the recovery revert.", "error");
     } finally {
       setBusyAction(null);
     }
@@ -101,17 +135,18 @@ export function ExecutionReportPanel({
       <div className="agentChatPanelBody">
         <section>
           <h4>Summary</h4>
-          <p>{report.summary}</p>
+          <AgentChatMarkdown text={report.summary} />
         </section>
         <section>
-          <h4>Outcome</h4>
-          <p>{report.outcome}</p>
+          <h4>Todd's Final Decision</h4>
+          <p>{humanizeSnakeCase(report.decision ?? "successful")}</p>
+          <AgentChatMarkdown text={report.outcome} />
         </section>
         {report.rawReport ? (
           <section>
             <h4>Update Details</h4>
             <p>Status: {report.rawReport.status?.replace(/_/g, " ") ?? "unknown"}</p>
-            <p>{report.rawReport.summary}</p>
+            <AgentChatMarkdown text={report.rawReport.summary} />
             {report.rawReport.changedFiles?.length > 0 ? (
               <>
                 <h4>Changed Files</h4>
@@ -146,41 +181,43 @@ export function ExecutionReportPanel({
           </section>
         )}
         <section>
-          <h4>Todd Follow-Up</h4>
+          <h4>Todd Review Notes</h4>
           <p>
             {report.toddFollowUpNeeded
-              ? report.toddFollowUpReason ?? "Jeff referred Todd for follow-up planning."
-              : "No Todd follow-up needed."}
+              ? report.toddFollowUpReason ?? "Todd marked follow-up work as needed."
+              : "Todd finalized this pass without extra follow-up."}
           </p>
         </section>
         <section>
-          <h4>Jeff's Assessment</h4>
-          <textarea
-            className="composerInput"
-            style={{ minHeight: 110 }}
-            value={decisionSummary}
-            onChange={(event) => setDecisionSummary(event.target.value)}
-            placeholder="Jeff's review summary..."
-          />
-          {isPending ? (
+          <h4>Structural Replan</h4>
+          <p>
+            {report.toddReplanNeeded
+              ? report.toddReplanReason ?? "Todd queued a structural replan before the next priority step."
+              : "Todd kept the current queue shape for the next step."}
+          </p>
+          {report.toddReplanApprovalId ? (
+            <p className="helperText">Pending approval: {report.toddReplanApprovalId}</p>
+          ) : null}
+        </section>
+        {report.pingReport ? (
+          <>
+            <UsageSnapshotSection title="Execution Usage Before" usage={report.pingReport.usageBefore} />
+            <UsageSnapshotSection title="Execution Usage After" usage={report.pingReport.usageAfter} />
+          </>
+        ) : null}
+        {report.validationReport ? <ValidationEvidenceSection report={report.validationReport} /> : null}
+        <section>
+          <h4>Jeff Status</h4>
+          {report.decision === "failure" && report.revertAvailable && isPending ? (
             <div className="proposalActions" style={{ marginTop: 12 }}>
-              <button className="primaryButton" onClick={() => void handleJeffDecision("successful")} disabled={busyAction !== null}>
-                Successful
-              </button>
-              <button className="secondaryButton" onClick={() => void handleJeffDecision("partially-successful")} disabled={busyAction !== null}>
-                Partially-successful
-              </button>
-              <button className="secondaryButton" onClick={() => void handleJeffDecision("failure")} disabled={busyAction !== null}>
-                Failure
-              </button>
-              <button className="secondaryButton" onClick={() => void handleSendToPong()} disabled={busyAction !== null}>
-                Send to Pong
+              <button className="secondaryButton" onClick={() => void handleQueueRecovery()} disabled={busyAction !== null}>
+                Queue Recovery Revert
               </button>
             </div>
+          ) : report.decision === "failure" ? (
+            <p className="helperText">Failure recorded. No automated revert is available for this report.</p>
           ) : (
-            <p className="helperText" style={{ marginTop: 8 }}>
-              Jeff already reviewed this report.
-            </p>
+            <p className="helperText">Jeff is presenting Todd's finalized outcome. No extra decision is required here.</p>
           )}
         </section>
       </div>
@@ -430,6 +467,8 @@ export function PingUpdateReportPanel({
             ) : null}
           </section>
         ) : null}
+        <UsageSnapshotSection title="Execution Usage Before" usage={report?.usageBefore} />
+        <UsageSnapshotSection title="Execution Usage After" usage={report?.usageAfter} />
       </div>
     </div>
   );

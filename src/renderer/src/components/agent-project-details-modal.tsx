@@ -496,7 +496,9 @@ export function AgentProjectDetailsModal({
                     {automationTargets.currentVersionLabel
                       ? `Current version: ${automationTargets.currentVersionLabel}`
                       : displayedPlan.source === "draft"
-                        ? "Todd has a live draft update plan that still needs confirmation."
+                        ? displayedPlan.supersedesConfirmedPlan
+                          ? "Todd has a superseding structural replan draft that must be confirmed before automation continues."
+                          : "Todd has a live draft update plan that still needs confirmation."
                         : "No current version is ready for automation yet."}
                   </p>
                   {loadingAutomationTargets ? (
@@ -526,7 +528,9 @@ export function AgentProjectDetailsModal({
                   ) : (
                     <p style={{ margin: "8px 0 0", fontSize: 12, color: "var(--muted)" }}>
                       {displayedPlan.source === "draft"
-                        ? "Confirm Todd's update plan to enable target selection."
+                        ? displayedPlan.supersedesConfirmedPlan
+                          ? "Confirm Todd's structural replan to resume target selection."
+                          : "Confirm Todd's update plan to enable target selection."
                         : "No selectable future targets are available in the current version."}
                     </p>
                   )}

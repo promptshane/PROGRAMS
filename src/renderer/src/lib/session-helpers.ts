@@ -11,6 +11,8 @@ import {
   type HardMemoryReportMetadata,
   type PendingApproval,
   type StageAgentMessage,
+  type ToddUpdatePlanDraftPayload,
+  type ToddUpdatePlanSource,
   type UsageWindow,
   type VersionPlan,
   type VersionUpdate,
@@ -427,6 +429,10 @@ export const buildHardMemoryReportFromApproval = (
         dependencies: Array.isArray(update.dependencies) ? update.dependencies : [],
         area: resolveHardMemoryReportArea(session, Array.isArray(update.pillarIds) ? update.pillarIds : []),
         skillsNeeded: Array.isArray(update.skillsNeeded) ? update.skillsNeeded : [],
+        updateKind: update.updateKind ?? null,
+        simplificationMode: update.simplificationMode ?? null,
+        structuralReason: update.structuralReason ?? null,
+        supportsNextStep: update.supportsNextStep ?? null,
       })),
       createdAt,
     };
@@ -435,14 +441,40 @@ export const buildHardMemoryReportFromApproval = (
   return null;
 };
 
+export const getToddUpdatePlanDraftPayload = (approval: PendingApproval | null): ToddUpdatePlanDraftPayload | null => {
+  const payload = approval?.draftPayload;
+  if (!payload || payload.action !== "applyStoredData" || payload.dataType !== "versionUpdates" || !Array.isArray(payload.updates)) {
+    return null;
+  }
+  return payload as unknown as ToddUpdatePlanDraftPayload;
+};
+
+export const getToddUpdatePlanDraftMeta = (approval: PendingApproval | null): {
+  planSource: ToddUpdatePlanSource;
+  supersedesConfirmedPlan: boolean;
+} => {
+  const payload = getToddUpdatePlanDraftPayload(approval);
+  return {
+    planSource: payload?.planSource === "post-run-structural-check" ? "post-run-structural-check" : "manual",
+    supersedesConfirmedPlan: payload?.supersedesConfirmedPlan === true,
+  };
+};
+
 export const findToddUpdatePlanDraftApproval = (session: AgentSession | null): PendingApproval | null =>
-  session?.pendingApprovals.find((approval) => {
-    const payload = approval.draftPayload;
-    return approval.requestedByDirectorId === "rd-director"
-      && approval.kind === "store-data"
-      && payload?.action === "applyStoredData"
-      && payload?.dataType === "versionUpdates";
-  }) ?? null;
+  (session?.pendingApprovals ?? [])
+    .filter((approval) => approval.requestedByDirectorId === "rd-director" && approval.kind === "store-data")
+    .filter((approval) => Boolean(getToddUpdatePlanDraftPayload(approval)))
+    .sort((left, right) => {
+      const leftMeta = getToddUpdatePlanDraftMeta(left);
+      const rightMeta = getToddUpdatePlanDraftMeta(right);
+      if (leftMeta.supersedesConfirmedPlan !== rightMeta.supersedesConfirmedPlan) {
+        return leftMeta.supersedesConfirmedPlan ? -1 : 1;
+      }
+      return new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime();
+    })[0] ?? null;
+
+export const hasToddSupersedingDraftUpdatePlan = (session: AgentSession | null): boolean =>
+  getToddUpdatePlanDraftMeta(findToddUpdatePlanDraftApproval(session)).supersedesConfirmedPlan;
 
 export const buildDisplayedUpdatePlan = (session: AgentSession | null): {
   source: "none" | "confirmed" | "draft";
@@ -450,9 +482,27 @@ export const buildDisplayedUpdatePlan = (session: AgentSession | null): {
   updates: VersionUpdate[];
   draftApprovalId: string | null;
   draftReport: HardMemoryReportMetadata | null;
+  supersedesConfirmedPlan: boolean;
+  planSource: ToddUpdatePlanSource | null;
 } => {
   const confirmedUpdates = session?.toddMemory?.futureUpdatePlan ?? [];
   const versions = collectHardMemoryRoadmapVersions(session);
+  const draftApproval = findToddUpdatePlanDraftApproval(session);
+  const draftMeta = getToddUpdatePlanDraftMeta(draftApproval);
+  if (draftApproval && draftMeta.supersedesConfirmedPlan) {
+    const draftReport = buildHardMemoryReportFromApproval(session, draftApproval);
+    return {
+      source: "draft",
+      versions: draftReport?.roadmapVersions ?? versions,
+      updates: Array.isArray(draftApproval.draftPayload?.updates)
+        ? draftApproval.draftPayload.updates as VersionUpdate[]
+        : [],
+      draftApprovalId: draftApproval.id,
+      draftReport,
+      supersedesConfirmedPlan: true,
+      planSource: draftMeta.planSource,
+    };
+  }
   if (confirmedUpdates.length > 0) {
     return {
       source: "confirmed",
@@ -460,10 +510,11 @@ export const buildDisplayedUpdatePlan = (session: AgentSession | null): {
       updates: confirmedUpdates,
       draftApprovalId: null,
       draftReport: null,
+      supersedesConfirmedPlan: false,
+      planSource: null,
     };
   }
 
-  const draftApproval = findToddUpdatePlanDraftApproval(session);
   if (!draftApproval) {
     return {
       source: "none",
@@ -471,6 +522,8 @@ export const buildDisplayedUpdatePlan = (session: AgentSession | null): {
       updates: [],
       draftApprovalId: null,
       draftReport: null,
+      supersedesConfirmedPlan: false,
+      planSource: null,
     };
   }
 
@@ -483,6 +536,8 @@ export const buildDisplayedUpdatePlan = (session: AgentSession | null): {
       : [],
     draftApprovalId: draftApproval.id,
     draftReport,
+    supersedesConfirmedPlan: draftMeta.supersedesConfirmedPlan,
+    planSource: draftMeta.planSource,
   };
 };
 

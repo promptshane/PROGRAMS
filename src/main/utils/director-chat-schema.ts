@@ -106,3 +106,20 @@ export const directorPongCompareSchema = buildStrictObjectSchema({
   },
   comparisonSummary: { type: ["string", "null"] },
 });
+
+export const directorToddReviewSchema = buildStrictObjectSchema({
+  response: { type: "string" },
+  nextAction: { type: "string" },
+  finalDecision: { type: ["string", "null"] },
+  finalSummary: { type: ["string", "null"] },
+  retryInstruction: { type: ["string", "null"] },
+  validationInstruction: { type: ["string", "null"] },
+  replanNeeded: { type: "boolean" },
+  replanReason: { type: ["string", "null"] },
+  replanCurrentState: { type: ["string", "null"] },
+  replanIdealState: { type: ["string", "null"] },
+  replanUpdates: {
+    type: ["array", "null"] as const,
+    items: toddUpdateItemSchema,
+  },
+});

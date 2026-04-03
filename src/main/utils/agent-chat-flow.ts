@@ -98,8 +98,8 @@ const AUTO_ROUTED_AGENT_CHAT_DIRECTORS: DirectorId[] = [
 const DIRECT_ROUTE_PATTERNS: { pattern: RegExp; directorId: DirectorId }[] = [
   { pattern: /^(?:hey\s+|@)?dan\b[,:\s]/i, directorId: "creative-director" },
   { pattern: /^(?:hey\s+|@)?todd\b[,:\s]/i, directorId: "rd-director" },
-  { pattern: /^(?:hey\s+|@)?ping\b[,:\s]/i, directorId: "programming-director" },
-  { pattern: /^(?:hey\s+|@)?pong\b[,:\s]/i, directorId: "validation-director" },
+  { pattern: /^(?:hey\s+|@)?ping\b[,:\s]/i, directorId: "rd-director" },
+  { pattern: /^(?:hey\s+|@)?pong\b[,:\s]/i, directorId: "rd-director" },
   { pattern: /^(?:hey\s+|@)?jeff\b[,:\s]/i, directorId: "project-manager" },
 ];
 
@@ -326,7 +326,7 @@ export const buildAgentChatResponseContract = (
       case "versions":
         return `- "versions": array|null. Required for Todd version-planning only. Each item must include label, description, and goals. Use null when you are only discussing.`;
       case "updates":
-        return `- "updates": array|null. Required for Todd update-planning only. Each item must include title, description, versionLabel, dependencies, area, and skillsNeeded. Use null when you are only discussing.`;
+        return `- "updates": array|null. Required for Todd update-planning only. Each item must include title, description, versionLabel, dependencies, area, skillsNeeded, updateKind, simplificationMode, structuralReason, and supportsNextStep. Use null when you are only discussing.`;
       case "notesToAppend":
         return directorId === "creative-director"
           ? `- "notesToAppend": string[]. Required for Dan only. Soft memory notes for this session. These are temporary working notes cleared when Dan leaves. Use [] when nothing new should be stored.`
@@ -454,6 +454,28 @@ export const validateAgentChatTurnParsedResponse = (
         }
         if (!Array.isArray(item.skillsNeeded) || !item.skillsNeeded.every((skill) => typeof skill === "string")) {
           throw new Error(`Agent chat structured output has an invalid "updates.skillsNeeded" field for ${DIRECTOR_NAMES[directorId]}.`);
+        }
+        if (
+          item.updateKind !== "create"
+          && item.updateKind !== "expand"
+          && item.updateKind !== "refine"
+          && item.updateKind !== "simplify"
+        ) {
+          throw new Error(`Agent chat structured output has an invalid "updates.updateKind" field for ${DIRECTOR_NAMES[directorId]}.`);
+        }
+        if (
+          item.simplificationMode !== null
+          && item.simplificationMode !== "inline"
+          && item.simplificationMode !== "staged"
+          && item.simplificationMode !== "overhaul"
+        ) {
+          throw new Error(`Agent chat structured output has an invalid "updates.simplificationMode" field for ${DIRECTOR_NAMES[directorId]}.`);
+        }
+        if (item.structuralReason !== null && typeof item.structuralReason !== "string") {
+          throw new Error(`Agent chat structured output has an invalid "updates.structuralReason" field for ${DIRECTOR_NAMES[directorId]}.`);
+        }
+        if (item.supportsNextStep !== null && typeof item.supportsNextStep !== "string") {
+          throw new Error(`Agent chat structured output has an invalid "updates.supportsNextStep" field for ${DIRECTOR_NAMES[directorId]}.`);
         }
       }
     }

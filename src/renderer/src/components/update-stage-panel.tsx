@@ -21,8 +21,10 @@ import { TypewriterText } from "./icons";
 import { CoreDetailsReport } from "./core-details";
 import { labelForPlanStatus } from "../lib/labels";
 import {
+  buildHardMemoryReportFromApproval,
   findHardMemoryReportMetadata,
   collectHardMemoryRoadmapVersions,
+  getToddUpdatePlanDraftMeta,
   resolveHardMemoryReportArea,
 } from "../lib/session-helpers";
 import { resolveDanHardMemoryReportDraft } from "../lib/hard-memory-report";
@@ -46,90 +48,6 @@ const labelForPendingApprovalKind = (kind: PendingApproval["kind"]): string => {
     case "outcome-decision":
       return "Outcome Decision";
   }
-};
-
-const buildHardMemoryReportFromApproval = (
-  session: AgentSession | null,
-  approval: PendingApproval,
-): HardMemoryReportMetadata | null => {
-  const liveReport = findHardMemoryReportMetadata(session, approval.id);
-  if (liveReport) {
-    return liveReport;
-  }
-
-  const payload = approval.draftPayload;
-  if (!payload || payload.action !== "applyStoredData") {
-    return null;
-  }
-
-  const createdAt = approval.updatedAt ?? approval.createdAt;
-
-  if (payload.dataType === "danDraftCoreDetails" && payload.draftCoreDetails) {
-    return {
-      type: "hard-memory-report",
-      dataType: "danDraftCoreDetails",
-      directorId: "creative-director",
-      approvalId: approval.id,
-      reportStage: "hard",
-      summary: approval.draftMessage ?? approval.summary,
-      currentState: typeof payload.currentState === "string" ? payload.currentState : null,
-      idealState: typeof payload.idealState === "string" ? payload.idealState : null,
-      changeSummary: Array.isArray(payload.draftChangeSummary)
-        ? payload.draftChangeSummary.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
-        : [],
-      draftCoreDetails: payload.draftCoreDetails as AgentCoreDetails,
-      roadmapVersions: null,
-      versionUpdates: null,
-      createdAt,
-    };
-  }
-
-  if (payload.dataType === "versions" && Array.isArray(payload.versions)) {
-    return {
-      type: "hard-memory-report",
-      dataType: "versions",
-      directorId: "rd-director",
-      approvalId: approval.id,
-      reportStage: "hard",
-      summary: approval.draftMessage ?? approval.summary,
-      currentState: typeof payload.currentState === "string" ? payload.currentState : null,
-      idealState: typeof payload.idealState === "string" ? payload.idealState : null,
-      changeSummary: [],
-      draftCoreDetails: null,
-      roadmapVersions: payload.versions as VersionPlan[],
-      versionUpdates: null,
-      createdAt,
-    };
-  }
-
-  if (payload.dataType === "versionUpdates" && Array.isArray(payload.updates)) {
-    const roadmapVersions = collectHardMemoryRoadmapVersions(session);
-    return {
-      type: "hard-memory-report",
-      dataType: "versionUpdates",
-      directorId: "rd-director",
-      approvalId: approval.id,
-      reportStage: "hard",
-      summary: approval.draftMessage ?? approval.summary,
-      currentState: typeof payload.currentState === "string" ? payload.currentState : null,
-      idealState: typeof payload.idealState === "string" ? payload.idealState : null,
-      changeSummary: [],
-      draftCoreDetails: null,
-      roadmapVersions,
-      versionUpdates: (payload.updates as VersionUpdate[]).map((update) => ({
-        id: update.id,
-        title: update.title,
-        description: update.description,
-        versionLabel: roadmapVersions.find((version) => version.id === update.versionId)?.label ?? "Unassigned",
-        dependencies: Array.isArray(update.dependencies) ? update.dependencies : [],
-        area: resolveHardMemoryReportArea(session, Array.isArray(update.pillarIds) ? update.pillarIds : []),
-        skillsNeeded: Array.isArray(update.skillsNeeded) ? update.skillsNeeded : [],
-      })),
-      createdAt,
-    };
-  }
-
-  return null;
 };
 
 function HardMemoryReportSections({
@@ -159,6 +77,10 @@ function HardMemoryReportSections({
     : versionGroups
     ? Object.keys(versionGroups).sort()
     : [];
+  const reportApproval = report.approvalId
+    ? session?.pendingApprovals.find((approval) => approval.id === report.approvalId) ?? null
+    : null;
+  const reportDraftMeta = getToddUpdatePlanDraftMeta(reportApproval);
 
   return (
     <div className="hardMemoryReportSections">
@@ -240,6 +162,11 @@ function HardMemoryReportSections({
       {report.dataType === "versionUpdates" ? (
         <div className="pendingProposalCard">
           <h5>Grouped Updates</h5>
+          {reportDraftMeta.supersedesConfirmedPlan ? (
+            <p className="helperText" style={{ marginBottom: 12 }}>
+              Todd marked this as a superseding structural replan from a post-run checkpoint. Confirm it before Ping continues from the older queue.
+            </p>
+          ) : null}
           {report.versionUpdates && report.versionUpdates.length > 0 ? (
             <div className="updatePlanList">
               {orderedGroupLabels.map((versionLabel) => {
@@ -253,10 +180,28 @@ function HardMemoryReportSections({
                         <div className="updateContent">
                           <div className="updateTitle">{update.title}</div>
                           <div className="updateDescription">{update.description}</div>
+                          {update.updateKind || update.simplificationMode ? (
+                            <div className="flowStepPillars" style={{ marginTop: 8 }}>
+                              {update.updateKind ? <span className="flowStepPillarTag">{update.updateKind}</span> : null}
+                              {update.simplificationMode ? <span className="flowStepPillarTag">{update.simplificationMode}</span> : null}
+                            </div>
+                          ) : null}
                           {update.area ? (
                             <div className="pillarDetailRow" style={{ marginTop: 8 }}>
                               <span className="pillarDetailLabel">Area</span>
                               <span>{update.area}</span>
+                            </div>
+                          ) : null}
+                          {update.structuralReason ? (
+                            <div className="pillarDetailRow" style={{ marginTop: 8 }}>
+                              <span className="pillarDetailLabel">Structural Reason</span>
+                              <span>{update.structuralReason}</span>
+                            </div>
+                          ) : null}
+                          {update.supportsNextStep ? (
+                            <div className="pillarDetailRow" style={{ marginTop: 8 }}>
+                              <span className="pillarDetailLabel">Supports Next</span>
+                              <span>{update.supportsNextStep}</span>
                             </div>
                           ) : null}
                           {update.dependencies.length > 0 ? (

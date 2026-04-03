@@ -9,6 +9,7 @@ import {
   directorPongTestSchema,
   directorPingSchema,
   directorPmSchema,
+  directorToddReviewSchema,
   directorToddResearchSchema,
   directorToddUpdateSchema,
   directorToddVersionSchema,
@@ -161,6 +162,12 @@ test("Todd DM schemas include routing and memory fields across planning modes", 
     assert.ok(schema.required.includes("currentState"));
     assert.ok(schema.required.includes("idealState"));
     assert.ok(schema.required.includes("notesToAppend"));
+  }
+});
+
+test("Todd review schema includes structural replan fields", () => {
+  for (const field of ["replanNeeded", "replanReason", "replanCurrentState", "replanIdealState", "replanUpdates"]) {
+    assert.ok(directorToddReviewSchema.required.includes(field));
   }
 });
 

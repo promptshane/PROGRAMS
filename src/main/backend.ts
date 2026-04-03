@@ -69,6 +69,8 @@ import {
   sanitizeSlackResponseContent,
 } from "@shared/agent-session";
 import {
+  BIG_CLAUDE_MODEL,
+  BIG_CODEX_MODEL,
   getDirectorRuntimeDefaults,
   getDirectorMetadata,
   resolveDirectorModelSelection,
@@ -179,6 +181,7 @@ import type {
   ProjectKnowledgeStatus,
   ProjectDirectorProgress,
   RdFocusMode,
+  ReasoningEffort,
   ValidationFocusMode,
   PlanDraft,
   Project,
@@ -316,6 +319,82 @@ function applyPingExecutionRuntimeToDraft(draft: PlanDraft): void {
   draft.claudeModel = runtime.claudeModel;
   draft.reasoningEffort = runtime.reasoningEffort;
   draft.contextPaths = [...runtime.contextPaths];
+}
+
+function isLargeModelSelection(
+  provider: AiProvider,
+  model: StartPlanInput["model"],
+  claudeModel: StartPlanInput["claudeModel"],
+): boolean {
+  return provider === "claude"
+    ? claudeModel === BIG_CLAUDE_MODEL
+    : model === BIG_CODEX_MODEL;
+}
+
+function buildPingUpdatePrompt(update: VersionUpdate): string {
+  return `Update: ${update.title}\n\nDescription: ${update.description}`;
+}
+
+function buildToddApprovedPingTaskSnapshot(
+  session: AgentSession,
+  input: {
+    projectId: string;
+    update: VersionUpdate;
+    provider: AiProvider;
+    model: StartPlanInput["model"];
+    claudeModel: StartPlanInput["claudeModel"];
+    reasoningEffort: ReasoningEffort;
+    planningMode: PlanningMode;
+    contextPaths?: string[];
+  },
+): PingTaskSnapshot {
+  const pingModelSelections = resolvePingRunModelSelections(
+    session,
+    input.provider,
+    input.model,
+    input.claudeModel,
+  );
+
+  return buildPingTaskSnapshot({
+    source: "todd-approved-update",
+    projectId: input.projectId,
+    updateId: input.update.id,
+    updateTitle: input.update.title,
+    updateDescription: input.update.description,
+    originalUserRequest: resolveLatestHumanRequest(session, `${input.update.title}: ${input.update.description}`),
+    toddExplanation: input.update.description,
+    relevantPillarIds: input.update.pillarIds ?? [],
+    toddCodebaseMapSummary: session.toddMemory.codebaseIndexedMap?.summary ?? null,
+    coreDetailsContext: formatCoreDetails(session) || null,
+    runtime: {
+      provider: input.provider,
+      model: pingModelSelections.execution.model,
+      claudeModel: pingModelSelections.execution.claudeModel,
+      reasoningEffort: input.reasoningEffort,
+      planningMode: input.planningMode,
+      contextPaths: [...(input.contextPaths ?? [])],
+    },
+  });
+}
+
+function buildPingAcknowledgementText(task: PingTaskSnapshot): string {
+  if (task.updateTitle) {
+    return `I'll map the plan for "${task.updateTitle}" now.`;
+  }
+  return "I'll map the plan for this update now.";
+}
+
+function formatJeffOutcomeDecisionLabel(decision: JeffOutcomeDecision): string {
+  switch (decision) {
+    case "successful":
+      return "successful";
+    case "partially-successful":
+      return "partially successful";
+    case "failure":
+      return "a failure";
+    default:
+      return "pending review";
+  }
 }
 
 function isPingStartupFailure(error: unknown): error is Error & {
@@ -2109,6 +2188,7 @@ const buildJeffExecutionReport = (input: {
   title: string;
   summary: string;
   outcome: string;
+  toddRecommendedDecision?: JeffOutcomeDecision | null;
   toddFollowUpNeeded: boolean;
   toddFollowUpReason?: string | null;
   toddReplanNeeded?: boolean;
@@ -2130,6 +2210,7 @@ const buildJeffExecutionReport = (input: {
   title: input.title,
   summary: input.summary,
   outcome: input.outcome,
+  toddRecommendedDecision: input.toddRecommendedDecision ?? null,
   toddFollowUpNeeded: input.toddFollowUpNeeded,
   toddFollowUpReason: input.toddFollowUpReason ?? null,
   toddReplanNeeded: input.toddReplanNeeded ?? false,
@@ -4764,6 +4845,25 @@ export class ProgramsBackend {
     return `${prefix}: ${clipped}`;
   }
 
+  private buildPingTaskReportContent(task: PingTaskSnapshot): string {
+    if (task.updateTitle && task.updateDescription) {
+      return `Task Report for Ping: ${task.updateTitle}. ${task.updateDescription} Confirm before PROGRAMS starts the planning pass.`;
+    }
+    return `Task Report for Ping: ${task.originalUserRequest} Confirm before PROGRAMS starts the planning pass.`;
+  }
+
+  private appendPingTaskReportMessage(session: AgentSession, task: PingTaskSnapshot): AgentChatMessage {
+    return this.appendSlackAssistantMessage(
+      session,
+      "rd-director",
+      this.buildPingTaskReportContent(task),
+      {
+        status: "complete",
+        metadata: { type: "ping-task", task },
+      },
+    );
+  }
+
   private buildHardMemoryReportMetadata(input: {
     directorId: Extract<DirectorId, "creative-director" | "rd-director">;
     dataType: HardMemoryReportDataType;
@@ -5094,6 +5194,17 @@ export class ProgramsBackend {
       return null;
     }
 
+    const pingDefaults = resolveDirectorRuntime(session, "programming-director");
+    const task = buildToddApprovedPingTaskSnapshot(session, {
+      projectId: project.id,
+      update,
+      provider,
+      model,
+      claudeModel,
+      reasoningEffort: pingDefaults.reasoningEffort,
+      planningMode: pingDefaults.planningMode,
+    });
+
     const existingApproval = this.findPendingApprovalByAction(
       session,
       "routeUpdateToProgramming",
@@ -5103,6 +5214,7 @@ export class ProgramsBackend {
       },
     );
     if (!existingApproval) {
+      this.appendPingTaskReportMessage(session, task);
       this.queueApproval(session, {
         kind: "agent-update",
         requestedByDirectorId: "rd-director",
@@ -6268,21 +6380,6 @@ Instructions:
     await this.store.saveAgentSession(session);
     this.emit({ type: "agent.session", projectId: input.projectId, session });
 
-    const confirmedContext: string[] = [];
-    const fc = session.stages.function.confirmed;
-    if (fc) confirmedContext.push(`Function: ${fc.summary}`);
-    const tc = session.stages.thesis.confirmed;
-    if (tc) confirmedContext.push(`Thesis: ${tc.summary}`);
-    const cpc = session.stages.core_pillars.confirmed;
-    if (cpc) confirmedContext.push(`Core Pillars: ${cpc.summary}`);
-    if (session.corePillars.length > 0) {
-      confirmedContext.push(`Pillar Details: ${session.corePillars.map((p) => `${p.name} (${p.function?.summary ?? "TBD"})`).join(", ")}`);
-    }
-    const ff = session.stages.full_flow.confirmed;
-    if (ff) confirmedContext.push(`Full-Flow: ${ff.summary}`);
-
-    const prompt = `${confirmedContext.length > 0 ? `Project context:\n${confirmedContext.join("\n")}\n\n` : ""}Update: ${update.title}\n\nDescription: ${update.description}`;
-
     const programmingDefaults = resolveDirectorRuntime(session, "programming-director");
     const planningMode = options.planningMode ?? programmingDefaults.planningMode;
     const pingModelSelections = resolvePingRunModelSelections(
@@ -6291,18 +6388,19 @@ Instructions:
       input.model,
       input.claudeModel,
     );
-    const pingRuntime: PingRuntimeSnapshot = {
+    const pingTaskSnapshot = buildToddApprovedPingTaskSnapshot(session, {
+      projectId: input.projectId,
+      update,
       provider: input.provider,
-      model: pingModelSelections.execution.model,
-      claudeModel: pingModelSelections.execution.claudeModel,
+      model: input.model,
+      claudeModel: input.claudeModel,
       reasoningEffort: programmingDefaults.reasoningEffort,
       planningMode,
-      contextPaths: [],
-    };
+    });
     const planInput: StartPlanInput = {
       projectId: input.projectId,
       provider: input.provider,
-      prompt,
+      prompt: buildPingUpdatePrompt(update),
       speed: "normal",
       model: pingModelSelections.planning.model,
       claudeModel: pingModelSelections.planning.claudeModel,
@@ -6311,19 +6409,7 @@ Instructions:
       autoApprove: planningMode === "auto",
       contextPaths: [],
       usageBefore: options.usageBefore ?? null,
-      pingTaskSnapshot: buildPingTaskSnapshot({
-        source: "todd-approved-update",
-        projectId: input.projectId,
-        updateId: update.id,
-        updateTitle: update.title,
-        updateDescription: update.description,
-        originalUserRequest: resolveLatestHumanRequest(session, `${update.title}: ${update.description}`),
-        toddExplanation: update.description,
-        relevantPillarIds: update.pillarIds ?? [],
-        toddCodebaseMapSummary: session.toddMemory.codebaseIndexedMap?.summary ?? null,
-        coreDetailsContext: formatCoreDetails(session) || null,
-        runtime: pingRuntime,
-      }),
+      pingTaskSnapshot,
     };
 
     return this.startPlanNow(planInput);
@@ -6412,6 +6498,7 @@ Instructions:
         runtime,
       }),
     };
+    const pingTaskSnapshot = planInput.pingTaskSnapshot;
 
     const existingApproval = this.findPendingApprovalByAction(
       session,
@@ -6422,7 +6509,8 @@ Instructions:
           && payloadInput?.prompt === message;
       },
     );
-    if (!existingApproval) {
+    if (!existingApproval && pingTaskSnapshot) {
+      this.appendPingTaskReportMessage(session, pingTaskSnapshot);
       this.queueApproval(session, {
         kind: "agent-update",
         requestedByDirectorId: "rd-director",
@@ -6943,6 +7031,13 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     const settings = await this.store.readSettings();
     await this.requireProviderReady(input.provider, settings);
     const project = await this.requireProject(input.projectId);
+
+    if (
+      input.runtimeStage === "memory-processing"
+      && (input.directorId === "creative-director" || input.directorId === "rd-director")
+    ) {
+      throw new Error("Hard-memory processing must stay behind the approval flow before PROGRAMS starts the large-model pass.");
+    }
 
     let session = await this.store.getAgentSession(input.projectId);
     if (!session) {
@@ -7901,122 +7996,22 @@ Your response must be ONLY strict JSON (no markdown fences).`;
 
     const pendingValidation = session.jeffMemory.pendingValidations[0] ?? null;
     if (pendingValidation) {
-      const decision: JeffOutcomeDecision = pendingValidation.passed === false
-        ? "failure"
-        : pendingValidation.passed === true
-          ? "successful"
-          : "partially-successful";
-      await this.recordJeffOutcome({
-        projectId: session.projectId,
-        reportId: pendingValidation.id,
-        decision,
-        summary: pendingValidation.summary,
-      });
-      if (decision === "failure") {
-        const latest = await this.getAgentSession(session.projectId);
-        if (latest) {
-          await this.stopAutomationWithReason(
-            latest,
-            "failure",
-            latest.automation.pendingRevertCommitSha
-              ? "Automation stopped after a failed validation. A revert is available."
-              : "Automation stopped after a failed validation. Manual recovery is required.",
-          );
-        }
-        return false;
-      }
-      if (decision === "partially-successful") {
-        const latest = await this.getAgentSession(session.projectId);
-        if (latest) {
-          await this.stopAutomationWithReason(
-            latest,
-            "partially-successful",
-            "Automation stopped because validation returned an unresolved partial result.",
-          );
-        }
-        return false;
-      }
-      return true;
+      await this.stopAutomationWithReason(
+        session,
+        "awaiting-user",
+        `Automation paused while Jeff waits for a decision on Pong's validation: ${pendingValidation.summary}`,
+      );
+      return false;
     }
 
     const pendingReport = session.jeffMemory.pendingReports[0] ?? null;
     if (pendingReport) {
-      const pendingUpdate = pendingReport.updateId
-        ? session.toddMemory.futureUpdatePlan.find((update) => update.id === pendingReport.updateId) ?? null
-        : null;
-      if (pendingUpdate && shouldAutomationValidateUpdate(session, pendingUpdate)) {
-        this.patchAutomationState(session, {
-          currentStep: "pong",
-          nextUpdateId: pendingUpdate.id,
-        });
-        this.appendJeffSlackMessage(session, `Pong, validate "${pendingUpdate.title}" before I decide whether to continue.`);
-        await this.saveAgentSession(session.projectId, session);
-        await this.runValidationNow({
-          projectId: session.projectId,
-          updateId: pendingUpdate.id,
-          validationType: resolveAutomationValidationType(pendingUpdate),
-          provider: settings.advancedDefaults.provider,
-          model: settings.advancedDefaults.model,
-          claudeModel: settings.advancedDefaults.claudeModel,
-        });
-        return true;
-      }
-
-      const decision: JeffOutcomeDecision = pendingReport.rawReport.status === "blocked"
-        ? "failure"
-        : pendingReport.rawReport.status === "unexpected"
-          ? "partially-successful"
-          : "successful";
-      await this.recordJeffOutcome({
-        projectId: session.projectId,
-        reportId: pendingReport.id,
-        decision,
-        summary: pendingReport.summary,
-      });
-
-      if (decision === "partially-successful") {
-        const latest = await this.getAgentSession(session.projectId);
-        if (latest) {
-          const approvalReason = pendingReport.toddFollowUpReason ?? pendingReport.summary;
-          this.queueApproval(latest, {
-            kind: "outcome-decision",
-            requestedByDirectorId: "project-manager",
-            targetDirectorId: "rd-director",
-            summary: this.buildApprovalSummary("Todd follow-up plan required", approvalReason),
-            draftMessage: approvalReason,
-            draftPayload: {
-              action: "runSlackDirector",
-              directorId: "rd-director",
-              provider: settings.advancedDefaults.provider,
-              model: settings.advancedDefaults.model,
-              claudeModel: settings.advancedDefaults.claudeModel,
-              mode: "update-planning",
-              message: `Write one immediate follow-up update to resolve this issue before the roadmap continues: ${approvalReason}`,
-            },
-          });
-          await this.stopAutomationWithReason(
-            latest,
-            "partially-successful",
-            "Automation stopped because Jeff marked the latest step as partially successful. Todd needs to write the follow-up plan before continuing.",
-          );
-        }
-        return false;
-      }
-
-      if (decision === "failure") {
-        const latest = await this.getAgentSession(session.projectId);
-        if (latest) {
-          await this.stopAutomationWithReason(
-            latest,
-            "failure",
-            latest.automation.pendingRevertCommitSha
-              ? "Automation stopped after a failure. A revert is available."
-              : "Automation stopped after a failure. Manual recovery is required.",
-          );
-        }
-        return false;
-      }
-      return true;
+      await this.stopAutomationWithReason(
+        session,
+        "awaiting-user",
+        `Automation paused while Jeff waits for a decision on "${pendingReport.title}".`,
+      );
+      return false;
     }
 
     const nextUpdate = plan.updates
@@ -8055,14 +8050,22 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     });
     this.appendJeffSlackMessage(session, `Next step toward the target: "${nextUpdate.title}".`);
     await this.saveAgentSession(session.projectId, session);
-    await this.routeUpdateToProgrammingNow({
+    await this.routeUpdateToProgramming({
       projectId: session.projectId,
       updateId: nextUpdate.id,
       provider: settings.advancedDefaults.provider,
       model: settings.advancedDefaults.model,
       claudeModel: settings.advancedDefaults.claudeModel,
     });
-    return true;
+    const latest = await this.getAgentSession(session.projectId);
+    if (latest) {
+      await this.stopAutomationWithReason(
+        latest,
+        "awaiting-user",
+        `Automation paused while Ping waits for confirmation on "${nextUpdate.title}".`,
+      );
+    }
+    return false;
   }
 
   private async refreshProjectNow(input: RefreshProjectInput): Promise<void> {
@@ -8941,6 +8944,16 @@ Return ONLY strict JSON matching:
     update.status = "in_progress";
     session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
     const usageBefore = buildUsageCapture(input.provider, await this.readUsage());
+    const programmingDefaults = resolveDirectorRuntime(session, "programming-director");
+    const pingTaskSnapshot = buildToddApprovedPingTaskSnapshot(session, {
+      projectId: input.projectId,
+      update,
+      provider: input.provider,
+      model: input.model,
+      claudeModel: input.claudeModel,
+      reasoningEffort: programmingDefaults.reasoningEffort,
+      planningMode: "auto",
+    });
 
     // Populate Ping's short-horizon task context
     session.pingTaskContext = {
@@ -8957,12 +8970,14 @@ Return ONLY strict JSON matching:
     session.pingMemory.latestRawReport = null;
     session.pingMemory.latestJeffReport = null;
     session.slackMessages = session.slackMessages ?? [];
-    this.appendSlackAssistantMessage(
-      session,
-      "rd-director",
-      `I’m handing Ping one specific update: ${update.title}. ${update.description}`,
-      { status: "complete" },
-    );
+    session.pingMemory.currentRun = {
+      task: pingTaskSnapshot,
+      plan: null,
+      report: null,
+      usageBefore,
+      usageAfter: null,
+      validationReport: null,
+    };
     session.slackActiveDirectorId = "programming-director";
     session.slackPresenceGuestId = "programming-director";
 
@@ -8993,6 +9008,17 @@ Return ONLY strict JSON matching:
       throw new Error("No pending programming update found.");
     }
 
+    const pingDefaults = resolveDirectorRuntime(session, "programming-director");
+    const task = buildToddApprovedPingTaskSnapshot(session, {
+      projectId: input.projectId,
+      update,
+      provider: input.provider,
+      model: input.model,
+      claudeModel: input.claudeModel,
+      reasoningEffort: pingDefaults.reasoningEffort,
+      planningMode: "auto",
+    });
+
     const existingApproval = this.findPendingApprovalByAction(
       session,
       "routeUpdateToProgramming",
@@ -9002,6 +9028,7 @@ Return ONLY strict JSON matching:
       },
     );
     if (!existingApproval) {
+      this.appendPingTaskReportMessage(session, task);
       this.queueApproval(session, {
         kind: "agent-update",
         requestedByDirectorId: "rd-director",
@@ -9030,7 +9057,6 @@ Return ONLY strict JSON matching:
     decision: JeffOutcomeDecision;
     summary: string;
   }): Promise<void> {
-    const settings = await this.store.readSettings();
     const session = await this.store.getAgentSession(input.projectId);
     if (!session) return;
     syncAgentMemories(session);
@@ -9055,27 +9081,50 @@ Return ONLY strict JSON matching:
       session.jeffMemory.pendingValidations.splice(validationIndex, 1);
     }
 
-    const updateId = report?.updateId ?? validation?.updateId ?? null;
-    const historyUpdateId = report?.historyUpdateId ?? validation?.historyUpdateId ?? null;
-    const commitSha = report?.commitSha ?? null;
+    if (!report) {
+      await this.saveAgentSession(input.projectId, session);
+      return;
+    }
+
+    const updateId = report.updateId ?? validation?.updateId ?? null;
+    const historyUpdateId = report.historyUpdateId ?? validation?.historyUpdateId ?? null;
+    const commitSha = report.commitSha ?? null;
+    const finalizedReport: JeffExecutionReport = {
+      ...report,
+      summary: input.summary,
+      outcome: input.summary,
+      toddRecommendedDecision: report.toddRecommendedDecision ?? report.decision ?? null,
+      decision: input.decision,
+      revertAvailable: Boolean(input.decision === "failure" && commitSha && historyUpdateId),
+      revertHistoryUpdateId: historyUpdateId,
+      revertCommitSha: commitSha,
+    };
     const decisionStatus: PingRawReportStatus = input.decision === "successful"
-      ? report?.rawReport.status ?? "success"
+      ? report.rawReport.status ?? "success"
       : input.decision === "partially-successful"
         ? "unexpected"
-        : report?.rawReport.status === "unexpected"
+        : report.rawReport.status === "unexpected"
           ? "unexpected"
           : "blocked";
 
     const outcomeEntry: JeffOutcomeEntry = {
       id: randomUUID(),
       updateId,
-      reportId: input.reportId,
+      reportId: finalizedReport.id,
       decision: input.decision,
       summary: input.summary,
       revertTriggered: input.decision === "failure",
       createdAt: new Date().toISOString(),
     };
     session.jeffMemory.outcomeLog.push(outcomeEntry);
+    session.pingMemory.latestJeffReport = finalizedReport;
+    if (session.pingMemory.currentRun?.report && session.pingMemory.currentRun.report.rawReport.updateId === updateId) {
+      session.pingMemory.currentRun.report = {
+        ...session.pingMemory.currentRun.report,
+        jeffReportId: finalizedReport.id,
+        jeffSummary: input.summary,
+      };
+    }
 
     if (input.decision === "successful" && updateId) {
       const update = session.toddMemory.futureUpdatePlan.find((u) => u.id === updateId);
@@ -9100,7 +9149,7 @@ Return ONLY strict JSON matching:
       }
       session.toddMemory.troubleLog.push({
         id: randomUUID(),
-        title: `Partial: ${report?.title ?? "Validation report"}`,
+        title: `Partial: ${finalizedReport.title}`,
         details: input.summary,
         priority: "medium",
         occurrences: 1,
@@ -9112,7 +9161,7 @@ Return ONLY strict JSON matching:
     if (input.decision === "failure") {
       session.toddMemory.troubleLog.push({
         id: randomUUID(),
-        title: `Failed: ${report?.title ?? "Validation report"}`,
+        title: `Failed: ${finalizedReport.title}`,
         details: input.summary,
         priority: "high",
         occurrences: 1,
@@ -9126,7 +9175,7 @@ Return ONLY strict JSON matching:
           session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
         }
       }
-      session.automation.pendingRevertReportId = commitSha && historyUpdateId ? input.reportId : null;
+      session.automation.pendingRevertReportId = commitSha && historyUpdateId ? finalizedReport.id : null;
       session.automation.pendingRevertHistoryUpdateId = historyUpdateId;
       session.automation.pendingRevertCommitSha = commitSha;
     }
@@ -9135,10 +9184,10 @@ Return ONLY strict JSON matching:
       session.toddMemory.previousUpdateLog.push({
         id: randomUUID(),
         updateId,
-        goal: report?.rawReport.goal ?? report?.title ?? validation?.summary ?? "Execution update",
+        goal: finalizedReport.rawReport.goal ?? finalizedReport.title ?? validation?.summary ?? "Execution update",
         outcome: input.summary,
         status: decisionStatus,
-        reportId: input.reportId,
+        reportId: finalizedReport.id,
         historyUpdateId,
         commitSha,
         createdAt: new Date().toISOString(),
@@ -9152,9 +9201,9 @@ Return ONLY strict JSON matching:
         : input.decision === "partially-successful"
           ? `Marked as partially successful. Todd needs a follow-up plan before this continues.`
           : commitSha && historyUpdateId
-            ? `Marked as failure. Automation stopped and a revert is available if you want it.`
-            : `Marked as failure. Automation stopped and this needs manual recovery.`,
-      report ?? null,
+            ? `Marked as failure. A revert is available if you want it.`
+            : `Marked as failure. This needs manual recovery.`,
+      finalizedReport,
     );
     session.slackActiveDirectorId = "project-manager";
     session.slackPresenceGuestId = null;
@@ -9190,9 +9239,12 @@ Return ONLY strict JSON matching:
       `I’m asking Pong to validate this pass before we finalize it. ${input.instruction}`,
       { status: "complete" },
     );
-    this.appendSlackAssistantMessage(session, "validation-director", "", { status: "working" });
-    await this.saveAgentSession(input.projectId, session);
-    await this.runValidationNow({
+    const usesLargeValidationModel = isLargeModelSelection(
+      settings.advancedDefaults.provider,
+      settings.advancedDefaults.model,
+      settings.advancedDefaults.claudeModel,
+    );
+    const validationInput: RunValidationInput = {
       projectId: input.projectId,
       updateId: input.updateId ?? "",
       validationType: input.updateId
@@ -9219,7 +9271,27 @@ Return ONLY strict JSON matching:
       provider: settings.advancedDefaults.provider,
       model: settings.advancedDefaults.model,
       claudeModel: settings.advancedDefaults.claudeModel,
-    });
+    };
+
+    if (usesLargeValidationModel) {
+      if (session.automation.status === "running") {
+        this.patchAutomationState(session, {
+          status: "stopped",
+          stopReason: "awaiting-user",
+          stopSummary: "Automation paused while Pong waits for validation confirmation.",
+          currentStep: "awaiting-user",
+          nextUpdateId: null,
+        });
+        this.appendJeffSlackMessage(session, "Automation paused while Pong waits for validation confirmation.");
+      }
+      await this.saveAgentSession(input.projectId, session);
+      await this.runValidation(validationInput);
+      return;
+    }
+
+    this.appendSlackAssistantMessage(session, "validation-director", "", { status: "working" });
+    await this.saveAgentSession(input.projectId, session);
+    await this.runValidationNow(validationInput);
   }
 
   private async runValidationNow(input: RunValidationInput): Promise<ValidationResult> {
@@ -10055,6 +10127,12 @@ Return ONLY strict JSON matching:
   }): Promise<{ started: true }> {
     const settings = await this.store.readSettings();
     const session = await this.getOrCreateAgentSession(input.projectId, input.runtime.provider);
+    const pingModelSelections = resolvePingRunModelSelections(
+      session,
+      input.runtime.provider,
+      input.runtime.model,
+      input.runtime.claudeModel,
+    );
     const usageBefore = buildUsageCapture(input.runtime.provider, await this.readUsage());
     const pingTaskSnapshot = buildPingTaskSnapshot({
       source: "direct-ping-request",
@@ -10065,20 +10143,58 @@ Return ONLY strict JSON matching:
       coreDetailsContext: formatCoreDetails(session) || null,
       runtime: input.runtime,
     });
-    return this.startPlanNow({
+    const planInput: StartPlanInput = {
       projectId: input.projectId,
       provider: input.runtime.provider,
       prompt: input.message,
       speed: input.runtime.provider === "claude" ? "normal" : settings.defaultSpeed,
-      model: input.runtime.model,
-      claudeModel: input.runtime.claudeModel,
+      model: pingModelSelections.planning.model,
+      claudeModel: pingModelSelections.planning.claudeModel,
       reasoningEffort: input.runtime.reasoningEffort,
       planningMode: input.runtime.planningMode,
       autoApprove: input.runtime.planningMode === "auto",
       contextPaths: input.runtime.contextPaths,
       usageBefore,
       pingTaskSnapshot,
-    });
+    };
+
+    const existingApproval = this.findPendingApprovalByAction(
+      session,
+      "startPlan",
+      (payload) => {
+        const payloadInput = isRecord(payload.input) ? payload.input : null;
+        return payloadInput?.projectId === input.projectId
+          && payloadInput?.prompt === input.message;
+      },
+    );
+    if (!existingApproval) {
+      this.appendPingTaskReportMessage(session, pingTaskSnapshot);
+      this.queueApproval(session, {
+        kind: "agent-update",
+        requestedByDirectorId: "rd-director",
+        targetDirectorId: "rd-director",
+        summary: this.buildApprovalSummary("Confirm Ping follow-up run", input.message),
+        draftMessage: "Todd prepared a focused Ping follow-up. Confirm before PROGRAMS spends tokens on the planning pass.",
+        draftPayload: {
+          action: "startPlan",
+          input: planInput,
+        },
+      });
+    }
+    if (session.automation.status === "running") {
+      this.patchAutomationState(session, {
+        status: "stopped",
+        stopReason: "awaiting-user",
+        stopSummary: "Automation paused while Ping waits for confirmation on Todd's follow-up task.",
+        currentStep: "awaiting-user",
+        nextUpdateId: null,
+      });
+      this.appendJeffSlackMessage(session, "Automation paused while Ping waits for confirmation on Todd's follow-up task.");
+    }
+    session.slackActiveDirectorId = "rd-director";
+    session.slackPresenceGuestId = "rd-director";
+    await this.saveAgentSession(input.projectId, session);
+    return { started: true };
   }
 
   private async handleToddSpecialistHandoff(input: {
@@ -10178,9 +10294,18 @@ Return ONLY strict JSON matching:
     };
     agentSession.slackActiveDirectorId = "programming-director";
     agentSession.slackPresenceGuestId = "programming-director";
+    this.appendSlackAssistantMessage(
+      agentSession,
+      "programming-director",
+      buildPingAcknowledgementText(pingTaskSnapshot),
+      {
+        status: "complete",
+        metadata: null,
+      },
+    );
     this.appendSlackAssistantMessage(agentSession, "programming-director", "", {
       status: "working",
-      metadata: { type: "ping-task", task: pingTaskSnapshot },
+      metadata: null,
     });
     agentSession.updatedAt = new Date().toISOString();
     await this.store.saveAgentSession(agentSession);
@@ -10896,6 +11021,7 @@ Return strict JSON with:
           : "Project Status Report",
       summary: input.summary,
       outcome: input.summary,
+      toddRecommendedDecision: input.decision,
       toddFollowUpNeeded: input.decision !== "successful",
       toddFollowUpReason: input.decision === "successful" ? null : input.summary,
       toddReplanNeeded: Boolean(replanProposal),
@@ -10903,123 +11029,41 @@ Return strict JSON with:
       toddReplanApprovalId: replanApproval?.id ?? null,
       historyUpdateId,
       commitSha,
-      decision: input.decision,
+      decision: null,
       pingReport,
       validationReport: input.validationReport,
-      revertAvailable: Boolean(input.decision === "failure" && commitSha && historyUpdateId),
+      revertAvailable: Boolean(commitSha && historyUpdateId),
       revertHistoryUpdateId: historyUpdateId,
       revertCommitSha: commitSha,
     });
 
     session.pingMemory.latestJeffReport = report;
-
-    if (input.decision === "successful" && updateId) {
-      const update = session.toddMemory.futureUpdatePlan.find((u) => u.id === updateId);
-      if (update) {
-        update.status = "completed";
-        session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
-      }
-      session.automation.lastSuccessfulUpdateId = updateId;
-      session.automation.lastSuccessfulHistoryUpdateId = historyUpdateId;
-      session.automation.pendingRevertReportId = null;
-      session.automation.pendingRevertHistoryUpdateId = null;
-      session.automation.pendingRevertCommitSha = null;
+    session.jeffMemory.pendingReports = [
+      ...session.jeffMemory.pendingReports.filter((item) => item.id !== report.id && item.updateId !== report.updateId),
+      report,
+    ];
+    if (session.pingMemory.currentRun?.report && session.pingMemory.currentRun.report.rawReport.updateId === updateId) {
+      session.pingMemory.currentRun.report = {
+        ...session.pingMemory.currentRun.report,
+        jeffReportId: report.id,
+        jeffSummary: input.summary,
+      };
     }
-
-    if (input.decision === "partially-successful") {
-      if (updateId) {
-        const update = session.toddMemory.futureUpdatePlan.find((u) => u.id === updateId);
-        if (update) {
-          update.status = "failed";
-          session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
-        }
-      }
-      session.toddMemory.troubleLog.push({
-        id: randomUUID(),
-        title: `Partial: ${report.title}`,
-        details: input.summary,
-        priority: "medium",
-        occurrences: 1,
-        lastSeenAt: new Date().toISOString(),
-        updateIds: updateId ? [updateId] : [],
-      });
-    }
-
-    if (input.decision === "failure") {
-      session.toddMemory.troubleLog.push({
-        id: randomUUID(),
-        title: `Failed: ${report.title}`,
-        details: input.summary,
-        priority: "high",
-        occurrences: 1,
-        lastSeenAt: new Date().toISOString(),
-        updateIds: updateId ? [updateId] : [],
-      });
-      if (updateId) {
-        const update = session.toddMemory.futureUpdatePlan.find((u) => u.id === updateId);
-        if (update) {
-          update.status = "failed";
-          session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
-        }
-      }
-      session.automation.pendingRevertReportId = report.id;
-      session.automation.pendingRevertHistoryUpdateId = historyUpdateId;
-      session.automation.pendingRevertCommitSha = commitSha;
-      session.jeffMemory.pendingReports = [...session.jeffMemory.pendingReports.filter((item) => item.id !== report.id), report];
-    }
-
-    if (updateId) {
-      session.toddMemory.previousUpdateLog.push({
-        id: randomUUID(),
-        updateId,
-        goal: rawReport.goal ?? report.title,
-        outcome: input.summary,
-        status: input.decision === "successful"
-          ? "success"
-          : input.decision === "partially-successful"
-            ? "unexpected"
-            : "blocked",
-        reportId: report.id,
-        historyUpdateId,
-        commitSha,
-        createdAt: new Date().toISOString(),
-      });
-    }
-
-    session.jeffMemory.outcomeLog.push({
-      id: randomUUID(),
-      updateId,
-      reportId: report.id,
-      decision: input.decision,
-      summary: input.summary,
-      revertTriggered: false,
-      createdAt: new Date().toISOString(),
-    });
 
     this.appendJeffSlackMessage(
       session,
-      input.decision === "successful"
-        ? `Complete success. ${input.summary}`
-        : input.decision === "partially-successful"
-          ? `Partial success. ${input.summary}`
-          : report.revertAvailable
-            ? `Failure. ${input.summary} A revert is ready when you want it.`
-            : `Failure. ${input.summary}`,
+      `Todd finished his review. He recommends ${formatJeffOutcomeDecisionLabel(input.decision)}. Review the Project Status Report and mark it successful, partially successful, or failure.`,
       report,
     );
     session.slackActiveDirectorId = "project-manager";
     session.slackPresenceGuestId = null;
     session.automation.updatedAt = new Date().toISOString();
 
-    if (session.automation.status === "running" && input.decision !== "successful") {
+    if (session.automation.status === "running") {
       this.patchAutomationState(session, {
         status: "stopped",
-        stopReason: input.decision === "failure" ? "failure" : "partially-successful",
-        stopSummary: input.decision === "failure"
-          ? report.revertAvailable
-            ? "Automation stopped after a failed step. A revert is available."
-            : "Automation stopped after a failed step."
-          : "Automation stopped after a partial-success outcome.",
+        stopReason: "awaiting-user",
+        stopSummary: "Automation paused while Jeff waits for your decision on the latest Ping report.",
         currentStep: "awaiting-user",
         nextUpdateId: null,
       });

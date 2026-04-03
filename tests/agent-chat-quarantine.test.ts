@@ -153,10 +153,11 @@ test("Agent chat no longer fails fast behind the quarantine gate", async () => {
   assert.equal(response.message.content, "Ready.");
 });
 
-test("Agent chat Ping with an active update skips the read-only chat turn and starts execution", async () => {
+test("Ping execution helper queues approval before the big-model planning pass", async () => {
   const backend = createBackend() as Record<string, unknown>;
   (backend.ensureInitialized as Function) = async () => {};
-  (backend.requireProject as Function) = async () => ({ id: "project-1", name: "Agent Chat Enabled Project" });
+  const project = { id: "project-1", name: "Agent Chat Enabled Project" };
+  (backend.requireProject as Function) = async () => project;
 
   const session = (backend.createEmptyAgentSession as Function)("project-1", "codex") as AgentSession;
   session.toddMemory.futureUpdatePlan = [
@@ -174,45 +175,31 @@ test("Agent chat Ping with an active update skips the read-only chat turn and st
   ];
   session.pingMemory.activeUpdateId = "update-1";
 
-  let routedUpdate: Record<string, unknown> | null = null;
-  let chainCalled = false;
-  (backend.getOrCreateAgentSession as Function) = async () => session;
-  (backend.routeUpdateToProgrammingNow as Function) = async (input: Record<string, unknown>) => {
-    routedUpdate = input;
-    return { started: true };
-  };
-  (backend.runSlackDirectorChain as Function) = async () => {
-    chainCalled = true;
-    throw new Error("runSlackDirectorChain should not be called for an active Ping update");
-  };
-
-  const response = await (backend.slackChat as Function)({
-    projectId: "project-1",
+  const response = await (backend.tryStartSlackPingExecution as Function)({
+    session,
+    project,
     provider: "codex",
     model: "gpt-5.4",
     claudeModel: "sonnet",
-    message: "Ping, apply the update.",
-    targetDirectorId: "programming-director",
+    directorId: "programming-director",
   });
 
-  assert.equal(chainCalled, false);
-  assert.deepEqual(routedUpdate, {
+  assert.ok(response);
+  assert.equal(session.pendingApprovals.length, 1);
+  assert.deepEqual(session.pendingApprovals[0]?.draftPayload?.input, {
     projectId: "project-1",
     updateId: "update-1",
     provider: "codex",
     model: "gpt-5.4",
     claudeModel: "sonnet",
   });
-  assert.equal(response.directorId, "programming-director");
-  assert.equal(response.message.role, "system");
-  assert.equal(response.message.content, "Handing this to Ping to update the code now.");
-  assert.equal(session.slackActiveDirectorId, "programming-director");
-  assert.equal(session.slackPresenceGuestId, "programming-director");
-  assert.equal(session.slackMessages.at(-1)?.role, "system");
-  assert.equal(session.slackMessages.at(-1)?.content, "Handing this to Ping to update the code now.");
+  assert.match(response.content, /planning \+ execution loop/);
+  assert.equal(session.slackActiveDirectorId, "rd-director");
+  assert.equal(session.slackPresenceGuestId, "rd-director");
+  assert.equal(session.slackMessages.some((msg) => msg.metadata?.type === "ping-task"), true);
 });
 
-test("Agent chat approval replay also routes Ping directly when an active update exists", async () => {
+test("Agent chat approval replay also queues the Ping approval when an active update exists", async () => {
   const backend = createBackend() as Record<string, unknown>;
   (backend.ensureInitialized as Function) = async () => {};
   (backend.requireProject as Function) = async () => ({ id: "project-1", name: "Agent Chat Enabled Project" });
@@ -233,14 +220,7 @@ test("Agent chat approval replay also routes Ping directly when an active update
   ];
   session.pingMemory.activeUpdateId = "update-1";
 
-  let routedUpdate: Record<string, unknown> | null = null;
-  let chainCalled = false;
-  (backend.routeUpdateToProgrammingNow as Function) = async (input: Record<string, unknown>) => {
-    routedUpdate = input;
-    return { started: true };
-  };
   (backend.runSlackDirectorChain as Function) = async () => {
-    chainCalled = true;
     throw new Error("runSlackDirectorChain should not be called for an active Ping approval");
   };
 
@@ -256,68 +236,42 @@ test("Agent chat approval replay also routes Ping directly when an active update
     },
   });
 
-  assert.equal(chainCalled, false);
-  assert.deepEqual(routedUpdate, {
+  assert.equal(session.pendingApprovals.length, 1);
+  assert.deepEqual(session.pendingApprovals[0]?.draftPayload?.input, {
     projectId: "project-1",
     updateId: "update-1",
     provider: "codex",
     model: "gpt-5.4",
     claudeModel: "sonnet",
   });
-  assert.equal(session.slackMessages.at(-1)?.content, "Handing this to Ping to update the code now.");
+  assert.equal((session.slackMessages.at(-1)?.content ?? "").includes("planning + execution loop"), true);
 });
 
-test("Agent chat Ping falls back to the normal chat turn when the active update is stale", async () => {
+test("Ping execution helper returns null when the active update is stale", async () => {
   const backend = createBackend() as Record<string, unknown>;
   (backend.ensureInitialized as Function) = async () => {};
-  (backend.requireProject as Function) = async () => ({ id: "project-1", name: "Agent Chat Enabled Project" });
+  const project = { id: "project-1", name: "Agent Chat Enabled Project" };
+  (backend.requireProject as Function) = async () => project;
 
   const session = (backend.createEmptyAgentSession as Function)("project-1", "codex") as AgentSession;
   session.pingMemory.activeUpdateId = "missing-update";
   session.toddMemory.futureUpdatePlan = [];
 
-  let routedCalled = false;
-  let turnCalled = false;
-  (backend.getOrCreateAgentSession as Function) = async () => session;
-  (backend.routeUpdateToProgrammingNow as Function) = async () => {
-    routedCalled = true;
-    return { started: true };
-  };
-  (backend.runSlackDirectorTurn as Function) = async () => {
-    turnCalled = true;
-    return {
-      assistantMessage: {
-        id: "assistant-1",
-        role: "assistant",
-        directorId: "programming-director",
-        content: "I'll look at the implementation...",
-        createdAt: new Date().toISOString(),
-        status: "complete",
-      },
-      parsed: {
-        handoffTo: null,
-        handoffReason: null,
-      },
-    };
-  };
-
-  const response = await (backend.slackChat as Function)({
-    projectId: "project-1",
+  const response = await (backend.tryStartSlackPingExecution as Function)({
+    session,
+    project,
     provider: "codex",
     model: "gpt-5.4",
     claudeModel: "sonnet",
-    message: "Ping, what should I do next?",
-    targetDirectorId: "programming-director",
+    directorId: "programming-director",
   });
 
-  assert.equal(routedCalled, false);
-  assert.equal(turnCalled, true);
-  assert.equal(response.directorId, "programming-director");
-  assert.equal(response.message.content, "I'll look at the implementation...");
-  assert.equal(session.slackMessages.some((msg) => msg.content === "Handing this to Ping to update the code now."), false);
+  assert.equal(response, null);
+  assert.equal(session.pendingApprovals.length, 0);
+  assert.equal(session.slackMessages.length, 0);
 });
 
-test("Direct Ping updates plan with the big Claude model and keep the small Claude model for execution runtime", async () => {
+test("Direct Ping updates queue approval with the big Claude planning model and keep the small Claude model for execution runtime", async () => {
   const backend = createBackend({
     advancedDefaults: {
       provider: "claude",
@@ -330,11 +284,10 @@ test("Direct Ping updates plan with the big Claude model and keep the small Clau
 
   const session = (backend.createEmptyAgentSession as Function)("project-1", "claude") as AgentSession;
   (backend.getOrCreateAgentSession as Function) = async () => session;
-
-  let capturedInput: Record<string, any> | null = null;
-  (backend.startPlanNow as Function) = async (input: Record<string, any>) => {
-    capturedInput = input;
-    return { started: true };
+  (backend.decorateAgentSessionKnowledgeState as Function) = async (target: AgentSession) => {
+    target.knowledgeStatus = "fresh";
+    target.knowledgeReasons = [];
+    return target;
   };
 
   await (backend.startPingDirectUpdate as Function)({
@@ -343,11 +296,73 @@ test("Direct Ping updates plan with the big Claude model and keep the small Clau
     runMode: "auto",
   });
 
-  assert.ok(capturedInput);
-  assert.equal(capturedInput?.provider, "claude");
-  assert.equal(capturedInput?.claudeModel, "opus");
-  assert.equal(capturedInput?.pingTaskSnapshot?.runtime?.provider, "claude");
-  assert.equal(capturedInput?.pingTaskSnapshot?.runtime?.claudeModel, "sonnet");
+  const queuedInput = session.pendingApprovals[0]?.draftPayload?.input as Record<string, any> | undefined;
+  assert.ok(queuedInput);
+  assert.equal(queuedInput?.provider, "claude");
+  assert.equal(queuedInput?.claudeModel, "opus");
+  assert.equal(queuedInput?.pingTaskSnapshot?.runtime?.provider, "claude");
+  assert.equal(queuedInput?.pingTaskSnapshot?.runtime?.claudeModel, "sonnet");
+  assert.equal(session.slackMessages.some((msg) => msg.metadata?.type === "ping-task"), true);
+});
+
+test("Pong validation queues approval only when the active validation model is large", async () => {
+  const largeBackend = createBackend() as Record<string, unknown>;
+  const largeSession = (largeBackend.createEmptyAgentSession as Function)("project-1", "codex") as AgentSession;
+  (largeBackend.ensureInitialized as Function) = async () => {};
+  (largeBackend.store as Record<string, unknown>).getAgentSession = async () => largeSession;
+  let largeImmediateRun = false;
+  (largeBackend.runValidationNow as Function) = async () => {
+    largeImmediateRun = true;
+    throw new Error("runValidationNow should not be called for large-model validation");
+  };
+
+  await (largeBackend.assignPongValidation as Function)({
+    projectId: "project-1",
+    instruction: "Validate the latest project state.",
+    updateId: null,
+  });
+
+  assert.equal(largeImmediateRun, false);
+  assert.equal(largeSession.pendingApprovals[0]?.draftPayload?.action, "runValidation");
+
+  const smallBackend = createBackend({
+    advancedDefaults: {
+      provider: "codex",
+      model: "gpt-5.4-mini",
+      claudeModel: "sonnet",
+    },
+  }) as Record<string, unknown>;
+  const smallSession = (smallBackend.createEmptyAgentSession as Function)("project-1", "codex") as AgentSession;
+  (smallBackend.store as Record<string, unknown>).getAgentSession = async () => smallSession;
+  let smallImmediateInput: Record<string, unknown> | null = null;
+  (smallBackend.runValidationNow as Function) = async (input: Record<string, unknown>) => {
+    smallImmediateInput = input;
+    return {
+      id: "validation-1",
+      updateId: "",
+      validationType: "functional",
+      passed: true,
+      summary: "Validation passed.",
+      details: null,
+      screenshotPaths: [],
+      createdAt: new Date().toISOString(),
+    };
+  };
+  let smallQueuedApproval = false;
+  (smallBackend.runValidation as Function) = async () => {
+    smallQueuedApproval = true;
+    return null;
+  };
+
+  await (smallBackend.assignPongValidation as Function)({
+    projectId: "project-1",
+    instruction: "Validate the latest project state.",
+    updateId: null,
+  });
+
+  assert.equal(smallQueuedApproval, false);
+  assert.equal(smallImmediateInput?.provider, "codex");
+  assert.equal(smallImmediateInput?.model, "gpt-5.4-mini");
 });
 
 test("Ping execution switches the approved plan draft to the small execution runtime", async () => {

@@ -848,7 +848,7 @@ test("Dan prompt keeps concept structure private and surfaces only concept memor
   assert.doesNotMatch(prompt, /Branch draft:/);
 });
 
-test("Dan ready-to-confirm only queues an approval during explicit memory-processing turns", async () => {
+test("Dan ready-to-confirm turns no longer allow the legacy memory-processing shortcut", async () => {
   const session = createSession();
   session.danInternalNotes = ["User wants the onboarding to feel decisive."];
   session.slackMessages.push({
@@ -892,101 +892,43 @@ test("Dan ready-to-confirm only queues an approval during explicit memory-proces
   assert.equal(session.pendingApprovals.length, 0);
   harness.setStoredSession(session);
 
-  await (harness.backend.directorChat as Function)({
-    projectId: "project-1",
-    directorId: "creative-director",
-    message: "Process Dan's notes into hard memory.",
-    provider: "codex",
-    model: "gpt-5.4",
-    claudeModel: "sonnet",
-    focusMode: "conversation",
-    runtimeStage: "memory-processing",
-  });
-
-  assert.equal(session.pendingApprovals.length, 1);
-  const approval = session.pendingApprovals[0] as PendingApproval;
-  assert.equal(approval.kind, "store-data");
-  assert.equal(approval.requestedByDirectorId, "creative-director");
-  assert.equal(approval.targetDirectorId, "creative-director");
-  assert.equal(approval.draftPayload?.dataType, "danDraftCoreDetails");
-
-  await (harness.backend.applyStoredDataApproval as Function)(session, approval);
-
-  assert.equal(
-    session.stages.function.confirmed?.summary,
-    "Guide new users into the workspace with a focused onboarding flow.",
+  await assert.rejects(
+    (harness.backend.directorChat as Function)({
+      projectId: "project-1",
+      directorId: "creative-director",
+      message: "Process Dan's notes into hard memory.",
+      provider: "codex",
+      model: "gpt-5.4",
+      claudeModel: "sonnet",
+      focusMode: "conversation",
+      runtimeStage: "memory-processing",
+    }),
+    /Hard-memory processing must stay behind the approval flow/,
   );
-  assert.equal(session.stages.function.confirmed?.status, "confirmed");
-  assert.equal(
-    session.stages.thesis.confirmed?.summary,
-    "Reduce first-run uncertainty by making the workspace feel legible immediately.",
-  );
-  assert.equal(session.stages.thesis.confirmed?.status, "confirmed");
-  assert.equal(
-    session.stages.full_flow.confirmed?.summary,
-    "User arrives, gets guided through setup, and lands inside a clear workspace baseline.",
-  );
-  assert.equal(session.stages.full_flow.confirmed?.status, "confirmed");
-  assert.equal(session.corePillars.length, 2);
-  assert.equal(session.corePillars[0]?.function?.status, "confirmed");
-  assert.equal(session.corePillars[1]?.thesis?.status, "confirmed");
-  assert.equal(session.danDraftCoreDetails, null);
-  assert.deepEqual(session.danDraftChangeSummary, []);
-  assert.equal(session.danDraftStatus, null);
-  assert.deepEqual(session.danInternalNotes, []);
-  assert.match(session.danArchivedNotes[0] ?? "", /dan draft confirmed/);
+
+  assert.equal(session.pendingApprovals.length, 0);
 });
 
-test("Dan DM ready-to-confirm turns attach hard-memory report metadata and keep it after approval", async () => {
+test("Dan directorChat blocks legacy hard-memory requests before any large-model call starts", async () => {
   const session = createSession();
-  session.slackMessages.push({
-    id: "user-dan-hard-memory",
-    role: "user",
-    directorId: null,
-    content: "Lock in the draft and show me the proposal.",
-    createdAt: NOW,
-  });
-
-  const harness = createBackendHarness([
-    createDanPayload({
-      response: "Here is the draft. Let me know if this is ready to store.",
-      conversationStatus: "ready-to-confirm",
-    }),
-  ]);
+  const harness = createBackendHarness([createDanPayload()]);
   harness.setStoredSession(session);
 
-  const result = await (harness.backend.directorChat as Function)({
-    projectId: "project-1",
-    directorId: "creative-director",
-    message: "Lock in the draft and show me the proposal.",
-    provider: "codex",
-    model: "gpt-5.4",
-    claudeModel: "sonnet",
-    focusMode: null,
-    runtimeStage: "memory-processing",
-  });
-
-  const metadata = result.message.metadata as HardMemoryReportMetadata | null;
-  assert.equal(metadata?.type, "hard-memory-report");
-  assert.equal(metadata?.dataType, "danDraftCoreDetails");
-  assert.equal(metadata?.directorId, "creative-director");
-  assert.equal(metadata?.approvalId, session.pendingApprovals[0]?.id ?? null);
-  assert.equal(metadata?.draftCoreDetails?.function?.summary, "Guide new users into the workspace with a focused onboarding flow.");
-  assert.deepEqual(metadata?.changeSummary, ["Added an onboarding flow and workspace landing sequence."]);
-  assert.equal(session.pendingApprovals.length, 1);
-
-  const approval = session.pendingApprovals[0] as PendingApproval;
-  await (harness.backend.approvePendingApproval as Function)({
-    projectId: session.projectId,
-    approvalId: approval.id,
-  });
-
-  const persistedReport = session.directorConversations["creative-director"]?.messages.find(
-    (message) => message.metadata?.type === "hard-memory-report",
+  await assert.rejects(
+    (harness.backend.directorChat as Function)({
+      projectId: "project-1",
+      directorId: "creative-director",
+      message: "Lock in the draft and show me the proposal.",
+      provider: "codex",
+      model: "gpt-5.4",
+      claudeModel: "sonnet",
+      focusMode: null,
+      runtimeStage: "memory-processing",
+    }),
+    /Hard-memory processing must stay behind the approval flow/,
   );
-  const persistedMetadata = persistedReport?.metadata as HardMemoryReportMetadata | null;
-  assert.equal(persistedMetadata?.type, "hard-memory-report");
-  assert.equal(persistedMetadata?.approvalId, metadata?.approvalId ?? null);
+
+  assert.equal(harness.aiCalls.length, 0);
   assert.equal(session.pendingApprovals.length, 0);
 });
 
@@ -1541,7 +1483,7 @@ test("DM focus mode inference resolves from the message when focusMode is omitte
   });
 });
 
-test("Dan directorChat uses small conversation turns and big memory-processing turns", async () => {
+test("Dan directorChat uses small conversation turns and blocks legacy memory-processing turns", async () => {
   const conversationSession = createSession();
   const conversationHarness = createBackendHarness([createDanPayload()]);
   conversationHarness.setStoredSession(conversationSession);
@@ -1561,30 +1503,27 @@ test("Dan directorChat uses small conversation turns and big memory-processing t
   assert.equal(conversationHarness.aiCalls[0]?.model, "gpt-5.4-mini");
 
   const synthesisSession = createSession();
-  const synthesisHarness = createBackendHarness([
-    createDanPayload({
-      response: "I processed the notes into a durable concept draft.",
-      conversationStatus: "ready-to-confirm",
-    }),
-  ]);
+  const synthesisHarness = createBackendHarness([createDanPayload()]);
   synthesisHarness.setStoredSession(synthesisSession);
 
-  await (synthesisHarness.backend.directorChat as Function)({
-    projectId: "project-1",
-    directorId: "creative-director",
-    message: "Process Dan's notes into hard memory.",
-    provider: "codex",
-    model: "gpt-5.4-mini",
-    claudeModel: "sonnet",
-    focusMode: "conversation",
-    runtimeStage: "memory-processing",
-  });
+  await assert.rejects(
+    (synthesisHarness.backend.directorChat as Function)({
+      projectId: "project-1",
+      directorId: "creative-director",
+      message: "Process Dan's notes into hard memory.",
+      provider: "codex",
+      model: "gpt-5.4-mini",
+      claudeModel: "sonnet",
+      focusMode: "conversation",
+      runtimeStage: "memory-processing",
+    }),
+    /Hard-memory processing must stay behind the approval flow/,
+  );
 
-  assert.equal(synthesisHarness.aiCalls[0]?.provider, "codex");
-  assert.equal(synthesisHarness.aiCalls[0]?.model, "gpt-5.4");
+  assert.equal(synthesisHarness.aiCalls.length, 0);
 });
 
-test("Todd directorChat uses small research turns and big memory-processing turns with roadmap-aware focus modes", async () => {
+test("Todd directorChat uses small research turns and blocks legacy memory-processing turns", async () => {
   const researchSession = createSession();
   const researchHarness = createBackendHarness([createToddPayload()]);
   researchHarness.setStoredSession(researchSession);
@@ -1607,20 +1546,21 @@ test("Todd directorChat uses small research turns and big memory-processing turn
   const roadmapHarness = createBackendHarness([createToddPayload()]);
   roadmapHarness.setStoredSession(roadmapSession);
 
-  await (roadmapHarness.backend.directorChat as Function)({
-    projectId: "project-1",
-    directorId: "rd-director",
-    message: "Process the latest Dan handoff into Todd memory.",
-    provider: "codex",
-    model: "gpt-5.4-mini",
-    claudeModel: "sonnet",
-    focusMode: "research",
-    runtimeStage: "memory-processing",
-  });
+  await assert.rejects(
+    (roadmapHarness.backend.directorChat as Function)({
+      projectId: "project-1",
+      directorId: "rd-director",
+      message: "Process the latest Dan handoff into Todd memory.",
+      provider: "codex",
+      model: "gpt-5.4-mini",
+      claudeModel: "sonnet",
+      focusMode: "research",
+      runtimeStage: "memory-processing",
+    }),
+    /Hard-memory processing must stay behind the approval flow/,
+  );
 
-  assert.equal(roadmapHarness.aiCalls[0]?.provider, "codex");
-  assert.equal(roadmapHarness.aiCalls[0]?.model, "gpt-5.4");
-  assert.equal(roadmapHarness.getSavedSessions()[0]?.directorConversations?.["rd-director"]?.focusMode, "version-planning");
+  assert.equal(roadmapHarness.aiCalls.length, 0);
 
   const updateSession = createSession();
   updateSession.toddMemory.versionPlan.v1 = {
@@ -1634,20 +1574,21 @@ test("Todd directorChat uses small research turns and big memory-processing turn
   const updateHarness = createBackendHarness([createToddPayload()]);
   updateHarness.setStoredSession(updateSession);
 
-  await (updateHarness.backend.directorChat as Function)({
-    projectId: "project-1",
-    directorId: "rd-director",
-    message: "Process the latest Todd planning notes.",
-    provider: "codex",
-    model: "gpt-5.4-mini",
-    claudeModel: "sonnet",
-    focusMode: "research",
-    runtimeStage: "memory-processing",
-  });
+  await assert.rejects(
+    (updateHarness.backend.directorChat as Function)({
+      projectId: "project-1",
+      directorId: "rd-director",
+      message: "Process the latest Todd planning notes.",
+      provider: "codex",
+      model: "gpt-5.4-mini",
+      claudeModel: "sonnet",
+      focusMode: "research",
+      runtimeStage: "memory-processing",
+    }),
+    /Hard-memory processing must stay behind the approval flow/,
+  );
 
-  assert.equal(updateHarness.aiCalls[0]?.provider, "codex");
-  assert.equal(updateHarness.aiCalls[0]?.model, "gpt-5.4");
-  assert.equal(updateHarness.getSavedSessions()[0]?.directorConversations?.["rd-director"]?.focusMode, "update-planning");
+  assert.equal(updateHarness.aiCalls.length, 0);
 });
 
 test("Todd DM prompt receives the codebase map and confirmed concept memory without Dan's old flow language", async () => {
@@ -1961,11 +1902,14 @@ test("Todd review can finalize success and queue a superseding structural replan
 
   const latest = harness.getStoredSession();
   assert.ok(latest);
-  assert.equal(latest?.toddMemory.futureUpdatePlan[0]?.status, "completed");
+  assert.equal(latest?.toddMemory.futureUpdatePlan[0]?.status, "in_progress");
   assert.equal(latest?.toddMemory.futureUpdatePlan[1]?.status, "pending");
   assert.equal(latest?.pendingApprovals.length, 1);
+  assert.equal(latest?.jeffMemory.pendingReports.length, 1);
   assert.equal(latest?.pendingApprovals[0]?.draftPayload?.planSource, "post-run-structural-check");
   assert.equal(latest?.pendingApprovals[0]?.draftPayload?.supersedesConfirmedPlan, true);
+  assert.equal(latest?.pingMemory.latestJeffReport?.decision ?? null, null);
+  assert.equal(latest?.pingMemory.latestJeffReport?.toddRecommendedDecision, "successful");
   assert.equal(latest?.pingMemory.latestJeffReport?.toddReplanNeeded, true);
   assert.equal(
     latest?.pingMemory.latestJeffReport?.toddReplanApprovalId,
@@ -2030,7 +1974,7 @@ test("Automation step stops outside the allowed work hours", async () => {
   assert.equal(session.automation.stopReason, "outside-work-hours");
 });
 
-test("Automation step consumes a successful Jeff report and marks the update complete", async () => {
+test("Automation step pauses when Jeff still has a pending decision", async () => {
   const session = createSession();
   session.toddMemory.futureUpdatePlan = [
     createVersionUpdate({
@@ -2048,6 +1992,7 @@ test("Automation step consumes a successful Jeff report and marks the update com
     title: "Update report: Ship backend patch",
     summary: "Ship backend patch completed cleanly.",
     outcome: "Ship backend patch completed cleanly.",
+    toddRecommendedDecision: "successful",
     toddFollowUpNeeded: false,
     toddFollowUpReason: null,
     toddReplanNeeded: false,
@@ -2065,6 +2010,7 @@ test("Automation step consumes a successful Jeff report and marks the update com
       unexpectedNotes: [],
       createdAt: NOW,
     },
+    decision: null,
     createdAt: NOW,
   });
   session.automation = {
@@ -2081,11 +2027,72 @@ test("Automation step consumes a successful Jeff report and marks the update com
 
   const shouldContinue = await (harness.backend.performAutomationStep as Function)(session);
 
-  assert.equal(shouldContinue, true);
+  assert.equal(shouldContinue, false);
+  assert.equal(session.jeffMemory.pendingReports.length, 1);
+  assert.equal(session.toddMemory.futureUpdatePlan[0]?.status, "in_progress");
+  assert.equal(session.jeffMemory.outcomeLog.length, 0);
+  assert.equal(session.toddMemory.previousUpdateLog.length, 0);
+  assert.equal(session.automation.status, "stopped");
+  assert.equal(session.automation.stopReason, "awaiting-user");
+});
+
+test("Jeff outcome recording finalizes the report and updates the roadmap state", async () => {
+  const session = createSession();
+  session.toddMemory.futureUpdatePlan = [
+    createVersionUpdate({
+      id: "update-1",
+      title: "Ship backend patch",
+      description: "Apply the backend fix.",
+      status: "in_progress",
+    }),
+  ];
+  session.jeffMemory.pendingReports.push({
+    id: "report-1",
+    updateId: "update-1",
+    historyUpdateId: "history-1",
+    commitSha: "abc123",
+    title: "Update report: Ship backend patch",
+    summary: "Ship backend patch completed cleanly.",
+    outcome: "Ship backend patch completed cleanly.",
+    toddRecommendedDecision: "successful",
+    toddFollowUpNeeded: false,
+    toddFollowUpReason: null,
+    toddReplanNeeded: false,
+    toddReplanReason: null,
+    toddReplanApprovalId: null,
+    rawReport: {
+      status: "success",
+      updateId: "update-1",
+      goal: "Apply the backend fix.",
+      summary: "Applied the backend fix.",
+      zhResponse: "已完成。修改已保存。",
+      enTranslation: "Done. Changes saved.",
+      changedFiles: ["src/backend.ts"],
+      blocker: null,
+      unexpectedNotes: [],
+      createdAt: NOW,
+    },
+    decision: null,
+    createdAt: NOW,
+  });
+
+  const harness = createBackendHarness([]);
+  harness.setStoredSession(session);
+
+  await (harness.backend.recordJeffOutcome as Function)({
+    projectId: session.projectId,
+    reportId: "report-1",
+    decision: "successful",
+    summary: "Ship backend patch completed cleanly.",
+  });
+
   assert.equal(session.jeffMemory.pendingReports.length, 0);
   assert.equal(session.toddMemory.futureUpdatePlan[0]?.status, "completed");
   assert.equal(session.jeffMemory.outcomeLog.length, 1);
   assert.equal(session.toddMemory.previousUpdateLog.length, 1);
+  assert.equal(session.pingMemory.latestJeffReport?.decision, "successful");
+  assert.equal(session.automation.lastSuccessfulUpdateId, "update-1");
+  assert.equal(session.automation.pendingRevertCommitSha, null);
 });
 
 test("Automation failure recovery queues a confirmation approval when a revert is available", async () => {

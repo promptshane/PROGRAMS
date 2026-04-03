@@ -489,6 +489,37 @@ export function AgentsPage({
       return;
     }
 
+    if (alertState.action === "review-jeff-work") {
+      const pendingReport = agentSession?.jeffMemory.pendingReports[0] ?? null;
+      if (!pendingReport) {
+        return;
+      }
+      const existingMessage = [...(agentSession?.slackMessages ?? [])]
+        .reverse()
+        .find((message) => message.metadata?.type === "execution-report" && message.metadata.report.id === pendingReport.id)
+        ?? null;
+      const reportMessage: AgentChatMessage = existingMessage ?? {
+        id: `execution-report-${pendingReport.id}`,
+        role: "assistant",
+        directorId: "project-manager",
+        content: pendingReport.summary,
+        createdAt: pendingReport.createdAt,
+        status: "complete",
+        metadata: {
+          type: "execution-report",
+          report: pendingReport,
+        },
+      };
+      setResearchPanelMessage(null);
+      setUpdatePanelMessage(null);
+      setPingTaskMessage(null);
+      setPingPlanMessage(null);
+      setPingUpdateReportMessage(null);
+      setHardMemoryReportMessageId(null);
+      setExecutionReportMessage(reportMessage);
+      return;
+    }
+
     if (alertState.action === "run-ping-update") {
       const nextUpdate = getNextPendingProgrammingUpdate(agentSession);
       if (!nextUpdate) return;

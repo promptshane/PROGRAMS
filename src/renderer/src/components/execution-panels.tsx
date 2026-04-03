@@ -4,6 +4,7 @@ import { providerLabel, labelForReasoningEffort, labelForPlanningMode } from "..
 import { humanizeSnakeCase } from "../lib/labels";
 import type {
   JeffExecutionReport,
+  JeffOutcomeDecision,
   PingTaskSnapshot,
   PingPlanSnapshot,
   PingExecutionReportSnapshot,
@@ -102,8 +103,34 @@ export function ExecutionReportPanel({
   pushToast: (message: string, level: "info" | "success" | "error") => void;
   onClose: () => void;
 }) {
-  const [busyAction, setBusyAction] = useState<"recovery" | null>(null);
+  const [busyAction, setBusyAction] = useState<"recovery" | JeffOutcomeDecision | null>(null);
   const isPending = session?.jeffMemory.pendingReports.some((pendingReport) => pendingReport.id === report.id) ?? false;
+  const toddRecommendation = report.toddRecommendedDecision ?? report.decision ?? null;
+
+  const handleJeffDecision = async (decision: JeffOutcomeDecision) => {
+    if (!projectId) {
+      return;
+    }
+    setBusyAction(decision);
+    try {
+      await window.programs.recordJeffOutcome({
+        projectId,
+        reportId: report.id,
+        decision,
+        summary: report.summary,
+      });
+      const refreshed = await window.programs.getAgentSession(projectId);
+      if (refreshed) {
+        onSessionUpdate(refreshed);
+      }
+      pushToast(`Jeff marked this report as ${humanizeSnakeCase(decision)}.`, "success");
+      onClose();
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Could not record Jeff's decision.", "error");
+    } finally {
+      setBusyAction(null);
+    }
+  };
 
   const handleQueueRecovery = async () => {
     if (!projectId) {
@@ -138,8 +165,8 @@ export function ExecutionReportPanel({
           <AgentChatMarkdown text={report.summary} />
         </section>
         <section>
-          <h4>Todd's Final Decision</h4>
-          <p>{humanizeSnakeCase(report.decision ?? "successful")}</p>
+          <h4>Todd's Recommendation</h4>
+          <p>{toddRecommendation ? humanizeSnakeCase(toddRecommendation) : "Pending recommendation"}</p>
           <AgentChatMarkdown text={report.outcome} />
         </section>
         {report.rawReport ? (
@@ -208,7 +235,36 @@ export function ExecutionReportPanel({
         {report.validationReport ? <ValidationEvidenceSection report={report.validationReport} /> : null}
         <section>
           <h4>Jeff Status</h4>
-          {report.decision === "failure" && report.revertAvailable && isPending ? (
+          {isPending ? (
+            <>
+              <p className="helperText">
+                Awaiting Jeff's final decision. Todd recommended {toddRecommendation ? humanizeSnakeCase(toddRecommendation) : "a review"}.
+              </p>
+              <div className="proposalActions" style={{ marginTop: 12 }}>
+                <button
+                  className="secondaryButton"
+                  onClick={() => void handleJeffDecision("successful")}
+                  disabled={busyAction !== null}
+                >
+                  Mark Successful
+                </button>
+                <button
+                  className="secondaryButton"
+                  onClick={() => void handleJeffDecision("partially-successful")}
+                  disabled={busyAction !== null}
+                >
+                  Mark Partially Successful
+                </button>
+                <button
+                  className="secondaryButton"
+                  onClick={() => void handleJeffDecision("failure")}
+                  disabled={busyAction !== null}
+                >
+                  Mark Failure
+                </button>
+              </div>
+            </>
+          ) : report.decision === "failure" && report.revertAvailable ? (
             <div className="proposalActions" style={{ marginTop: 12 }}>
               <button className="secondaryButton" onClick={() => void handleQueueRecovery()} disabled={busyAction !== null}>
                 Queue Recovery Revert
@@ -217,7 +273,9 @@ export function ExecutionReportPanel({
           ) : report.decision === "failure" ? (
             <p className="helperText">Failure recorded. No automated revert is available for this report.</p>
           ) : (
-            <p className="helperText">Jeff is presenting Todd's finalized outcome. No extra decision is required here.</p>
+            <p className="helperText">
+              Jeff marked this report as {humanizeSnakeCase(report.decision ?? "successful")}.
+            </p>
           )}
         </section>
       </div>
@@ -232,6 +290,18 @@ export function PingTaskPanel({
   task: PingTaskSnapshot;
   onClose: () => void;
 }) {
+  const normalizeComparableText = (value: string | null | undefined): string =>
+    value?.trim().replace(/\s+/g, " ").toLowerCase() ?? "";
+  const normalizedOriginalRequest = normalizeComparableText(task.originalUserRequest);
+  const normalizedUpdateDescription = normalizeComparableText(task.updateDescription);
+  const normalizedToddExplanation = normalizeComparableText(task.toddExplanation);
+  const showToddUpdateContext = Boolean(task.updateTitle) || (
+    Boolean(task.updateDescription) && normalizedUpdateDescription !== normalizedOriginalRequest
+  );
+  const showToddExplanation = Boolean(task.toddExplanation)
+    && normalizedToddExplanation !== normalizedOriginalRequest
+    && normalizedToddExplanation !== normalizedUpdateDescription;
+
   return (
     <div className="agentChatPanel">
       <div className="agentChatPanelHeader">
@@ -249,14 +319,16 @@ export function PingTaskPanel({
           <h4>Original Request</h4>
           <AgentChatMarkdown text={task.originalUserRequest} />
         </section>
-        {task.updateTitle || task.updateDescription ? (
+        {showToddUpdateContext ? (
           <section>
             <h4>Todd Update Context</h4>
             {task.updateTitle ? <p><strong>{task.updateTitle}</strong></p> : null}
-            {task.updateDescription ? <AgentChatMarkdown text={task.updateDescription} /> : null}
+            {task.updateDescription && normalizedUpdateDescription !== normalizedOriginalRequest ? (
+              <AgentChatMarkdown text={task.updateDescription} />
+            ) : null}
           </section>
         ) : null}
-        {task.toddExplanation ? (
+        {showToddExplanation ? (
           <section>
             <h4>Todd Explanation</h4>
             <AgentChatMarkdown text={task.toddExplanation} />

@@ -1185,6 +1185,7 @@ export interface JeffExecutionReport {
   title: string;
   summary: string;
   outcome: string;
+  toddRecommendedDecision: JeffOutcomeDecision | null;
   toddFollowUpNeeded: boolean;
   toddFollowUpReason: string | null;
   toddReplanNeeded: boolean;

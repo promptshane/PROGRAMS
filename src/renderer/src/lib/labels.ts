@@ -48,4 +48,4 @@ export function labelForUpdateStatus(status: UpdateRecord["status"]): string {
 }
 
 export const humanizeSnakeCase = (value: string | null | undefined): string =>
-  value ? value.replace(/_/g, " ") : "unknown";
+  value ? value.replace(/[-_]/g, " ") : "unknown";

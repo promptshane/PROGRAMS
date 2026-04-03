@@ -1213,13 +1213,20 @@ export function DirectorMemoryPanel({
                 ) : null}
                 {pendingReports.length > 0 ? (
                   <div style={{ marginTop: 12 }}>
-                    <span className="pmStatusLabel">Failure Reports Awaiting User Recovery Decision</span>
+                    <span className="pmStatusLabel">Execution Reports Awaiting Jeff Decision</span>
                     <div className="validationResultsList" style={{ marginTop: 8 }}>
                       {pendingReports.map((report) => (
-                        <div key={report.id} className={`validationResultCard validationResultCard--${report.decision === "failure" ? "fail" : "pass"}`}>
+                        <div
+                          key={report.id}
+                          className={`validationResultCard validationResultCard--${(report.toddRecommendedDecision ?? report.decision) === "failure" ? "fail" : "pass"}`}
+                        >
                           <span className="validationResultType">{report.title}</span>
                           <span className="validationResultStatus">
-                            {report.decision ? report.decision.replace(/_/g, " ") : "review"}
+                            {report.toddRecommendedDecision
+                              ? `Todd recommends ${report.toddRecommendedDecision.replace(/[-_]/g, " ")}`
+                              : report.decision
+                                ? report.decision.replace(/[-_]/g, " ")
+                                : "awaiting decision"}
                           </span>
                           <p style={{ gridColumn: "1 / -1" }}>{report.summary}</p>
                           {onViewExecutionReport ? (
@@ -1238,7 +1245,7 @@ export function DirectorMemoryPanel({
                   </div>
                 ) : (
                   <p className="coreDetailEmpty" style={{ marginTop: 12 }}>
-                    Jeff does not have any failure reports waiting on a recovery decision.
+                    Jeff does not have any execution reports waiting on a decision.
                   </p>
                 )}
               </div>

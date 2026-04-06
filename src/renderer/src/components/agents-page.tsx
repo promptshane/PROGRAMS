@@ -25,6 +25,8 @@ import {
   getWorkingConcept,
   buildAgentProjectDescription,
   buildDisplayedUpdatePlan,
+  findLivePendingApproval,
+  getLivePendingApprovals,
 } from "../lib/session-helpers";
 import {
   AGENT_CHAT_COMPOSER_MIN_HEIGHT,
@@ -58,7 +60,7 @@ import {
   type Settings,
   type AgentChatMessage,
 } from "@shared/types";
-import { getDirectorMetadata } from "@shared/director-metadata";
+import { getDirectorMetadata, matchDirectRoutePattern } from "@shared/director-metadata";
 import { AgentProjectDetailsModal, type DetailsView } from "./agent-project-details-modal";
 import { AgentLandingCard } from "./home-tiles";
 import { PendingApprovalsPanel } from "./update-stage-panel";
@@ -96,13 +98,17 @@ export function AgentsPage({
   const [showProjectDetails, setShowProjectDetails] = useState(false);
   const [projectDetailsInitialView, setProjectDetailsInitialView] = useState<DetailsView | undefined>(undefined);
   const [showDirectorProfile, setShowDirectorProfile] = useState<DirectorId | null>(null);
-  const [hardMemoryReportMessageId, setHardMemoryReportMessageId] = useState<string | null>(null);
-  const [researchPanelMessage, setResearchPanelMessage] = useState<AgentChatMessage | null>(null);
-  const [updatePanelMessage, setUpdatePanelMessage] = useState<AgentChatMessage | null>(null);
-  const [executionReportMessage, setExecutionReportMessage] = useState<AgentChatMessage | null>(null);
-  const [pingTaskMessage, setPingTaskMessage] = useState<AgentChatMessage | null>(null);
-  const [pingPlanMessage, setPingPlanMessage] = useState<AgentChatMessage | null>(null);
-  const [pingUpdateReportMessage, setPingUpdateReportMessage] = useState<AgentChatMessage | null>(null);
+  const [activePanel, setActivePanel] = useState<
+    | { type: "none" }
+    | { type: "hard-memory-report"; messageId: string }
+    | { type: "research"; message: AgentChatMessage }
+    | { type: "update"; message: AgentChatMessage }
+    | { type: "execution-report"; message: AgentChatMessage }
+    | { type: "ping-task"; message: AgentChatMessage }
+    | { type: "ping-plan"; message: AgentChatMessage }
+    | { type: "ping-update-report"; message: AgentChatMessage }
+  >({ type: "none" });
+  const closePanel = () => setActivePanel({ type: "none" });
   const [messageValue, setMessageValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
@@ -204,16 +210,20 @@ export function AgentsPage({
     [visibleMessages],
   );
   const hardMemoryReportMessage = useMemo(
-    () => hardMemoryReportMessageId
-      ? displayMessages.find((message) => message.id === hardMemoryReportMessageId && message.metadata?.type === "hard-memory-report") ?? null
+    () => activePanel.type === "hard-memory-report"
+      ? displayMessages.find((message) => message.id === activePanel.messageId && message.metadata?.type === "hard-memory-report") ?? null
       : null,
-    [displayMessages, hardMemoryReportMessageId],
+    [displayMessages, activePanel],
   );
   const hardMemoryReport = hardMemoryReportMessage?.metadata?.type === "hard-memory-report"
     ? hardMemoryReportMessage.metadata
     : null;
+  const livePendingApprovals = useMemo(
+    () => getLivePendingApprovals(agentSession),
+    [agentSession],
+  );
   const hardMemoryReportApproval = hardMemoryReport && agentSession
-    ? agentSession.pendingApprovals.find((approval) => approval.id === hardMemoryReport.approvalId) ?? null
+    ? findLivePendingApproval(agentSession, hardMemoryReport.approvalId)
     : null;
   const agentChatConversationSignature = useMemo(
     () => visibleMessages
@@ -230,23 +240,26 @@ export function AgentsPage({
     [visibleMessages],
   );
 
-  const presenceGuestId = agentSession?.slackPresenceGuestId ?? null;
-  const nonJeffPresentDirectorId: DirectorId | null = presenceGuestId
-    ?? (agentSession?.slackActiveDirectorId && agentSession.slackActiveDirectorId !== "project-manager"
+  const activeNonJeffDirectorId: DirectorId | null =
+    agentSession?.slackActiveDirectorId && agentSession.slackActiveDirectorId !== "project-manager"
       ? agentSession.slackActiveDirectorId
-      : null);
+      : null;
+  const passiveGuestId = agentSession?.slackPresenceGuestId ?? null;
   const presentDirectorIds = useMemo(() => {
     const ids = new Set<DirectorId>();
     if (jeffPresenceState.present) {
       ids.add("project-manager");
     }
-    if (nonJeffPresentDirectorId) {
-      ids.add(nonJeffPresentDirectorId);
+    if (activeNonJeffDirectorId) {
+      ids.add(activeNonJeffDirectorId);
+    }
+    if (passiveGuestId && passiveGuestId !== "project-manager") {
+      ids.add(passiveGuestId);
     }
     return ids;
-  }, [jeffPresenceState.present, nonJeffPresentDirectorId]);
+  }, [activeNonJeffDirectorId, jeffPresenceState.present, passiveGuestId]);
   const activeDirectorId: DirectorId | null = alertedDirectorId
-    ?? nonJeffPresentDirectorId
+    ?? activeNonJeffDirectorId
     ?? (jeffPresenceState.present ? "project-manager" : null);
   const automationTargetTitle = useMemo(() => {
     const targetId = agentSession?.automation.selectedTargetUpdateId;
@@ -290,20 +303,14 @@ export function AgentsPage({
       setShowProjectDetails(false);
       setShowDirectorProfile(null);
     }
-    setResearchPanelMessage(null);
-    setUpdatePanelMessage(null);
-    setExecutionReportMessage(null);
-    setPingTaskMessage(null);
-    setPingPlanMessage(null);
-    setPingUpdateReportMessage(null);
-    setHardMemoryReportMessageId(null);
+    closePanel();
   }, [agentSelectedProjectId]);
 
   useEffect(() => {
-    if (hardMemoryReportMessageId && !hardMemoryReportMessage) {
-      setHardMemoryReportMessageId(null);
+    if (activePanel.type === "hard-memory-report" && !hardMemoryReportMessage) {
+      closePanel();
     }
-  }, [hardMemoryReportMessage, hardMemoryReportMessageId]);
+  }, [hardMemoryReportMessage, activePanel]);
 
   useEffect(() => {
     if (!requestedDirectorProfileId || !agentSelectedProjectId) {
@@ -314,19 +321,14 @@ export function AgentsPage({
   }, [agentSelectedProjectId, onDirectorProfileRequestHandled, requestedDirectorProfileId]);
 
   useEffect(() => {
-    if (pingTaskMessage && !displayMessages.some((message) => message.id === pingTaskMessage.id)) {
-      setPingTaskMessage(null);
+    if (activePanel.type === "ping-task" && !displayMessages.some((message) => message.id === activePanel.message.id)) {
+      closePanel();
     }
-  }, [displayMessages, pingTaskMessage]);
+  }, [displayMessages, activePanel]);
 
   useLayoutEffect(() => {
     syncComposerTextareaHeight(composerInputRef.current, { minHeight: AGENT_CHAT_COMPOSER_MIN_HEIGHT });
   }, [messageValue, agentSelectedProjectId]);
-
-  const NAME_TO_DIRECTOR: Record<string, DirectorId> = {
-    jeff: "project-manager", dan: "creative-director",
-    todd: "rd-director", ping: "rd-director", pong: "rd-director",
-  };
 
   const handleSend = async () => {
     if (!messageValue.trim() || !agentSelectedProjectId) return;
@@ -343,13 +345,9 @@ export function AgentsPage({
     };
     setOptimisticMessages((prev) => [...prev, optimisticUserMsg]);
 
-    let targetDirectorId: DirectorId | null = null;
-    const mentionMatch = msg.match(/^@(\w+)/i);
-    if (mentionMatch) {
-      const name = mentionMatch[1].toLowerCase();
-      if (NAME_TO_DIRECTOR[name] && name !== "jeff") {
-        targetDirectorId = NAME_TO_DIRECTOR[name];
-      }
+    let targetDirectorId = matchDirectRoutePattern(msg);
+    if (targetDirectorId === "project-manager") {
+      targetDirectorId = null;
     }
     if (!targetDirectorId && alertedDirectorId && alertedDirectorId !== "project-manager") {
       targetDirectorId = alertedDirectorId === "programming-director" || alertedDirectorId === "validation-director"
@@ -357,7 +355,7 @@ export function AgentsPage({
         : alertedDirectorId;
     }
     const effectiveDirectorId = targetDirectorId
-      ?? resolveAgentChatRouteForRenderer(msg, presenceGuestId);
+      ?? resolveAgentChatRouteForRenderer(msg, activeNonJeffDirectorId);
 
     setJeffPresenceTick(sendTimestamp);
     setJeffLivePresenceByProject((prev) => {
@@ -462,7 +460,7 @@ export function AgentsPage({
   const runDirectorAlertAction = useCallback(async (directorId: DirectorId) => {
     if (!agentSelectedProjectId) return;
 
-    setHardMemoryReportMessageId(null);
+    closePanel();
 
     const alertState = resolveAgentAlertState(directorId, agentSession);
     if (!alertState) {
@@ -510,13 +508,7 @@ export function AgentsPage({
           report: pendingReport,
         },
       };
-      setResearchPanelMessage(null);
-      setUpdatePanelMessage(null);
-      setPingTaskMessage(null);
-      setPingPlanMessage(null);
-      setPingUpdateReportMessage(null);
-      setHardMemoryReportMessageId(null);
-      setExecutionReportMessage(reportMessage);
+      setActivePanel({ type: "execution-report", message: reportMessage });
       return;
     }
 
@@ -538,6 +530,7 @@ export function AgentsPage({
           provider: settings.advancedDefaults.provider,
           model: settings.advancedDefaults.model,
           claudeModel: settings.advancedDefaults.claudeModel,
+          skipConfirmation: true,
         });
         const refreshed = await window.programs.getAgentSession(agentSelectedProjectId);
         if (refreshed) onSessionUpdate(refreshed);
@@ -560,6 +553,26 @@ export function AgentsPage({
         });
         const refreshed = await window.programs.getAgentSession(agentSelectedProjectId);
         if (refreshed) onSessionUpdate(refreshed);
+      } catch (error) {
+        pushToast(error instanceof Error ? error.message : "Something went wrong.", "error");
+      } finally {
+        setIsLoading(false);
+      }
+      return;
+    }
+
+    if (alertState.action === "regenerate-todd-plan") {
+      setIsLoading(true);
+      try {
+        await window.programs.regenerateToddPlan({
+          projectId: agentSelectedProjectId,
+          provider: settings.advancedDefaults.provider,
+          model: settings.advancedDefaults.model,
+          claudeModel: settings.advancedDefaults.claudeModel,
+        });
+        const refreshed = await window.programs.getAgentSession(agentSelectedProjectId);
+        if (refreshed) onSessionUpdate(refreshed);
+        pushToast("Todd's plan regenerated.", "success");
       } catch (error) {
         pushToast(error instanceof Error ? error.message : "Something went wrong.", "error");
       } finally {
@@ -660,7 +673,7 @@ export function AgentsPage({
         ) : null}
       </div>
 
-      {agentSelectedProjectId && (agentSession?.pendingApprovals.length ?? 0) > 0 ? (
+      {agentSelectedProjectId && livePendingApprovals.length > 0 ? (
         <div className="conversationApprovalShelf">
           <PendingApprovalsPanel
             projectId={agentSelectedProjectId}
@@ -779,16 +792,6 @@ export function AgentsPage({
               </div>
             </div>
           ) : null}
-          {(agentSession?.pendingApprovals.length ?? 0) > 0 ? (
-            <div className="conversationApprovalShelf">
-              <PendingApprovalsPanel
-                projectId={agentSelectedProjectId}
-                session={agentSession}
-                onSessionUpdate={onSessionUpdate}
-                pushToast={pushToast}
-              />
-            </div>
-          ) : null}
           <div className="conversationViewportShell agentChatConversationViewportShell">
             <div className="chatViewportDivider" aria-hidden="true" />
             <div className="agentContentLayout">
@@ -840,13 +843,7 @@ export function AgentsPage({
                                         className={`agentChatViewMoreButton ${stage === "soft" ? "agentChatViewMoreButton--soft-report" : "agentChatViewMoreButton--hard-report"}`}
                                         onClick={(e) => {
                                           e.stopPropagation();
-                                          setResearchPanelMessage(null);
-                                          setUpdatePanelMessage(null);
-                                          setExecutionReportMessage(null);
-                                          setPingTaskMessage(null);
-                                          setPingPlanMessage(null);
-                                          setPingUpdateReportMessage(null);
-                                          setHardMemoryReportMessageId(msg.id);
+                                          setActivePanel({ type: "hard-memory-report", messageId: msg.id });
                                         }}
                                       >
                                         {stage === "soft" ? "View Soft Report" : "View Hard Report"}
@@ -858,13 +855,7 @@ export function AgentsPage({
                                       className="agentChatViewMoreButton"
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        setHardMemoryReportMessageId(null);
-                                        setUpdatePanelMessage(null);
-                                        setExecutionReportMessage(null);
-                                        setPingTaskMessage(null);
-                                        setPingPlanMessage(null);
-                                        setPingUpdateReportMessage(null);
-                                        setResearchPanelMessage(msg);
+                                        setActivePanel({ type: "research", message: msg });
                                       }}
                                     >
                                       View Research
@@ -875,13 +866,7 @@ export function AgentsPage({
                                       className="agentChatViewMoreButton"
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        setHardMemoryReportMessageId(null);
-                                        setResearchPanelMessage(null);
-                                        setExecutionReportMessage(null);
-                                        setPingTaskMessage(null);
-                                        setPingPlanMessage(null);
-                                        setPingUpdateReportMessage(null);
-                                        setUpdatePanelMessage(msg);
+                                        setActivePanel({ type: "update", message: msg });
                                       }}
                                     >
                                       View Update
@@ -892,16 +877,10 @@ export function AgentsPage({
                                       className="agentChatViewMoreButton"
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        setHardMemoryReportMessageId(null);
-                                        setResearchPanelMessage(null);
-                                        setUpdatePanelMessage(null);
-                                        setExecutionReportMessage(null);
-                                        setPingPlanMessage(null);
-                                        setPingUpdateReportMessage(null);
-                                        setPingTaskMessage(msg);
+                                        setActivePanel({ type: "ping-task", message: msg });
                                       }}
                                     >
-                                      View Update Task
+                                      View Priority Update
                                     </button>
                                   )}
                                   {msg.metadata?.type === "ping-plan-summary" && (
@@ -909,12 +888,7 @@ export function AgentsPage({
                                       className="agentChatViewMoreButton"
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        setHardMemoryReportMessageId(null);
-                                        setPingTaskMessage(null);
-                                        setResearchPanelMessage(null);
-                                        setUpdatePanelMessage(null);
-                                        setExecutionReportMessage(null);
-                                        setPingPlanMessage(msg);
+                                        setActivePanel({ type: "ping-plan", message: msg });
                                       }}
                                     >
                                       View Update Plan
@@ -925,12 +899,7 @@ export function AgentsPage({
                                       className="agentChatViewMoreButton"
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        setHardMemoryReportMessageId(null);
-                                        setPingTaskMessage(null);
-                                        setResearchPanelMessage(null);
-                                        setUpdatePanelMessage(null);
-                                        setExecutionReportMessage(null);
-                                        setPingUpdateReportMessage(msg);
+                                        setActivePanel({ type: "ping-update-report", message: msg });
                                       }}
                                     >
                                       View Update Report
@@ -941,13 +910,7 @@ export function AgentsPage({
                                       className="agentChatViewMoreButton"
                                       onClick={(e) => {
                                         e.stopPropagation();
-                                        setHardMemoryReportMessageId(null);
-                                        setResearchPanelMessage(null);
-                                        setUpdatePanelMessage(null);
-                                        setPingTaskMessage(null);
-                                        setPingPlanMessage(null);
-                                        setPingUpdateReportMessage(null);
-                                        setExecutionReportMessage(msg);
+                                        setActivePanel({ type: "execution-report", message: msg });
                                       }}
                                     >
                                       View Project Status Report
@@ -1018,60 +981,60 @@ export function AgentsPage({
                   session={agentSession}
                   projectId={agentSelectedProjectId}
                   onSessionUpdate={onSessionUpdate}
-                  onClose={() => setHardMemoryReportMessageId(null)}
+                  onClose={closePanel}
                   pushToast={pushToast}
                 />
               ) : null}
 
-              {researchPanelMessage?.metadata?.type === "research-result" && (
+              {activePanel.type === "research" && activePanel.message.metadata?.type === "research-result" && (
                 <div className="agentChatPanel">
                   <div className="agentChatPanelHeader">
                     <h3>Research by Todd</h3>
-                    <button className="secondaryButton" style={{ fontSize: '0.75rem', padding: '4px 8px' }} onClick={() => setResearchPanelMessage(null)}>Close</button>
+                    <button className="secondaryButton" style={{ fontSize: '0.75rem', padding: '4px 8px' }} onClick={closePanel}>Close</button>
                   </div>
                   <div className="agentChatPanelBody">
                     <section>
                       <h4>Research Prompt</h4>
-                      <p>{researchPanelMessage.metadata.researchPrompt}</p>
+                      <p>{activePanel.message.metadata.researchPrompt}</p>
                     </section>
                     <section>
                       <h4>General Findings</h4>
-                      <AgentChatMarkdown text={researchPanelMessage.metadata.generalSummary} />
+                      <AgentChatMarkdown text={activePanel.message.metadata.generalSummary} />
                     </section>
                     <section>
                       <h4>Project-Specific Findings</h4>
-                      <AgentChatMarkdown text={researchPanelMessage.metadata.projectSummary} />
+                      <AgentChatMarkdown text={activePanel.message.metadata.projectSummary} />
                     </section>
                   </div>
                 </div>
               )}
 
-              {updatePanelMessage?.metadata?.type === "refresh-update" && (
+              {activePanel.type === "update" && activePanel.message.metadata?.type === "refresh-update" && (
                 <div className="agentChatPanel">
                   <div className="agentChatPanelHeader">
-                    <h3>Update by {DIRECTOR_NAMES[updatePanelMessage.metadata.directorId]}</h3>
-                    <button className="secondaryButton" style={{ fontSize: '0.75rem', padding: '4px 8px' }} onClick={() => setUpdatePanelMessage(null)}>Close</button>
+                    <h3>Update by {DIRECTOR_NAMES[activePanel.message.metadata.directorId]}</h3>
+                    <button className="secondaryButton" style={{ fontSize: '0.75rem', padding: '4px 8px' }} onClick={closePanel}>Close</button>
                   </div>
                   <div className="agentChatPanelBody">
                     <section>
                       <h4>Summary</h4>
-                      <AgentChatMarkdown text={updatePanelMessage.metadata.summary} />
+                      <AgentChatMarkdown text={activePanel.message.metadata.summary} />
                     </section>
-                    {updatePanelMessage.metadata.same.length > 0 && (
+                    {activePanel.message.metadata.same.length > 0 && (
                       <section>
                         <h4>Same (Matched Prior Understanding)</h4>
                         <ul className="agentChatUpdateList">
-                          {updatePanelMessage.metadata.same.map((item, i) => (
+                          {activePanel.message.metadata.same.map((item, i) => (
                             <li key={i}>{item}</li>
                           ))}
                         </ul>
                       </section>
                     )}
-                    {updatePanelMessage.metadata.updated.length > 0 && (
+                    {activePanel.message.metadata.updated.length > 0 && (
                       <section>
                         <h4>Updated (New / Changed / Removed)</h4>
                         <ul className="agentChatUpdateList">
-                          {updatePanelMessage.metadata.updated.map((item, i) => (
+                          {activePanel.message.metadata.updated.map((item, i) => (
                             <li key={i}>{item}</li>
                           ))}
                         </ul>
@@ -1081,38 +1044,38 @@ export function AgentsPage({
                 </div>
               )}
 
-              {pingTaskMessage?.metadata?.type === "ping-task" ? (
+              {activePanel.type === "ping-task" && activePanel.message.metadata?.type === "ping-task" ? (
                 <PingTaskPanel
-                  task={pingTaskMessage.metadata.task}
-                  onClose={() => setPingTaskMessage(null)}
+                  task={activePanel.message.metadata.task}
+                  onClose={closePanel}
                 />
               ) : null}
 
-              {pingPlanMessage?.metadata?.type === "ping-plan-summary" ? (
+              {activePanel.type === "ping-plan" && activePanel.message.metadata?.type === "ping-plan-summary" ? (
                 <PingPlanPanel
-                  plan={pingPlanMessage.metadata.plan ?? null}
-                  summary={pingPlanMessage.metadata.summary}
-                  onClose={() => setPingPlanMessage(null)}
+                  plan={activePanel.message.metadata.plan ?? null}
+                  summary={activePanel.message.metadata.summary}
+                  onClose={closePanel}
                 />
               ) : null}
 
-              {pingUpdateReportMessage?.metadata?.type === "ping-update-report" ? (
+              {activePanel.type === "ping-update-report" && activePanel.message.metadata?.type === "ping-update-report" ? (
                 <PingUpdateReportPanel
-                  report={pingUpdateReportMessage.metadata.report ?? null}
-                  fallbackRawReport={pingUpdateReportMessage.metadata.rawReport}
-                  onClose={() => setPingUpdateReportMessage(null)}
+                  report={activePanel.message.metadata.report ?? null}
+                  fallbackRawReport={activePanel.message.metadata.rawReport}
+                  onClose={closePanel}
                 />
               ) : null}
 
-              {executionReportMessage?.metadata?.type === "execution-report" ? (
-                <ErrorBoundaryPanel onClose={() => setExecutionReportMessage(null)}>
+              {activePanel.type === "execution-report" && activePanel.message.metadata?.type === "execution-report" ? (
+                <ErrorBoundaryPanel onClose={closePanel}>
                   <ExecutionReportPanel
-                    report={executionReportMessage.metadata.report}
+                    report={activePanel.message.metadata.report}
                     projectId={agentSelectedProjectId}
                     session={agentSession}
                     onSessionUpdate={onSessionUpdate}
                     pushToast={pushToast}
-                    onClose={() => setExecutionReportMessage(null)}
+                    onClose={closePanel}
                   />
                 </ErrorBoundaryPanel>
               ) : null}

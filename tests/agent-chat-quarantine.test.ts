@@ -153,6 +153,84 @@ test("Agent chat no longer fails fast behind the quarantine gate", async () => {
   assert.equal(response.message.content, "Ready.");
 });
 
+test("listPendingApprovals only returns live pending approvals", async () => {
+  const backend = createBackend() as Record<string, unknown>;
+  const session = (backend.createEmptyAgentSession as Function)("project-1", "claude") as AgentSession;
+  session.pendingApprovals = [
+    {
+      id: "approval-pending",
+      kind: "codebase-scan",
+      status: "pending",
+      requestedByDirectorId: "project-manager",
+      targetDirectorId: "rd-director",
+      summary: "Refresh project",
+      draftMessage: "Refresh now.",
+      draftPayload: { action: "refreshProject" },
+      createdAt: "2026-04-04T00:45:00.000Z",
+      updatedAt: "2026-04-04T00:45:00.000Z",
+    },
+    {
+      id: "approval-later",
+      kind: "codebase-scan",
+      status: "later",
+      requestedByDirectorId: "project-manager",
+      targetDirectorId: "rd-director",
+      summary: "Refresh later",
+      draftMessage: "Refresh later.",
+      draftPayload: { action: "refreshProject" },
+      createdAt: "2026-04-04T00:46:00.000Z",
+      updatedAt: "2026-04-04T00:46:00.000Z",
+    },
+  ];
+  (backend.getAgentSession as Function) = async () => session;
+
+  const approvals = await (backend.listPendingApprovals as Function)({ projectId: "project-1" }) as AgentSession["pendingApprovals"];
+
+  assert.deepEqual(approvals.map((approval) => approval.id), ["approval-pending"]);
+});
+
+test("refreshProject queues a new live approval even when a legacy later refresh approval exists", async () => {
+  const backend = createBackend() as Record<string, unknown>;
+  (backend.ensureInitialized as Function) = async () => {};
+  (backend.requireProject as Function) = async () => ({ id: "project-1", name: "Refresh Project" });
+
+  let storedSession = (backend.createEmptyAgentSession as Function)("project-1", "claude") as AgentSession;
+  storedSession.pendingApprovals = [
+    {
+      id: "approval-later",
+      kind: "codebase-scan",
+      status: "later",
+      requestedByDirectorId: "project-manager",
+      targetDirectorId: "rd-director",
+      summary: "Refresh later",
+      draftMessage: "Refresh later.",
+      draftPayload: {
+        action: "refreshProject",
+        input: { projectId: "project-1", provider: "claude", model: "gpt-5.4", claudeModel: "sonnet" },
+      },
+      createdAt: "2026-04-04T00:46:00.000Z",
+      updatedAt: "2026-04-04T00:46:00.000Z",
+    },
+  ];
+  (backend.getOrCreateAgentSession as Function) = async () => storedSession;
+  (backend.saveAgentSession as Function) = async (_projectId: string, session: AgentSession) => {
+    storedSession = JSON.parse(JSON.stringify(session)) as AgentSession;
+  };
+
+  await (backend.refreshProject as Function)({
+    projectId: "project-1",
+    provider: "claude",
+    model: "gpt-5.4",
+    claudeModel: "sonnet",
+  });
+
+  assert.equal(storedSession.pendingApprovals.filter((approval) => approval.status === "pending").length, 1);
+  assert.equal(
+    storedSession.pendingApprovals.some((approval) => approval.id === "approval-later" && approval.status === "later"),
+    true,
+  );
+});
+
 test("Ping execution helper queues approval before the big-model planning pass", async () => {
   const backend = createBackend() as Record<string, unknown>;
   (backend.ensureInitialized as Function) = async () => {};
@@ -303,6 +381,466 @@ test("Direct Ping updates queue approval with the big Claude planning model and 
   assert.equal(queuedInput?.pingTaskSnapshot?.runtime?.provider, "claude");
   assert.equal(queuedInput?.pingTaskSnapshot?.runtime?.claudeModel, "sonnet");
   assert.equal(session.slackMessages.some((msg) => msg.metadata?.type === "ping-task"), true);
+});
+
+test("Alert-triggered Ping runs skip the extra confirmation and start immediately with Todd as the passive guest", async () => {
+  const backend = createBackend({
+    advancedDefaults: {
+      provider: "claude",
+      model: "gpt-5.4",
+      claudeModel: "sonnet",
+    },
+  }) as Record<string, unknown>;
+  (backend.ensureInitialized as Function) = async () => {};
+  (backend.requireProject as Function) = async () => ({
+    id: "project-1",
+    name: "Ping Alert Project",
+    localPath: projectRoot,
+    status: "idle",
+    lastError: null,
+  });
+  (backend.assertFreshProjectKnowledge as Function) = async () => {};
+  (backend.requireProviderReady as Function) = async () => {};
+  (backend.updateProjectStatus as Function) = async (project: Record<string, unknown>, status: string, lastError: string | null) => ({
+    ...project,
+    status,
+    lastError,
+  });
+  (backend.readUsage as Function) = async () => ({
+    updatedAt: "2026-04-04T00:09:30.000Z",
+    claude: { status: "ready", windows: [], note: null },
+    codex: { status: "ready", windows: [], note: null },
+  });
+  (backend.aiService as Function) = () => ({
+    previewPlanningPrompt: () => "Plan prompt",
+    startPlanningTurn: async () => new Promise(() => {}),
+  });
+
+  let storedSession = (backend.createEmptyAgentSession as Function)("project-1", "claude") as AgentSession;
+  const savedSessions: AgentSession[] = [];
+  storedSession.toddMemory.futureUpdatePlan = [
+    {
+      id: "update-1",
+      versionId: "version-1",
+      title: "Ship Ping update",
+      description: "Apply the latest update in agent chat.",
+      order: 0,
+      status: "pending",
+      dependencies: [],
+      pillarIds: [],
+      skillsNeeded: [],
+    },
+  ];
+  (backend.store as Record<string, unknown>).getAgentSession = async () => storedSession;
+  (backend.store as Record<string, unknown>).saveAgentSession = async (session: AgentSession) => {
+    storedSession = JSON.parse(JSON.stringify(session)) as AgentSession;
+    savedSessions.push(JSON.parse(JSON.stringify(session)) as AgentSession);
+  };
+
+  await (backend.routeUpdateToProgramming as Function)({
+    projectId: "project-1",
+    updateId: "update-1",
+    provider: "claude",
+    model: "gpt-5.4",
+    claudeModel: "sonnet",
+    skipConfirmation: true,
+  });
+
+  assert.equal(storedSession.pendingApprovals.length, 0);
+  assert.equal(storedSession.toddMemory.futureUpdatePlan[0]?.status, "in_progress");
+  assert.equal(storedSession.slackActiveDirectorId, "programming-director");
+  assert.equal(storedSession.slackPresenceGuestId, "rd-director");
+  assert.equal(storedSession.pingMemory.activeUpdateId, "update-1");
+  assert.ok(savedSessions.length >= 1);
+  const firstSavedSession = savedSessions[0]!;
+  assert.equal(firstSavedSession.slackActiveDirectorId, "programming-director");
+  assert.equal(firstSavedSession.slackPresenceGuestId, "rd-director");
+  assert.equal(firstSavedSession.pingMemory.activeUpdateId, "update-1");
+  assert.match(storedSession.slackMessages.at(-4)?.content ?? "", /Task Report for Ping:/);
+  assert.match(storedSession.slackMessages.at(-3)?.content ?? "", /I’m ready to hand Ping one specific update:/);
+  assert.match(storedSession.slackMessages.at(-2)?.content ?? "", /I(?:'|’)ll map the plan/i);
+  assert.equal(storedSession.slackMessages.at(-1)?.status, "working");
+  assert.match(firstSavedSession.slackMessages.at(-4)?.content ?? "", /Task Report for Ping:/);
+  assert.match(firstSavedSession.slackMessages.at(-3)?.content ?? "", /I’m ready to hand Ping one specific update:/);
+  assert.match(firstSavedSession.slackMessages.at(-2)?.content ?? "", /I(?:'|’)ll map the plan/i);
+  assert.equal(firstSavedSession.slackMessages.at(-1)?.status, "working");
+});
+
+test("Immediate agent session refresh keeps a live Ping planning run active", async () => {
+  const backend = createBackend({
+    advancedDefaults: {
+      provider: "claude",
+      model: "gpt-5.4",
+      claudeModel: "sonnet",
+    },
+  }) as Record<string, unknown>;
+  (backend.ensureInitialized as Function) = async () => {};
+  (backend.assertFreshProjectKnowledge as Function) = async () => {};
+  (backend.requireProviderReady as Function) = async () => {};
+  (backend.decorateAgentSessionKnowledgeState as Function) = async (target: AgentSession) => {
+    target.knowledgeStatus = "fresh";
+    target.knowledgeReasons = [];
+    return target;
+  };
+  (backend.readUsage as Function) = async () => ({
+    updatedAt: "2026-04-04T00:09:30.000Z",
+    claude: { status: "ready", windows: [], note: null },
+    codex: { status: "ready", windows: [], note: null },
+  });
+
+  let project: Record<string, unknown> = {
+    id: "project-1",
+    name: "Ping Refresh Project",
+    localPath: projectRoot,
+    status: "idle",
+    lastError: null,
+    updatedAt: "2026-04-04T00:09:30.000Z",
+    description: "Ping refresh project.",
+    threadId: null,
+  };
+  (backend.requireProject as Function) = async () => project;
+
+  let planningStarted = false;
+  const livePlan = { status: "planning" };
+  backend.codex = { getActivePlan: () => null };
+  backend.claude = { getActivePlan: () => (planningStarted ? livePlan : null) };
+  (backend.aiService as Function) = () => ({
+    previewPlanningPrompt: () => "Plan prompt",
+    startPlanningTurn: async () => {
+      planningStarted = true;
+      return new Promise(() => {});
+    },
+  });
+
+  let storedSession = (backend.createEmptyAgentSession as Function)("project-1", "claude") as AgentSession;
+  const savedSessions: AgentSession[] = [];
+  storedSession.toddMemory.futureUpdatePlan = [
+    {
+      id: "update-1",
+      versionId: "version-1",
+      title: "Ship Ping update",
+      description: "Apply the latest update in agent chat.",
+      order: 0,
+      status: "pending",
+      dependencies: [],
+      pillarIds: [],
+      skillsNeeded: [],
+    },
+  ];
+  (backend.store as Record<string, unknown>).getAgentSession = async () => storedSession;
+  (backend.store as Record<string, unknown>).saveAgentSession = async (session: AgentSession) => {
+    storedSession = JSON.parse(JSON.stringify(session)) as AgentSession;
+    savedSessions.push(JSON.parse(JSON.stringify(session)) as AgentSession);
+  };
+  (backend.store as Record<string, unknown>).updateProject = async (nextProject: Record<string, unknown>) => {
+    project = JSON.parse(JSON.stringify(nextProject));
+  };
+
+  await (backend.routeUpdateToProgramming as Function)({
+    projectId: "project-1",
+    updateId: "update-1",
+    provider: "claude",
+    model: "gpt-5.4",
+    claudeModel: "sonnet",
+    skipConfirmation: true,
+  });
+
+  const saveCountBeforeRefresh = savedSessions.length;
+  const refreshed = await (backend.getAgentSession as Function)("project-1") as AgentSession | null;
+
+  assert.equal(planningStarted, true);
+  assert.ok(refreshed);
+  assert.equal(savedSessions.length, saveCountBeforeRefresh);
+  assert.equal(refreshed?.pingMemory.activeUpdateId, "update-1");
+  assert.equal(refreshed?.toddMemory.futureUpdatePlan[0]?.status, "in_progress");
+  assert.equal(refreshed?.slackMessages.at(-1)?.status, "working");
+  assert.equal(
+    refreshed?.slackMessages.some((message) => /Ping stopped before execution began/i.test(message.content)),
+    false,
+  );
+  assert.equal(project.status, "planning");
+});
+
+test("Immediate project refresh keeps a live Ping planning run active", async () => {
+  const backend = createBackend({
+    advancedDefaults: {
+      provider: "claude",
+      model: "gpt-5.4",
+      claudeModel: "sonnet",
+    },
+  }) as Record<string, unknown>;
+  (backend.ensureInitialized as Function) = async () => {};
+  (backend.assertFreshProjectKnowledge as Function) = async () => {};
+  (backend.requireProviderReady as Function) = async () => {};
+  (backend.readUsage as Function) = async () => ({
+    updatedAt: "2026-04-04T00:09:30.000Z",
+    claude: { status: "ready", windows: [], note: null },
+    codex: { status: "ready", windows: [], note: null },
+  });
+  (backend.refreshProjectRuntimeConfig as Function) = async (currentProject: Record<string, unknown>) => currentProject;
+  (backend.syncProjectRuntimeState as Function) = async (currentProject: Record<string, unknown>) => ({
+    project: currentProject,
+    runtime: { running: false },
+  });
+
+  let project: Record<string, unknown> = {
+    id: "project-1",
+    name: "Ping Project Refresh Project",
+    localPath: projectRoot,
+    status: "idle",
+    lastError: null,
+    updatedAt: "2026-04-04T00:09:30.000Z",
+    description: "Ping project refresh project.",
+    threadId: null,
+  };
+  (backend.requireProject as Function) = async () => project;
+
+  let planningStarted = false;
+  const livePlan = { status: "planning" };
+  backend.codex = { getActivePlan: () => null };
+  backend.claude = { getActivePlan: () => (planningStarted ? livePlan : null) };
+  (backend.aiService as Function) = () => ({
+    previewPlanningPrompt: () => "Plan prompt",
+    startPlanningTurn: async () => {
+      planningStarted = true;
+      return new Promise(() => {});
+    },
+  });
+
+  let storedSession = (backend.createEmptyAgentSession as Function)("project-1", "claude") as AgentSession;
+  const savedSessions: AgentSession[] = [];
+  storedSession.toddMemory.futureUpdatePlan = [
+    {
+      id: "update-1",
+      versionId: "version-1",
+      title: "Ship Ping update",
+      description: "Apply the latest update in agent chat.",
+      order: 0,
+      status: "pending",
+      dependencies: [],
+      pillarIds: [],
+      skillsNeeded: [],
+    },
+  ];
+  (backend.store as Record<string, unknown>).getAgentSession = async () => storedSession;
+  (backend.store as Record<string, unknown>).saveAgentSession = async (session: AgentSession) => {
+    storedSession = JSON.parse(JSON.stringify(session)) as AgentSession;
+    savedSessions.push(JSON.parse(JSON.stringify(session)) as AgentSession);
+  };
+  (backend.store as Record<string, unknown>).readHistory = async () => [];
+  (backend.store as Record<string, unknown>).updateProject = async (nextProject: Record<string, unknown>) => {
+    project = JSON.parse(JSON.stringify(nextProject));
+  };
+
+  await (backend.routeUpdateToProgramming as Function)({
+    projectId: "project-1",
+    updateId: "update-1",
+    provider: "claude",
+    model: "gpt-5.4",
+    claudeModel: "sonnet",
+    skipConfirmation: true,
+  });
+
+  const saveCountBeforeRefresh = savedSessions.length;
+  const detail = await (backend.readProject as Function)("project-1") as { project: Record<string, unknown>; activePlan: { status: string } | null };
+
+  assert.equal(planningStarted, true);
+  assert.equal(savedSessions.length, saveCountBeforeRefresh);
+  assert.equal(detail.project.status, "planning");
+  assert.equal(detail.activePlan?.status, "planning");
+  assert.equal(storedSession.pingMemory.activeUpdateId, "update-1");
+  assert.equal(storedSession.slackMessages.at(-1)?.status, "working");
+  assert.equal(
+    storedSession.slackMessages.some((message) => /Ping stopped before execution began/i.test(message.content)),
+    false,
+  );
+});
+
+test("Agent session load repairs a stale Claude Ping startup failure and releases the Todd update", async () => {
+  const backend = createBackend({
+    advancedDefaults: {
+      provider: "claude",
+      model: "gpt-5.4",
+      claudeModel: "sonnet",
+    },
+  }) as Record<string, unknown>;
+  (backend.ensureInitialized as Function) = async () => {};
+  (backend.decorateAgentSessionKnowledgeState as Function) = async (target: AgentSession) => {
+    target.knowledgeStatus = "fresh";
+    target.knowledgeReasons = [];
+    return target;
+  };
+  backend.codex = { getActivePlan: () => null };
+  backend.claude = { getActivePlan: () => null };
+
+  let storedSession = (backend.createEmptyAgentSession as Function)("project-1", "claude") as AgentSession;
+  storedSession.toddMemory.futureUpdatePlan = [
+    {
+      id: "update-1",
+      versionId: "version-1",
+      title: "Ship Ping update",
+      description: "Apply the latest update in agent chat.",
+      order: 0,
+      status: "in_progress",
+      dependencies: [],
+      pillarIds: [],
+      skillsNeeded: [],
+    },
+  ];
+  storedSession.versionUpdates = [...storedSession.toddMemory.futureUpdatePlan];
+  storedSession.pingMemory.activeUpdateId = "update-1";
+  storedSession.pingMemory.activeTask = "Ship Ping update";
+  storedSession.pingMemory.context = "Todd handed this off to Ping.";
+  storedSession.pingMemory.currentRun = {
+    task: {
+      source: "todd-approved-update",
+      projectId: "project-1",
+      updateId: "update-1",
+      updateTitle: "Ship Ping update",
+      updateDescription: "Apply the latest update in agent chat.",
+      originalUserRequest: "Ship Ping update",
+      toddExplanation: "Apply the latest update in agent chat.",
+      relevantPillarIds: [],
+      toddCodebaseMapSummary: null,
+      coreDetailsContext: null,
+      runtime: {
+        provider: "claude",
+        model: "gpt-5.4",
+        claudeModel: "sonnet",
+        reasoningEffort: "medium",
+        planningMode: "auto",
+        contextPaths: [],
+      },
+      planPrompt: "Plan prompt",
+      createdAt: "2026-04-03T23:21:22.576Z",
+    },
+    plan: null,
+    report: null,
+    usageBefore: null,
+    usageAfter: null,
+    validationReport: null,
+  };
+  storedSession.slackActiveDirectorId = "programming-director";
+  storedSession.slackPresenceGuestId = "programming-director";
+  (backend.appendSlackAssistantMessage as Function)(storedSession, "programming-director", "I’ll map the plan now.", {
+    status: "complete",
+    metadata: null,
+  });
+  (backend.appendSlackAssistantMessage as Function)(storedSession, "programming-director", "", {
+    status: "working",
+    metadata: null,
+  });
+
+  const project = {
+    id: "project-1",
+    name: "Ping Recovery Project",
+    localPath: projectRoot,
+    lastError: JSON.stringify([
+      { path: ["summary"], message: "Required" },
+      { path: ["impact"], message: "Required" },
+    ]),
+  };
+
+  (backend.store as Record<string, unknown>).getAgentSession = async () => storedSession;
+  (backend.store as Record<string, unknown>).saveAgentSession = async (session: AgentSession) => {
+    storedSession = JSON.parse(JSON.stringify(session)) as AgentSession;
+  };
+  (backend.store as Record<string, unknown>).readProject = async () => project;
+
+  const repaired = await (backend.getAgentSession as Function)("project-1") as AgentSession | null;
+
+  assert.ok(repaired);
+  assert.equal(repaired?.pingMemory.activeUpdateId, null);
+  assert.equal(repaired?.pingMemory.activeTask, null);
+  assert.equal(repaired?.pingMemory.context, null);
+  assert.equal(repaired?.pingMemory.currentRun, null);
+  assert.equal(repaired?.toddMemory.futureUpdatePlan[0]?.status, "pending");
+  assert.equal(repaired?.versionUpdates[0]?.status, "pending");
+  assert.equal(repaired?.slackActiveDirectorId, "project-manager");
+  assert.equal(repaired?.slackPresenceGuestId, null);
+  assert.equal(repaired?.slackMessages.at(-1)?.status, "complete");
+  assert.match(repaired?.slackMessages.at(-1)?.content ?? "", /Structured output validation failed/i);
+});
+
+test("Agent session load repairs an orphaned Ping working message and clears transient project state", async () => {
+  const backend = createBackend({
+    advancedDefaults: {
+      provider: "claude",
+      model: "gpt-5.4",
+      claudeModel: "sonnet",
+    },
+  }) as Record<string, unknown>;
+  (backend.ensureInitialized as Function) = async () => {};
+  (backend.decorateAgentSessionKnowledgeState as Function) = async (target: AgentSession) => {
+    target.knowledgeStatus = "fresh";
+    target.knowledgeReasons = [];
+    return target;
+  };
+  backend.codex = { getActivePlan: () => null };
+  backend.claude = { getActivePlan: () => null };
+
+  let project = {
+    id: "project-1",
+    name: "Ping Orphan Recovery Project",
+    localPath: projectRoot,
+    status: "executing",
+    lastError: null,
+    updatedAt: "2026-04-04T00:09:30.000Z",
+  };
+
+  let storedSession = (backend.createEmptyAgentSession as Function)("project-1", "claude") as AgentSession;
+  storedSession.toddMemory.futureUpdatePlan = [
+    {
+      id: "update-1",
+      versionId: "version-1",
+      title: "Ship Ping update",
+      description: "Apply the latest update in agent chat.",
+      order: 0,
+      status: "in_progress",
+      dependencies: [],
+      pillarIds: [],
+      skillsNeeded: [],
+    },
+  ];
+  storedSession.versionUpdates = [...storedSession.toddMemory.futureUpdatePlan];
+  storedSession.pingMemory.activeUpdateId = "update-1";
+  storedSession.pingMemory.activeTask = "Ship Ping update";
+  storedSession.pingMemory.context = "Todd handed this off to Ping.";
+  storedSession.slackActiveDirectorId = "programming-director";
+  storedSession.slackPresenceGuestId = "programming-director";
+  (backend.appendSlackAssistantMessage as Function)(storedSession, "programming-director", "Plan completed.", {
+    status: "complete",
+    metadata: null,
+  });
+  (backend.appendSlackAssistantMessage as Function)(storedSession, "programming-director", "", {
+    status: "working",
+    metadata: null,
+  });
+
+  (backend.store as Record<string, unknown>).getAgentSession = async () => storedSession;
+  (backend.store as Record<string, unknown>).saveAgentSession = async (session: AgentSession) => {
+    storedSession = JSON.parse(JSON.stringify(session)) as AgentSession;
+  };
+  (backend.store as Record<string, unknown>).readProject = async () => project;
+  (backend.store as Record<string, unknown>).updateProject = async (nextProject: typeof project) => {
+    project = JSON.parse(JSON.stringify(nextProject));
+  };
+
+  const repaired = await (backend.getAgentSession as Function)("project-1") as AgentSession | null;
+
+  assert.ok(repaired);
+  assert.equal(repaired?.pingMemory.activeUpdateId, null);
+  assert.equal(repaired?.pingMemory.activeTask, null);
+  assert.equal(repaired?.pingMemory.context, null);
+  assert.equal(repaired?.pingMemory.currentRun, null);
+  assert.equal(repaired?.toddMemory.futureUpdatePlan[0]?.status, "pending");
+  assert.equal(repaired?.versionUpdates[0]?.status, "pending");
+  assert.equal(repaired?.slackActiveDirectorId, "project-manager");
+  assert.equal(repaired?.slackPresenceGuestId, null);
+  assert.equal(repaired?.slackMessages.at(-1)?.status, "complete");
+  assert.match(repaired?.slackMessages.at(-1)?.content ?? "", /cleared after the run stopped/i);
+  assert.equal(project.status, "idle");
+  assert.equal(project.lastError, null);
 });
 
 test("Pong validation queues approval only when the active validation model is large", async () => {

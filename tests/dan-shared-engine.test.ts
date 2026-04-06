@@ -168,7 +168,10 @@ const createSession = (): AgentSession => {
     },
     toddMemory: {
       confirmedConcept: null,
-      versionPlan: { v1: null, v2: null, v3: null },
+      currentState: null,
+      endStateGoal: null,
+      successChain: [],
+      nextUpdate: null,
       futureUpdatePlan: [],
       previousUpdateLog: [],
       troubleLog: [],
@@ -977,74 +980,6 @@ test("Dan soft reports keep metadata light and resolve against the live draft", 
   assert.equal(session.pendingApprovals.length, 0);
 });
 
-test("Todd DM version-planning turns attach hard-memory report metadata and keep it after approval", async () => {
-  const session = createSession();
-  session.slackMessages.push({
-    id: "user-todd-version",
-    role: "user",
-    directorId: null,
-    content: "Build me a phased roadmap for the next release.",
-    createdAt: NOW,
-  });
-
-  const harness = createBackendHarness([
-    {
-      response: "The phased roadmap is ready.",
-      handoffTo: null,
-      handoffReason: null,
-      currentState: "We need a clear phased roadmap.",
-      idealState: "We have a concrete V1-V3 roadmap.",
-      confirmationSuggested: true,
-      versions: [
-        {
-          label: "V1",
-          description: "Ship the minimum viable experience.",
-          goals: ["Keep the first pass focused.", "Reduce setup friction."],
-        },
-        {
-          label: "V2",
-          description: "Add the next round of refinements.",
-          goals: ["Extend the core flow.", "Improve confidence."],
-        },
-      ],
-      notesToAppend: [],
-    },
-  ]);
-  harness.setStoredSession(session);
-
-  const result = await (harness.backend.directorChat as Function)({
-    projectId: "project-1",
-    directorId: "rd-director",
-    message: "Build me a phased roadmap for the next release.",
-    provider: "codex",
-    model: "gpt-5.4",
-    claudeModel: "sonnet",
-    focusMode: "version-planning",
-  });
-
-  const metadata = result.message.metadata as HardMemoryReportMetadata | null;
-  assert.equal(metadata?.type, "hard-memory-report");
-  assert.equal(metadata?.dataType, "versions");
-  assert.equal(metadata?.directorId, "rd-director");
-  assert.equal(metadata?.approvalId, session.pendingApprovals[0]?.id ?? null);
-  assert.deepEqual(metadata?.roadmapVersions?.map((version) => version.label), ["V1", "V2"]);
-  assert.equal(metadata?.summary, "The phased roadmap is ready.");
-  assert.equal(session.pendingApprovals.length, 1);
-
-  const approval = session.pendingApprovals[0] as PendingApproval;
-  await (harness.backend.approvePendingApproval as Function)({
-    projectId: session.projectId,
-    approvalId: approval.id,
-  });
-
-  const persistedReport = session.directorConversations["rd-director"]?.messages.find(
-    (message) => message.metadata?.type === "hard-memory-report",
-  );
-  const persistedMetadata = persistedReport?.metadata as HardMemoryReportMetadata | null;
-  assert.equal(persistedMetadata?.type, "hard-memory-report");
-  assert.equal(persistedMetadata?.approvalId, metadata?.approvalId ?? null);
-  assert.equal(session.pendingApprovals.length, 0);
-});
 
 test("Todd research turns can hand concept questions back to Dan without consuming Dan's pending handoff", async () => {
   const session = createSession();
@@ -1189,92 +1124,6 @@ test("Todd research Slack turns keep Dan handoff context live until a synthesis 
   assert.equal((session.toddMemory.backupNotes ?? []).some((note) => note.includes("Handoff raw: Start with onboarding before extending the workspace.")), false);
 });
 
-test("Todd Slack update-planning turns attach hard-memory report metadata and keep it after approval", async () => {
-  const session = createSession();
-  session.corePillars = [
-    {
-      id: "onboarding",
-      name: "Onboarding",
-      pillarType: "core",
-      function: createDetail("Guide the user into the product."),
-      thesis: createDetail("The first pass should feel obvious."),
-      corePillars: [],
-      fullFlow: createDetail("Move from setup into the workspace."),
-      description: "Onboarding flow",
-      connectedPillarIds: [],
-      assumptionText: null,
-      assumptionSource: null,
-      order: 1,
-      threadMemberships: [],
-      endState: null,
-    },
-  ];
-  session.slackMessages.push({
-    id: "user-todd-update",
-    role: "user",
-    directorId: null,
-    content: "Break this into grouped updates for the implementation plan.",
-    createdAt: NOW,
-  });
-
-  const harness = createBackendHarness([
-    {
-      response: "Grouped updates are ready.",
-      handoffTo: null,
-      handoffReason: null,
-      currentState: "We need smaller implementation slices.",
-      idealState: "We have grouped updates with clear dependencies.",
-      confirmationSuggested: true,
-      updates: [
-        createToddUpdatePlanItem({
-          title: "Ship the onboarding shell",
-          description: "Build the first pass of the onboarding experience.",
-          dependencies: ["Navigation"],
-          area: "Onboarding",
-          skillsNeeded: ["React", "Routing"],
-          updateKind: "create",
-          supportsNextStep: "Expands the onboarding flow safely.",
-        }),
-      ],
-      notesToAppend: [],
-    },
-  ]);
-
-  const result = await (harness.backend.runSlackDirectorTurn as Function)({
-    session,
-    project: harness.project,
-    settings: harness.settings,
-    provider: "codex",
-    model: "gpt-5.4",
-    claudeModel: "sonnet",
-    directorId: "rd-director",
-    userMessage: "Break this into grouped updates for the implementation plan.",
-    mode: "update-planning",
-  });
-
-  const metadata = result.assistantMessage.metadata as HardMemoryReportMetadata | null;
-  assert.equal(metadata?.type, "hard-memory-report");
-  assert.equal(metadata?.dataType, "versionUpdates");
-  assert.equal(metadata?.directorId, "rd-director");
-  assert.equal(metadata?.approvalId, session.pendingApprovals[0]?.id ?? null);
-  assert.equal(metadata?.versionUpdates?.[0]?.area, "Onboarding");
-  assert.equal(metadata?.versionUpdates?.[0]?.skillsNeeded[0], "React");
-  assert.equal(session.pendingApprovals.length, 1);
-
-  const approval = session.pendingApprovals[0] as PendingApproval;
-  await (harness.backend.approvePendingApproval as Function)({
-    projectId: session.projectId,
-    approvalId: approval.id,
-  });
-
-  const persistedReport = session.slackMessages.find(
-    (message) => message.metadata?.type === "hard-memory-report",
-  );
-  const persistedMetadata = persistedReport?.metadata as HardMemoryReportMetadata | null;
-  assert.equal(persistedMetadata?.type, "hard-memory-report");
-  assert.equal(persistedMetadata?.approvalId, metadata?.approvalId ?? null);
-  assert.equal(session.pendingApprovals.length, 0);
-});
 
 test("Dan uses the same reducer path in DM and Slack, and Slack presence changes on handoff or exit", async () => {
   const dmSession = createSession();
@@ -1563,14 +1412,6 @@ test("Todd directorChat uses small research turns and blocks legacy memory-proce
   assert.equal(roadmapHarness.aiCalls.length, 0);
 
   const updateSession = createSession();
-  updateSession.toddMemory.versionPlan.v1 = {
-    id: "version-1",
-    label: "V1",
-    description: "Ship the onboarding baseline.",
-    goals: ["Land the first confirmed experience."],
-    status: "confirmed",
-    order: 0,
-  };
   const updateHarness = createBackendHarness([createToddPayload()]);
   updateHarness.setStoredSession(updateSession);
 
@@ -1638,13 +1479,26 @@ test("Ping routed Slack updates auto-approve planning for the next pending updat
   const harness = createBackendHarness([]);
   harness.setStoredSession(session);
 
-  let capturedPlanningMode: string | null = null;
+  let capturedPrompt: string | null = null;
   let capturedUpdateId: string | null = null;
-  harness.backend.agentExecuteUpdateNow = async (input: { updateId?: string } | unknown, options?: { planningMode?: string }) => {
-    capturedPlanningMode = options?.planningMode ?? null;
-    capturedUpdateId = typeof input === "object" && input && "updateId" in input && typeof input.updateId === "string"
-      ? input.updateId
+  harness.backend.readUsage = async () => ({
+    updatedAt: NOW,
+    claude: { status: "ready", windows: [], note: null },
+    codex: { status: "ready", windows: [], note: null },
+  });
+  harness.backend.startPlanNow = async (input: { prompt?: string; pingTaskSnapshot?: { updateId?: string | null } } | unknown) => {
+    capturedPrompt = typeof input === "object" && input && "prompt" in input && typeof input.prompt === "string"
+      ? input.prompt
       : null;
+    capturedUpdateId = typeof input === "object"
+      && input
+      && "pingTaskSnapshot" in input
+      && typeof input.pingTaskSnapshot === "object"
+      && input.pingTaskSnapshot
+      && "updateId" in input.pingTaskSnapshot
+      && typeof input.pingTaskSnapshot.updateId === "string"
+        ? input.pingTaskSnapshot.updateId
+        : null;
     return { started: true };
   };
 
@@ -1656,15 +1510,17 @@ test("Ping routed Slack updates auto-approve planning for the next pending updat
     claudeModel: "sonnet",
   });
 
-  assert.equal(capturedPlanningMode, "auto");
+  assert.match(capturedPrompt ?? "", /Ship Ping update/);
   assert.equal(capturedUpdateId, "update-0");
-  assert.equal(session.pingMemory.activeUpdateId, "update-0");
-  assert.equal(session.pingTaskContext?.currentTask, "Ship Ping update: Apply the latest update in Slack.");
-  assert.equal(session.pingMemory.activeTask, "Ship Ping update: Apply the latest update in Slack.");
-  assert.equal(session.pingMemory.context, "Apply the latest update in Slack.");
   assert.equal(session.toddMemory.futureUpdatePlan.find((update) => update.id === "update-0")?.status, "in_progress");
   assert.equal(session.versionUpdates.find((update) => update.id === "update-0")?.status, "in_progress");
   assert.equal(session.toddMemory.futureUpdatePlan.find((update) => update.id === "update-1")?.status, "pending");
+  assert.equal(session.slackActiveDirectorId, "programming-director");
+  assert.equal(session.slackPresenceGuestId, "rd-director");
+  assert.equal(session.pingMemory.activeUpdateId, "update-0");
+  assert.equal(session.pingMemory.currentRun?.task.updateId, "update-0");
+  assert.match(session.slackMessages.at(-2)?.content ?? "", /I(?:'|’)ll map the plan/i);
+  assert.equal(session.slackMessages.at(-1)?.status, "working");
 });
 
 test("Ping Slack intro, response, and outro bubbles all carry translation metadata", async () => {
@@ -1753,14 +1609,6 @@ test("Ping Slack intro, response, and outro bubbles all carry translation metada
 
 test("Automation targets fall back to Todd's live draft update plan when no confirmed plan exists", async () => {
   const session = createSession();
-  session.toddMemory.versionPlan.v1 = {
-    id: "version-1",
-    label: "V1",
-    description: "Ship the onboarding baseline.",
-    goals: ["Land the first confirmed experience."],
-    status: "confirmed",
-    order: 0,
-  };
   session.pendingApprovals.push({
     id: "approval-1",
     kind: "store-data",
@@ -1788,7 +1636,6 @@ test("Automation targets fall back to Todd's live draft update plan when no conf
   });
 
   assert.equal(response.source, "draft");
-  assert.equal(response.currentVersionLabel, "V1");
   assert.equal(response.draftApprovalId, "approval-1");
   assert.equal(response.candidates.length, 1);
   assert.equal(response.candidates[0]?.available, false);
@@ -1797,14 +1644,6 @@ test("Automation targets fall back to Todd's live draft update plan when no conf
 
 test("Todd review can finalize success and queue a superseding structural replan draft", async () => {
   const session = createSession();
-  session.toddMemory.versionPlan.v1 = {
-    id: "version-1",
-    label: "V1",
-    description: "Ship the onboarding baseline.",
-    goals: ["Land the first confirmed experience."],
-    status: "confirmed",
-    order: 0,
-  };
   session.toddMemory.futureUpdatePlan = [
     createVersionUpdate({
       id: "update-1",

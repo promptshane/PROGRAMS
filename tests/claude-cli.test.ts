@@ -31,7 +31,9 @@ Commands:
   update                                            Check for updates
 
 Options:
+  --json-schema                                     Enforce a JSON schema
   --output-format <format>                          Output format
+  --permission-mode <mode>                          Select permission behavior
   --print                                           Print response and exit
   --verbose                                         Override verbose mode
 `);
@@ -39,16 +41,24 @@ Options:
   assert.deepEqual(features, {
     supportsAuthCommands: true,
     supportsStreamJsonVerbose: true,
+    supportsJsonSchema: true,
+    supportsPermissionMode: true,
   });
 });
 
-test("buildClaudePrintArgs always includes verbose stream-json output", () => {
+test("buildClaudePrintArgs includes native schema and permission mode when requested", () => {
   const args = buildClaudePrintArgs({
     prompt: "Say ok",
     model: "sonnet",
     settingsArg: "{\"effortLevel\":\"medium\"}",
     maxTurns: 5,
     allowedTools: "Read,Write",
+    jsonSchema: {
+      type: "object",
+      required: ["ok"],
+      properties: { ok: { type: "boolean" } },
+    },
+    permissionMode: "plan",
   });
 
   assert.deepEqual(args, [
@@ -58,6 +68,10 @@ test("buildClaudePrintArgs always includes verbose stream-json output", () => {
     "sonnet",
     "--settings",
     "{\"effortLevel\":\"medium\"}",
+    "--json-schema",
+    "{\"type\":\"object\",\"required\":[\"ok\"],\"properties\":{\"ok\":{\"type\":\"boolean\"}}}",
+    "--permission-mode",
+    "plan",
     "--print",
     "--verbose",
     "--max-turns",
@@ -88,6 +102,8 @@ test("buildClaudeAuthStatus handles signed-in, signed-out, incompatible, and run
     features: {
       supportsAuthCommands: true,
       supportsStreamJsonVerbose: true,
+      supportsJsonSchema: true,
+      supportsPermissionMode: true,
     },
   });
   assert.equal(signedIn.loggedIn, true);
@@ -104,6 +120,8 @@ test("buildClaudeAuthStatus handles signed-in, signed-out, incompatible, and run
     features: {
       supportsAuthCommands: true,
       supportsStreamJsonVerbose: true,
+      supportsJsonSchema: true,
+      supportsPermissionMode: true,
     },
   });
   assert.equal(signedOut.loggedIn, false);
@@ -119,6 +137,8 @@ test("buildClaudeAuthStatus handles signed-in, signed-out, incompatible, and run
     features: {
       supportsAuthCommands: false,
       supportsStreamJsonVerbose: true,
+      supportsJsonSchema: true,
+      supportsPermissionMode: true,
     },
   });
   assert.equal(incompatibleConnect.loggedIn, false);
@@ -143,6 +163,8 @@ test("buildClaudeAuthStatus handles signed-in, signed-out, incompatible, and run
     features: {
       supportsAuthCommands: true,
       supportsStreamJsonVerbose: false,
+      supportsJsonSchema: true,
+      supportsPermissionMode: true,
     },
   });
   assert.equal(runtimeError.loggedIn, true);

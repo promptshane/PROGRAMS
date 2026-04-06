@@ -16,8 +16,8 @@ import type {
   UsageWindow,
 } from "@shared/types";
 
-import type { ComposerOptions } from "./constants";
-export type { ComposerOptions } from "./constants";
+import type { ComposerOptions } from "./constants.ts";
+export type { ComposerOptions } from "./constants.ts";
 
 export const normalizeSentence = (value: string | null | undefined): string | null => {
   const trimmed = value?.trim() ?? "";

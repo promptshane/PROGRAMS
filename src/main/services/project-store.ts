@@ -232,11 +232,10 @@ const buildToddMemory = (session: {
 
   return {
     confirmedConcept: session.danMemory.confirmedConcept,
-    versionPlan: {
-      v1: session.toddMemory?.versionPlan.v1 ?? findRoadmapVersion(session.versions, "v1"),
-      v2: session.toddMemory?.versionPlan.v2 ?? findRoadmapVersion(session.versions, "v2"),
-      v3: session.toddMemory?.versionPlan.v3 ?? findRoadmapVersion(session.versions, "v3"),
-    },
+    currentState: session.toddMemory?.currentState ?? null,
+    endStateGoal: session.toddMemory?.endStateGoal ?? null,
+    successChain: session.toddMemory?.successChain ?? [],
+    nextUpdate: session.toddMemory?.nextUpdate ?? null,
     futureUpdatePlan,
     previousUpdateLog: session.toddMemory?.previousUpdateLog ?? [],
     troubleLog,
@@ -301,8 +300,7 @@ const syncLegacyFieldsFromMemory = (session: AgentSession): AgentSession => {
   session.danDraftStatus = session.danMemory.draftStatus;
   session.danArchivedNotes = [...session.danMemory.archivedNotes];
   session.deletedNotes = [...session.danMemory.deletedNotes];
-  session.versions = [session.toddMemory.versionPlan.v1, session.toddMemory.versionPlan.v2, session.toddMemory.versionPlan.v3]
-    .filter((version): version is VersionPlan => Boolean(version));
+  session.versions = [];
   session.versionUpdates = session.toddMemory.futureUpdatePlan.map(normalizeVersionUpdate);
   session.automation = buildAutomationState(session.automation);
   session.pingTaskContext = session.pingMemory.activeTask

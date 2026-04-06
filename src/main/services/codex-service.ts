@@ -683,18 +683,15 @@ export class CodexService {
   }
 
   async startPlanningTurn(project: Project, settings: Settings, input: StartPlanInput): Promise<PlanDraft> {
-    const { threadId } = await this.ensureThread(project, settings, input.speed, input.model);
-
-    return new Promise<PlanDraft>(async (resolve, reject) => {
-      const draft: PlanDraft = {
-        projectId: project.id,
-        provider: "codex",
-        threadId,
-        turnId: null,
-        prompt: input.prompt,
-        speed: input.speed,
-        model: input.model,
-        claudeModel: input.claudeModel,
+    const draft: PlanDraft = {
+      projectId: project.id,
+      provider: "codex",
+      threadId: project.threadId,
+      turnId: null,
+      prompt: input.prompt,
+      speed: input.speed,
+      model: input.model,
+      claudeModel: input.claudeModel,
       reasoningEffort: input.reasoningEffort,
       planningMode: input.planningMode,
       autoApprove: input.autoApprove,
@@ -703,76 +700,79 @@ export class CodexService {
       coreDetailsContext: input.coreDetailsContext ?? null,
       pingTaskSnapshot: input.pingTaskSnapshot ?? null,
       status: "planning",
-        thinkingStatus: "in_progress",
-        planningStatus: "in_progress",
-        buildingStatus: "pending",
-        verifyingStatus: "pending",
-        explanation: "Codex is building the plan.",
-        steps: [],
-        summary: null,
-        impact: null,
-        diff: null,
-        diffStats: null,
-        finalText: null,
-        verificationDetails: null,
-        errorMessage: null,
-        lastUpdatedAt: new Date().toISOString(),
-      };
+      thinkingStatus: "in_progress",
+      planningStatus: "in_progress",
+      buildingStatus: "pending",
+      verifyingStatus: "pending",
+      explanation: "Codex is building the plan.",
+      steps: [],
+      summary: null,
+      impact: null,
+      diff: null,
+      diffStats: null,
+      finalText: null,
+      verificationDetails: null,
+      errorMessage: null,
+      lastUpdatedAt: new Date().toISOString(),
+    };
 
-      this.syncDraft(draft);
+    this.syncDraft(draft);
 
-      try {
-        const { result, threadId: resolvedThreadId } = await this.startTurnWithThreadRetry(
-          project,
-          settings,
-          input.speed,
-          input.model,
-          (activeThreadId) => ({
-            threadId: activeThreadId,
-            cwd: project.localPath,
-            input: [{ type: "text", text: this.previewPlanningPrompt(project, input) }],
-            effort: input.reasoningEffort,
-            model: input.model,
-            outputSchema: planOutputSchema,
-            personality: "pragmatic",
-            approvalPolicy: "never",
-            sandboxPolicy: {
-              type: "readOnly",
-              networkAccess: false,
-            },
-            summary: "auto",
-          }),
-        );
+    return new Promise<PlanDraft>((resolve, reject) => {
+      void (async () => {
+        try {
+          const { result, threadId: resolvedThreadId } = await this.startTurnWithThreadRetry(
+            project,
+            settings,
+            input.speed,
+            input.model,
+            (activeThreadId) => ({
+              threadId: activeThreadId,
+              cwd: project.localPath,
+              input: [{ type: "text", text: this.previewPlanningPrompt(project, input) }],
+              effort: input.reasoningEffort,
+              model: input.model,
+              outputSchema: planOutputSchema,
+              personality: "pragmatic",
+              approvalPolicy: "never",
+              sandboxPolicy: {
+                type: "readOnly",
+                networkAccess: false,
+              },
+              summary: "auto",
+            }),
+          );
 
-        const turnId = result.turn?.id ?? null;
-        const activeTurn: ActiveTurn = {
-          projectId: project.id,
-          projectPath: project.localPath,
-          threadId: resolvedThreadId,
-          turnId,
-          phase: "plan",
-          prompt: input.prompt,
-          speed: input.speed,
-          draft,
-          projectRoot: project.localPath,
-          finalMessages: [],
-          pendingItems: new Map(),
-          resolve: (value) => resolve(value as PlanDraft),
-          reject,
-        };
+          const turnId = result.turn?.id ?? null;
+          const activeTurn: ActiveTurn = {
+            projectId: project.id,
+            projectPath: project.localPath,
+            threadId: resolvedThreadId,
+            turnId,
+            phase: "plan",
+            prompt: input.prompt,
+            speed: input.speed,
+            draft,
+            projectRoot: project.localPath,
+            finalMessages: [],
+            pendingItems: new Map(),
+            resolve: (value) => resolve(value as PlanDraft),
+            reject,
+          };
 
-        draft.threadId = resolvedThreadId;
-        draft.turnId = turnId;
-        this.activeTurns.set(project.id, activeTurn);
-        this.syncDraft(draft);
-      } catch (error) {
-        draft.status = "failed";
-        draft.thinkingStatus = "failed";
-        draft.planningStatus = "failed";
-        draft.errorMessage = error instanceof Error ? error.message : "Planning failed.";
-        this.syncDraft(draft);
-        reject(error instanceof Error ? error : new Error("Planning failed."));
-      }
+          draft.threadId = resolvedThreadId;
+          draft.turnId = turnId;
+          this.activeTurns.set(project.id, activeTurn);
+          this.syncDraft(draft);
+        } catch (error) {
+          draft.status = "failed";
+          draft.thinkingStatus = "failed";
+          draft.planningStatus = "failed";
+          draft.errorMessage = error instanceof Error ? error.message : "Planning failed.";
+          this.syncDraft(draft);
+          reject(error instanceof Error ? error : new Error("Planning failed."));
+        }
+      })();
     });
   }
 
@@ -1313,10 +1313,10 @@ export class CodexService {
           turn.draft.thinkingStatus = "failed";
         }
       }
-      turn.draft.errorMessage =
-        error instanceof Error ? error.message : "Codex returned an unexpected result.";
+      const message = formatStructuredOutputError("Codex", error);
+      turn.draft.errorMessage = message;
       this.syncDraft(turn.draft);
-      turn.reject(error instanceof Error ? error : new Error("Codex returned an unexpected result."));
+      turn.reject(new Error(message));
     }
   }
 
@@ -1372,6 +1372,21 @@ const parseJsonFromText = (value: string): unknown => {
   }
 
   return JSON.parse(trimmed);
+};
+
+const formatStructuredOutputError = (providerLabel: string, error: unknown): string => {
+  if (error instanceof z.ZodError) {
+    const issues = error.issues
+      .map((issue) => `${issue.path.length > 0 ? issue.path.join(".") : "result"}: ${issue.message}`)
+      .join("; ");
+    return `${providerLabel} returned invalid structured output${issues ? `: ${issues}` : "."}`;
+  }
+
+  if (error instanceof SyntaxError) {
+    return `${providerLabel} returned malformed JSON output.`;
+  }
+
+  return error instanceof Error ? error.message : `${providerLabel} returned an unexpected result.`;
 };
 
 const extractTurnErrorMessage = (value: string | null | undefined): string | null => {

@@ -1,4 +1,5 @@
 import type { DirectorId, AgentChatMessage } from "@shared/types";
+import { DIRECT_ROUTE_PATTERNS } from "@shared/director-metadata";
 import { getAgentChatDayKey } from "./agent-chat-grouping.ts";
 
 export const JEFF_CARD_VISIBLE_DELAY_MS = 1_000;
@@ -28,13 +29,6 @@ export interface JeffPresenceState {
   nextTransitionAt: number | null;
 }
 
-const DIRECT_ROUTE_PATTERNS: { pattern: RegExp; directorId: DirectorId }[] = [
-  { pattern: /^(?:hey\s+|@)?dan\b[,:\s]/i, directorId: "creative-director" },
-  { pattern: /^(?:hey\s+|@)?todd\b[,:\s]/i, directorId: "rd-director" },
-  { pattern: /^(?:hey\s+|@)?ping\b[,:\s]/i, directorId: "rd-director" },
-  { pattern: /^(?:hey\s+|@)?pong\b[,:\s]/i, directorId: "rd-director" },
-  { pattern: /^(?:hey\s+|@)?jeff\b[,:\s]/i, directorId: "project-manager" },
-];
 
 const HIDDEN_STATE: JeffPresenceState = {
   phase: "hidden",
@@ -49,7 +43,7 @@ const HIDDEN_STATE: JeffPresenceState = {
 
 export const resolveAgentChatRouteForRenderer = (
   message: string,
-  presenceGuestId: DirectorId | null,
+  activeDirectorId: DirectorId | null,
 ): DirectorId => {
   const trimmed = message.trim();
   if (trimmed) {
@@ -60,8 +54,8 @@ export const resolveAgentChatRouteForRenderer = (
     }
   }
 
-  if (presenceGuestId && presenceGuestId !== "project-manager") {
-    return presenceGuestId;
+  if (activeDirectorId && activeDirectorId !== "project-manager") {
+    return activeDirectorId;
   }
 
   return "project-manager";

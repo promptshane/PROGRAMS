@@ -5,6 +5,7 @@ import {
   buildAgentChatProviderAttemptPlan,
   canAutoRouteAgentChatDirector,
   normalizeAgentChatDirectorMode,
+  resolveAgentChatDirectRoute,
   resolveAgentChatDirectorMode,
   validateAgentChatTurnParsedResponse,
 } from "../src/main/utils/agent-chat-flow.ts";
@@ -90,6 +91,11 @@ test("automatic agent-chat routing excludes Pong for this pass", () => {
   assert.equal(canAutoRouteAgentChatDirector("rd-director"), true);
   assert.equal(canAutoRouteAgentChatDirector("programming-director"), true);
   assert.equal(canAutoRouteAgentChatDirector("validation-director"), false);
+});
+
+test("direct routing keeps the active non-Jeff director without treating passive guests as the target", () => {
+  assert.equal(resolveAgentChatDirectRoute("Can you take another look?", "programming-director"), "programming-director");
+  assert.equal(resolveAgentChatDirectRoute("Can you take another look?", null), null);
 });
 
 test("approval descriptors mark explicit Todd web research as internet-research", () => {

@@ -1,4 +1,4 @@
-import { buildStrictObjectSchema, toddVersionItemSchema, toddUpdateItemSchema, pingRawReportSchema } from "./shared-schema.ts";
+import { buildStrictObjectSchema, toddVersionItemSchema, toddUpdateItemSchema, toddSuccessChainStepSchema, toddNextUpdateSchema, pingRawReportSchema } from "./shared-schema.ts";
 
 const toddFeasibilityAssessmentSchema = buildStrictObjectSchema({
   area: { type: "string" },
@@ -122,4 +122,27 @@ export const directorToddReviewSchema = buildStrictObjectSchema({
     type: ["array", "null"] as const,
     items: toddUpdateItemSchema,
   },
+  updatedCurrentState: { type: ["string", "null"] },
+  satisfiedStepTitles: {
+    type: ["array", "null"] as const,
+    items: { type: "string" },
+  },
+  newNextUpdate: {
+    ...toddNextUpdateSchema,
+    type: ["object", "null"] as const,
+  },
+});
+
+export const directorToddRegenerateSchema = buildStrictObjectSchema({
+  currentState: { type: "string" },
+  endStateGoal: { type: "string" },
+  successChain: {
+    type: "array" as const,
+    items: toddSuccessChainStepSchema,
+  },
+  nextUpdate: {
+    ...toddNextUpdateSchema,
+    type: ["object", "null"] as const,
+  },
+  response: { type: "string" },
 });

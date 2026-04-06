@@ -120,7 +120,7 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
     accessOverview: [
       "Only Dan's confirmed concept memory, not Dan's unconfirmed draft or side-notes.",
       "Todd's codebase index from the latest repo scan or refresh.",
-      "Todd's planning state: V1-V3 roadmap, future update plan, previous update log, and trouble log.",
+      "Todd's planning state: current state, end state goal, success chain (dependency steps in order), next update for Ping, update queue, previous update log, and trouble log.",
     ],
     notesSource: "directorStateMap",
   },
@@ -252,4 +252,23 @@ export const resolveDirectorModelSelection = (
     claudeModel: resolvedClaudeModel,
     activeModel: provider === "claude" ? resolvedClaudeModel : resolvedModel,
   };
+};
+
+export const DIRECT_ROUTE_PATTERNS: { pattern: RegExp; directorId: DirectorId }[] = [
+  { pattern: /^(?:hey\s+|@)?dan\b[,:\s]/i, directorId: "creative-director" },
+  { pattern: /^(?:hey\s+|@)?todd\b[,:\s]/i, directorId: "rd-director" },
+  { pattern: /^(?:hey\s+|@)?ping\b[,:\s]/i, directorId: "rd-director" },
+  { pattern: /^(?:hey\s+|@)?pong\b[,:\s]/i, directorId: "rd-director" },
+  { pattern: /^(?:hey\s+|@)?jeff\b[,:\s]/i, directorId: "project-manager" },
+];
+
+export const matchDirectRoutePattern = (message: string): DirectorId | null => {
+  const trimmed = message.trim();
+  if (!trimmed) return null;
+  for (const { pattern, directorId } of DIRECT_ROUTE_PATTERNS) {
+    if (pattern.test(trimmed)) {
+      return directorId;
+    }
+  }
+  return null;
 };

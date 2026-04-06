@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { access, mkdtemp, readdir, stat } from "node:fs/promises";
+import { access, mkdtemp, readdir, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, extname, join, relative, sep } from "node:path";
 import { app, shell } from "electron";
@@ -45,8 +45,7 @@ import {
   pingAgentChatSchema,
   refreshScanSchema,
   researchAgentChatSchema,
-  toddUpdateAgentChatSchema,
-  toddVersionAgentChatSchema,
+
 } from "@main/utils/agent-chat-schema";
 import {
   directorPongCompareSchema,
@@ -55,9 +54,9 @@ import {
   directorPingSchema,
   directorPmSchema,
   directorToddReviewSchema,
+  directorToddRegenerateSchema,
   directorToddResearchSchema,
   directorToddUpdateSchema,
-  directorToddVersionSchema,
 } from "@main/utils/director-chat-schema";
 import { ensureDirectory, pathExists, readTextFile, writeTextFile } from "@main/utils/fs";
 import { execCommand } from "@main/utils/process";
@@ -207,6 +206,8 @@ import type {
   ValidationResult,
   ToddCodebaseIndexedMap,
   ToddMemory,
+  ToddSuccessChainStep,
+  ToddNextUpdate,
   VersionPlan,
   VersionUpdate,
   PlanningMode,
@@ -230,6 +231,7 @@ import type {
   DirectorSettingsOverride,
   DirectorStateSnapshot,
   RefreshProjectInput,
+  RegenerateToddPlanInput,
   CorePillar,
   StageAgentChatInput,
   StageAgentChatResponse,
@@ -409,17 +411,41 @@ function isPingStartupFailure(error: unknown): error is Error & {
   );
 }
 
-function hasToddVersionRoadmap(session: AgentSession): boolean {
-  return Boolean(
-    session.toddMemory.versionPlan.v1
-    || session.toddMemory.versionPlan.v2
-    || session.toddMemory.versionPlan.v3
-    || session.versions.length > 0,
-  );
+function formatStructuredOutputIssueMessage(message: string | null | undefined): string | null {
+  const trimmed = message?.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (!Array.isArray(parsed)) {
+      return trimmed;
+    }
+
+    const issues = parsed
+      .filter(isRecord)
+      .map((issue) => {
+        const path = Array.isArray(issue.path)
+          ? issue.path.filter((entry) => typeof entry === "string" || typeof entry === "number").join(".")
+          : "result";
+        const detail = typeof issue.message === "string" && issue.message.trim()
+          ? issue.message.trim()
+          : "Invalid value";
+        return `${path || "result"}: ${detail}`;
+      });
+    return issues.length > 0 ? `Structured output validation failed: ${issues.join("; ")}` : trimmed;
+  } catch {
+    return trimmed;
+  }
 }
 
-function resolveToddMemoryProcessingFocusMode(session: AgentSession): RdFocusMode {
-  return hasToddVersionRoadmap(session) ? "update-planning" : "version-planning";
+function hasToddVersionRoadmap(session: AgentSession): boolean {
+  return (session.toddMemory.successChain?.length ?? 0) > 0;
+}
+
+function resolveToddMemoryProcessingFocusMode(_session: AgentSession): RdFocusMode {
+  return "update-planning";
 }
 
 function resolveDirectorModelUseCase(
@@ -463,8 +489,7 @@ function requiresApprovalForSlackDirectorRun(
   directorId: DirectorId,
   mode: AgentChatDirectorMode,
 ): boolean {
-  return directorId === "rd-director"
-    && (mode === "internet-research" || mode === "version-planning" || mode === "update-planning");
+  return directorId === "rd-director" && mode === "internet-research";
 }
 
 const APP_UPDATE_FRESHNESS_WINDOW_MS = 1000;
@@ -1894,7 +1919,7 @@ const mapToddPlannedUpdates = (
     const version = roadmapVersions.find((item) => item.label === update.versionLabel);
     return {
       id: randomUUID(),
-      versionId: version?.id ?? "",
+      versionId: version?.id ?? null,
       title: update.title,
       description: update.description,
       order: idx,
@@ -1926,11 +1951,6 @@ const mapToddPlannedUpdates = (
   return { updates, reportUpdates };
 };
 
-const buildToddVersionPlan = (versions: VersionPlan[]): ToddMemory["versionPlan"] => ({
-  v1: versions.find((version) => /\bv1\b/i.test(version.label)) ?? null,
-  v2: versions.find((version) => /\bv2\b/i.test(version.label)) ?? null,
-  v3: versions.find((version) => /\bv3\b/i.test(version.label)) ?? null,
-});
 
 const buildToddCodebaseMapFromSession = (
   session: AgentSession,
@@ -2021,7 +2041,10 @@ const syncAgentMemories = (session: AgentSession): AgentSession => {
 
   const toddMemory: ToddMemory = {
     confirmedConcept: danMemory.confirmedConcept,
-    versionPlan: hasToddMemory ? session.toddMemory!.versionPlan : buildToddVersionPlan(session.versions),
+    currentState: hasToddMemory ? (session.toddMemory!.currentState ?? null) : null,
+    endStateGoal: hasToddMemory ? (session.toddMemory!.endStateGoal ?? null) : null,
+    successChain: hasToddMemory ? (session.toddMemory!.successChain ?? []) : [],
+    nextUpdate: hasToddMemory ? (session.toddMemory!.nextUpdate ?? null) : null,
     futureUpdatePlan: hasToddMemory
       ? normalizeFutureUpdatePlan(session.toddMemory!.futureUpdatePlan ?? [])
       : normalizeFutureUpdatePlan(session.versionUpdates ?? []),
@@ -2065,8 +2088,7 @@ const syncAgentMemories = (session: AgentSession): AgentSession => {
   session.pingMemory = pingMemory;
   session.jeffMemory = jeffMemory;
   session.pongMemory = pongMemory;
-  session.versions = [toddMemory.versionPlan.v1, toddMemory.versionPlan.v2, toddMemory.versionPlan.v3]
-    .filter((version): version is VersionPlan => Boolean(version));
+  session.versions = [];
   session.versionUpdates = [...toddMemory.futureUpdatePlan];
   session.danInternalNotes = extractNoteContents(danMemory.notes);
   session.danSideNotes = [...danMemory.sideNotes];
@@ -2261,15 +2283,7 @@ const buildDefaultAutomationState = (
 const AUTOMATION_VERSION_UNASSIGNED = "__unassigned__";
 const AUTOMATION_POLL_INTERVAL_MS = 1500;
 
-const collectToddRoadmapVersions = (session: AgentSession): VersionPlan[] => ([
-  session.toddMemory.versionPlan.v1,
-  session.toddMemory.versionPlan.v2,
-  session.toddMemory.versionPlan.v3,
-  ...session.versions,
-])
-  .filter((version): version is VersionPlan => Boolean(version))
-  .filter((version, index, array) => array.findIndex((candidate) => candidate.id === version.id) === index)
-  .sort((left, right) => left.order - right.order);
+const collectToddRoadmapVersions = (_session: AgentSession): VersionPlan[] => [];
 
 const findToddDraftUpdateApproval = (session: AgentSession): PendingApproval | null =>
   (session.pendingApprovals ?? [])
@@ -3331,7 +3345,6 @@ function getSchemaForDirector(directorId: DirectorId, focusMode: DirectorFocusMo
       return danAgentChatSchema;
     case "rd-director":
       if (focusMode === "research") return directorToddResearchSchema;
-      if (focusMode === "version-planning") return directorToddVersionSchema;
       return directorToddUpdateSchema;
     case "programming-director": return directorPingSchema;
     case "validation-director":
@@ -3349,12 +3362,8 @@ function formatDirectorStatus(session: AgentSession): string {
   const cpc = concept?.corePillars?.length ? session.stages.core_pillars.confirmed ?? { summary: `${concept.corePillars.length} concept area(s)` } : null;
   const ffc = concept?.fullFlow ?? null;
   parts.push(`Dan (Creative): Function=${fc ? "confirmed" : "pending"}, Thesis=${tc ? "confirmed" : "pending"}, Pillars=${cpc ? "confirmed" : "pending"}, Flow=${ffc ? "confirmed" : "pending"}`);
-  const toddVersionPlan = session.toddMemory?.versionPlan ?? buildToddVersionPlan(session.versions);
   const futureUpdatePlan = session.toddMemory?.futureUpdatePlan ?? normalizeFutureUpdatePlan(session.versionUpdates ?? []);
-  const roadmapLabels = [toddVersionPlan.v1, toddVersionPlan.v2, toddVersionPlan.v3]
-    .filter((version): version is VersionPlan => Boolean(version))
-    .map((version) => version.label);
-  parts.push(`Todd (R&D): Feasibility=${session.feasibilityAssessments.length > 0 ? session.feasibilityAssessments.length + " assessments" : "pending"}, Versions=${roadmapLabels.length > 0 ? roadmapLabels.join("/") : "pending"}, Updates=${futureUpdatePlan.length > 0 ? futureUpdatePlan.length + " planned" : "pending"}`);
+  parts.push(`Todd (R&D): Codebase=${session.toddMemory?.codebaseIndexedMap ? "indexed" : "pending"}, CurrentState=${session.toddMemory?.currentState ? "set" : "none"}, SuccessChain=${(session.toddMemory?.successChain ?? []).length} step(s), NextUpdate=${session.toddMemory?.nextUpdate?.title ?? "none"}, Queue=${futureUpdatePlan.length} update(s)`);
   const progUpdates = futureUpdatePlan.filter((u) => u.status === "in_progress" || u.status === "completed");
   parts.push(`Ping (Programming): ${progUpdates.length > 0 ? progUpdates.length + " updates processed" : "waiting for approved updates"}`);
   parts.push(`Pong (Validation): ${session.validationResults.length > 0 ? session.validationResults.length + " results" : "no validations yet"}, Frequency=${session.validationFrequency}`);
@@ -3712,19 +3721,22 @@ ${buildAgentChatResponseContract(directorId, mode)}`;
       includeIdeal: true,
     });
     const codebaseSummary = buildToddCodebaseSummary(session);
-    const versionPlan = session.toddMemory?.versionPlan ?? buildToddVersionPlan(session.versions);
-    const roadmapItems = [versionPlan.v1, versionPlan.v2, versionPlan.v3]
-      .filter((version): version is VersionPlan => Boolean(version))
-      .map((version) => `- ${version.label}: ${version.description}${version.goals.length > 0 ? ` | Goals: ${version.goals.join(", ")}` : ""}`);
-    const roadmapSection = roadmapItems.length > 0
-      ? `\nExisting roadmap:\n${roadmapItems.join("\n")}\n`
-      : "";
     const futureUpdates = session.toddMemory?.futureUpdatePlan ?? session.versionUpdates ?? [];
     const futureUpdateSection = futureUpdates.length > 0
-      ? `\nExisting future update plan:\n${futureUpdates.map((update) =>
-        `- [${update.status}] ${update.title} (${update.versionId || "unassigned"}): ${update.description}${update.skillsNeeded.length > 0 ? ` | Skills: ${update.skillsNeeded.join(", ")}` : ""}`
+      ? `\nCurrent update queue:\n${futureUpdates.map((update) =>
+        `- [${update.status}] ${update.title}: ${update.description}${update.skillsNeeded.length > 0 ? ` | Skills: ${update.skillsNeeded.join(", ")}` : ""}`
       ).join("\n")}\n`
       : "";
+    const toddPlanSection = [
+      session.toddMemory?.currentState ? `Current State: ${session.toddMemory.currentState}` : null,
+      session.toddMemory?.endStateGoal ? `End State Goal: ${session.toddMemory.endStateGoal}` : null,
+      (session.toddMemory?.successChain?.length ?? 0) > 0
+        ? `Success Chain:\n${session.toddMemory!.successChain.map((s, i) => `  ${i + 1}. [${s.satisfied ? "done" : "pending"}] ${s.title}: ${s.description}`).join("\n")}`
+        : null,
+      session.toddMemory?.nextUpdate
+        ? `Next Update: ${session.toddMemory.nextUpdate.title} — ${session.toddMemory.nextUpdate.description}`
+        : null,
+    ].filter(Boolean).join("\n\n");
 
     if (mode === "internet-research") {
       return `You are Todd, the R&D Director for "${projectName}".
@@ -3746,82 +3758,6 @@ Valid director IDs for handoff (use the exact ID string, not the name):
 Current project status:
 ${statusContext}
 
-${codebaseSummary}
-${toddCoreContext}
-${stateContext}
-${conversationSection}
-${buildAgentChatResponseContract(directorId, mode)}`;
-    }
-
-    if (mode === "version-planning") {
-      return `You are Todd, the R&D Director for "${projectName}".
-You are in a team agent chat. Your role:
-- Turn confirmed concept details into a technical roadmap
-- Plan only from confirmed concept details plus your own codebase map and logs
-- Do not plan from Dan draft notes, side-notes, or unconfirmed concept changes
-- Keep "response" conversational and direct
-- Use "confirmationSuggested" when the roadmap is ready to be confirmed and stored
-- Put proposed roadmap items in "versions". Use labels like V1, V2, and V3 when they fit. Use null when you are only discussing.
-- Set handoffTo to null unless another director needs to act on your findings
-- When you finish your current function, end your response with a brief completion line: "[Done: <1-sentence summary of what you accomplished and any next step>]"
-
-Valid director IDs for handoff (use the exact ID string, not the name):
-- "project-manager" (Jeff)
-- "creative-director" (Dan)
-- "programming-director" (Ping)
-- "validation-director" (Pong)
-
-Current project status:
-${statusContext}
-${roadmapSection}
-${codebaseSummary}
-${toddCoreContext}
-${stateContext}
-${conversationSection}
-${buildAgentChatResponseContract(directorId, mode)}`;
-    }
-
-    if (mode === "update-planning") {
-      return `You are Todd, the R&D Director for "${projectName}".
-You are in a team agent chat. Your role:
-- Turn the confirmed roadmap into the one future update plan Ping will execute from
-- Plan only from confirmed concept details plus your own codebase map and logs
-- Do not plan from Dan draft notes, side-notes, or unconfirmed concept changes
-- Review update planning in this order:
-  1. review roadmap direction
-  2. review the relevant code/index shape
-  3. identify the highest-priority next step
-  4. classify it as Create, Expand, Refine, or Simplify
-  5. decide whether simplification is unnecessary, inline, staged, or overhaul-first before the next major step
-- Treat simplification as structural optimization, not feature growth
-- Trigger structural concern when responsibilities are mixed, one change would touch too many places, the module split no longer matches the concept, testing is messy because concerns are mixed, Ping would need workaround edits, coupling recently increased, or the next clean structure is blocked by the current one
-- File size alone is not enough reason to simplify
-- Keep "response" conversational and direct
-- Use "confirmationSuggested" when the update plan is ready to be confirmed and stored
-- Put proposed grouped updates in "updates". Each update must include title, description, versionLabel, dependencies, area, skillsNeeded, updateKind, simplificationMode, structuralReason, and supportsNextStep. Use null when you are only discussing.
-- Use updateKind exactly as:
-  - create = build a new piece that does not yet exist
-  - expand = add meaningful capability onto an existing piece
-  - refine = improve an existing piece while keeping its role
-  - simplify = preserve intended function while improving structure so future work lands cleanly
-- Use simplificationMode as:
-  - null when no simplification is needed first
-  - inline when cleanup is local and bundled into the same step
-  - staged when cleanup should be a dedicated step or sequence ahead of a later step
-  - overhaul when layering more work on top would be poor practice
-- If a Create/Expand/Refine step needs broader cleanup first, make the blocking Simplify work explicit in the plan and make the title/description relationship obvious, for example "Simplify X before expanding Y"
-- Set handoffTo to null unless another director needs to act on your findings
-- When you finish your current function, end your response with a brief completion line: "[Done: <1-sentence summary of what you accomplished and any next step>]"
-
-Valid director IDs for handoff (use the exact ID string, not the name):
-- "project-manager" (Jeff)
-- "creative-director" (Dan)
-- "programming-director" (Ping)
-- "validation-director" (Pong)
-
-Current project status:
-${statusContext}
-${roadmapSection}${futureUpdateSection}
 ${codebaseSummary}
 ${toddCoreContext}
 ${stateContext}
@@ -3852,7 +3788,8 @@ Current project status:
 ${statusContext}
 
 ${codebaseSummary}
-${toddCoreContext}${toddPendingHandoff}
+${toddCoreContext}
+${toddPlanSection ? `\nPlanning State:\n${toddPlanSection}\n` : ""}${futureUpdateSection}${toddPendingHandoff}
 ${stateContext}
 ${conversationSection}
 ${buildAgentChatResponseContract(directorId, mode)}`;
@@ -3871,6 +3808,7 @@ ${buildAgentChatResponseContract(directorId, mode)}`;
   }
 
   if (directorId === "programming-director") {
+
     const pingCoreContext = formatScopedCoreDetails(session, {
       confirmedOnly: true,
       relevantPillarIds: session.pingTaskContext?.relevantPillarIds,
@@ -3977,6 +3915,53 @@ ${stateContext}
 ${conversationSection}
 ${buildAgentChatResponseContract(directorId, mode)}`;
 }
+
+const buildToddRegeneratePrompt = (
+  projectName: string,
+  codebaseSummary: string,
+  coreContext: string,
+  existingChain: string,
+  existingQueue: string,
+  previousUpdateLog: string,
+  troubleLog: string,
+): string => `You are Todd, the R&D Director for "${projectName}".
+Regenerate the full planning state for this project based on the codebase map and confirmed concept details below.
+
+Your job is to produce four things:
+1. currentState — what is currently true about this project's technical implementation (1–3 sentences, grounded in the codebase map)
+2. endStateGoal — what the project is trying to become technically (1–3 sentences, grounded in the confirmed concept)
+3. successChain — an ordered dependency chain of steps that must be completed to reach the end state goal. Each step must be independent enough that completing it is clearly testable. Earlier steps must be prerequisites for later ones. Mark satisfied=true only for steps that the previous update log confirms are fully done.
+4. nextUpdate — the single most important next update for Ping to execute. This must be the first unsatisfied step from the success chain that is now unblocked. Provide full detail: title, description, updateKind, simplificationMode, structuralReason, supportsNextStep, skillsNeeded, dependencies.
+
+Rules:
+- Plan only from confirmed concept details and the codebase map. Do not invent goals not present in either source.
+- successChain must have 3–10 steps. Keep each step title concise (under 60 chars).
+- nextUpdate must match the first unsatisfied and unblocked step in successChain.
+- If nextUpdate requires simplification first, make simplificationMode and structuralReason explicit.
+- Set nextUpdate to null only if successChain is empty or all steps are already satisfied.
+- Use updateKind exactly as: create = build a new piece that does not yet exist | expand = add meaningful capability onto an existing piece | refine = improve an existing piece while keeping its role | simplify = preserve intended function while improving structure so future work lands cleanly
+- Use simplificationMode as: null when no simplification is needed first | inline when cleanup is local and bundled into the same step | staged when cleanup should be a dedicated step or sequence ahead of a later step | overhaul when layering more work on top would be poor practice
+- response is a short plain-English summary of what Todd concluded (2–4 sentences), written as Todd speaking to the team.
+
+${codebaseSummary}
+
+Confirmed concept:
+${coreContext}
+
+Existing success chain (for reference — will be replaced):
+${existingChain}
+
+Current update queue (for context only — do not modify here):
+${existingQueue}
+
+Previous update log:
+${previousUpdateLog}
+
+Trouble log:
+${troubleLog}
+
+Respond with strict JSON:
+{"currentState": string, "endStateGoal": string, "successChain": [{"title": string, "description": string, "satisfied": boolean}], "nextUpdate": {"title": string, "description": string, "updateKind": string|null, "simplificationMode": string|null, "structuralReason": string|null, "supportsNextStep": string|null, "skillsNeeded": string[], "dependencies": string[]} | null, "response": string}`;
 
 function buildDirectorPrompt(
   directorId: DirectorId,
@@ -4521,6 +4506,10 @@ export class ProgramsBackend {
     const refreshedProject = await this.refreshProjectRuntimeConfig(await this.requireProject(projectId));
     const { project, runtime } = await this.syncProjectRuntimeState(refreshedProject);
     const updates = await this.store.readHistory(projectId);
+    const session = await this.store.getAgentSession(projectId);
+    if (session) {
+      await this.reconcileStalePingStartupState(project.id, session, project.lastError, project);
+    }
     const activePlan = this.codex.getActivePlan(projectId) ?? this.claude.getActivePlan(projectId);
 
     return {
@@ -4679,27 +4668,34 @@ export class ProgramsBackend {
 
   async getAgentSession(projectId: string): Promise<AgentSession | null> {
     await this.ensureInitialized();
-    const session = await this.store.getAgentSession(projectId);
-    if (session) {
-      // Migration safety for older sessions missing slack fields
-      session.slackMessages = session.slackMessages ?? [];
-      session.slackActiveDirectorId = session.slackActiveDirectorId ?? "project-manager";
-      session.slackPresenceGuestId = sanitizeSlackPresenceGuestId(session.slackPresenceGuestId).directorId;
-      session.pendingApprovals = sanitizePendingApprovals(session.pendingApprovals).pendingApprovals;
-      session.directorStateMap = sanitizeDirectorStateMap(session.directorStateMap).directorStateMap;
-      session.danArchivedNotes = sanitizeDanArchivedNotes(session.danArchivedNotes).notes;
-      session.danInternalNotes = sanitizeDanArchivedNotes(session.danInternalNotes).notes;
-      session.danSideNotes = sanitizeDanArchivedNotes(session.danSideNotes).notes;
-      session.danDraftChangeSummary = sanitizeDanArchivedNotes(session.danDraftChangeSummary).notes;
-      session.danDraftCoreDetails = isRecord(session.danDraftCoreDetails)
-        ? session.danDraftCoreDetails as AgentCoreDetails
-        : null;
-      session.danDraftStatus = session.danDraftStatus === "gathering" || session.danDraftStatus === "ready-to-confirm"
-        ? session.danDraftStatus
-        : null;
-      syncAgentMemories(session);
-      await this.decorateAgentSessionKnowledgeState(session);
+    let session = await this.store.getAgentSession(projectId);
+    if (!session) {
+      return null;
     }
+
+    session = await this.reconcileStalePingStartupState(projectId, session);
+    if (!session) {
+      return null;
+    }
+
+    // Migration safety for older sessions missing slack fields
+    session.slackMessages = session.slackMessages ?? [];
+    session.slackActiveDirectorId = session.slackActiveDirectorId ?? "project-manager";
+    session.slackPresenceGuestId = sanitizeSlackPresenceGuestId(session.slackPresenceGuestId).directorId;
+    session.pendingApprovals = sanitizePendingApprovals(session.pendingApprovals).pendingApprovals;
+    session.directorStateMap = sanitizeDirectorStateMap(session.directorStateMap).directorStateMap;
+    session.danArchivedNotes = sanitizeDanArchivedNotes(session.danArchivedNotes).notes;
+    session.danInternalNotes = sanitizeDanArchivedNotes(session.danInternalNotes).notes;
+    session.danSideNotes = sanitizeDanArchivedNotes(session.danSideNotes).notes;
+    session.danDraftChangeSummary = sanitizeDanArchivedNotes(session.danDraftChangeSummary).notes;
+    session.danDraftCoreDetails = isRecord(session.danDraftCoreDetails)
+      ? session.danDraftCoreDetails as AgentCoreDetails
+      : null;
+    session.danDraftStatus = session.danDraftStatus === "gathering" || session.danDraftStatus === "ready-to-confirm"
+      ? session.danDraftStatus
+      : null;
+    syncAgentMemories(session);
+    await this.decorateAgentSessionKnowledgeState(session);
     return session;
   }
 
@@ -4785,11 +4781,10 @@ export class ProgramsBackend {
       },
       toddMemory: {
         confirmedConcept: null,
-        versionPlan: {
-          v1: null,
-          v2: null,
-          v3: null,
-        },
+        currentState: null,
+        endStateGoal: null,
+        successChain: [],
+        nextUpdate: null,
         futureUpdatePlan: [],
         previousUpdateLog: [],
         troubleLog: [],
@@ -4862,6 +4857,96 @@ export class ProgramsBackend {
         metadata: { type: "ping-task", task },
       },
     );
+  }
+
+  private buildToddPingHandoffMessage(updateTitle: string, updateDescription: string): string {
+    return `I’m ready to hand Ping one specific update: ${updateTitle}. ${updateDescription} Confirm and I’ll start the planning + execution loop.`;
+  }
+
+  private normalizePassivePingGuestId(directorId: DirectorId | null | undefined): DirectorId | null {
+    return directorId && directorId !== "project-manager" && directorId !== "programming-director"
+      ? directorId
+      : null;
+  }
+
+  private isSamePingTaskSnapshot(
+    existingTask: PingTaskSnapshot | null | undefined,
+    nextTask: PingTaskSnapshot,
+  ): boolean {
+    if (!existingTask) {
+      return false;
+    }
+
+    if (existingTask.source !== nextTask.source) {
+      return false;
+    }
+
+    if (existingTask.updateId || nextTask.updateId) {
+      return existingTask.updateId === nextTask.updateId;
+    }
+
+    return existingTask.originalUserRequest === nextTask.originalUserRequest
+      && existingTask.toddExplanation === nextTask.toddExplanation
+      && existingTask.updateTitle === nextTask.updateTitle
+      && existingTask.updateDescription === nextTask.updateDescription
+      && existingTask.runtime.provider === nextTask.runtime.provider
+      && existingTask.runtime.model === nextTask.runtime.model
+      && existingTask.runtime.claudeModel === nextTask.runtime.claudeModel;
+  }
+
+  private seedPingStartupState(
+    session: AgentSession,
+    task: PingTaskSnapshot,
+    usageBefore: UsageCapture | null,
+    options: { appendMessages?: boolean } = {},
+  ): void {
+    const currentTask = task.updateTitle && task.updateDescription
+      ? `${task.updateTitle}: ${task.updateDescription}`
+      : task.updateTitle ?? task.originalUserRequest;
+    const passiveGuestId = this.normalizePassivePingGuestId(session.slackPresenceGuestId);
+    const existingRun = this.isSamePingTaskSnapshot(session.pingMemory.currentRun?.task, task)
+      ? session.pingMemory.currentRun
+      : null;
+
+    session.pingTaskContext = {
+      currentTask,
+      lastResult: session.pingTaskContext?.lastResult ?? null,
+      lastFailureReason: session.pingTaskContext?.lastFailureReason ?? null,
+      toddUpdateExplanation: task.toddExplanation ?? task.updateDescription ?? task.originalUserRequest,
+      relevantPillarIds: task.relevantPillarIds ?? [],
+    };
+    session.pingMemory.activeUpdateId = task.updateId ?? null;
+    session.pingMemory.activeTask = currentTask;
+    session.pingMemory.context = task.toddExplanation ?? task.updateDescription ?? task.originalUserRequest;
+    session.pingMemory.codebaseMapSummary = task.toddCodebaseMapSummary;
+    session.pingMemory.latestRawReport = null;
+    session.pingMemory.latestJeffReport = null;
+    session.pingMemory.currentRun = {
+      task,
+      plan: existingRun?.plan ?? null,
+      report: existingRun?.report ?? null,
+      usageBefore: usageBefore ?? existingRun?.usageBefore ?? null,
+      usageAfter: existingRun?.usageAfter ?? null,
+      validationReport: existingRun?.validationReport ?? null,
+    };
+    session.slackActiveDirectorId = "programming-director";
+    session.slackPresenceGuestId = passiveGuestId;
+
+    if (options.appendMessages !== false) {
+      this.appendSlackAssistantMessage(
+        session,
+        "programming-director",
+        buildPingAcknowledgementText(task),
+        {
+          status: "complete",
+          metadata: null,
+        },
+      );
+      this.appendSlackAssistantMessage(session, "programming-director", "", {
+        status: "working",
+        metadata: null,
+      });
+    }
   }
 
   private buildHardMemoryReportMetadata(input: {
@@ -4949,6 +5034,9 @@ export class ProgramsBackend {
     predicate?: (payload: Record<string, unknown>) => boolean,
   ): PendingApproval | null {
     return session.pendingApprovals.find((approval) => {
+      if (approval.status !== "pending") {
+        return false;
+      }
       const payload = approval.draftPayload;
       if (!payload || payload.action !== action) {
         return false;
@@ -5237,7 +5325,7 @@ export class ProgramsBackend {
     const executionMessage = this.appendSlackAssistantMessage(
       session,
       "rd-director",
-      `I’m ready to hand Ping one specific update: ${update.title}. ${update.description} Confirm and I’ll start the planning + execution loop.`,
+      this.buildToddPingHandoffMessage(update.title, update.description),
       { status: "complete" },
     );
     session.slackActiveDirectorId = "rd-director";
@@ -5452,16 +5540,10 @@ export class ProgramsBackend {
 
     const isTodd = directorId === "rd-director";
     const researchMode = isTodd && mode === "internet-research";
-    const versionPlanningMode = isTodd && mode === "version-planning";
-    const updatePlanningMode = isTodd && mode === "update-planning";
     const schema = directorId === "creative-director"
       ? danAgentChatSchema
       : directorId === "programming-director"
         ? pingAgentChatSchema
-      : versionPlanningMode
-        ? toddVersionAgentChatSchema
-      : updatePlanningMode
-        ? toddUpdateAgentChatSchema
       : researchMode
         ? researchAgentChatSchema
         : directorAgentChatSchema;
@@ -5491,7 +5573,8 @@ export class ProgramsBackend {
     const attemptPlan = buildAgentChatProviderAttemptPlan(provider, preflightErrors);
     const failures: Array<{ provider: AiProvider; reason: string }> = [];
     const reasoningEffort = resolveDirectorRuntime(session, directorId).reasoningEffort;
-    const allowDanHardMemoryProcessing = false;
+    // Hard memory processing only activates in the guided memory-processing stage, not direct chat
+    const allowDanHardMemoryProcessing = shouldAllowDanHardMemory(undefined);
     const consumeToddHandoff = shouldConsumeToddPendingHandoff(mode, undefined);
 
     for (const attemptProvider of attemptPlan.attemptedProviders) {
@@ -5603,77 +5686,6 @@ export class ProgramsBackend {
             }
           }
           this.applySlackDirectorStateSnapshot(session, directorId, parsed);
-        }
-
-        if (versionPlanningMode && Array.isArray(parsed.versions)) {
-          const versions: VersionPlan[] = parsed.versions.map((version: {
-            label: string;
-            description: string;
-            goals: string[];
-          }, idx: number) => ({
-            id: randomUUID(),
-            label: version.label,
-            description: version.description,
-            goals: version.goals,
-            status: "assumed",
-            order: idx,
-          }));
-          const approval = this.queueApproval(session, {
-            kind: "store-data",
-            requestedByDirectorId: directorId,
-            targetDirectorId: directorId,
-            summary: this.buildApprovalSummary("Confirm version plan", response),
-            draftMessage: response,
-            draftPayload: {
-              action: "applyStoredData",
-              dataType: "versions",
-              versions,
-            },
-          });
-          hardMemoryReportMetadata = this.buildHardMemoryReportMetadata({
-            directorId: "rd-director",
-            dataType: "versions",
-            reportStage: "hard",
-            approvalId: approval.id,
-            summary: sanitizeSlackResponseContent(parsed.response, "rd-director"),
-            currentState: normalizeNonEmptyString(parsed.currentState),
-            idealState: normalizeNonEmptyString(parsed.idealState),
-            roadmapVersions: versions,
-            createdAt: responseCreatedAt,
-          });
-        }
-
-        if (updatePlanningMode && Array.isArray(parsed.updates)) {
-          const roadmapVersions = [
-            session.toddMemory?.versionPlan.v1,
-            session.toddMemory?.versionPlan.v2,
-            session.toddMemory?.versionPlan.v3,
-            ...session.versions,
-          ]
-            .filter((version): version is VersionPlan => Boolean(version))
-            .filter((version, index, array) => array.findIndex((candidate) => candidate.id === version.id) === index);
-          const mapped = mapToddPlannedUpdates(session, roadmapVersions, parsed.updates as ToddPlannedUpdateInput[]);
-          const approval = this.queueToddUpdatePlanApproval(session, {
-            summary: this.buildApprovalSummary("Confirm update plan", response),
-            draftMessage: response,
-            updates: mapped.updates,
-            currentState: normalizeNonEmptyString(parsed.currentState),
-            idealState: normalizeNonEmptyString(parsed.idealState),
-            planSource: "manual",
-            supersedesConfirmedPlan: false,
-          });
-          hardMemoryReportMetadata = this.buildHardMemoryReportMetadata({
-            directorId: "rd-director",
-            dataType: "versionUpdates",
-            reportStage: "hard",
-            approvalId: approval.id,
-            summary: sanitizeSlackResponseContent(parsed.response, "rd-director"),
-            currentState: normalizeNonEmptyString(parsed.currentState),
-            idealState: normalizeNonEmptyString(parsed.idealState),
-            roadmapVersions,
-            versionUpdates: mapped.reportUpdates,
-            createdAt: responseCreatedAt,
-          });
         }
 
         if (directorId !== "programming-director") {
@@ -6374,12 +6386,6 @@ Instructions:
     const update = resolveNextProgrammingUpdate(session, input.updateId);
     if (!update) throw new Error("No pending programming update found.");
 
-    update.status = "in_progress";
-    session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
-    session.updatedAt = new Date().toISOString();
-    await this.store.saveAgentSession(session);
-    this.emit({ type: "agent.session", projectId: input.projectId, session });
-
     const programmingDefaults = resolveDirectorRuntime(session, "programming-director");
     const planningMode = options.planningMode ?? programmingDefaults.planningMode;
     const pingModelSelections = resolvePingRunModelSelections(
@@ -6397,6 +6403,14 @@ Instructions:
       reasoningEffort: programmingDefaults.reasoningEffort,
       planningMode,
     });
+
+    update.status = "in_progress";
+    session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
+    this.seedPingStartupState(session, pingTaskSnapshot, options.usageBefore ?? null);
+    session.updatedAt = new Date().toISOString();
+    await this.store.saveAgentSession(session);
+    this.emit({ type: "agent.session", projectId: input.projectId, session });
+
     const planInput: StartPlanInput = {
       projectId: input.projectId,
       provider: input.provider,
@@ -7243,77 +7257,6 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       });
     }
 
-    // Todd — Version Planning mode: versions
-    if (input.directorId === "rd-director" && resolvedFocusMode === "version-planning" && parsed.versions) {
-      const versions: VersionPlan[] = parsed.versions.map((v: { label: string; description: string; goals: string[] }, idx: number) => ({
-        id: randomUUID(),
-        label: v.label,
-        description: v.description,
-        goals: v.goals,
-        status: "assumed" as const,
-        order: idx,
-      }));
-      structuredData = { type: "versions", versions };
-      const approval = this.queueApproval(session, {
-        kind: "store-data",
-        requestedByDirectorId: input.directorId,
-        targetDirectorId: input.directorId,
-        summary: this.buildApprovalSummary("Confirm version plan", parsed.response),
-        draftMessage: parsed.response,
-        draftPayload: {
-          action: "applyStoredData",
-          dataType: "versions",
-          versions,
-        },
-      });
-      hardMemoryReportMetadata = this.buildHardMemoryReportMetadata({
-        directorId: "rd-director",
-        dataType: "versions",
-        reportStage: "hard",
-        approvalId: approval.id,
-        summary: sanitizeSlackResponseContent(parsed.response, "rd-director"),
-        currentState: normalizeNonEmptyString(parsed.currentState),
-        idealState: normalizeNonEmptyString(parsed.idealState),
-        roadmapVersions: versions,
-        createdAt: assistantCreatedAt,
-      });
-    }
-
-    // Todd — Update Planning mode: updates
-    if (input.directorId === "rd-director" && resolvedFocusMode === "update-planning" && parsed.updates) {
-      const roadmapVersions = [
-        session.toddMemory?.versionPlan.v1,
-        session.toddMemory?.versionPlan.v2,
-        session.toddMemory?.versionPlan.v3,
-        ...session.versions,
-      ]
-        .filter((version): version is VersionPlan => Boolean(version))
-        .filter((version, index, array) => array.findIndex((candidate) => candidate.id === version.id) === index);
-      const mapped = mapToddPlannedUpdates(session, roadmapVersions, parsed.updates as ToddPlannedUpdateInput[]);
-      structuredData = { type: "versionUpdates", updates: mapped.updates };
-      const approval = this.queueToddUpdatePlanApproval(session, {
-        summary: this.buildApprovalSummary("Confirm update plan", parsed.response),
-        draftMessage: parsed.response,
-        updates: mapped.updates,
-        currentState: normalizeNonEmptyString(parsed.currentState),
-        idealState: normalizeNonEmptyString(parsed.idealState),
-        planSource: "manual",
-        supersedesConfirmedPlan: false,
-      });
-      hardMemoryReportMetadata = this.buildHardMemoryReportMetadata({
-        directorId: "rd-director",
-        dataType: "versionUpdates",
-        reportStage: "hard",
-        approvalId: approval.id,
-        summary: sanitizeSlackResponseContent(parsed.response, "rd-director"),
-        currentState: normalizeNonEmptyString(parsed.currentState),
-        idealState: normalizeNonEmptyString(parsed.idealState),
-        roadmapVersions,
-        versionUpdates: mapped.reportUpdates,
-        createdAt: assistantCreatedAt,
-      });
-    }
-
     // Ping — minimal execution status only
     if (input.directorId === "programming-director") {
       const status = parsed.status === "blocked" || parsed.status === "unexpected" || parsed.status === "no_changes"
@@ -7460,7 +7403,10 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     const currentDirectorId: DirectorId =
       input.targetDirectorId && input.targetDirectorId !== "project-manager"
         ? rerouteRestrictedAgentTarget(input.targetDirectorId) ?? "project-manager"
-        : resolveAgentChatDirectRoute(input.message, session.slackPresenceGuestId) ?? "project-manager";
+        : resolveAgentChatDirectRoute(
+          input.message,
+          session.slackActiveDirectorId !== "project-manager" ? session.slackActiveDirectorId : null,
+        ) ?? "project-manager";
     const initialMode = currentDirectorId === "project-manager"
       ? "codebase-analysis"
       : resolveAgentChatDirectorMode(currentDirectorId, input.message);
@@ -8266,7 +8212,7 @@ Return ONLY strict JSON matching:
       });
       session.danMemory.derivedUpdatedAt = new Date().toISOString();
       derivedRefreshStatus = "Dan's derived soft memory was refreshed from the current codebase without touching hard memory.";
-      danWorkingMsg.content = "I loaded a derived current-state snapshot into soft memory so we can compare it against the discussed concept without overwriting Dan's hard memory.";
+      danWorkingMsg.content = "I loaded a derived current-state snapshot into soft memory so we can compare it against the discussed concept without overwriting my hard memory.";
       danWorkingMsg.status = "complete";
       danWorkingMsg.createdAt = new Date().toISOString();
       danWorkingMsg.metadata = null;
@@ -8345,9 +8291,169 @@ Return ONLY strict JSON matching:
     await this.saveAgentSession(input.projectId, session);
   }
 
+  async regenerateToddPlan(input: RegenerateToddPlanInput): Promise<void> {
+    await this.ensureInitialized();
+    const settings = await this.store.readSettings();
+    await this.requireProviderReady(input.provider, settings);
+    const project = await this.requireProject(input.projectId);
+
+    const session = await this.getOrCreateAgentSession(input.projectId, input.provider);
+    syncAgentMemories(session);
+
+    const responsePlaceholder = this.appendSlackAssistantMessage(session, "rd-director", "", { status: "working" });
+    session.slackActiveDirectorId = "rd-director";
+    session.slackPresenceGuestId = null;
+    await this.saveAgentSession(input.projectId, session);
+
+    try {
+      const requestedModels = resolveDirectorRequestedModels(
+        session,
+        "rd-director",
+        settings.advancedDefaults.model,
+        settings.advancedDefaults.claudeModel,
+      );
+      const modelSelection = resolveDirectorModelSelection(
+        "rd-director",
+        input.provider,
+        requestedModels.model,
+        requestedModels.claudeModel,
+        "synthesis",
+      );
+      const resolvedModel = input.provider === "claude" ? modelSelection.claudeModel : modelSelection.model;
+
+      const codebaseSummary = buildToddCodebaseSummary(session);
+      const coreContext = formatScopedCoreDetails(session, { confirmedOnly: true, includeCurrent: true, includeIdeal: true });
+
+      const existingChain = (session.toddMemory.successChain ?? []).length > 0
+        ? session.toddMemory.successChain.map((s, i) => `${i + 1}. [${s.satisfied ? "satisfied" : "pending"}] ${s.title}: ${s.description}`).join("\n")
+        : "(none yet)";
+
+      const existingQueue = session.toddMemory.futureUpdatePlan.length > 0
+        ? session.toddMemory.futureUpdatePlan.map((u) => `- [${u.status}] ${u.title}: ${u.description}`).join("\n")
+        : "(empty)";
+
+      const previousUpdateLog = session.toddMemory.previousUpdateLog.slice(-5)
+        .map((entry) => `- ${entry.status}: ${entry.goal} -> ${entry.outcome}`)
+        .join("\n") || "(none)";
+
+      const troubleLog = session.toddMemory.troubleLog.slice(-5)
+        .map((entry) => `- ${entry.title}: ${entry.details}`)
+        .join("\n") || "(none)";
+
+      const prompt = buildToddRegeneratePrompt(
+        project.name,
+        codebaseSummary,
+        coreContext,
+        existingChain,
+        existingQueue,
+        previousUpdateLog,
+        troubleLog,
+      );
+
+      const rawResult = await this.aiService(input.provider).runOneShot(
+        project,
+        settings,
+        prompt,
+        resolvedModel,
+        directorToddRegenerateSchema,
+        resolveDirectorRuntime(session, "rd-director").reasoningEffort,
+      );
+
+      const parsed = JSON.parse(
+        rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""),
+      ) as Record<string, unknown>;
+
+      const response = sanitizeSlackResponseContent(
+        typeof parsed.response === "string" ? parsed.response : "Plan regenerated.",
+        "rd-director",
+      );
+
+      const rawChain = Array.isArray(parsed.successChain) ? parsed.successChain : [];
+      const newSuccessChain: ToddSuccessChainStep[] = rawChain.map((step: Record<string, unknown>, idx: number) => ({
+        id: randomUUID(),
+        title: typeof step.title === "string" ? step.title.trim() : `Step ${idx + 1}`,
+        description: typeof step.description === "string" ? step.description.trim() : "",
+        order: idx,
+        satisfied: step.satisfied === true,
+        satisfiedAt: null,
+      }));
+
+      const rawNext = parsed.nextUpdate && typeof parsed.nextUpdate === "object"
+        ? parsed.nextUpdate as Record<string, unknown>
+        : null;
+      const newNextUpdate: ToddNextUpdate | null = rawNext ? {
+        id: randomUUID(),
+        title: typeof rawNext.title === "string" ? rawNext.title.trim() : "Next update",
+        description: typeof rawNext.description === "string" ? rawNext.description.trim() : "",
+        updateKind: normalizeToddUpdateKind(rawNext.updateKind),
+        simplificationMode: normalizeToddSimplificationMode(rawNext.simplificationMode),
+        structuralReason: normalizeOptionalToddText(rawNext.structuralReason),
+        supportsNextStep: normalizeOptionalToddText(rawNext.supportsNextStep),
+        skillsNeeded: Array.isArray(rawNext.skillsNeeded)
+          ? (rawNext.skillsNeeded as unknown[]).filter((s): s is string => typeof s === "string")
+          : [],
+        dependencies: Array.isArray(rawNext.dependencies)
+          ? (rawNext.dependencies as unknown[]).filter((s): s is string => typeof s === "string")
+          : [],
+      } : null;
+
+      session.toddMemory.currentState = normalizeOptionalToddText(parsed.currentState) ?? session.toddMemory.currentState;
+      session.toddMemory.endStateGoal = normalizeOptionalToddText(parsed.endStateGoal) ?? session.toddMemory.endStateGoal;
+      session.toddMemory.successChain = newSuccessChain;
+      session.toddMemory.nextUpdate = newNextUpdate;
+
+      if (newNextUpdate) {
+        const alreadyQueued = session.toddMemory.futureUpdatePlan.some(
+          (u) => u.status === "pending" && u.title === newNextUpdate.title,
+        );
+        if (!alreadyQueued) {
+          const asVersionUpdate: VersionUpdate = {
+            id: newNextUpdate.id,
+            versionId: null,
+            title: newNextUpdate.title,
+            description: newNextUpdate.description,
+            order: session.toddMemory.futureUpdatePlan.length,
+            status: "pending",
+            dependencies: newNextUpdate.dependencies,
+            pillarIds: [],
+            skillsNeeded: newNextUpdate.skillsNeeded,
+            updateKind: newNextUpdate.updateKind,
+            simplificationMode: newNextUpdate.simplificationMode,
+            structuralReason: newNextUpdate.structuralReason,
+            supportsNextStep: newNextUpdate.supportsNextStep,
+          };
+          session.toddMemory.futureUpdatePlan = normalizeFutureUpdatePlan([
+            ...session.toddMemory.futureUpdatePlan,
+            asVersionUpdate,
+          ]);
+          session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
+        }
+      }
+
+      this.replaceSlackAssistantMessage(session, "rd-director", {
+        ...responsePlaceholder,
+        content: response,
+        createdAt: new Date().toISOString(),
+        status: "complete",
+        metadata: null,
+      });
+      await this.saveAgentSession(input.projectId, session);
+    } catch (error) {
+      this.replaceSlackAssistantMessage(session, "rd-director", {
+        ...responsePlaceholder,
+        content: error instanceof Error ? error.message : "Todd could not regenerate the plan.",
+        createdAt: new Date().toISOString(),
+        status: "complete",
+        metadata: null,
+      });
+      await this.saveAgentSession(input.projectId, session);
+      throw error;
+    }
+  }
+
   async listPendingApprovals(input: ListPendingApprovalsInput): Promise<PendingApproval[]> {
     const session = await this.getAgentSession(input.projectId);
-    return session?.pendingApprovals ?? [];
+    return (session?.pendingApprovals ?? []).filter((approval) => approval.status === "pending");
   }
 
   async revisePendingApproval(input: RevisePendingApprovalInput): Promise<AgentSession> {
@@ -8513,26 +8619,8 @@ Return ONLY strict JSON matching:
       return;
     }
     if (dataType === "versions" && Array.isArray(payload.versions)) {
-      session.versions = payload.versions as VersionPlan[];
-      session.toddMemory.versionPlan = buildToddVersionPlan(session.versions);
-      // Move Todd's soft notes to backup on confirmation
-      if ((session.toddMemory.notes ?? []).length > 0) {
-        const timestamp = new Date().toISOString();
-        session.toddMemory.backupNotes = [
-          ...(session.toddMemory.backupNotes ?? []),
-          ...session.toddMemory.notes.map((note) => ({
-            ...note,
-            tag: "likely-backup" as const,
-            content: `[${timestamp}] ${note.content}`,
-          })),
-        ];
-        session.toddMemory.notes = [];
-      }
-      this.appendJeffSlackMessage(
-        session,
-        "Todd's roadmap is now confirmed in hard memory. We can plan forward from this version structure.",
-      );
-      session.projectCategory = this.deriveProjectCategoryFromSession(session);
+      // Legacy: old V1-V3 roadmap approval. versionPlan field has been replaced by successChain.
+      this.appendJeffSlackMessage(session, "Legacy roadmap data applied. Version plan has been replaced by the success chain model.");
       await this.saveAgentSession(session.projectId, session);
       return;
     }
@@ -8928,23 +9016,17 @@ Return ONLY strict JSON matching:
     await this.ensureInitialized();
     const session = await this.store.getAgentSession(input.projectId);
     if (!session) throw new Error("No agent session found for this program.");
-    await this.assertFreshProjectKnowledge(session);
-
-    // Confirmation flow enforcement: block build if core pillars are still assumed
-    const hasUnconfirmedPillars = session.corePillars.some((p) =>
-      (p.function?.status === "assumed") || (p.thesis?.status === "assumed")
-    );
-    if (hasUnconfirmedPillars) {
-      throw new Error("Some core pillars are still marked as assumed. Please confirm them with Dan before building. Ask Jeff \"anything for me to confirm?\" to see what needs attention.");
-    }
 
     const update = resolveNextProgrammingUpdate(session, input.updateId);
     if (!update) throw new Error("No pending programming update found.");
 
-    update.status = "in_progress";
-    session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
-    const usageBefore = buildUsageCapture(input.provider, await this.readUsage());
     const programmingDefaults = resolveDirectorRuntime(session, "programming-director");
+    const pingModelSelections = resolvePingRunModelSelections(
+      session,
+      input.provider,
+      input.model,
+      input.claudeModel,
+    );
     const pingTaskSnapshot = buildToddApprovedPingTaskSnapshot(session, {
       projectId: input.projectId,
       update,
@@ -8955,51 +9037,49 @@ Return ONLY strict JSON matching:
       planningMode: "auto",
     });
 
-    // Populate Ping's short-horizon task context
-    session.pingTaskContext = {
-      currentTask: `${update.title}: ${update.description}`,
-      lastResult: session.pingTaskContext?.lastResult ?? null,
-      lastFailureReason: session.pingTaskContext?.lastFailureReason ?? null,
-      toddUpdateExplanation: update.description,
-      relevantPillarIds: update.pillarIds ?? [],
-    };
-    session.pingMemory.activeUpdateId = update.id;
-    session.pingMemory.activeTask = session.pingTaskContext.currentTask;
-    session.pingMemory.context = update.description;
-    session.pingMemory.codebaseMapSummary = session.toddMemory.codebaseIndexedMap?.summary ?? null;
-    session.pingMemory.latestRawReport = null;
-    session.pingMemory.latestJeffReport = null;
+    update.status = "in_progress";
+    session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
     session.slackMessages = session.slackMessages ?? [];
-    session.pingMemory.currentRun = {
-      task: pingTaskSnapshot,
-      plan: null,
-      report: null,
-      usageBefore,
-      usageAfter: null,
-      validationReport: null,
-    };
     session.slackActiveDirectorId = "programming-director";
-    session.slackPresenceGuestId = "programming-director";
+    session.slackPresenceGuestId = "rd-director";
 
+    if (input.skipConfirmation) {
+      this.appendPingTaskReportMessage(session, pingTaskSnapshot);
+      this.appendSlackAssistantMessage(
+        session,
+        "rd-director",
+        this.buildToddPingHandoffMessage(update.title, update.description),
+        { status: "complete" },
+      );
+    }
+
+    this.seedPingStartupState(session, pingTaskSnapshot, null);
     session.updatedAt = new Date().toISOString();
     await this.store.saveAgentSession(session);
     this.emit({ type: "agent.session", projectId: input.projectId, session });
 
-    // Bridge to existing execution pipeline
-    return this.agentExecuteUpdateNow({
+    const usageBefore = buildUsageCapture(input.provider, await this.readUsage());
+    return this.startPlanNow({
       projectId: input.projectId,
-      updateId: update.id,
       provider: input.provider,
-      model: input.model,
-      claudeModel: input.claudeModel,
-    }, {
+      prompt: buildPingUpdatePrompt(update),
+      speed: "normal",
+      model: pingModelSelections.planning.model,
+      claudeModel: pingModelSelections.planning.claudeModel,
+      reasoningEffort: programmingDefaults.reasoningEffort,
       planningMode: "auto",
+      autoApprove: true,
+      contextPaths: [],
       usageBefore,
+      pingTaskSnapshot,
     });
   }
 
   async routeUpdateToProgramming(input: RouteUpdateToProgrammingInput): Promise<{ started: true }> {
     await this.ensureInitialized();
+    if (input.skipConfirmation) {
+      return this.routeUpdateToProgrammingNow(input);
+    }
     const session = await this.store.getAgentSession(input.projectId);
     if (!session) throw new Error("No agent session found for this program.");
 
@@ -9043,7 +9123,7 @@ Return ONLY strict JSON matching:
       this.appendSlackAssistantMessage(
         session,
         "rd-director",
-        `I’m ready to hand Ping one specific update: ${update.title}. ${update.description} Confirm and I’ll start the planning + execution loop.`,
+        this.buildToddPingHandoffMessage(update.title, update.description),
         { status: "complete" },
       );
       await this.saveAgentSession(input.projectId, session);
@@ -10047,14 +10127,62 @@ Return ONLY strict JSON matching:
     }
   }
 
-  private async rollbackPingStartupState(projectId: string, message: string): Promise<void> {
-    const session = await this.store.getAgentSession(projectId);
+  private isLivePingPlanDraft(draft: PlanDraft | null | undefined): boolean {
+    return Boolean(draft && (
+      draft.status === "planning"
+      || draft.status === "awaitingApproval"
+      || draft.status === "executing"
+    ));
+  }
+
+  private async settleProjectAfterPingRecovery(
+    projectId: string,
+    message: string,
+    options: {
+      existingProject?: Project | null;
+      preferredStatus?: "error" | "idle";
+    } = {},
+  ): Promise<Project | null> {
+    const project = options.existingProject ?? await this.store.readProject(projectId);
+    if (!project) {
+      return null;
+    }
+
+    const transientStatus = project.status === "planning"
+      || project.status === "awaitingApproval"
+      || project.status === "executing";
+    const preferredStatus = options.preferredStatus ?? "error";
+    const normalizedMessage = formatStructuredOutputIssueMessage(message) ?? "Ping stopped before execution began.";
+    const nextStatus = preferredStatus === "error" || project.status === "error" ? "error" : "idle";
+    const nextLastError = nextStatus === "error" ? normalizedMessage : null;
+
+    if (!transientStatus && !(project.status === "error" && project.lastError !== nextLastError)) {
+      return project;
+    }
+
+    if (project.status === nextStatus && project.lastError === nextLastError) {
+      return project;
+    }
+
+    return this.updateProjectStatus(project, nextStatus, nextLastError);
+  }
+
+  private async rollbackPingStartupState(
+    projectId: string,
+    message: string,
+    existingSession?: AgentSession | null,
+    options: {
+      existingProject?: Project | null;
+      preferredProjectStatus?: "error" | "idle";
+    } = {},
+  ): Promise<void> {
+    const session = existingSession ?? await this.store.getAgentSession(projectId);
     if (!session) {
       return;
     }
     syncAgentMemories(session);
 
-    const activeUpdateId = session.pingMemory.activeUpdateId;
+    const activeUpdateId = session.pingMemory.activeUpdateId ?? session.pingMemory.currentRun?.task.updateId ?? null;
     if (activeUpdateId) {
       const update = session.toddMemory.futureUpdatePlan.find((item) => item.id === activeUpdateId) ?? null;
       if (update && update.status === "in_progress") {
@@ -10068,7 +10196,9 @@ Return ONLY strict JSON matching:
     session.pingMemory.context = null;
     session.pingMemory.latestRawReport = null;
     session.pingMemory.latestJeffReport = null;
+    session.pingMemory.currentRun = null;
     session.pingTaskContext = null;
+    const normalizedMessage = formatStructuredOutputIssueMessage(message) ?? "Ping stopped before execution began.";
     const workingMessage = this.findLatestSlackAssistantMessage(
       session,
       "programming-director",
@@ -10077,24 +10207,90 @@ Return ONLY strict JSON matching:
     if (workingMessage) {
       this.replaceSlackAssistantMessage(session, "programming-director", {
         ...workingMessage,
-        content: message,
+        content: normalizedMessage,
         createdAt: new Date().toISOString(),
         status: "complete",
         metadata: null,
       });
     } else {
-      this.appendSlackAssistantMessage(session, "programming-director", message, { status: "complete" });
+      this.appendSlackAssistantMessage(session, "programming-director", normalizedMessage, { status: "complete" });
     }
     session.slackActiveDirectorId = "project-manager";
     session.slackPresenceGuestId = null;
     await this.saveAgentSession(projectId, session);
+    await this.settleProjectAfterPingRecovery(projectId, normalizedMessage, {
+      existingProject: options.existingProject,
+      preferredStatus: options.preferredProjectStatus ?? "error",
+    });
   }
 
-  private async reconcileToddAfterDirectPingRun(
+  private async reconcileStalePingStartupState(
+    projectId: string,
+    session: AgentSession | null,
+    projectLastError?: string | null,
+    existingProject?: Project | null,
+  ): Promise<AgentSession | null> {
+    if (!session) {
+      return session;
+    }
+
+    syncAgentMemories(session);
+    const activePlan = this.codex.getActivePlan(projectId) ?? this.claude.getActivePlan(projectId);
+    if (this.isLivePingPlanDraft(activePlan)) {
+      return session;
+    }
+
+    const currentRun = session.pingMemory.currentRun;
+    const workingMessage = this.findLatestSlackAssistantMessage(
+      session,
+      "programming-director",
+      (item) => item.status === "working",
+    );
+    if (!workingMessage) {
+      return session;
+    }
+
+    if (!currentRun) {
+      const fallbackProject = existingProject ?? (
+        projectLastError === undefined
+          ? await this.store.readProject(projectId)
+          : null
+      );
+      const orphanMessage = projectLastError
+        ?? fallbackProject?.lastError
+        ?? "Ping's previous working state was cleared after the run stopped.";
+      await this.rollbackPingStartupState(projectId, orphanMessage, session, {
+        existingProject: fallbackProject,
+        preferredProjectStatus: (projectLastError ?? fallbackProject?.lastError) ? "error" : "idle",
+      });
+      return await this.store.getAgentSession(projectId);
+    }
+
+    if (currentRun.report) {
+      return session;
+    }
+
+    const fallbackProject = existingProject ?? (
+      projectLastError === undefined
+        ? await this.store.readProject(projectId)
+        : null
+    );
+    await this.rollbackPingStartupState(
+      projectId,
+      projectLastError ?? fallbackProject?.lastError ?? "Ping stopped before execution began.",
+      session,
+      {
+        existingProject: fallbackProject,
+        preferredProjectStatus: "error",
+      },
+    );
+    return await this.store.getAgentSession(projectId);
+  }
+
+  private async reconcileToddAfterPingRun(
     session: AgentSession,
     report: PingExecutionReportSnapshot,
   ): Promise<void> {
-    const matchedUpdate = findToddOverlapForDirectPingRun(session, report.task, report.rawReport);
     const statusLabel = report.rawReport.status === "no_changes"
       ? "did not need code changes"
       : report.rawReport.status === "success"
@@ -10102,9 +10298,16 @@ Return ONLY strict JSON matching:
         : report.rawReport.status === "unexpected"
           ? "finished with an unexpected outcome"
           : "hit a blocker";
-    const note = matchedUpdate
-      ? `Todd note: Ping completed a direct request that appears to overlap with "${matchedUpdate.title}". Ping ${statusLabel}.`
-      : `Todd note: Ping completed a direct request that does not clearly map to an existing Todd plan item. Ping ${statusLabel}.`;
+    let note: string;
+    if (report.task.source === "todd-approved-update") {
+      const updateTitle = report.task.updateTitle ?? report.task.originalUserRequest;
+      note = `Todd note: Todd's planned update "${updateTitle}" completed. Ping ${statusLabel}.`;
+    } else {
+      const matchedUpdate = findToddOverlapForDirectPingRun(session, report.task, report.rawReport);
+      note = matchedUpdate
+        ? `Todd note: Ping completed a direct request that appears to overlap with "${matchedUpdate.title}". Ping ${statusLabel}.`
+        : `Todd note: Ping completed a direct request that does not clearly map to an existing Todd plan item. Ping ${statusLabel}.`;
+    }
     const indexedMap = session.toddMemory.codebaseIndexedMap ?? {
       summary: session.pingMemory.codebaseMapSummary ?? null,
       indexedAt: null,
@@ -10246,7 +10449,6 @@ Return ONLY strict JSON matching:
 
   private async startPlanNow(input: StartPlanInput): Promise<{ started: true }> {
     const settings = await this.store.readSettings();
-    await this.requireProviderReady(input.provider, settings);
     const project = await this.requireProject(input.projectId);
     const agentSession = await this.getOrCreateAgentSession(input.projectId, input.provider);
     const coreDetailsContext = formatCoreDetails(agentSession);
@@ -10278,38 +10480,41 @@ Return ONLY strict JSON matching:
     };
     pingTaskSnapshot.planPrompt = service.previewPlanningPrompt(project, enrichedInput);
     const providerLabel = input.provider === "claude" ? "Claude" : "Codex";
-
-    agentSession.pingMemory.activeTask = pingTaskSnapshot.updateTitle ?? pingTaskSnapshot.originalUserRequest;
-    agentSession.pingMemory.context = pingTaskSnapshot.toddExplanation ?? pingTaskSnapshot.updateDescription ?? pingTaskSnapshot.originalUserRequest;
-    agentSession.pingMemory.codebaseMapSummary = pingTaskSnapshot.toddCodebaseMapSummary;
-    agentSession.pingMemory.latestRawReport = null;
-    agentSession.pingMemory.latestJeffReport = null;
-    agentSession.pingMemory.currentRun = {
-      task: pingTaskSnapshot,
-      plan: null,
-      report: null,
-      usageBefore: input.usageBefore ?? null,
-      usageAfter: null,
-      validationReport: null,
-    };
-    agentSession.slackActiveDirectorId = "programming-director";
-    agentSession.slackPresenceGuestId = "programming-director";
-    this.appendSlackAssistantMessage(
-      agentSession,
-      "programming-director",
-      buildPingAcknowledgementText(pingTaskSnapshot),
-      {
-        status: "complete",
-        metadata: null,
-      },
-    );
-    this.appendSlackAssistantMessage(agentSession, "programming-director", "", {
-      status: "working",
-      metadata: null,
+    const startupAlreadySeeded = this.isSamePingTaskSnapshot(agentSession.pingMemory.currentRun?.task, pingTaskSnapshot)
+      && Boolean(this.findLatestSlackAssistantMessage(
+        agentSession,
+        "programming-director",
+        (item) => item.status === "working",
+      ));
+    this.seedPingStartupState(agentSession, pingTaskSnapshot, input.usageBefore ?? null, {
+      appendMessages: !startupAlreadySeeded,
     });
     agentSession.updatedAt = new Date().toISOString();
     await this.store.saveAgentSession(agentSession);
     this.emit({ type: "agent.session", projectId: input.projectId, session: agentSession });
+
+    try {
+      if (pingTaskSnapshot.source === "todd-approved-update" && pingTaskSnapshot.updateId) {
+        await this.assertFreshProjectKnowledge(agentSession);
+        const hasUnconfirmedPillars = agentSession.corePillars.some((pillar) =>
+          pillar.function?.status === "assumed" || pillar.thesis?.status === "assumed"
+        );
+        if (hasUnconfirmedPillars) {
+          throw new Error("Some core pillars are still marked as assumed. Please confirm them with Dan before building. Ask Jeff \"anything for me to confirm?\" to see what needs attention.");
+        }
+      }
+
+      await this.requireProviderReady(input.provider, settings);
+    } catch (error) {
+      const latest = await this.requireProject(project.id);
+      const failureMessage = error instanceof Error ? error.message : `PROGRAMS could not create a plan with ${providerLabel}.`;
+      await this.updateProjectStatus(latest, "error", failureMessage);
+      await this.rollbackPingStartupState(project.id, failureMessage, undefined, {
+        existingProject: latest,
+        preferredProjectStatus: "error",
+      });
+      throw error instanceof Error ? error : new Error(failureMessage);
+    }
 
     if (input.planningMode === "none") {
       const executingProject = await this.updateProjectStatus(project, "executing", null);
@@ -10423,6 +10628,7 @@ Return ONLY strict JSON matching:
       })
       .catch(async (error) => {
         const latest = await this.requireProject(project.id);
+        const failureMessage = error instanceof Error ? error.message : `PROGRAMS could not create a plan with ${providerLabel}.`;
         // Persist any new threadId even on failure so we don't keep retrying a stale one.
         const activeDraft = service.getActivePlan(project.id);
         if (activeDraft?.threadId && activeDraft.threadId !== latest.threadId) {
@@ -10433,14 +10639,12 @@ Return ONLY strict JSON matching:
         await this.updateProjectStatus(
           latest,
           "error",
-          error instanceof Error ? error.message : `PROGRAMS could not create a plan with ${providerLabel}.`,
+          failureMessage,
         );
-        if (isPingStartupFailure(error)) {
-          await this.rollbackPingStartupState(
-            project.id,
-            error instanceof Error ? error.message : `PROGRAMS could not create a plan with ${providerLabel}.`,
-          );
-        }
+        await this.rollbackPingStartupState(project.id, failureMessage, undefined, {
+          existingProject: latest,
+          preferredProjectStatus: "error",
+        });
       });
 
     return { started: true };
@@ -10622,10 +10826,10 @@ Return ONLY strict JSON matching:
         metadata: { type: "ping-update-report", rawReport, report: reportSnapshot },
       });
     }
-    if (reportSnapshot && reportSnapshot.task.source === "direct-ping-request") {
-      await this.reconcileToddAfterDirectPingRun(session, reportSnapshot);
+    if (reportSnapshot) {
+      await this.reconcileToddAfterPingRun(session, reportSnapshot);
     }
-    session.slackActiveDirectorId = "project-manager";
+    session.slackActiveDirectorId = reportSnapshot ? "rd-director" : "project-manager";
     session.slackPresenceGuestId = null;
     session.pingMemory.activeUpdateId = null;
     session.pingMemory.activeTask = null;
@@ -10650,7 +10854,7 @@ Return ONLY strict JSON matching:
 
     const responsePlaceholder = this.appendSlackAssistantMessage(session, "rd-director", "", { status: "working" });
     session.slackActiveDirectorId = "rd-director";
-    session.slackPresenceGuestId = "rd-director";
+    session.slackPresenceGuestId = null;
     await this.saveAgentSession(projectId, session);
 
     try {
@@ -10667,6 +10871,24 @@ Return ONLY strict JSON matching:
         requestedModels.claudeModel,
         "synthesis",
       );
+      const changedFileSnippets: string[] = [];
+      for (const filePath of report.rawReport.changedFiles.slice(0, 10)) {
+        try {
+          const fullPath = join(project.localPath, filePath);
+          const content = await readFile(fullPath, "utf-8");
+          const lines = content.split("\n");
+          const preview = lines.length > 120
+            ? [...lines.slice(0, 120), `... (${lines.length - 120} more lines)`].join("\n")
+            : content;
+          changedFileSnippets.push(`--- ${filePath} ---\n${preview}`);
+        } catch {
+          changedFileSnippets.push(`--- ${filePath} --- (could not read)`);
+        }
+      }
+      const changedFileContext = changedFileSnippets.length > 0
+        ? changedFileSnippets.join("\n\n")
+        : "(no changed file contents available)";
+
       const prompt = `You are Todd, the R&D Director for "${project.name}".
 Review Ping's latest completed run and decide what happens next.
 
@@ -10684,6 +10906,9 @@ Ping execution report:
 - Blocker: ${report.rawReport.blocker ?? "(none)"}
 - Unexpected notes: ${report.rawReport.unexpectedNotes.join(" | ") || "(none)"}
 
+Updated file contents (post-execution indexed code):
+${changedFileContext}
+
 Provider usage before:
 ${report.usageBefore?.windows.map((window) => `- ${window.label}: ${window.usedPercent ?? 0}% used`).join("\n") ?? "(not captured)"}
 
@@ -10699,7 +10924,21 @@ ${session.toddMemory.previousUpdateLog.slice(-5).map((entry) => `- ${entry.statu
 Trouble log:
 ${session.toddMemory.troubleLog.slice(-5).map((entry) => `- ${entry.title}: ${entry.details}`).join("\n") || "(empty)"}
 
-Confirmed roadmap and updates:
+Current state:
+${session.toddMemory.currentState ?? "(not set)"}
+
+End state goal:
+${session.toddMemory.endStateGoal ?? "(not set)"}
+
+Success chain:
+${(session.toddMemory.successChain ?? []).length > 0
+  ? session.toddMemory.successChain.map((step, i) => `${i + 1}. [${step.satisfied ? "satisfied" : "pending"}] ${step.title}: ${step.description}`).join("\n")
+  : "(none)"}
+
+Next update that was just executed:
+${session.toddMemory.nextUpdate ? `${session.toddMemory.nextUpdate.title}: ${session.toddMemory.nextUpdate.description}` : "(not set)"}
+
+Update queue:
 ${session.toddMemory.futureUpdatePlan.map((update) =>
   `- [${update.status}] ${update.title}: ${update.description}${update.updateKind ? ` | Kind: ${update.updateKind}` : ""}${update.simplificationMode ? ` | Simplification: ${update.simplificationMode}` : ""}`
 ).join("\n") || "(none)"}
@@ -10715,12 +10954,13 @@ Rules:
 - Use send_to_pong when validation is needed before finalizing.
 - Use finalize_partial only for a real step forward with no major regression of what already worked.
 - Use finalize_failure when this step moved backward, broke important behavior, or should be reverted instead of continued.
-- After deciding the current run, perform a structural checkpoint for the next priority step:
-  - Ask whether the current code shape still supports what should happen next cleanly
-  - Use the roadmap direction, codebase map, previous update/trouble logs, and the latest result
-  - Trigger structural concern when responsibilities are mixed, one change would touch too many places, the module split no longer matches the concept, testing is messy because concerns are mixed, Ping would need workaround edits, coupling recently increased, or the next clean structure is blocked by the current shape
-  - File size alone is not enough reason to simplify
-- If the current run can finalize but the next step now needs a cleaner structure first, set replanNeeded to true and provide replanUpdates as the full superseding future update plan. Use the same Create/Expand/Refine/Simplify classification rules as normal Todd update planning. The replan should preserve completed work and start from the next clean step.
+- After deciding the current run, update the planning state:
+  - updatedCurrentState: revise currentState to reflect what is now true after this run (required on all finalizing actions)
+  - satisfiedStepTitles: list the exact titles of any success chain steps now fully satisfied by this run (empty array if none)
+  - newNextUpdate: the full next update for Ping — the first unsatisfied and unblocked step from the success chain. Set to null if retry_ping is chosen (retryInstruction handles the next step) or if all steps are done.
+- replanNeeded/replanUpdates: set replanNeeded=true and provide replanUpdates only if the code structure now makes the success chain invalid and a full replan is required. In that case, also set newNextUpdate to null.
+- Trigger structural concern when responsibilities are mixed, one change would touch too many places, the module split no longer matches the concept, testing is messy because concerns are mixed, Ping would need workaround edits, coupling recently increased, or the next clean structure is blocked by the current shape
+- File size alone is not enough reason to trigger a replan
 - Keep response conversational and short. It is Todd's chat message.
 
 Return strict JSON with:
@@ -10735,7 +10975,10 @@ Return strict JSON with:
   "replanReason": string | null,
   "replanCurrentState": string | null,
   "replanIdealState": string | null,
-  "replanUpdates": [...] | null
+  "replanUpdates": [...] | null,
+  "updatedCurrentState": string | null,
+  "satisfiedStepTitles": string[] | null,
+  "newNextUpdate": {"title": string, "description": string, "updateKind": string|null, "simplificationMode": string|null, "structuralReason": string|null, "supportsNextStep": string|null, "skillsNeeded": string[], "dependencies": string[]} | null
 }`;
       const rawResult = await this.aiService(report.task.runtime.provider).runOneShot(
         project,
@@ -10755,6 +10998,70 @@ Return strict JSON with:
       const replanUpdates = Array.isArray(parsed.replanUpdates)
         ? parsed.replanUpdates as ToddPlannedUpdateInput[]
         : null;
+
+      const updatedCurrentState = normalizeOptionalToddText(parsed.updatedCurrentState);
+      const satisfiedStepTitles = Array.isArray(parsed.satisfiedStepTitles)
+        ? (parsed.satisfiedStepTitles as unknown[]).filter((s): s is string => typeof s === "string")
+        : [];
+      const rawNewNextUpdate = parsed.newNextUpdate && typeof parsed.newNextUpdate === "object"
+        ? parsed.newNextUpdate as Record<string, unknown>
+        : null;
+      const newNextUpdate: ToddNextUpdate | null = rawNewNextUpdate ? {
+        id: randomUUID(),
+        title: typeof rawNewNextUpdate.title === "string" ? rawNewNextUpdate.title.trim() : "Next update",
+        description: typeof rawNewNextUpdate.description === "string" ? rawNewNextUpdate.description.trim() : "",
+        updateKind: normalizeToddUpdateKind(rawNewNextUpdate.updateKind),
+        simplificationMode: normalizeToddSimplificationMode(rawNewNextUpdate.simplificationMode),
+        structuralReason: normalizeOptionalToddText(rawNewNextUpdate.structuralReason),
+        supportsNextStep: normalizeOptionalToddText(rawNewNextUpdate.supportsNextStep),
+        skillsNeeded: Array.isArray(rawNewNextUpdate.skillsNeeded)
+          ? (rawNewNextUpdate.skillsNeeded as unknown[]).filter((s): s is string => typeof s === "string")
+          : [],
+        dependencies: Array.isArray(rawNewNextUpdate.dependencies)
+          ? (rawNewNextUpdate.dependencies as unknown[]).filter((s): s is string => typeof s === "string")
+          : [],
+      } : null;
+
+      if (updatedCurrentState) {
+        session.toddMemory.currentState = updatedCurrentState;
+      }
+      if (satisfiedStepTitles.length > 0) {
+        const now = new Date().toISOString();
+        session.toddMemory.successChain = (session.toddMemory.successChain ?? []).map((step) =>
+          satisfiedStepTitles.includes(step.title)
+            ? { ...step, satisfied: true, satisfiedAt: step.satisfiedAt ?? now }
+            : step,
+        );
+      }
+      if (newNextUpdate && !replanNeeded) {
+        session.toddMemory.nextUpdate = newNextUpdate;
+        const alreadyQueued = session.toddMemory.futureUpdatePlan.some(
+          (u) => u.status === "pending" && u.title === newNextUpdate.title,
+        );
+        if (!alreadyQueued) {
+          const asVersionUpdate: VersionUpdate = {
+            id: newNextUpdate.id,
+            versionId: null,
+            title: newNextUpdate.title,
+            description: newNextUpdate.description,
+            order: session.toddMemory.futureUpdatePlan.length,
+            status: "pending",
+            dependencies: newNextUpdate.dependencies,
+            pillarIds: [],
+            skillsNeeded: newNextUpdate.skillsNeeded,
+            updateKind: newNextUpdate.updateKind,
+            simplificationMode: newNextUpdate.simplificationMode,
+            structuralReason: newNextUpdate.structuralReason,
+            supportsNextStep: newNextUpdate.supportsNextStep,
+          };
+          session.toddMemory.futureUpdatePlan = normalizeFutureUpdatePlan([
+            ...session.toddMemory.futureUpdatePlan,
+            asVersionUpdate,
+          ]);
+          session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
+        }
+      }
+
       this.replaceSlackAssistantMessage(session, "rd-director", {
         ...responsePlaceholder,
         content: response,
@@ -10762,6 +11069,12 @@ Return strict JSON with:
         status: "complete",
         metadata: null,
       });
+      try {
+        const postPingFingerprint = await buildProjectKnowledgeFingerprint(project.localPath);
+        if (session.toddMemory.codebaseIndexedMap && postPingFingerprint) {
+          session.toddMemory.codebaseIndexedMap.lastIndexedFingerprint = postPingFingerprint;
+        }
+      } catch { /* non-fatal: fingerprint update is best-effort */ }
       await this.saveAgentSession(projectId, session);
 
       if (nextAction === "retry_ping") {
@@ -10818,6 +11131,12 @@ Return strict JSON with:
         status: "complete",
         metadata: null,
       });
+      try {
+        const postPingFingerprint = await buildProjectKnowledgeFingerprint(project.localPath);
+        if (session.toddMemory.codebaseIndexedMap && postPingFingerprint) {
+          session.toddMemory.codebaseIndexedMap.lastIndexedFingerprint = postPingFingerprint;
+        }
+      } catch { /* non-fatal */ }
       await this.saveAgentSession(projectId, session);
       await this.finalizeToddOutcomeToJeff(projectId, {
         decision: report.rawReport.status === "blocked" ? "failure" : report.rawReport.status === "unexpected" ? "partially-successful" : "successful",
@@ -10902,7 +11221,10 @@ Return strict JSON with:
   "replanReason": null,
   "replanCurrentState": null,
   "replanIdealState": null,
-  "replanUpdates": null
+  "replanUpdates": null,
+  "updatedCurrentState": null,
+  "satisfiedStepTitles": null,
+  "newNextUpdate": null
 }`;
       const rawResult = await this.aiService(provider).runOneShot(
         project,
@@ -11191,6 +11513,11 @@ Return strict JSON with:
           await this.rollbackPingStartupState(
             latest.id,
             error instanceof Error ? error.message : `PROGRAMS could not finish the update with ${providerLabel}.`,
+            undefined,
+            {
+              existingProject: latest,
+              preferredProjectStatus: "error",
+            },
           );
           return;
         }

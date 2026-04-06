@@ -42,6 +42,29 @@ export const toddUpdateItemSchema = buildStrictObjectSchema({
   supportsNextStep: { type: ["string", "null"] },
 });
 
+export const toddSuccessChainStepSchema = buildStrictObjectSchema({
+  title: { type: "string" },
+  description: { type: "string" },
+  satisfied: { type: "boolean" },
+});
+
+export const toddNextUpdateSchema = buildStrictObjectSchema({
+  title: { type: "string" },
+  description: { type: "string" },
+  updateKind: { type: ["string", "null"] as const },
+  simplificationMode: { type: ["string", "null"] as const },
+  structuralReason: { type: ["string", "null"] },
+  supportsNextStep: { type: ["string", "null"] },
+  skillsNeeded: {
+    type: "array" as const,
+    items: { type: "string" },
+  },
+  dependencies: {
+    type: "array" as const,
+    items: { type: "string" },
+  },
+});
+
 export const pingRawReportSchema = buildStrictObjectSchema({
   summary: { type: "string" },
   changedFiles: {

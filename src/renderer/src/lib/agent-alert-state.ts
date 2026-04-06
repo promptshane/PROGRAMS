@@ -1,5 +1,5 @@
 import type { AgentSession, DirectorId, RdFocusMode, VersionUpdate } from "@shared/types";
-import { getDanConflictQuestionCount, hasToddSupersedingDraftUpdatePlan } from "./session-helpers";
+import { getDanConflictQuestionCount, hasToddSupersedingDraftUpdatePlan } from "./session-helpers.ts";
 
 export type AgentAlertTone = "white" | "red";
 export type AgentAlertAction =
@@ -8,6 +8,7 @@ export type AgentAlertAction =
   | "review-dan-memory"
   | "reconcile-dan-memory"
   | "review-todd-memory"
+  | "regenerate-todd-plan"
   | "run-ping-update"
   | "run-pong-validation";
 
@@ -46,10 +47,12 @@ export const hasPingPendingUpdate = (session: AgentSession | null): boolean =>
 export const hasPingActiveTask = (session: AgentSession | null): boolean =>
   Boolean(session?.pingMemory.activeTask);
 
-export const hasJeffPendingWork = (session: AgentSession | null): boolean =>
+export const hasJeffFailureReport = (session: AgentSession | null): boolean =>
   Boolean(
     session
-    && (session.jeffMemory?.pendingReports?.length ?? 0) > 0,
+    && session.jeffMemory?.pendingReports?.some(
+      (report) => report.toddRecommendedDecision === "failure" || report.decision === "failure",
+    ),
   );
 
 export const hasPongPendingWork = (session: AgentSession | null): boolean =>
@@ -71,15 +74,8 @@ export const getNextPendingProgrammingUpdate = (session: AgentSession | null): V
     .sort((a, b) => a.order - b.order)[0] ?? null;
 };
 
-export const getToddMemoryProcessingFocusMode = (session: AgentSession | null): RdFocusMode =>
-  session && (
-    session.toddMemory.versionPlan.v1
-    || session.toddMemory.versionPlan.v2
-    || session.toddMemory.versionPlan.v3
-    || session.versions.length > 0
-  )
-    ? "update-planning"
-    : "version-planning";
+export const getToddMemoryProcessingFocusMode = (_session: AgentSession | null): RdFocusMode =>
+  "update-planning";
 
 export const resolveAgentAlertState = (
   directorId: DirectorId,
@@ -93,12 +89,12 @@ export const resolveAgentAlertState = (
         action: "refresh-project",
       };
     }
-    if (!hasJeffPendingWork(session)) {
+    if (!hasJeffFailureReport(session)) {
       return null;
     }
     return {
-      tone: hasPingActiveTask(session) ? "red" : "white",
-      warningTargetDirectorId: hasPingActiveTask(session) ? "programming-director" : null,
+      tone: "red",
+      warningTargetDirectorId: null,
       action: "review-jeff-work",
     };
   }
@@ -113,13 +109,12 @@ export const resolveAgentAlertState = (
   }
 
   if (directorId === "rd-director") {
-    if (!hasToddActionableMemory(session)) {
-      return null;
-    }
+    // Todd's button is always visible. Tone escalates when a Dan handoff is pending.
+    const hasPendingHandoff = hasToddActionableMemory(session);
     return {
-      tone: hasDanActionableMemory(session) ? "red" : "white",
-      warningTargetDirectorId: hasDanActionableMemory(session) ? "creative-director" : null,
-      action: "review-todd-memory",
+      tone: hasPendingHandoff ? "red" : "white",
+      warningTargetDirectorId: hasPendingHandoff && hasDanActionableMemory(session) ? "creative-director" : null,
+      action: "regenerate-todd-plan",
     };
   }
 

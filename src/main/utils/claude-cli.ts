@@ -17,6 +17,8 @@ export interface ClaudeCliAuthMetadata {
 export interface ClaudeCliFeatures {
   supportsAuthCommands: boolean;
   supportsStreamJsonVerbose: boolean;
+  supportsJsonSchema: boolean;
+  supportsPermissionMode: boolean;
 }
 
 const claudeLocalAuthSchema = z.object({
@@ -85,6 +87,8 @@ export const parseClaudeCliFeatures = (helpText: string): ClaudeCliFeatures => (
     /--output-format\s+<format>/.test(helpText) &&
     /--verbose\b/.test(helpText) &&
     /--print\b/.test(helpText),
+  supportsJsonSchema: /--json-schema\b/.test(helpText),
+  supportsPermissionMode: /--permission-mode\b/.test(helpText),
 });
 
 export interface BuildClaudeAuthStatusInput {
@@ -154,6 +158,8 @@ export interface BuildClaudePrintArgsInput {
   settingsArg?: string | null;
   maxTurns: number;
   allowedTools?: string | null;
+  jsonSchema?: Record<string, unknown> | null;
+  permissionMode?: string | null;
 }
 
 export const buildClaudePrintArgs = ({
@@ -162,12 +168,16 @@ export const buildClaudePrintArgs = ({
   settingsArg = null,
   maxTurns,
   allowedTools = null,
+  jsonSchema = null,
+  permissionMode = null,
 }: BuildClaudePrintArgsInput): string[] => [
   "-p",
   prompt,
   "--model",
   model,
   ...(settingsArg ? ["--settings", settingsArg] : []),
+  ...(jsonSchema ? ["--json-schema", JSON.stringify(jsonSchema)] : []),
+  ...(permissionMode ? ["--permission-mode", permissionMode] : []),
   "--print",
   "--verbose",
   "--max-turns",

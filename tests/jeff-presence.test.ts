@@ -1,7 +1,52 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import test from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentChatMessage } from "../src/shared/types.ts";
-import {
+
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+const loadJeffPresenceModule = async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), "programs-jeff-presence-"));
+  const sharedTypesUrl = pathToFileURL(path.join(projectRoot, "src/shared/types.ts")).href;
+  const sharedDirectorMetadataUrl = pathToFileURL(path.join(projectRoot, "src/shared/director-metadata.ts")).href;
+  const libModules = [
+    "jeff-presence.ts",
+    "agent-chat-grouping.ts",
+  ] as const;
+
+  try {
+    for (const fileName of libModules) {
+      const sourcePath = path.join(projectRoot, "src/renderer/src/lib", fileName);
+      let source = await readFile(sourcePath, "utf8");
+      source = source.replaceAll('from "@shared/types"', `from ${JSON.stringify(sharedTypesUrl)}`);
+      source = source.replaceAll('from "@shared/director-metadata"', `from ${JSON.stringify(sharedDirectorMetadataUrl)}`);
+
+      for (const dependency of libModules) {
+        const specifier = `./${dependency}`;
+        if (source.includes(specifier)) {
+          source = source.replaceAll(
+            specifier,
+            pathToFileURL(path.join(tempDir, dependency)).href,
+          );
+        }
+      }
+
+      await writeFile(path.join(tempDir, fileName), source, "utf8");
+    }
+
+    const modulePath = path.join(tempDir, "jeff-presence.ts");
+    assert.ok(existsSync(modulePath), "Jeff presence shim was not created.");
+    return await import(pathToFileURL(modulePath).href);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+};
+
+const {
   deriveJeffPresenceState,
   getLatestAgentChatUserTurn,
   JEFF_CARD_VISIBLE_DELAY_MS,
@@ -9,7 +54,7 @@ import {
   JEFF_TYPING_DELAY_MS,
   resolveAgentChatRouteForRenderer,
   userTurnIncludesDirector,
-} from "../src/renderer/src/lib/jeff-presence.ts";
+} = await loadJeffPresenceModule();
 
 const buildUserMessage = (id: string, createdAt: string, content = "hello"): AgentChatMessage => ({
   id,
@@ -152,4 +197,8 @@ test("A later non-Jeff user turn suppresses Jeff history state and keeps routing
   assert.equal(userTurnIncludesDirector(latestTurn, "project-manager"), false);
   assert.equal(state.phase, "hidden");
   assert.equal(resolveAgentChatRouteForRenderer("Can you take another look?", "creative-director"), "creative-director");
+});
+
+test("Renderer routing follows the active non-Jeff director instead of a passive guest", () => {
+  assert.equal(resolveAgentChatRouteForRenderer("Can you take another look?", "programming-director"), "programming-director");
 });

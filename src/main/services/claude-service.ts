@@ -54,6 +54,27 @@ interface ClaudeUsageProbeResult {
   note: string | null;
 }
 
+const planOutputSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["summary", "impact"],
+  properties: {
+    summary: { type: "string" },
+    impact: { type: "string" },
+  },
+};
+
+const executionOutputSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["summary", "description", "commitMessage"],
+  properties: {
+    summary: { type: "string" },
+    description: { type: "string" },
+    commitMessage: { type: "string" },
+  },
+};
+
 const planResultSchema = z.object({
   summary: z.string(),
   impact: z.string(),
@@ -112,7 +133,14 @@ const formatContextPaths = (contextPaths: string[]): string =>
 const formatSkillInstructions = (value: string | null | undefined): string =>
   value?.trim() ? `Attached skill:\n${value.trim()}\n` : "";
 
-const buildPlanningPrompt = (project: Project, prompt: string, contextPaths: string[], skillInstructions: string | null, coreDetailsContext?: string | null): string => `
+const buildPlanningPrompt = (
+  project: Project,
+  prompt: string,
+  contextPaths: string[],
+  skillInstructions: string | null,
+  coreDetailsContext?: string | null,
+  promptOnlyJsonFallback = true,
+): string => `
 ${baseDeveloperInstructions}
 
 ${formatSkillInstructions(skillInstructions)}
@@ -132,11 +160,16 @@ Instructions:
 - Do not change any files.
 - Produce a concise implementation plan.
 - Include the expected user-visible impact.
-- Your final answer must be ONLY strict JSON (no markdown fences) matching this schema:
-  {"summary": string, "impact": string}
+${promptOnlyJsonFallback
+    ? '- Your final answer must be ONLY strict JSON (no markdown fences) matching this schema:\n  {"summary": string, "impact": string}'
+    : ""}
 `.trim();
 
-const buildExecutionPrompt = async (project: Project, draft: PlanDraft): Promise<string> => `
+const buildExecutionPrompt = async (
+  project: Project,
+  draft: PlanDraft,
+  promptOnlyJsonFallback = true,
+): Promise<string> => `
 ${baseDeveloperInstructions}
 
 ${formatSkillInstructions(draft.skillInstructions)}
@@ -157,8 +190,9 @@ ${formatContextPaths(draft.contextPaths)}
 ${draft.coreDetailsContext ? `${draft.coreDetailsContext}\n\n` : ""}Requirements:
 - Make the code changes now.
 - Keep the project description current and user-facing.
-- Your final answer must be ONLY strict JSON (no markdown fences) matching this schema:
-  {"summary": string, "description": string, "commitMessage": string}
+${promptOnlyJsonFallback
+    ? '- Your final answer must be ONLY strict JSON (no markdown fences) matching this schema:\n  {"summary": string, "description": string, "commitMessage": string}'
+    : ""}
 - The summary must be one or two short sentences for the update history.
 - The commitMessage must be short and action-oriented.
 `.trim();
@@ -226,6 +260,50 @@ const cleanClaudeProcessMessage = (value: string): string | null => {
 
 const stripAnsi = (value: string): string =>
   value.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+
+const CLAUDE_WRAPPER_KEYS = new Set([
+  "apiKeySource",
+  "agents",
+  "claude_code_version",
+  "container",
+  "content",
+  "context_management",
+  "cwd",
+  "delta",
+  "duration_api_ms",
+  "duration_ms",
+  "error",
+  "errors",
+  "fast_mode_state",
+  "id",
+  "input_tokens",
+  "is_error",
+  "mcp_servers",
+  "message",
+  "model",
+  "modelUsage",
+  "num_turns",
+  "output_style",
+  "parent_tool_use_id",
+  "permissionMode",
+  "permission_denials",
+  "plugins",
+  "result",
+  "role",
+  "session_id",
+  "skills",
+  "slash_commands",
+  "stop_reason",
+  "stop_sequence",
+  "subtype",
+  "tools",
+  "total_cost_usd",
+  "type",
+  "usage",
+  "uuid",
+]);
+
+const CLAUDE_CONTAINER_KEYS = ["result", "input", "output", "data", "value"] as const;
 
 const extractClaudeTextBlocks = (value: unknown): string => {
   if (typeof value === "string") {
@@ -297,6 +375,87 @@ const isLikelyJsonResponse = (value: string): boolean => {
   return trimmed.startsWith("{") || trimmed.startsWith("```");
 };
 
+const isStructuredPayloadRecord = (value: Record<string, unknown>): boolean => {
+  if (value.type === "text" && typeof value.text === "string") {
+    return false;
+  }
+
+  const keys = Object.keys(value);
+  if (keys.length === 0) {
+    return false;
+  }
+
+  if (keys.some((key) => CLAUDE_CONTAINER_KEYS.includes(key as typeof CLAUDE_CONTAINER_KEYS[number]))) {
+    return false;
+  }
+
+  return !keys.every((key) => CLAUDE_WRAPPER_KEYS.has(key));
+};
+
+const extractClaudeStructuredPayloadCandidate = (value: unknown, depth = 0): unknown | null => {
+  if (value == null || depth > 6) {
+    return null;
+  }
+
+  if (typeof value === "string") {
+    return value.trim() && isLikelyJsonResponse(value) ? value : null;
+  }
+
+  if (Array.isArray(value)) {
+    for (let index = value.length - 1; index >= 0; index -= 1) {
+      const candidate = extractClaudeStructuredPayloadCandidate(value[index], depth + 1);
+      if (candidate !== null) {
+        return candidate;
+      }
+    }
+    return null;
+  }
+
+  if (typeof value !== "object") {
+    return null;
+  }
+
+  const record = value as Record<string, unknown>;
+
+  for (const key of CLAUDE_CONTAINER_KEYS) {
+    const candidate = extractClaudeStructuredPayloadCandidate(record[key], depth + 1);
+    if (candidate !== null) {
+      return candidate;
+    }
+  }
+
+  if (isStructuredPayloadRecord(record)) {
+    return record;
+  }
+
+  return (
+    extractClaudeStructuredPayloadCandidate(record.content, depth + 1)
+    ?? extractClaudeStructuredPayloadCandidate(record.message, depth + 1)
+    ?? extractClaudeStructuredPayloadCandidate(record.text, depth + 1)
+  );
+};
+
+const describeClaudeResultEvent = (event: {
+  result?: unknown;
+  content?: unknown;
+  message?: { content?: unknown } | null;
+}): string => {
+  const summarize = (value: unknown): string => {
+    if (value == null) {
+      return "null";
+    }
+    if (Array.isArray(value)) {
+      return `array(${value.length})`;
+    }
+    if (typeof value === "object") {
+      return `object(${Object.keys(value as Record<string, unknown>).slice(0, 5).join(",")})`;
+    }
+    return typeof value;
+  };
+
+  return `result=${summarize(event.result)}, content=${summarize(event.content)}, message.content=${summarize(event.message?.content)}`;
+};
+
 const extractClaudeResultEventError = (event: {
   errors?: unknown;
   result?: unknown;
@@ -319,11 +478,70 @@ const extractClaudeResultEventError = (event: {
   return text.trim() || null;
 };
 
+const extractClaudeResultPayload = (event: {
+  result?: unknown;
+  content?: unknown;
+  message?: { content?: unknown } | null;
+  delta?: { text?: unknown } | null;
+}): unknown | null => {
+  if (typeof event.result === "string" && event.result.trim()) {
+    return event.result;
+  }
+
+  if (event.result && typeof event.result === "object") {
+    return event.result;
+  }
+
+  return (
+    extractClaudeStructuredPayloadCandidate(event.content)
+    ?? extractClaudeStructuredPayloadCandidate(event.message?.content)
+    ?? (() => {
+      const text = extractClaudeEventText(event);
+      return text.trim() && isLikelyJsonResponse(text) ? text : null;
+    })()
+  );
+};
+
+const stringifyStructuredPayload = (value: unknown): string =>
+  typeof value === "string" ? value : JSON.stringify(value);
+
+const formatStructuredOutputError = (providerLabel: string, error: unknown): string => {
+  if (error instanceof z.ZodError) {
+    const issues = error.issues
+      .map((issue) => `${issue.path.length > 0 ? issue.path.join(".") : "result"}: ${issue.message}`)
+      .join("; ");
+    return `${providerLabel} returned invalid structured output${issues ? `: ${issues}` : "."}`;
+  }
+
+  if (error instanceof SyntaxError) {
+    return `${providerLabel} returned malformed JSON output.`;
+  }
+
+  return error instanceof Error ? error.message : `${providerLabel} returned an unexpected result.`;
+};
+
+const parseStructuredPayload = <T>(
+  providerLabel: string,
+  payload: unknown,
+  schema: z.ZodType<T>,
+): { parsed: T; finalText: string } => {
+  try {
+    const normalized = typeof payload === "string" ? parseJsonFromText(payload) : payload;
+    return {
+      parsed: schema.parse(normalized),
+      finalText: stringifyStructuredPayload(payload),
+    };
+  } catch (error) {
+    throw new Error(formatStructuredOutputError(providerLabel, error));
+  }
+};
+
 
 export class ClaudeService {
   private readonly planDrafts = new Map<string, PlanDraft>();
   private readonly activeProcesses = new Map<string, ChildProcess>();
   private readonly pendingDiffRefresh = new Set<string>();
+  private readonly cliFeaturesCache = new Map<string, ClaudeCliFeatures | null>();
   private pendingLoginStdin: import("stream").Writable | null = null;
   private readonly emit: Emit;
   private readonly openExternal?: (url: string) => Promise<void>;
@@ -458,7 +676,7 @@ export class ClaudeService {
       execCommand(`"${binaryPath}" --version`, process.cwd()),
       this.readCliAuthMetadata(binaryPath),
       this.readLocalAuthMetadata(),
-      this.readCliFeatures(binaryPath),
+      this.getCliFeatures(binaryPath),
     ]);
 
     return buildClaudeAuthStatus({
@@ -525,6 +743,16 @@ export class ClaudeService {
         raw: null,
       };
     }
+  }
+
+  private async getCliFeatures(binaryPath: string): Promise<ClaudeCliFeatures | null> {
+    if (this.cliFeaturesCache.has(binaryPath)) {
+      return this.cliFeaturesCache.get(binaryPath) ?? null;
+    }
+
+    const features = await this.readCliFeatures(binaryPath);
+    this.cliFeaturesCache.set(binaryPath, features);
+    return features;
   }
 
   async installPlugin(settings: Settings, pluginSlug: string): Promise<string | null> {
@@ -716,15 +944,15 @@ export class ClaudeService {
     const status = await this.requireReadyStatus(settings);
     const commandEnv = await getCommandEnv();
     const binaryPath = status.binaryPath!;
+    const features = await this.getCliFeatures(binaryPath);
     const reasoningEffort = resolveOneShotReasoningEffort(
       settings.advancedDefaults.reasoningEffort,
       reasoningEffortOverride,
     );
+    const supportsNativeJsonSchema = Boolean(outputSchema && features?.supportsJsonSchema);
 
-    // If an output schema is provided, inject it into the prompt so Claude
-    // returns structured JSON (the CLI has no --output-schema flag).
     let finalPrompt = prompt;
-    if (outputSchema) {
+    if (outputSchema && !supportsNativeJsonSchema) {
       finalPrompt += `\n\nIMPORTANT: You MUST respond with ONLY a valid JSON object matching this exact schema. No markdown, no explanation, no code fences — just the raw JSON object.\n\nRequired JSON schema:\n${JSON.stringify(outputSchema, null, 2)}`;
     }
 
@@ -735,6 +963,7 @@ export class ClaudeService {
         settingsArg: buildClaudeOneShotSettingsArg(reasoningEffort),
         maxTurns: options?.maxTurns ?? 5,
         allowedTools: options?.allowedTools ?? null,
+        jsonSchema: supportsNativeJsonSchema ? outputSchema ?? null : null,
       });
 
       const child = spawn(binaryPath, args, {
@@ -765,8 +994,8 @@ export class ClaudeService {
             throw new Error(msg);
           }
 
-          const finalText = this.extractFinalResult(chunks);
-          resolve(finalText);
+          const finalPayload = this.extractFinalResult(chunks);
+          resolve(stringifyStructuredPayload(finalPayload));
         } catch (error) {
           reject(error instanceof Error ? error : new Error("Claude returned an unexpected result."));
         }
@@ -790,10 +1019,6 @@ export class ClaudeService {
   }
 
   async startPlanningTurn(project: Project, settings: Settings, input: StartPlanInput): Promise<PlanDraft> {
-    const status = await this.requireReadyStatus(settings);
-    const commandEnv = await getCommandEnv();
-    const binaryPath = status.binaryPath!;
-
     const draft: PlanDraft = {
       projectId: project.id,
       provider: "claude",
@@ -830,72 +1055,97 @@ export class ClaudeService {
     this.syncDraft(draft);
 
     return new Promise<PlanDraft>((resolve, reject) => {
-      const prompt = this.previewPlanningPrompt(project, input);
-      const args = buildClaudePrintArgs({
-        prompt,
-        model: input.claudeModel,
-        settingsArg: buildClaudeOneShotSettingsArg(input.reasoningEffort),
-        maxTurns: 5,
-      });
-
-      const child = spawn(binaryPath, args, {
-        cwd: project.localPath,
-        env: commandEnv,
-        stdio: ["pipe", "pipe", "pipe"],
-      });
-
-      this.activeProcesses.set(project.id, child);
-      const chunks: string[] = [];
-      let stderr = "";
-
-      readline.createInterface({ input: child.stdout }).on("line", (line) => {
-        chunks.push(line);
-        this.handleStreamEvent(project.id, project.localPath, draft, line);
-      });
-
-      readline.createInterface({ input: child.stderr }).on("line", (line) => {
-        stderr = stderr ? `${stderr}\n${line}` : line;
-      });
-
-      child.on("exit", (code) => {
-        this.activeProcesses.delete(project.id);
-
+      void (async () => {
         try {
-          if (code !== 0) {
-            throw new Error(this.extractErrorMessage(chunks, stderr) ?? "Claude could not complete the plan.");
-          }
+          const status = await this.requireReadyStatus(settings);
+          const commandEnv = await getCommandEnv();
+          const binaryPath = status.binaryPath!;
+          const features = await this.getCliFeatures(binaryPath);
+          const supportsNativeJsonSchema = Boolean(features?.supportsJsonSchema);
+          const prompt = buildPlanningPrompt(
+            project,
+            input.prompt,
+            input.contextPaths,
+            input.skillInstructions ?? null,
+            input.coreDetailsContext ?? null,
+            !supportsNativeJsonSchema,
+          );
+          const args = buildClaudePrintArgs({
+            prompt,
+            model: input.claudeModel,
+            settingsArg: buildClaudeOneShotSettingsArg(input.reasoningEffort),
+            maxTurns: 5,
+            jsonSchema: supportsNativeJsonSchema ? planOutputSchema : null,
+            permissionMode: features?.supportsPermissionMode ? "plan" : null,
+          });
 
-          const finalText = this.extractFinalResult(chunks);
-          const parsed = planResultSchema.parse(parseJsonFromText(finalText));
-          draft.status = "awaitingApproval";
-          draft.thinkingStatus = "completed";
-          draft.planningStatus = "completed";
-          draft.summary = parsed.summary;
-          draft.impact = parsed.impact;
-          draft.finalText = finalText;
-          draft.errorMessage = null;
-          this.syncDraft(draft);
-          resolve({ ...draft });
+          const child = spawn(binaryPath, args, {
+            cwd: project.localPath,
+            env: commandEnv,
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+
+          this.activeProcesses.set(project.id, child);
+          const chunks: string[] = [];
+          let stderr = "";
+
+          readline.createInterface({ input: child.stdout }).on("line", (line) => {
+            chunks.push(line);
+            this.handleStreamEvent(project.id, project.localPath, draft, line);
+          });
+
+          readline.createInterface({ input: child.stderr }).on("line", (line) => {
+            stderr = stderr ? `${stderr}\n${line}` : line;
+          });
+
+          child.on("exit", (code) => {
+            this.activeProcesses.delete(project.id);
+
+            try {
+              if (code !== 0) {
+                throw new Error(this.extractErrorMessage(chunks, stderr) ?? "Claude could not complete the plan.");
+              }
+
+              const finalPayload = this.extractFinalResult(chunks);
+              const { parsed, finalText } = parseStructuredPayload("Claude", finalPayload, planResultSchema);
+              draft.status = "awaitingApproval";
+              draft.thinkingStatus = "completed";
+              draft.planningStatus = "completed";
+              draft.summary = parsed.summary;
+              draft.impact = parsed.impact;
+              draft.finalText = finalText;
+              draft.errorMessage = null;
+              this.syncDraft(draft);
+              resolve({ ...draft });
+            } catch (error) {
+              draft.status = "failed";
+              draft.thinkingStatus = "failed";
+              draft.planningStatus = "failed";
+              draft.errorMessage =
+                error instanceof Error ? error.message : "Claude returned an unexpected result.";
+              this.syncDraft(draft);
+              reject(error instanceof Error ? error : new Error("Claude returned an unexpected result."));
+            }
+          });
+
+          child.on("error", (err) => {
+            this.activeProcesses.delete(project.id);
+            draft.status = "failed";
+            draft.thinkingStatus = "failed";
+            draft.planningStatus = "failed";
+            draft.errorMessage = err.message;
+            this.syncDraft(draft);
+            reject(err);
+          });
         } catch (error) {
           draft.status = "failed";
           draft.thinkingStatus = "failed";
           draft.planningStatus = "failed";
-          draft.errorMessage =
-            error instanceof Error ? error.message : "Claude returned an unexpected result.";
+          draft.errorMessage = error instanceof Error ? error.message : "Claude could not complete the plan.";
           this.syncDraft(draft);
-          reject(error instanceof Error ? error : new Error("Claude returned an unexpected result."));
+          reject(error instanceof Error ? error : new Error("Claude could not complete the plan."));
         }
-      });
-
-      child.on("error", (err) => {
-        this.activeProcesses.delete(project.id);
-        draft.status = "failed";
-        draft.thinkingStatus = "failed";
-        draft.planningStatus = "failed";
-        draft.errorMessage = err.message;
-        this.syncDraft(draft);
-        reject(err);
-      });
+      })();
     });
   }
 
@@ -903,15 +1153,18 @@ export class ClaudeService {
     const status = await this.requireReadyStatus(settings);
     const commandEnv = await getCommandEnv();
     const binaryPath = status.binaryPath!;
+    const features = await this.getCliFeatures(binaryPath);
+    const supportsNativeJsonSchema = Boolean(features?.supportsJsonSchema);
 
     return new Promise<ExecutionPayload>(async (resolve, reject) => {
-      const prompt = await buildExecutionPrompt(project, draft);
+      const prompt = await buildExecutionPrompt(project, draft, !supportsNativeJsonSchema);
       const args = buildClaudePrintArgs({
         prompt,
         model: draft.claudeModel,
         settingsArg: buildClaudeOneShotSettingsArg(draft.reasoningEffort),
         maxTurns: 20,
         allowedTools: "Edit,Write,Bash(npm install:*),Bash(npx:*),Read,Glob,Grep",
+        jsonSchema: supportsNativeJsonSchema ? executionOutputSchema : null,
       });
 
       const child = spawn(binaryPath, args, {
@@ -955,8 +1208,8 @@ export class ClaudeService {
             throw new Error(this.extractErrorMessage(chunks, stderr) ?? "Claude could not finish the update.");
           }
 
-          const finalText = this.extractFinalResult(chunks);
-          const parsed = executionResultSchema.parse(parseJsonFromText(finalText));
+          const finalPayload = this.extractFinalResult(chunks);
+          const { parsed, finalText } = parseStructuredPayload("Claude", finalPayload, executionResultSchema);
           draft.status = "executing";
           if (draft.planningMode === "none") {
             draft.thinkingStatus = "completed";
@@ -1097,37 +1350,80 @@ export class ClaudeService {
     }
   }
 
-  private extractFinalResult(chunks: string[]): string {
-    for (let i = chunks.length - 1; i >= 0; i--) {
-      try {
-        const event = JSON.parse(chunks[i]) as {
-          type?: string;
-          result?: unknown;
-          is_error?: boolean;
-          errors?: unknown;
-          content?: unknown;
-          delta?: { text?: unknown } | null;
-          message?: { content?: unknown } | null;
-        };
-        if (event.type === "result") {
-          if (event.is_error) {
-            throw new Error(extractClaudeResultEventError(event) ?? "Claude returned an error.");
-          }
-          if (typeof event.result === "string" && event.result.trim()) {
-            return event.result;
-          }
-        }
+  private extractFinalResult(chunks: string[]): unknown {
+    let sawResultEvent = false;
+    let resultEventSummary: string | null = null;
 
-        const text = extractClaudeEventText(event);
-        if (text && isLikelyJsonResponse(text)) {
-          return text;
-        }
+    for (let i = chunks.length - 1; i >= 0; i--) {
+      let event: {
+        type?: string;
+        result?: unknown;
+        is_error?: boolean;
+        errors?: unknown;
+        content?: unknown;
+        delta?: { text?: unknown } | null;
+        message?: { content?: unknown } | null;
+      };
+
+      try {
+        event = JSON.parse(chunks[i]) as typeof event;
       } catch {
         const raw = chunks[i].trim();
         if (raw && isLikelyJsonResponse(raw)) {
+          if (sawResultEvent) {
+            console.info(
+              "[claude] Falling back to raw JSON chunk after empty result event (%s).",
+              resultEventSummary ?? "unknown result event shape",
+            );
+          }
           return raw;
         }
+        continue;
       }
+
+      if (event.type === "result") {
+        sawResultEvent = true;
+        resultEventSummary = describeClaudeResultEvent(event);
+        if (event.is_error) {
+          throw new Error(extractClaudeResultEventError(event) ?? "Claude returned an error.");
+        }
+        const payload = extractClaudeResultPayload(event);
+        if (payload !== null) {
+          return payload;
+        }
+        continue;
+      }
+
+      const payload = extractClaudeStructuredPayloadCandidate(event.content)
+        ?? extractClaudeStructuredPayloadCandidate(event.message?.content);
+      if (payload !== null) {
+        if (sawResultEvent) {
+          console.info(
+            "[claude] Falling back to earlier structured output after empty result event (%s).",
+            resultEventSummary ?? "unknown result event shape",
+          );
+        }
+        return payload;
+      }
+
+      const text = extractClaudeEventText(event);
+      if (text && isLikelyJsonResponse(text)) {
+        if (sawResultEvent) {
+          console.info(
+            "[claude] Falling back to earlier JSON text after empty result event (%s).",
+            resultEventSummary ?? "unknown result event shape",
+          );
+        }
+        return text;
+      }
+    }
+
+    if (sawResultEvent) {
+      console.warn(
+        "[claude] Result event had no structured payload and no earlier fallback candidate (%s).",
+        resultEventSummary ?? "unknown result event shape",
+      );
+      throw new Error("Claude returned a result event without a valid payload.");
     }
 
     // Last resort: forward-scan for any raw JSON object in the chunks

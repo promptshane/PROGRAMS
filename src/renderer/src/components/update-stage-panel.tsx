@@ -5,29 +5,21 @@ import {
 } from "react";
 import {
   DIRECTOR_NAMES,
-  type AgentCoreDetails,
   type AgentSession,
-  type DirectorId,
   type HardMemoryReportMetadata,
-  type HardMemoryReportUpdate,
   type PendingApproval,
   type PlanDraft,
   type UpdateStageStatus,
-  type VersionPlan,
   type VersionUpdate,
 } from "@shared/types";
-import { StatusChip } from "./ui-primitives";
 import { TypewriterText } from "./icons";
-import { CoreDetailsReport } from "./core-details";
 import { labelForPlanStatus } from "../lib/labels";
 import {
   buildHardMemoryReportFromApproval,
-  findHardMemoryReportMetadata,
-  collectHardMemoryRoadmapVersions,
+  getLivePendingApprovals,
   getToddUpdatePlanDraftMeta,
-  resolveHardMemoryReportArea,
 } from "../lib/session-helpers";
-import { resolveDanHardMemoryReportDraft } from "../lib/hard-memory-report";
+import { HardMemoryReportSections } from "./hard-memory-report";
 
 const labelForPendingApprovalKind = (kind: PendingApproval["kind"]): string => {
   switch (kind) {
@@ -50,191 +42,7 @@ const labelForPendingApprovalKind = (kind: PendingApproval["kind"]): string => {
   }
 };
 
-function HardMemoryReportSections({
-  report,
-  session,
-}: {
-  report: HardMemoryReportMetadata;
-  session: AgentSession | null;
-}) {
-  const danDraftCoreDetails = resolveDanHardMemoryReportDraft(report, session);
-  const hasStateInfo = Boolean(report.currentState || report.idealState);
-  const versionGroups = report.dataType === "versionUpdates" && report.versionUpdates
-    ? report.versionUpdates.reduce<Record<string, HardMemoryReportUpdate[]>>((groups, update) => {
-      const label = update.versionLabel || "Unassigned";
-      if (!groups[label]) {
-        groups[label] = [];
-      }
-      groups[label].push(update);
-      return groups;
-    }, {})
-    : null;
-  const orderedGroupLabels = versionGroups && report.roadmapVersions
-    ? [
-      ...report.roadmapVersions.map((version) => version.label),
-      ...Object.keys(versionGroups).filter((label) => !report.roadmapVersions?.some((version) => version.label === label)).sort(),
-    ]
-    : versionGroups
-    ? Object.keys(versionGroups).sort()
-    : [];
-  const reportApproval = report.approvalId
-    ? session?.pendingApprovals.find((approval) => approval.id === report.approvalId) ?? null
-    : null;
-  const reportDraftMeta = getToddUpdatePlanDraftMeta(reportApproval);
-
-  return (
-    <div className="hardMemoryReportSections">
-      {hasStateInfo ? (
-        <div className="pendingProposalCard">
-          <h5>State</h5>
-          {report.currentState ? (
-            <div className="proposalField">
-              <div className="proposalFieldLabel">Current</div>
-              <div className="proposalFieldValue">{report.currentState}</div>
-            </div>
-          ) : null}
-          {report.idealState ? (
-            <div className="proposalField">
-              <div className="proposalFieldLabel">Ideal</div>
-              <div className="proposalFieldValue">{report.idealState}</div>
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-
-      {report.dataType === "danDraftCoreDetails" ? (
-        <>
-          {report.changeSummary.length > 0 ? (
-            <div className="pendingProposalCard">
-              <h5>Change Summary</h5>
-              <ul className="agentSummaryList">
-                {report.changeSummary.map((item, index) => (
-                  <li key={`${report.approvalId ?? report.createdAt}-change-${index}`}>{item}</li>
-                ))}
-              </ul>
-            </div>
-          ) : null}
-          {report.reportStage === "soft" && session ? (
-            <div className="pendingProposalCard">
-              <h5>Takeaway Notes</h5>
-              {(session.danMemory?.notes ?? []).length > 0 ? (
-                <ul className="agentSummaryList">
-                  {(session.danMemory?.notes ?? []).map((note) => (
-                    <li key={note.id}>{note.content}</li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="emptyFieldText">No notes yet.</p>
-              )}
-            </div>
-          ) : (
-            <CoreDetailsReport coreDetails={danDraftCoreDetails} />
-          )}
-        </>
-      ) : null}
-
-      {report.dataType === "versions" ? (
-        <div className="pendingProposalCard">
-          <h5>Roadmap</h5>
-          {report.roadmapVersions && report.roadmapVersions.length > 0 ? (
-            <div className="versionTimeline">
-              {report.roadmapVersions.slice().sort((a, b) => a.order - b.order).map((version) => (
-                <div key={version.id} className="versionCard">
-                  <div className="versionHeader">
-                    <span className={`versionLabel${version.status === "assumed" ? " assumedText" : ""}`}>{version.label}</span>
-                    <StatusChip tone={version.status === "confirmed" ? "confirmed" : version.status === "assumed" ? "action_required" : "info"}>{version.status}</StatusChip>
-                  </div>
-                  <p className={version.status === "assumed" ? "assumedText" : ""}>{version.description}</p>
-                  {version.goals.length > 0 ? (
-                    <ul className="versionGoals">
-                      {version.goals.map((goal, index) => <li key={`${version.id}-goal-${index}`}>{goal}</li>)}
-                    </ul>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <em className="coreDetailEmpty">No roadmap versions have been captured yet.</em>
-          )}
-        </div>
-      ) : null}
-
-      {report.dataType === "versionUpdates" ? (
-        <div className="pendingProposalCard">
-          <h5>Grouped Updates</h5>
-          {reportDraftMeta.supersedesConfirmedPlan ? (
-            <p className="helperText" style={{ marginBottom: 12 }}>
-              Todd marked this as a superseding structural replan from a post-run checkpoint. Confirm it before Ping continues from the older queue.
-            </p>
-          ) : null}
-          {report.versionUpdates && report.versionUpdates.length > 0 ? (
-            <div className="updatePlanList">
-              {orderedGroupLabels.map((versionLabel) => {
-                const updates = versionGroups?.[versionLabel] ?? [];
-                return (
-                  <div key={versionLabel} className="updatePlanGroup">
-                    <h6 className="updatePlanGroupLabel">{versionLabel}</h6>
-                    {updates.map((update, index) => (
-                      <div key={update.id} className="agentPlannedUpdateItem">
-                        <span className="orderBadge">{index + 1}</span>
-                        <div className="updateContent">
-                          <div className="updateTitle">{update.title}</div>
-                          <div className="updateDescription">{update.description}</div>
-                          {update.updateKind || update.simplificationMode ? (
-                            <div className="flowStepPillars" style={{ marginTop: 8 }}>
-                              {update.updateKind ? <span className="flowStepPillarTag">{update.updateKind}</span> : null}
-                              {update.simplificationMode ? <span className="flowStepPillarTag">{update.simplificationMode}</span> : null}
-                            </div>
-                          ) : null}
-                          {update.area ? (
-                            <div className="pillarDetailRow" style={{ marginTop: 8 }}>
-                              <span className="pillarDetailLabel">Area</span>
-                              <span>{update.area}</span>
-                            </div>
-                          ) : null}
-                          {update.structuralReason ? (
-                            <div className="pillarDetailRow" style={{ marginTop: 8 }}>
-                              <span className="pillarDetailLabel">Structural Reason</span>
-                              <span>{update.structuralReason}</span>
-                            </div>
-                          ) : null}
-                          {update.supportsNextStep ? (
-                            <div className="pillarDetailRow" style={{ marginTop: 8 }}>
-                              <span className="pillarDetailLabel">Supports Next</span>
-                              <span>{update.supportsNextStep}</span>
-                            </div>
-                          ) : null}
-                          {update.dependencies.length > 0 ? (
-                            <div className="flowStepPillars" style={{ marginTop: 8 }}>
-                              {update.dependencies.map((dependency) => (
-                                <span key={`${update.id}-${dependency}`} className="flowStepPillarTag">{dependency}</span>
-                              ))}
-                            </div>
-                          ) : null}
-                          {update.skillsNeeded.length > 0 ? (
-                            <div className="flowStepPillars" style={{ marginTop: 8 }}>
-                              {update.skillsNeeded.map((skill) => (
-                                <span key={`${update.id}-${skill}`} className="flowStepPillarTag">{skill}</span>
-                              ))}
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                );
-              })}
-            </div>
-          ) : (
-            <em className="coreDetailEmpty">No grouped updates have been captured yet.</em>
-          )}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-export { HardMemoryReportSections, labelForPendingApprovalKind, buildHardMemoryReportFromApproval };
+export { labelForPendingApprovalKind, buildHardMemoryReportFromApproval };
 
 export function PendingApprovalsPanel({
   projectId,
@@ -247,75 +55,17 @@ export function PendingApprovalsPanel({
   onSessionUpdate: (session: AgentSession) => void;
   pushToast: (message: string, level: "info" | "success" | "error") => void;
 }) {
-  const approvals = session?.pendingApprovals ?? [];
-  const [editingApprovalId, setEditingApprovalId] = useState<string | null>(null);
-  const [draftSummary, setDraftSummary] = useState("");
-  const [draftMessage, setDraftMessage] = useState("");
-  const [draftPayloadText, setDraftPayloadText] = useState("");
-  const [draftTargetDirectorId, setDraftTargetDirectorId] = useState<DirectorId | "">("");
+  const approvals = getLivePendingApprovals(session);
   const [busyApprovalId, setBusyApprovalId] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!editingApprovalId) {
-      return;
-    }
-
-    if (!approvals.some((approval) => approval.id === editingApprovalId)) {
-      setEditingApprovalId(null);
-      setBusyApprovalId((current) => (current === editingApprovalId ? null : current));
-    }
-  }, [approvals, editingApprovalId]);
 
   if (!projectId || approvals.length === 0) {
     return null;
   }
 
-  const openEditor = (approval: PendingApproval) => {
-    setEditingApprovalId(approval.id);
-    setDraftSummary(approval.summary);
-    setDraftMessage(approval.draftMessage ?? "");
-    setDraftPayloadText(approval.draftPayload ? JSON.stringify(approval.draftPayload, null, 2) : "");
-    setDraftTargetDirectorId(approval.targetDirectorId ?? "");
-  };
-
-  const saveEdits = async (approvalId: string) => {
-    if (!projectId) return;
-    setBusyApprovalId(approvalId);
-    try {
-      const updated = await window.programs.revisePendingApproval({
-        projectId,
-        approvalId,
-        summary: draftSummary,
-        draftMessage,
-        draftPayloadText,
-        targetDirectorId: draftTargetDirectorId || null,
-      });
-      onSessionUpdate(updated);
-      setEditingApprovalId(null);
-      pushToast("Approval draft updated.", "success");
-    } catch (error) {
-      pushToast(error instanceof Error ? error.message : "Could not update the approval draft.", "error");
-    } finally {
-      setBusyApprovalId(null);
-    }
-  };
-
   const confirmApproval = async (approval: PendingApproval) => {
     if (!projectId) return;
     setBusyApprovalId(approval.id);
     try {
-      if (editingApprovalId === approval.id) {
-        const revised = await window.programs.revisePendingApproval({
-          projectId,
-          approvalId: approval.id,
-          summary: draftSummary,
-          draftMessage,
-          draftPayloadText,
-          targetDirectorId: draftTargetDirectorId || null,
-        });
-        onSessionUpdate(revised);
-        setEditingApprovalId(null);
-      }
       const updated = await window.programs.approvePendingApproval({
         projectId,
         approvalId: approval.id,
@@ -329,29 +79,13 @@ export function PendingApprovalsPanel({
     }
   };
 
-  const moveApprovalLater = async (approvalId: string) => {
-    if (!projectId) return;
-    setBusyApprovalId(approvalId);
-    try {
-      const updated = await window.programs.deferPendingApproval({ projectId, approvalId });
-      onSessionUpdate(updated);
-      setEditingApprovalId(null);
-      pushToast("Approval saved for later.", "info");
-    } catch (error) {
-      pushToast(error instanceof Error ? error.message : "Could not defer the approval.", "error");
-    } finally {
-      setBusyApprovalId(null);
-    }
-  };
-
-  const dismissApproval = async (approvalId: string) => {
+  const cancelApproval = async (approvalId: string) => {
     if (!projectId) return;
     setBusyApprovalId(approvalId);
     try {
       const updated = await window.programs.dismissPendingApproval({ projectId, approvalId });
       onSessionUpdate(updated);
-      setEditingApprovalId(null);
-      pushToast("Approval dismissed.", "info");
+      pushToast("Action cancelled.", "info");
     } catch (error) {
       pushToast(error instanceof Error ? error.message : "Could not dismiss the approval.", "error");
     } finally {
@@ -364,17 +98,17 @@ export function PendingApprovalsPanel({
       <div className="pendingApprovalsHeader">
         <div>
           <h4>Approvals</h4>
-          <p>High-impact actions stay here until you confirm, revise, or dismiss them.</p>
+          <p>Actions stay here until you confirm or cancel them.</p>
         </div>
         <span className="pendingApprovalsCount">{approvals.length}</span>
       </div>
       <div className="pendingApprovalsList">
         {approvals.map((approval) => {
-          const isEditing = editingApprovalId === approval.id;
           const isBusy = busyApprovalId === approval.id;
           const hardMemoryReport = approval.kind === "store-data"
             ? buildHardMemoryReportFromApproval(session, approval)
             : null;
+          const approvalDraftMeta = hardMemoryReport ? getToddUpdatePlanDraftMeta(approval) : null;
           return (
             <div key={approval.id} className="pendingApprovalCard">
               <div className="pendingApprovalCardHead">
@@ -382,84 +116,26 @@ export function PendingApprovalsPanel({
                   <div className="pendingApprovalTitle">{approval.summary}</div>
                   <div className="pendingApprovalMeta">
                     <span>{labelForPendingApprovalKind(approval.kind)}</span>
-                    <span>{approval.status === "later" ? "Later" : "Pending"}</span>
                     {approval.requestedByDirectorId ? <span>From {DIRECTOR_NAMES[approval.requestedByDirectorId]}</span> : null}
                     {approval.targetDirectorId ? <span>To {DIRECTOR_NAMES[approval.targetDirectorId]}</span> : null}
                   </div>
                 </div>
-                <button
-                  type="button"
-                  className="textButton"
-                  onClick={() => isEditing ? setEditingApprovalId(null) : openEditor(approval)}
-                  disabled={isBusy}
-                >
-                  {isEditing ? "Cancel Edit" : "Edit"}
-                </button>
               </div>
-              {approval.draftMessage ? (
-                <p className="pendingApprovalCopy">{approval.draftMessage}</p>
-              ) : null}
-              {isEditing ? (
-                <div className="pendingApprovalEditor">
-                  <label>
-                    Summary
-                    <textarea
-                      value={draftSummary}
-                      onChange={(event) => setDraftSummary(event.target.value)}
-                      rows={2}
-                    />
-                  </label>
-                  <label>
-                    Draft Message
-                    <textarea
-                      value={draftMessage}
-                      onChange={(event) => setDraftMessage(event.target.value)}
-                      rows={4}
-                    />
-                  </label>
-                  {approval.targetDirectorId ? (
-                    <label>
-                      Target Director
-                      <select
-                        className="plannerSelect"
-                        value={draftTargetDirectorId}
-                        onChange={(event) => setDraftTargetDirectorId((event.target.value as DirectorId) || "")}
-                      >
-                        <option value="">None</option>
-                        {(Object.keys(DIRECTOR_NAMES) as DirectorId[]).map((directorId) => (
-                          <option key={directorId} value={directorId}>{DIRECTOR_NAMES[directorId]}</option>
-                        ))}
-                      </select>
-                    </label>
-                  ) : null}
-                  <label>
-                    Draft Payload (JSON)
-                    <textarea
-                      value={draftPayloadText}
-                      onChange={(event) => setDraftPayloadText(event.target.value)}
-                      rows={8}
-                    />
-                  </label>
-                </div>
-              ) : hardMemoryReport ? (
-                <HardMemoryReportSections report={hardMemoryReport} session={session} />
-              ) : approval.draftPayload ? (
-                <pre className="pendingApprovalPayload">{JSON.stringify(approval.draftPayload, null, 2)}</pre>
-              ) : null}
+              {hardMemoryReport ? (
+                <HardMemoryReportSections report={hardMemoryReport} session={session} draftMeta={approvalDraftMeta} />
+              ) : (
+                <p className="pendingApprovalCopy">
+                  {approval.draftMessage
+                    ? approval.draftMessage
+                    : `Allow ${approval.requestedByDirectorId ? DIRECTOR_NAMES[approval.requestedByDirectorId] : "the system"} to ${approval.summary.toLowerCase()}?`}
+                </p>
+              )}
               <div className="pendingApprovalActions">
-                {isEditing ? (
-                  <button className="secondaryButton" onClick={() => void saveEdits(approval.id)} disabled={isBusy}>
-                    Save Edit
-                  </button>
-                ) : null}
                 <button className="primaryButton" onClick={() => void confirmApproval(approval)} disabled={isBusy}>
                   Confirm
                 </button>
-                <button className="secondaryButton" onClick={() => void moveApprovalLater(approval.id)} disabled={isBusy}>
-                  Later
-                </button>
-                <button className="secondaryButton" onClick={() => void dismissApproval(approval.id)} disabled={isBusy}>
-                  Dismiss
+                <button className="secondaryButton" onClick={() => void cancelApproval(approval.id)} disabled={isBusy}>
+                  Cancel
                 </button>
               </div>
             </div>

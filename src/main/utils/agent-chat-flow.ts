@@ -7,6 +7,7 @@ import type {
   AgentChatDirectorMode,
   ValidationFocusMode,
 } from "../../shared/types.ts";
+import { DIRECT_ROUTE_PATTERNS } from "../../shared/director-metadata.ts";
 
 export const STANDARD_AGENT_CHAT_RESPONSE_FIELDS = [
   "response",
@@ -91,19 +92,6 @@ const AUTO_ROUTED_AGENT_CHAT_DIRECTORS: DirectorId[] = [
 ] as const;
 
 /**
- * Name-based direct routing patterns.
- * Matches when a message clearly targets a specific director by name
- * at the beginning of the message or with a casual address prefix.
- */
-const DIRECT_ROUTE_PATTERNS: { pattern: RegExp; directorId: DirectorId }[] = [
-  { pattern: /^(?:hey\s+|@)?dan\b[,:\s]/i, directorId: "creative-director" },
-  { pattern: /^(?:hey\s+|@)?todd\b[,:\s]/i, directorId: "rd-director" },
-  { pattern: /^(?:hey\s+|@)?ping\b[,:\s]/i, directorId: "rd-director" },
-  { pattern: /^(?:hey\s+|@)?pong\b[,:\s]/i, directorId: "rd-director" },
-  { pattern: /^(?:hey\s+|@)?jeff\b[,:\s]/i, directorId: "project-manager" },
-];
-
-/**
  * Detects if the user's message clearly targets a specific director,
  * allowing us to skip Jeff's routing turn and go directly to that director.
  * Returns the target DirectorId, or null if the message is ambiguous
@@ -111,7 +99,7 @@ const DIRECT_ROUTE_PATTERNS: { pattern: RegExp; directorId: DirectorId }[] = [
  */
 export const resolveAgentChatDirectRoute = (
   message: string,
-  presenceGuestId: DirectorId | null,
+  activeDirectorId: DirectorId | null,
 ): DirectorId | null => {
   const trimmed = message.trim();
   if (!trimmed) return null;
@@ -123,10 +111,10 @@ export const resolveAgentChatDirectRoute = (
     }
   }
 
-  // If a director is already present in the channel, keep routing to them
+  // If a director is already active in the channel, keep routing to them
   // unless the message explicitly addresses Jeff or another director
-  if (presenceGuestId && presenceGuestId !== "project-manager") {
-    return presenceGuestId;
+  if (activeDirectorId && activeDirectorId !== "project-manager") {
+    return activeDirectorId;
   }
 
   return null;

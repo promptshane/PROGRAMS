@@ -466,11 +466,6 @@ export interface ApprovePlanInput {
   projectId: string;
 }
 
-export interface RevisePlanInput {
-  projectId: string;
-  prompt: string;
-}
-
 export interface RenameProjectInput {
   projectId: string;
   name: string;
@@ -789,7 +784,7 @@ export type ToddUpdatePlanSource = "manual" | "post-run-structural-check";
 
 export interface VersionUpdate {
   id: string;
-  versionId: string;
+  versionId: string | null;
   title: string;
   description: string;
   order: number;
@@ -1092,13 +1087,33 @@ export interface ToddHandoffPackage {
   receivedAt: string;
 }
 
+export interface ToddSuccessChainStep {
+  id: string;
+  title: string;
+  description: string;
+  order: number;
+  satisfied: boolean;
+  satisfiedAt: string | null;
+}
+
+export interface ToddNextUpdate {
+  id: string;
+  title: string;
+  description: string;
+  updateKind: ToddUpdateKind | null;
+  simplificationMode: ToddSimplificationMode | null;
+  structuralReason: string | null;
+  supportsNextStep: string | null;
+  skillsNeeded: string[];
+  dependencies: string[];
+}
+
 export interface ToddMemory {
   confirmedConcept: AgentCoreDetails | null;
-  versionPlan: {
-    v1: VersionPlan | null;
-    v2: VersionPlan | null;
-    v3: VersionPlan | null;
-  };
+  currentState: string | null;
+  endStateGoal: string | null;
+  successChain: ToddSuccessChainStep[];
+  nextUpdate: ToddNextUpdate | null;
   futureUpdatePlan: VersionUpdate[];
   previousUpdateLog: ToddUpdateLogEntry[];
   troubleLog: ToddTroubleLogEntry[];
@@ -1650,6 +1665,7 @@ export interface RouteUpdateToProgrammingInput {
   provider: AiProvider;
   model: CodexModel;
   claudeModel: ClaudeModel;
+  skipConfirmation?: boolean;
 }
 
 export interface RunValidationInput {
@@ -1669,6 +1685,15 @@ export interface SetValidationFrequencyInput {
 // --- Refresh Project ---
 
 export interface RefreshProjectInput {
+  projectId: string;
+  provider: AiProvider;
+  model: CodexModel;
+  claudeModel: ClaudeModel;
+}
+
+// --- Regenerate Todd Plan ---
+
+export interface RegenerateToddPlanInput {
   projectId: string;
   provider: AiProvider;
   model: CodexModel;

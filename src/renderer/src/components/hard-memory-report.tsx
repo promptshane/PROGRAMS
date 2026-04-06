@@ -19,9 +19,11 @@ import type {
 export function HardMemoryReportSections({
   report,
   session,
+  draftMeta,
 }: {
   report: HardMemoryReportMetadata;
   session: AgentSession | null;
+  draftMeta?: { supersedesConfirmedPlan: boolean } | null;
 }) {
   const danDraftCoreDetails = resolveDanHardMemoryReportDraft(report, session);
   const hasStateInfo = Boolean(report.currentState || report.idealState);
@@ -124,6 +126,11 @@ export function HardMemoryReportSections({
       {report.dataType === "versionUpdates" ? (
         <div className="pendingProposalCard">
           <h5>Grouped Updates</h5>
+          {draftMeta?.supersedesConfirmedPlan ? (
+            <p className="helperText" style={{ marginBottom: 12 }}>
+              Todd marked this as a superseding structural replan from a post-run checkpoint. Confirm it before Ping continues from the older queue.
+            </p>
+          ) : null}
           {report.versionUpdates && report.versionUpdates.length > 0 ? (
             <div className="updatePlanList">
               {orderedGroupLabels.map((versionLabel) => {
@@ -137,10 +144,28 @@ export function HardMemoryReportSections({
                         <div className="updateContent">
                           <div className="updateTitle">{update.title}</div>
                           <div className="updateDescription">{update.description}</div>
+                          {update.updateKind || update.simplificationMode ? (
+                            <div className="flowStepPillars" style={{ marginTop: 8 }}>
+                              {update.updateKind ? <span className="flowStepPillarTag">{update.updateKind}</span> : null}
+                              {update.simplificationMode ? <span className="flowStepPillarTag">{update.simplificationMode}</span> : null}
+                            </div>
+                          ) : null}
                           {update.area ? (
                             <div className="pillarDetailRow" style={{ marginTop: 8 }}>
                               <span className="pillarDetailLabel">Area</span>
                               <span>{update.area}</span>
+                            </div>
+                          ) : null}
+                          {update.structuralReason ? (
+                            <div className="pillarDetailRow" style={{ marginTop: 8 }}>
+                              <span className="pillarDetailLabel">Structural Reason</span>
+                              <span>{update.structuralReason}</span>
+                            </div>
+                          ) : null}
+                          {update.supportsNextStep ? (
+                            <div className="pillarDetailRow" style={{ marginTop: 8 }}>
+                              <span className="pillarDetailLabel">Supports Next</span>
+                              <span>{update.supportsNextStep}</span>
                             </div>
                           ) : null}
                           {update.dependencies.length > 0 ? (
@@ -190,9 +215,9 @@ export function HardMemoryReportPanel({
   onClose: () => void;
   pushToast: (message: string, level: "info" | "success" | "error") => void;
 }) {
-  const [busyAction, setBusyAction] = useState<"confirm" | "later" | "dismiss" | null>(null);
+  const [busyAction, setBusyAction] = useState<"confirm" | "cancel" | null>(null);
 
-  const handleApprovalAction = async (action: "confirm" | "later" | "dismiss") => {
+  const handleApprovalAction = async (action: "confirm" | "cancel") => {
     if (!projectId || !liveApproval) {
       return;
     }
@@ -205,11 +230,6 @@ export function HardMemoryReportPanel({
           projectId,
           approvalId: liveApproval.id,
         });
-      } else if (action === "later") {
-        updatedSession = await window.programs.deferPendingApproval({
-          projectId,
-          approvalId: liveApproval.id,
-        });
       } else {
         updatedSession = await window.programs.dismissPendingApproval({
           projectId,
@@ -218,15 +238,11 @@ export function HardMemoryReportPanel({
       }
 
       onSessionUpdate(updatedSession);
-      if (action !== "later" || !updatedSession.pendingApprovals.some((approval) => approval.id === liveApproval.id)) {
-        onClose();
-      }
+      onClose();
       pushToast(
         action === "confirm"
           ? "Approval confirmed."
-          : action === "later"
-            ? "Approval saved for later."
-            : "Approval dismissed.",
+          : "Action cancelled.",
         action === "confirm" ? "success" : "info",
       );
     } catch (error) {
@@ -259,11 +275,8 @@ export function HardMemoryReportPanel({
             <button className="primaryButton" onClick={() => void handleApprovalAction("confirm")} disabled={busyAction !== null}>
               Confirm
             </button>
-            <button className="secondaryButton" onClick={() => void handleApprovalAction("later")} disabled={busyAction !== null}>
-              Later
-            </button>
-            <button className="secondaryButton" onClick={() => void handleApprovalAction("dismiss")} disabled={busyAction !== null}>
-              Dismiss
+            <button className="secondaryButton" onClick={() => void handleApprovalAction("cancel")} disabled={busyAction !== null}>
+              Cancel
             </button>
           </div>
         ) : (

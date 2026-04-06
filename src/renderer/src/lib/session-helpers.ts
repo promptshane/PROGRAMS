@@ -17,8 +17,8 @@ import {
   type VersionPlan,
   type VersionUpdate,
 } from "@shared/types";
-import { USAGE_SCHEDULE_TOLERANCE } from "./constants";
-import { titleCaseWord, normalizeSentence, labelForDirectorStageStatus } from "./formatting";
+import { USAGE_SCHEDULE_TOLERANCE } from "./constants.ts";
+import { titleCaseWord, normalizeSentence, labelForDirectorStageStatus } from "./formatting.ts";
 
 export type UsageScheduleTone = "under" | "onTrack" | "over";
 
@@ -215,13 +215,14 @@ export const buildDirectorLiveContextItems = (directorId: DirectorId, session: A
 
   switch (directorId) {
     case "project-manager": {
+      const liveApprovals = (session.pendingApprovals ?? []).filter((approval) => approval.status === "pending");
       const activeDirector = session.directorProgress.currentDirector
         ? `${DIRECTOR_NAMES[session.directorProgress.currentDirector]} is currently active.`
         : "No active director has been set yet.";
       return [
         `Creative ${labelForDirectorStageStatus(session.directorProgress.creative)}, R&D ${labelForDirectorStageStatus(session.directorProgress.rd)}, Programming ${labelForDirectorStageStatus(session.directorProgress.programming)}, Validation ${labelForDirectorStageStatus(session.directorProgress.validation)}.`,
         `${confirmedConcept ? "Dan has locked the concept." : "Dan is still shaping the concept."} Todd is tracking ${toddMemory.futureUpdatePlan.length} planned update(s) and ${toddMemory.previousUpdateLog.length} completed execution report(s).`,
-        `${(session.pendingApprovals ?? []).length} pending confirmation(s) and ${Object.values(session.directorStateMap ?? {}).reduce((total, snapshot) => total + (snapshot?.assumptions.length ?? 0), 0)} unresolved assumption(s) are currently visible to Jeff.`,
+        `${liveApprovals.length} pending confirmation(s) and ${Object.values(session.directorStateMap ?? {}).reduce((total, snapshot) => total + (snapshot?.assumptions.length ?? 0), 0)} unresolved assumption(s) are currently visible to Jeff.`,
         activeDirector,
       ];
     }
@@ -243,7 +244,7 @@ export const buildDirectorLiveContextItems = (directorId: DirectorId, session: A
     case "rd-director": {
       return [
         `${confirmedConcept ? "Confirmed Dan concept is available." : "Todd is waiting on confirmed Dan concept."}`,
-        `${[toddMemory.versionPlan.v1, toddMemory.versionPlan.v2, toddMemory.versionPlan.v3].filter(Boolean).length} roadmap version(s), ${toddMemory.futureUpdatePlan.length} future update(s), and ${toddMemory.previousUpdateLog.length} logged execution outcome(s) are available.`,
+        `${(toddMemory.successChain ?? []).length} success chain step(s), ${toddMemory.futureUpdatePlan.length} future update(s), and ${toddMemory.previousUpdateLog.length} logged execution outcome(s) are available.`,
         toddMemory.codebaseIndexedMap?.featureAreas.length
           ? `Current codebase index covers ${toddMemory.codebaseIndexedMap.featureAreas.length} feature area(s).`
           : "No codebase index has been stored yet.",
@@ -338,20 +339,7 @@ export const resolveHardMemoryReportArea = (session: AgentSession | null, pillar
   return names.length > 0 ? names.join(", ") : null;
 };
 
-export const collectHardMemoryRoadmapVersions = (session: AgentSession | null): VersionPlan[] => {
-  if (!session) {
-    return [];
-  }
-
-  return [
-    session.toddMemory?.versionPlan.v1,
-    session.toddMemory?.versionPlan.v2,
-    session.toddMemory?.versionPlan.v3,
-    ...session.versions,
-  ]
-    .filter((version): version is VersionPlan => Boolean(version))
-    .filter((version, index, array) => array.findIndex((candidate) => candidate.id === version.id) === index);
-};
+export const collectHardMemoryRoadmapVersions = (_session: AgentSession | null): VersionPlan[] => [];
 
 export const buildHardMemoryReportFromApproval = (
   session: AgentSession | null,
@@ -460,8 +448,22 @@ export const getToddUpdatePlanDraftMeta = (approval: PendingApproval | null): {
   };
 };
 
+export const getLivePendingApprovals = (session: AgentSession | null): PendingApproval[] =>
+  (session?.pendingApprovals ?? []).filter((approval) => approval.status === "pending");
+
+export const findLivePendingApproval = (
+  session: AgentSession | null,
+  approvalId: string | null | undefined,
+): PendingApproval | null => {
+  if (!approvalId) {
+    return null;
+  }
+
+  return getLivePendingApprovals(session).find((approval) => approval.id === approvalId) ?? null;
+};
+
 export const findToddUpdatePlanDraftApproval = (session: AgentSession | null): PendingApproval | null =>
-  (session?.pendingApprovals ?? [])
+  getLivePendingApprovals(session)
     .filter((approval) => approval.requestedByDirectorId === "rd-director" && approval.kind === "store-data")
     .filter((approval) => Boolean(getToddUpdatePlanDraftPayload(approval)))
     .sort((left, right) => {

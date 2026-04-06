@@ -305,7 +305,7 @@ export function PingTaskPanel({
   return (
     <div className="agentChatPanel">
       <div className="agentChatPanelHeader">
-        <h3>Ping's Update Task</h3>
+        <h3>Priority Update Plan</h3>
         <button className="secondaryButton" style={{ fontSize: "0.75rem", padding: "4px 8px" }} onClick={onClose}>
           Close
         </button>
@@ -396,7 +396,7 @@ export function PingPlanPanel({
   return (
     <div className="agentChatPanel">
       <div className="agentChatPanelHeader">
-        <h3>Ping's Plan</h3>
+        <h3>Ping's Execution Plan</h3>
         <button className="secondaryButton" style={{ fontSize: "0.75rem", padding: "4px 8px" }} onClick={onClose}>
           Close
         </button>
@@ -483,7 +483,7 @@ export function PingUpdateReportPanel({
   return (
     <div className="agentChatPanel">
       <div className="agentChatPanelHeader">
-        <h3>Ping's Update Report</h3>
+        <h3>Update Report</h3>
         <button className="secondaryButton" style={{ fontSize: "0.75rem", padding: "4px 8px" }} onClick={onClose}>
           Close
         </button>
@@ -497,6 +497,34 @@ export function PingUpdateReportPanel({
           <h4>Summary</h4>
           <AgentChatMarkdown text={rawReport.summary} />
         </section>
+        {report?.plan ? (
+          <>
+            <section>
+              <h4>Execution Plan</h4>
+              {report.plan.summary ? <AgentChatMarkdown text={report.plan.summary} /> : null}
+              {report.plan.explanation ? <AgentChatMarkdown text={report.plan.explanation} /> : null}
+            </section>
+            {report.plan.steps.length > 0 ? (
+              <section>
+                <h4>Plan Steps</h4>
+                <ol className="planList">
+                  {report.plan.steps.map((step) => (
+                    <li key={step.step}>
+                      <span className={`stepPill step-${step.status}`}>{humanizeSnakeCase(step.status)}</span>
+                      {step.step}
+                    </li>
+                  ))}
+                </ol>
+              </section>
+            ) : null}
+            {report.plan.impact ? (
+              <section>
+                <h4>Impact</h4>
+                <AgentChatMarkdown text={report.plan.impact} />
+              </section>
+            ) : null}
+          </>
+        ) : null}
         {rawReport.changedFiles.length > 0 ? (
           <section>
             <h4>Changed Files</h4>

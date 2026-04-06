@@ -26,7 +26,6 @@ import {
   type ModelCatalog,
   type Project,
   type Settings,
-  type VersionPlan,
 } from "@shared/types";
 
 export type DetailsView =
@@ -888,7 +887,6 @@ export function AgentDetailsForecastPanel({
   session: AgentSession | null;
   range: AgentDetailsRange;
 }) {
-  const versionPlan = session?.toddMemory?.versionPlan;
   const pending = (session?.toddMemory?.futureUpdatePlan ?? [])
     .filter((u) => u.status === "pending")
     .slice()
@@ -924,17 +922,17 @@ export function AgentDetailsForecastPanel({
     );
   }
 
-  // monthly — show version plan overview
-  const versions = [versionPlan?.v1, versionPlan?.v2, versionPlan?.v3].filter(Boolean) as VersionPlan[];
-  if (versions.length === 0) {
+  // monthly — show success chain overview
+  const successChain = (session?.toddMemory?.successChain ?? []).slice().sort((a, b) => a.order - b.order);
+  if (successChain.length === 0) {
     return <p style={{ margin: 0, fontSize: 12, color: "var(--muted)" }}>No information available yet.</p>;
   }
   return (
     <div style={{ fontSize: 12 }}>
-      {versions.map((v) => (
-        <div key={v.id} style={{ marginBottom: 8 }}>
-          <p style={{ margin: "0 0 2px", fontWeight: 600 }}>{v.label}</p>
-          {v.description ? <p style={{ margin: 0, color: "var(--muted)" }}>{v.description}</p> : null}
+      {successChain.map((step, idx) => (
+        <div key={step.id} style={{ marginBottom: 8 }}>
+          <p style={{ margin: "0 0 2px", fontWeight: 600 }}>{idx + 1}. {step.title}</p>
+          {step.description ? <p style={{ margin: 0, color: "var(--muted)" }}>{step.description}</p> : null}
         </div>
       ))}
     </div>

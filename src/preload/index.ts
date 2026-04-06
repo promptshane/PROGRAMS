@@ -148,6 +148,8 @@ const api = {
     ipcRenderer.invoke("agents.refreshProject", input),
   refreshProject: (input: import("@shared/types").RefreshProjectInput): Promise<void> =>
     ipcRenderer.invoke("slack.refreshProject", input),
+  regenerateToddPlan: (input: import("@shared/types").RegenerateToddPlanInput): Promise<void> =>
+    ipcRenderer.invoke("agents.regenerateToddPlan", input),
   listAutomationTargets: (input: ListAutomationTargetsInput): Promise<ListAutomationTargetsResponse> =>
     ipcRenderer.invoke("automation.targets", input),
   startAutomationRun: (input: StartAutomationRunInput): Promise<AgentSession> =>

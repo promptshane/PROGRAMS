@@ -121,6 +121,8 @@ export const registerIpc = (backend: ProgramsBackend): void => {
     backend.refreshProject(input));
   ipcMain.handle("slack.refreshProject", (_event, input: import("@shared/types").RefreshProjectInput) =>
     backend.refreshProject(input));
+  ipcMain.handle("agents.regenerateToddPlan", (_event, input: import("@shared/types").RegenerateToddPlanInput) =>
+    backend.regenerateToddPlan(input));
   ipcMain.handle("automation.targets", (_event, input: ListAutomationTargetsInput) =>
     backend.listAutomationTargets(input));
   ipcMain.handle("automation.start", (_event, input: StartAutomationRunInput) =>

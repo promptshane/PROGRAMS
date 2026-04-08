@@ -488,76 +488,34 @@ export function AgentsPage({
     }
 
     if (alertState.action === "review-jeff-work") {
-      const pendingReport = agentSession?.jeffMemory.pendingReports[0] ?? null;
-      if (!pendingReport) {
+      const latestExecutionMessage = [...(agentSession?.slackMessages ?? [])]
+        .reverse()
+        .find((message) => message.metadata?.type === "execution-report") ?? null;
+      const latestReport = agentSession?.pingMemory.latestJeffReport
+        ?? (latestExecutionMessage?.metadata?.type === "execution-report"
+          ? latestExecutionMessage.metadata.report
+          : null)
+        ?? null;
+      if (!latestReport) {
         return;
       }
       const existingMessage = [...(agentSession?.slackMessages ?? [])]
         .reverse()
-        .find((message) => message.metadata?.type === "execution-report" && message.metadata.report.id === pendingReport.id)
+        .find((message) => message.metadata?.type === "execution-report" && message.metadata.report.id === latestReport.id)
         ?? null;
       const reportMessage: AgentChatMessage = existingMessage ?? {
-        id: `execution-report-${pendingReport.id}`,
+        id: `execution-report-${latestReport.id}`,
         role: "assistant",
         directorId: "project-manager",
-        content: pendingReport.summary,
-        createdAt: pendingReport.createdAt,
+        content: latestReport.summary,
+        createdAt: latestReport.createdAt,
         status: "complete",
         metadata: {
           type: "execution-report",
-          report: pendingReport,
+          report: latestReport,
         },
       };
       setActivePanel({ type: "execution-report", message: reportMessage });
-      return;
-    }
-
-    if (alertState.action === "run-ping-update") {
-      const nextUpdate = getNextPendingProgrammingUpdate(agentSession);
-      if (!nextUpdate) return;
-      setIsLoading(true);
-      try {
-        if (agentSession?.automation.status === "running") {
-          const paused = await window.programs.pauseAutomationRun({
-            projectId: agentSelectedProjectId,
-            summary: "Automation paused because the user triggered a manual Ping step.",
-          });
-          onSessionUpdate(paused);
-        }
-        await window.programs.routeUpdateToProgramming({
-          projectId: agentSelectedProjectId,
-          updateId: nextUpdate.id,
-          provider: settings.advancedDefaults.provider,
-          model: settings.advancedDefaults.model,
-          claudeModel: settings.advancedDefaults.claudeModel,
-          skipConfirmation: true,
-        });
-        const refreshed = await window.programs.getAgentSession(agentSelectedProjectId);
-        if (refreshed) onSessionUpdate(refreshed);
-      } catch (error) {
-        pushToast(error instanceof Error ? error.message : "Something went wrong.", "error");
-      } finally {
-        setIsLoading(false);
-      }
-      return;
-    }
-
-    if (alertState.action === "run-pong-validation") {
-      setIsLoading(true);
-      try {
-        const latestPingReport = agentSession?.pingMemory.currentRun?.report ?? null;
-        await window.programs.assignPongValidation({
-          projectId: agentSelectedProjectId,
-          instruction: latestPingReport?.rawReport.summary ?? "Validate the latest project state.",
-          updateId: latestPingReport?.task.updateId ?? null,
-        });
-        const refreshed = await window.programs.getAgentSession(agentSelectedProjectId);
-        if (refreshed) onSessionUpdate(refreshed);
-      } catch (error) {
-        pushToast(error instanceof Error ? error.message : "Something went wrong.", "error");
-      } finally {
-        setIsLoading(false);
-      }
       return;
     }
 
@@ -674,14 +632,12 @@ export function AgentsPage({
       </div>
 
       {agentSelectedProjectId && livePendingApprovals.length > 0 ? (
-        <div className="conversationApprovalShelf">
-          <PendingApprovalsPanel
-            projectId={agentSelectedProjectId}
-            session={agentSession}
-            onSessionUpdate={onSessionUpdate}
-            pushToast={pushToast}
-          />
-        </div>
+        <PendingApprovalsPanel
+          projectId={agentSelectedProjectId}
+          session={agentSession}
+          onSessionUpdate={onSessionUpdate}
+          pushToast={pushToast}
+        />
       ) : null}
 
       <div className="chatViewportDivider pageChromeDivider" aria-hidden="true" />
@@ -1110,31 +1066,30 @@ export function AgentsPage({
         <Modal
           title="Proceed With Agent Action?"
           onClose={() => setPendingAgentAlert(null)}
+          compact
         >
-          <div className="refreshModal">
-            <p style={{ color: "var(--muted)", fontSize: 13, marginBottom: 16 }}>
-              {`Are you sure you want to run ${DIRECTOR_NAMES[pendingAgentAlert.directorId]} before ${DIRECTOR_NAMES[pendingAgentAlert.warningTargetDirectorId]}?`}
-            </p>
-            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
-              <button
-                type="button"
-                className="secondaryButton"
-                onClick={() => setPendingAgentAlert(null)}
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                className="primaryButton"
-                onClick={() => {
-                  const directorId = pendingAgentAlert.directorId;
-                  setPendingAgentAlert(null);
-                  void runDirectorAlertAction(directorId);
-                }}
-              >
-                Proceed
-              </button>
-            </div>
+          <p className="modalLead">
+            {`Are you sure you want to run ${DIRECTOR_NAMES[pendingAgentAlert.directorId]} before ${DIRECTOR_NAMES[pendingAgentAlert.warningTargetDirectorId]}?`}
+          </p>
+          <div className="modalActions">
+            <button
+              type="button"
+              className="secondaryButton"
+              onClick={() => setPendingAgentAlert(null)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="primaryButton"
+              onClick={() => {
+                const directorId = pendingAgentAlert.directorId;
+                setPendingAgentAlert(null);
+                void runDirectorAlertAction(directorId);
+              }}
+            >
+              Proceed
+            </button>
           </div>
         </Modal>
       ) : null}

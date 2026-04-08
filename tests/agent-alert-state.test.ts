@@ -65,6 +65,11 @@ const {
 
 const createSession = (): AgentSession => ({
   danMemory: {
+    softMemory: [],
+    hardMemory: null,
+    backupMemory: [],
+    hardMemoryUpdatedAt: null,
+    latestReportId: null,
     confirmedConcept: null,
     notes: [],
     toddHandoffNotes: [],
@@ -74,7 +79,13 @@ const createSession = (): AgentSession => ({
     derivedUpdatedAt: null,
   },
   toddMemory: {
+    softMemory: [],
+    hardMemory: null,
+    backupMemory: [],
+    hardMemoryUpdatedAt: null,
+    latestReportId: null,
     confirmedConcept: null,
+    roadmap: null,
     pendingHandoff: null,
     currentState: null,
     endStateGoal: null,
@@ -92,9 +103,33 @@ const createSession = (): AgentSession => ({
     activeTask: null,
     context: null,
     codebaseMapSummary: null,
+    latestPlanReport: null,
+    latestIndexedMap: null,
     latestRawReport: null,
     latestJeffReport: null,
     currentRun: null,
+  },
+  jeffMemory: {
+    softMemory: [],
+    hardMemory: null,
+    backupMemory: [],
+    hardMemoryUpdatedAt: null,
+    latestReportId: null,
+    pendingReports: [],
+    pendingValidations: [],
+    outcomeLog: [],
+    managerSummary: null,
+    projectStatusHistory: [],
+    currentProjectStatus: null,
+    notes: [],
+    backupNotes: [],
+  },
+  pongMemory: {
+    jeffInstruction: null,
+    validationRequest: null,
+    previousValidationReports: [],
+    latestValidationReport: null,
+    screenshotPaths: [],
   },
   versions: [],
   pendingApprovals: [],
@@ -171,16 +206,19 @@ test("legacy later structural replans do not keep blocking Ping", () => {
   ];
 
   assert.equal(getNextPendingProgrammingUpdate(session)?.id, "update-1");
-  assert.deepEqual(resolveAgentAlertState("programming-director", session), {
-    tone: "white",
-    warningTargetDirectorId: null,
-    action: "run-ping-update",
-  });
+  assert.equal(resolveAgentAlertState("programming-director", session), null);
 });
 
 test("Dan alert appears when Dan still has actionable soft memory", () => {
   const session = createSession();
-  session.danMemory.notes.push("Capture the onboarding tone.");
+  session.danMemory.softMemory.push({
+    id: "dan-soft-1",
+    content: "Capture the onboarding tone.",
+    tag: "general",
+    createdAt: "2026-03-25T10:00:00.000Z",
+    sourceRefs: [],
+    resolution: null,
+  });
 
   assert.deepEqual(resolveAgentAlertState("creative-director", session), {
     tone: "white",
@@ -189,34 +227,31 @@ test("Dan alert appears when Dan still has actionable soft memory", () => {
   });
 });
 
-test("Todd alert is always visible with white tone when no Dan handoff is pending", () => {
+test("Todd alert stays hidden when there is no actionable memory", () => {
   const session = createSession();
+
+  assert.equal(resolveAgentAlertState("rd-director", session), null);
+});
+
+test("Todd alert appears when Todd still has actionable memory", () => {
+  const session = createSession();
+  session.toddMemory.softMemory.push({
+    id: "todd-soft-1",
+    content: "Dan handed off the updated core-details for roadmap review.",
+    tag: "handoff-to-todd",
+    createdAt: "2026-03-25T10:00:00.000Z",
+    sourceRefs: [],
+    resolution: null,
+  });
 
   assert.deepEqual(resolveAgentAlertState("rd-director", session), {
     tone: "white",
     warningTargetDirectorId: null,
-    action: "regenerate-todd-plan",
+    action: "review-todd-memory",
   });
 });
 
-test("Todd alert turns red when Dan still has actionable memory upstream", () => {
-  const session = createSession();
-  session.danMemory.notes.push("Dan still has notes to process.");
-  session.toddMemory.pendingHandoff = {
-    summary: "Dan handed off the concept.",
-    rawInputs: ["Keep onboarding calm."],
-    context: "Creative session handoff",
-    receivedAt: "2026-03-25T10:00:00.000Z",
-  };
-
-  assert.deepEqual(resolveAgentAlertState("rd-director", session), {
-    tone: "red",
-    warningTargetDirectorId: "creative-director",
-    action: "regenerate-todd-plan",
-  });
-});
-
-test("Ping alert is white when Todd has a pending update and no upstream memory to process", () => {
+test("Ping no longer owns alert badges for queued execution work", () => {
   const session = createSession();
   session.toddMemory.futureUpdatePlan = [
     {
@@ -232,21 +267,19 @@ test("Ping alert is white when Todd has a pending update and no upstream memory 
     },
   ];
 
-  assert.deepEqual(resolveAgentAlertState("programming-director", session), {
-    tone: "white",
-    warningTargetDirectorId: null,
-    action: "run-ping-update",
-  });
+  assert.equal(resolveAgentAlertState("programming-director", session), null);
 });
 
-test("Ping alert turns red when Todd still has memory to process before execution", () => {
+test("Ping stays without an alert even when Todd still has soft memory to resolve", () => {
   const session = createSession();
-  session.toddMemory.pendingHandoff = {
-    summary: "Todd still needs to process Dan's handoff.",
-    rawInputs: ["Refine the roadmap first."],
-    context: "Creative session handoff",
-    receivedAt: "2026-03-25T10:05:00.000Z",
-  };
+  session.toddMemory.softMemory.push({
+    id: "todd-soft-1",
+    content: "Todd still needs to process Dan's handoff.",
+    tag: "handoff-to-todd",
+    createdAt: "2026-03-25T10:05:00.000Z",
+    sourceRefs: [],
+    resolution: null,
+  });
   session.toddMemory.futureUpdatePlan = [
     {
       id: "update-1",
@@ -261,11 +294,7 @@ test("Ping alert turns red when Todd still has memory to process before executio
     },
   ];
 
-  assert.deepEqual(resolveAgentAlertState("programming-director", session), {
-    tone: "red",
-    warningTargetDirectorId: "rd-director",
-    action: "run-ping-update",
-  });
+  assert.equal(resolveAgentAlertState("programming-director", session), null);
 });
 
 test("Jeff alert becomes the refresh owner when Todd's project knowledge is stale", () => {
@@ -280,50 +309,41 @@ test("Jeff alert becomes the refresh owner when Todd's project knowledge is stal
   });
 });
 
-test("Jeff alert turns red for Todd-recommended failure reports that still need review", () => {
+test("Jeff alert stays visible when the refresh approval has been deferred later", () => {
   const session = createSession();
-  session.jeffMemory = {
-    pendingReports: [
-      {
-        id: "report-1",
-        updateId: "update-1",
-        historyUpdateId: null,
-        commitSha: null,
-        title: "Ship onboarding update",
-        summary: "Todd recommends treating this update as a failure.",
-        outcome: "The implementation blocked on a missing dependency.",
-        toddRecommendedDecision: "failure",
-        toddFollowUpNeeded: true,
-        toddFollowUpReason: "Todd wants Jeff to review the blocked outcome.",
-        toddReplanNeeded: false,
-        toddReplanReason: null,
-        toddReplanApprovalId: null,
-        rawReport: {
-          status: "blocked",
-          updateId: "update-1",
-          goal: "Ship onboarding update",
-          summary: "Ping was blocked before completion.",
-          zhResponse: "",
-          enTranslation: "",
-          changedFiles: [],
-          blocker: "Missing dependency",
-          unexpectedNotes: [],
-          createdAt: "2026-03-25T10:10:00.000Z",
-        },
-        decision: null,
-        pingReport: null,
-        validationReport: null,
-        revertAvailable: false,
-        revertHistoryUpdateId: null,
-        revertCommitSha: null,
-        createdAt: "2026-03-25T10:10:00.000Z",
-      },
-    ],
-    pendingValidations: [],
-    outcomeLog: [],
-    notes: [],
-    backupNotes: [],
-  };
+  session.knowledgeStatus = "stale";
+  session.pendingApprovals = [
+    {
+      id: "approval-refresh",
+      kind: "codebase-scan",
+      status: "later",
+      requestedByDirectorId: "project-manager",
+      targetDirectorId: "rd-director",
+      summary: "Refresh project",
+      draftMessage: "Refresh the project.",
+      draftPayload: { action: "refreshProject" },
+      createdAt: "2026-04-04T00:45:00.000Z",
+      updatedAt: "2026-04-04T00:46:00.000Z",
+    },
+  ];
+
+  assert.deepEqual(resolveAgentAlertState("project-manager", session), {
+    tone: "white",
+    warningTargetDirectorId: null,
+    action: "refresh-project",
+  });
+});
+
+test("Jeff alert turns red only for Jeff-owned manager soft memory", () => {
+  const session = createSession();
+  session.jeffMemory.softMemory.push({
+    id: "jeff-soft-1",
+    content: "Manager follow-up: review drift between current roadmap and project status.",
+    tag: "general",
+    createdAt: "2026-03-25T10:10:00.000Z",
+    sourceRefs: [],
+    resolution: null,
+  });
 
   assert.deepEqual(resolveAgentAlertState("project-manager", session), {
     tone: "red",

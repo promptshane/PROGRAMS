@@ -1587,11 +1587,8 @@ code {
 .pendingApprovalsPanel {
   display: grid;
   gap: 12px;
-  padding: 14px 16px;
-  border-radius: 20px;
-  background: color-mix(in srgb, var(--panel-soft) 88%, transparent);
-  border: 1px solid color-mix(in srgb, var(--border-strong) 72%, transparent);
-  box-shadow: var(--shadow-sm);
+  width: 100%;
+  min-width: 0;
 }
 
 .pendingApprovalsHeader {
@@ -1849,12 +1846,51 @@ code {
   background: var(--button-secondary);
 }
 
+.memoryToggle {
+  gap: 6px;
+  padding: 4px;
+}
+
+.memoryToggle--wrap {
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
 .toggleOption,
 .tabOption {
   border: none;
   background: transparent;
   color: var(--muted);
   padding: 10px 14px;
+}
+
+.memoryToggle .toggleOption {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 88px;
+  min-width: 88px;
+  padding: 6px 8px;
+  font-size: 0.74rem;
+  line-height: 1.05;
+  text-align: center;
+}
+
+.agentSummaryCard--personal .agentSummaryEyebrow,
+.agentSummaryCard--shared .agentSummaryEyebrow {
+  color: color-mix(in srgb, var(--memory-accent) 68%, var(--text));
+}
+
+.agentSummaryCard--personal .toggleOption.active,
+.agentSummaryCard--shared .toggleOption.active {
+  background: color-mix(in srgb, var(--memory-accent) 16%, var(--panel-strong));
+  color: color-mix(in srgb, var(--memory-accent) 76%, var(--text));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--memory-accent) 28%, transparent);
+}
+
+.agentSummaryCard--personal .toggleOption:hover,
+.agentSummaryCard--shared .toggleOption:hover {
+  background: color-mix(in srgb, var(--memory-accent) 8%, var(--button-secondary));
 }
 
 .toggleOption.active,
@@ -2405,6 +2441,11 @@ select {
 
 .modalFrame.wide {
   width: min(1080px, 100%);
+}
+
+.modalFrame.compact {
+  width: min(520px, 100%);
+  padding: 20px;
 }
 
 .modalFrame.fullscreen {
@@ -4603,12 +4644,6 @@ select {
   padding-top: 0;
 }
 
-.conversationApprovalShelf {
-  flex-shrink: 0;
-  padding-top: calc(var(--conversation-toolbar-top) + var(--conversation-toolbar-height) + 10px);
-  padding-bottom: 8px;
-}
-
 .agentsTopBar {
   position: fixed;
   top: 8px;
@@ -5620,6 +5655,14 @@ select {
   background: color-mix(in srgb, var(--panel-soft) 84%, var(--panel));
 }
 
+.agentSummaryCard--personal,
+.agentSummaryCard--shared {
+  --memory-accent: var(--accent);
+  border-color: color-mix(in srgb, var(--memory-accent) 34%, var(--border));
+  background: color-mix(in srgb, var(--memory-accent) 7%, var(--panel-soft));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--memory-accent) 16%, transparent);
+}
+
 .agentSummaryHeader {
   display: flex;
   align-items: flex-start;
@@ -5816,6 +5859,11 @@ select {
   margin: 0;
 }
 
+.agentSummarySharedBody {
+  display: grid;
+  gap: 10px;
+}
+
 @media (max-width: 960px) {
   .agentDepartmentSection {
     padding-inline: 16px;
@@ -5903,17 +5951,46 @@ select {
   gap: 12px;
 }
 
-.conceptOverviewTitle {
-  margin: 0;
-  font-size: 0.8rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted);
+.conceptOverviewDetails {
+  background: color-mix(in srgb, var(--panel-soft) 92%, var(--panel));
 }
 
-.conceptOverviewGrid {
+.conceptOverviewDetails--root {
+  background: color-mix(in srgb, var(--panel-soft) 82%, var(--panel));
+}
+
+.conceptOverviewDetails--root > summary {
+  font-size: 0.84rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.conceptOverviewDetails--section {
+  margin-left: 10px;
+  background: color-mix(in srgb, var(--panel-soft) 96%, var(--panel));
+}
+
+.conceptOverviewDetails--section > summary {
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.conceptOverviewDetailsBody {
   display: grid;
-  gap: 12px;
+  gap: 10px;
+  padding: 10px 12px 12px;
+}
+
+.conceptOverviewDetails--section .conceptOverviewDetailsBody {
+  padding-left: 14px;
+}
+
+.conceptOverviewDetails--experience .flowStepList {
+  margin-top: 2px;
+}
+
+.conceptOverviewDetails--pillars .conceptThreadList {
+  margin-top: 2px;
 }
 
 .conceptThreadList {
@@ -6890,40 +6967,6 @@ select {
   border-radius: 4px;
   font-weight: 600;
 }
-
-/* --- Refresh Project Modal --- */
-.refreshModal { padding: 24px; max-width: 400px; }
-.refreshToggleGroup { display: flex; gap: 8px; margin-bottom: 16px; }
-.refreshToggleBtn {
-  padding: 8px 16px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--text);
-  cursor: pointer;
-  font-size: 13px;
-  transition: background 140ms ease, border-color 140ms ease;
-}
-.refreshToggleBtn:hover { border-color: var(--accent); }
-.refreshToggleBtn--active {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: #fff;
-}
-.refreshButton {
-  width: 100%;
-  padding: 10px;
-  border-radius: 8px;
-  background: var(--button-primary);
-  color: #fff;
-  border: none;
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 14px;
-  transition: opacity 140ms ease;
-}
-.refreshButton:hover { opacity: 0.9; }
-.refreshButton:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .agentDetailsProgressGrid {
   display: grid;
@@ -7913,18 +7956,28 @@ select {
   margin: 0;
 }
 
-.directorProfileLowerGrid {
+.directorProfileTopRow {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 220px 1fr;
   gap: 12px;
+  align-items: start;
 }
 
-.directorProfileLowerGrid > :only-child {
-  grid-column: 1 / -1;
+.directorProfileTopRow .directorProfileCard {
+  width: 100%;
+  margin: 0;
+}
+
+.directorProfileTopRow .agentSummaryGrid {
+  grid-template-columns: 1fr;
+}
+
+.directorProfilePanel .agentSummaryPanel .agentSummaryGrid {
+  grid-template-columns: 1fr;
 }
 
 @media (max-width: 900px) {
-  .directorProfileLowerGrid {
+  .directorProfileTopRow {
     grid-template-columns: 1fr;
   }
 }

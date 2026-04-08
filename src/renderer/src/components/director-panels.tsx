@@ -1,4 +1,4 @@
-import { useLayoutEffect, useMemo, useState, type CSSProperties } from "react";
+import { useLayoutEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { getDirectorMetadata, type DirectorFlowLink } from "@shared/director-metadata";
 import { ConceptOverview } from "./core-details";
 import { StatusChip } from "./ui-primitives";
@@ -24,18 +24,21 @@ import {
   getDirectorFocusModes,
   describeDirectorFocusMode,
   buildDirectorLiveContextItems,
+  buildDirectorSharedMemorySources,
   getLivePendingApprovals,
   getDirectorProjectNotes,
   getConfirmedConcept,
   getDanConflictQuestionCount,
   getDanConflictQuestions,
   getWorkingConcept,
+  type DirectorSharedMemorySource,
 } from "../lib/session-helpers";
 import type {
   DirectorId,
   DirectorFocusMode,
   DirectorSettingsOverride,
   AgentSession,
+  CorePillar,
   Settings,
   ModelCatalog,
   CodexModel,
@@ -44,8 +47,9 @@ import type {
   PlanningMode,
   VersionUpdate,
   JeffExecutionReport,
+  ToddRoadmap,
 } from "@shared/types";
-import { DIRECTOR_NAMES } from "@shared/types";
+import { DIRECTOR_COLORS, DIRECTOR_NAMES } from "@shared/types";
 
 export function DirectorFlowLinkPill({
   link,
@@ -330,6 +334,299 @@ export function DirectorSummaryPanel({
   );
 }
 
+function getPillarNames(pillarIds: string[], corePillars: CorePillar[] | null | undefined): string[] {
+  if (!corePillars || !pillarIds.length) return [];
+  return pillarIds
+    .map((id) => corePillars.find((p) => p.id === id)?.name)
+    .filter((name): name is string => typeof name === "string");
+}
+
+type ToddMemorySectionProps = {
+  title: string;
+  open?: boolean;
+  children: ReactNode;
+};
+
+function ToddMemorySection({ title, open = false, children }: ToddMemorySectionProps) {
+  return (
+    <details className="agentSummaryDetails" open={open}>
+      <summary>{title}</summary>
+      <div className="agentSummaryDetailsBody">
+        {children}
+      </div>
+    </details>
+  );
+}
+
+function ToddMemoryAccordion({
+  toddMemory,
+  corePillars,
+}: {
+  toddMemory: AgentSession["toddMemory"];
+  corePillars: CorePillar[];
+}) {
+  const roadmap = toddMemory.hardMemory ?? toddMemory.roadmap ?? null;
+  const successChain = [...toddMemory.successChain].sort((left, right) => left.order - right.order);
+  const nextUpdate = toddMemory.nextUpdate;
+  const updateQueue = [...toddMemory.futureUpdatePlan].sort((left, right) => left.order - right.order);
+  const previousUpdateLog = [...toddMemory.previousUpdateLog].slice().reverse();
+  const troubleLog = [...toddMemory.troubleLog];
+  const backupNotes = toddMemory.backupMemory ?? toddMemory.backupNotes ?? [];
+  const codebaseIndex = toddMemory.codebaseIndexedMap ?? null;
+  const roadmapPillarNames = roadmap?.priorityUpdate ? getPillarNames(roadmap.priorityUpdate.pillarIds, corePillars) : [];
+
+  return (
+    <>
+      <ToddMemorySection title="Roadmap Overview">
+        {roadmap ? (
+          <div className="agentInfoPanelSection" style={{ marginTop: 10 }}>
+            <span className="pmStatusLabel">Roadmap</span>
+            <p className="coreDetailValue">
+              {roadmap.priorityUpdate
+                ? `Priority Update: ${roadmap.priorityUpdate.title}`
+                : "No priority update locked in."}
+            </p>
+            {roadmap.priorityUpdate ? (
+              <>
+                <p className="helperText" style={{ marginTop: 4 }}>
+                  {roadmap.priorityUpdate.description}
+                </p>
+                <div className="flowStepPillars" style={{ marginTop: 8 }}>
+                  <span className="flowStepPillarTag roadmapKindTag">
+                    {roadmap.priorityUpdate.updateKind === "create"
+                      ? "Create"
+                      : roadmap.priorityUpdate.updateKind === "expand"
+                        ? "Expand"
+                        : "Refine"}
+                  </span>
+                  {roadmapPillarNames.map((name) => (
+                    <span key={name} className="roadmapPillarTag">{name}</span>
+                  ))}
+                </div>
+                {roadmap.priorityUpdate.currentStateContext ? (
+                  <p className="coreDetailValue" style={{ marginTop: 8 }}>
+                    {roadmap.priorityUpdate.currentStateContext}
+                  </p>
+                ) : null}
+              </>
+            ) : null}
+            <p className="helperText" style={{ marginTop: 4 }}>
+              {roadmap.currentState.length} current-state item(s), {roadmap.pathway.length} pathway item(s), {roadmap.endState.length} end-state item(s)
+            </p>
+          </div>
+        ) : (
+          <p className="coreDetailEmpty" style={{ marginTop: 10 }}>No roadmap locked yet.</p>
+        )}
+        {(toddMemory.currentState || toddMemory.endStateGoal) ? (
+          <div className="agentInfoPanelSection" style={{ marginTop: 10 }}>
+            {toddMemory.currentState ? (
+              <div>
+                <span className="pmStatusLabel">Current State</span>
+                <p className="coreDetailValue">{toddMemory.currentState}</p>
+              </div>
+            ) : null}
+            {toddMemory.endStateGoal ? (
+              <div style={{ marginTop: toddMemory.currentState ? 10 : 0 }}>
+                <span className="pmStatusLabel">End State Goal</span>
+                <p className="coreDetailValue">{toddMemory.endStateGoal}</p>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+        {codebaseIndex ? (
+          <div className="agentInfoPanelSection" style={{ marginTop: 10 }}>
+            <span className="pmStatusLabel">Codebase Index</span>
+            <p className="coreDetailValue">{codebaseIndex.summary ?? "No codebase summary yet."}</p>
+            {codebaseIndex.featureAreas.length > 0 ? (
+              <div className="flowStepPillars" style={{ marginTop: 8 }}>
+                {codebaseIndex.featureAreas.map((area) => (
+                  <span key={area} className="flowStepPillarTag">{area}</span>
+                ))}
+              </div>
+            ) : null}
+            {codebaseIndex.repoNotes.length > 0 ? (
+              <ul className="agentSummaryList" style={{ marginTop: 8 }}>
+                {codebaseIndex.repoNotes.map((note, index) => (
+                  <li key={`codebase-note-${index}`}>{note}</li>
+                ))}
+              </ul>
+            ) : null}
+            <p className="helperText" style={{ marginTop: 6 }}>
+              Indexed {formatDate(codebaseIndex.indexedAt)}
+            </p>
+          </div>
+        ) : null}
+      </ToddMemorySection>
+
+      <ToddMemorySection title="Success Chain">
+        {successChain.length > 0 ? (
+          <div className="updatePlanList">
+            {successChain.map((step, index) => (
+              <div key={step.id} className="agentPlannedUpdateItem">
+                <div className="updateContent">
+                  <div className="updateTitle">{step.title}</div>
+                  <div className="updateDescription">{step.description}</div>
+                  <p className="helperText" style={{ marginTop: 6 }}>
+                    Step {index + 1}{step.satisfiedAt ? ` · satisfied ${formatDate(step.satisfiedAt)}` : ""}
+                  </p>
+                </div>
+                <StatusChip tone={step.satisfied ? "confirmed" : "neutral"}>
+                  {step.satisfied ? "done" : "pending"}
+                </StatusChip>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="coreDetailEmpty">No success chain steps have been defined yet.</p>
+        )}
+      </ToddMemorySection>
+
+      <ToddMemorySection title="Next Update">
+        {nextUpdate ? (
+          <div className="agentPlannedUpdateItem">
+            <div className="updateContent">
+              <div className="updateTitle">{nextUpdate.title}</div>
+              <div className="updateDescription">{nextUpdate.description}</div>
+              <div className="flowStepPillars" style={{ marginTop: 8 }}>
+                {nextUpdate.updateKind ? (
+                  <span className="flowStepPillarTag">{labelForToddUpdateKind(nextUpdate.updateKind)}</span>
+                ) : null}
+                {nextUpdate.simplificationMode ? (
+                  <span className="flowStepPillarTag">{labelForToddSimplificationMode(nextUpdate.simplificationMode)}</span>
+                ) : null}
+              </div>
+              {nextUpdate.structuralReason ? (
+                <p className="helperText" style={{ marginTop: 8 }}>{nextUpdate.structuralReason}</p>
+              ) : null}
+              {nextUpdate.supportsNextStep ? (
+                <p className="helperText" style={{ marginTop: 4 }}>Supports next: {nextUpdate.supportsNextStep}</p>
+              ) : null}
+              {nextUpdate.skillsNeeded.length > 0 ? (
+                <div className="flowStepPillars" style={{ marginTop: 8 }}>
+                  {nextUpdate.skillsNeeded.map((skill) => (
+                    <span key={`${nextUpdate.id}-${skill}`} className="flowStepPillarTag">{skill}</span>
+                  ))}
+                </div>
+              ) : null}
+              {nextUpdate.dependencies.length > 0 ? (
+                <p className="helperText" style={{ marginTop: 6 }}>
+                  Depends on: {nextUpdate.dependencies.join(", ")}
+                </p>
+              ) : null}
+            </div>
+          </div>
+        ) : (
+          <p className="coreDetailEmpty">No next update is selected yet.</p>
+        )}
+      </ToddMemorySection>
+
+      <ToddMemorySection title="Update Queue">
+        {updateQueue.length > 0 ? (
+          <div className="programmingQueue">
+            {updateQueue.map((update) => (
+              <div key={update.id} className="agentPlannedUpdateItem">
+                <div className="updateContent">
+                  <div className="updateTitle">{update.title}</div>
+                  <div className="updateDescription">{update.description}</div>
+                  <div className="flowStepPillars" style={{ marginTop: 8 }}>
+                    {update.updateKind ? (
+                      <span className="flowStepPillarTag">{labelForToddUpdateKind(update.updateKind)}</span>
+                    ) : null}
+                    {update.simplificationMode ? (
+                      <span className="flowStepPillarTag">{labelForToddSimplificationMode(update.simplificationMode)}</span>
+                    ) : null}
+                  </div>
+                  {update.structuralReason ? (
+                    <p className="helperText" style={{ marginTop: 8 }}>{update.structuralReason}</p>
+                  ) : null}
+                  {update.supportsNextStep ? (
+                    <p className="helperText" style={{ marginTop: 4 }}>Supports next: {update.supportsNextStep}</p>
+                  ) : null}
+                  {update.skillsNeeded.length > 0 ? (
+                    <div className="flowStepPillars" style={{ marginTop: 8 }}>
+                      {update.skillsNeeded.map((skill) => (
+                        <span key={`${update.id}-${skill}`} className="flowStepPillarTag">{skill}</span>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+                <StatusChip
+                  tone={update.status === "completed"
+                    ? "confirmed"
+                    : update.status === "failed"
+                      ? "action_required"
+                      : update.status === "in_progress"
+                        ? "info"
+                        : "neutral"}
+                >
+                  {update.status.replace(/_/g, " ")}
+                </StatusChip>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="coreDetailEmpty">No future updates are queued yet.</p>
+        )}
+      </ToddMemorySection>
+
+      <ToddMemorySection title="Previous Update Log">
+        {previousUpdateLog.length > 0 ? (
+          <div className="validationResultsList">
+            {previousUpdateLog.map((entry) => (
+              <div
+                key={entry.id}
+                className={`validationResultCard validationResultCard--${entry.status === "success" || entry.status === "no_changes" ? "pass" : "fail"}`}
+              >
+                <span className="validationResultType">{entry.goal}</span>
+                <span className={`validationResultStatus${entry.status === "success" || entry.status === "no_changes" ? " pmStatusDone" : ""}`}>
+                  {entry.status.replace(/_/g, " ")}
+                </span>
+                <p>{entry.outcome}</p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="coreDetailEmpty">No completed execution log entries yet.</p>
+        )}
+      </ToddMemorySection>
+
+      <ToddMemorySection title="Trouble Log">
+        {troubleLog.length > 0 ? (
+          <div className="validationResultsList">
+            {troubleLog.map((entry) => (
+              <div key={entry.id} className="validationResultCard validationResultCard--fail">
+                <span className="validationResultType">{entry.title}</span>
+                <span className="validationResultStatus">{entry.priority}</span>
+                <p>{entry.details}</p>
+                <p className="helperText">
+                  Seen {entry.occurrences} time(s). Last seen {formatDate(entry.lastSeenAt)}
+                </p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="coreDetailEmpty">No trouble log entries yet.</p>
+        )}
+      </ToddMemorySection>
+
+      <ToddMemorySection title="Backup Notes">
+        {backupNotes.length > 0 ? (
+          <ul className="agentSummaryList">
+            {backupNotes.slice(-5).map((note, index) => (
+              <li key={`todd-backup-${index}`}>{typeof note === "string" ? note : note.content}</li>
+            ))}
+            {backupNotes.length > 5 ? (
+              <li className="helperText">...and {backupNotes.length - 5} more</li>
+            ) : null}
+          </ul>
+        ) : (
+          <p className="coreDetailEmpty">No backup notes stored.</p>
+        )}
+      </ToddMemorySection>
+    </>
+  );
+}
+
 export function DirectorInfoPanel({
   directorId,
   focusMode,
@@ -429,6 +726,46 @@ export function DirectorInfoPanel({
                 </ul>
               </div>
             ) : null}
+            {confirmedConcept && toddMemory.roadmap && confirmedConcept.corePillars.some((pillar) =>
+              (toddMemory.roadmap?.pathway ?? []).some((item) => item.pillarIds.includes(pillar.id))
+              || (toddMemory.roadmap?.currentState ?? []).some((item) => item.pillarIds.includes(pillar.id))
+              || (toddMemory.roadmap?.endState ?? []).some((item) => item.pillarIds.includes(pillar.id))
+            ) ? (
+              <div className="conceptNotesBlock" style={{ marginTop: 12 }}>
+                <span className="pmStatusLabel">Roadmap Connections</span>
+                {confirmedConcept.corePillars.map((pillar) => {
+                  const road = toddMemory.roadmap!;
+                  const csItems = road.currentState.filter((i) => i.pillarIds.includes(pillar.id));
+                  const pathItems = road.pathway.filter((i) => i.pillarIds.includes(pillar.id));
+                  const esItems = road.endState.filter((i) => i.pillarIds.includes(pillar.id));
+                  if (!csItems.length && !pathItems.length && !esItems.length) return null;
+                  return (
+                    <div key={pillar.id} className="roadmapPillarConnectionBlock">
+                      <strong className="roadmapPillarConnectionName">{pillar.name}</strong>
+                      {csItems.map((item) => (
+                        <div key={item.id} className="roadmapConnectionRow">
+                          <span className="roadmapConnectionKind">Current</span>
+                          <span className="roadmapConnectionTitle">{item.title}</span>
+                          <StatusChip tone={item.itemStatus === "done" ? "confirmed" : "neutral"}>{item.itemStatus}</StatusChip>
+                        </div>
+                      ))}
+                      {pathItems.map((item) => (
+                        <div key={item.id} className="roadmapConnectionRow">
+                          <span className="roadmapConnectionKind">{item.updateKind === "create" ? "Create" : item.updateKind === "expand" ? "Expand" : "Refine"}</span>
+                          <span className="roadmapConnectionTitle">{item.title}</span>
+                        </div>
+                      ))}
+                      {esItems.map((item) => (
+                        <div key={item.id} className="roadmapConnectionRow">
+                          <span className="roadmapConnectionKind">End State</span>
+                          <span className="roadmapConnectionTitle">{item.title}</span>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
             {confirmedConcept ? (
               <button className="primaryButton" style={{ marginTop: 12, fontSize: "0.8rem" }} onClick={() => onNavigateToDirector("rd-director")}>
                 Proceed to R&D
@@ -484,150 +821,7 @@ export function DirectorInfoPanel({
         <>
           {summaryPanel}
           <div className="agentInfoPanel">
-            {(toddMemory.currentState || toddMemory.endStateGoal) ? (
-              <div className="agentInfoPanelSection">
-                {toddMemory.currentState ? (
-                  <>
-                    <h5 style={{ margin: "0 0 6px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Current State</h5>
-                    <p className="coreDetailValue">{toddMemory.currentState}</p>
-                  </>
-                ) : null}
-                {toddMemory.endStateGoal ? (
-                  <>
-                    <h5 style={{ margin: "10px 0 6px", fontSize: "0.8rem", color: "var(--text-muted)" }}>End State Goal</h5>
-                    <p className="coreDetailValue">{toddMemory.endStateGoal}</p>
-                  </>
-                ) : null}
-              </div>
-            ) : null}
-            <div className="agentInfoPanelSection">
-              <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Success Chain</h5>
-              {toddMemory.successChain.length > 0 ? (
-                <div className="updatePlanList">
-                  {toddMemory.successChain.slice().sort((a, b) => a.order - b.order).map((step, idx) => (
-                    <div key={step.id} className="agentPlannedUpdateItem">
-                      <span className="orderBadge">{idx + 1}</span>
-                      <div className="updateContent">
-                        <div className="updateTitle">{step.title}</div>
-                        <div className="updateDescription">{step.description}</div>
-                      </div>
-                      <StatusChip tone={step.satisfied ? "confirmed" : "neutral"}>
-                        {step.satisfied ? "done" : "pending"}
-                      </StatusChip>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <em className="coreDetailEmpty">No success chain defined yet. Use the ! button to regenerate Todd's plan.</em>
-              )}
-            </div>
-            {toddMemory.nextUpdate ? (
-              <div className="agentInfoPanelSection">
-                <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Next Update</h5>
-                <div className="agentPlannedUpdateItem">
-                  <div className="updateContent">
-                    <div className="updateTitle">{toddMemory.nextUpdate.title}</div>
-                    <div className="updateDescription">{toddMemory.nextUpdate.description}</div>
-                    {toddMemory.nextUpdate.updateKind || toddMemory.nextUpdate.simplificationMode ? (
-                      <div className="flowStepPillars" style={{ marginTop: 8 }}>
-                        {labelForToddUpdateKind(toddMemory.nextUpdate.updateKind) ? (
-                          <span className="flowStepPillarTag">{labelForToddUpdateKind(toddMemory.nextUpdate.updateKind)}</span>
-                        ) : null}
-                        {labelForToddSimplificationMode(toddMemory.nextUpdate.simplificationMode) ? (
-                          <span className="flowStepPillarTag">{labelForToddSimplificationMode(toddMemory.nextUpdate.simplificationMode)}</span>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    {toddMemory.nextUpdate.structuralReason ? (
-                      <p className="helperText" style={{ marginTop: 8 }}>{toddMemory.nextUpdate.structuralReason}</p>
-                    ) : null}
-                    {toddMemory.nextUpdate.supportsNextStep ? (
-                      <p className="helperText" style={{ marginTop: 4 }}>Supports next: {toddMemory.nextUpdate.supportsNextStep}</p>
-                    ) : null}
-                    {toddMemory.nextUpdate.skillsNeeded.length > 0 ? (
-                      <div className="flowStepPillars" style={{ marginTop: 8 }}>
-                        {toddMemory.nextUpdate.skillsNeeded.map((skill) => (
-                          <span key={`next-update-${skill}`} className="flowStepPillarTag">{skill}</span>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-            ) : null}
-            <h5 style={{ margin: "0 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Update Queue</h5>
-            {toddMemory.futureUpdatePlan.length > 0 ? (
-              <div className="updatePlanList">
-                {toddMemory.futureUpdatePlan.slice().sort((a, b) => a.order - b.order).map((u, idx) => (
-                  <div key={u.id} className="agentPlannedUpdateItem">
-                    <span className="orderBadge">{idx + 1}</span>
-                    <div className="updateContent">
-                      <div className="updateTitle">{u.title}</div>
-                      <div className="updateDescription">{u.description}</div>
-                      {u.updateKind || u.simplificationMode ? (
-                        <div className="flowStepPillars" style={{ marginTop: 8 }}>
-                          {labelForToddUpdateKind(u.updateKind) ? (
-                            <span className="flowStepPillarTag">{labelForToddUpdateKind(u.updateKind)}</span>
-                          ) : null}
-                          {labelForToddSimplificationMode(u.simplificationMode) ? (
-                            <span className="flowStepPillarTag">{labelForToddSimplificationMode(u.simplificationMode)}</span>
-                          ) : null}
-                        </div>
-                      ) : null}
-                      {u.structuralReason ? (
-                        <p className="helperText" style={{ marginTop: 8 }}>{u.structuralReason}</p>
-                      ) : null}
-                      {u.supportsNextStep ? (
-                        <p className="helperText" style={{ marginTop: 4 }}>Supports next: {u.supportsNextStep}</p>
-                      ) : null}
-                      {u.skillsNeeded.length > 0 ? (
-                        <div className="flowStepPillars" style={{ marginTop: 8 }}>
-                          {u.skillsNeeded.map((skill) => (
-                            <span key={`${u.id}-${skill}`} className="flowStepPillarTag">{skill}</span>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                    <StatusChip tone={u.status === "completed" ? "confirmed" : u.status === "failed" ? "action_required" : u.status === "in_progress" ? "info" : "neutral"}>{u.status}</StatusChip>
-                  </div>
-                ))}
-              </div>
-            ) : <em className="coreDetailEmpty">No updates queued yet.</em>}
-            <div className="agentInfoPanelSection">
-              <h5 style={{ margin: "12px 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Previous Update Log</h5>
-              {toddMemory.previousUpdateLog.length > 0 ? (
-                <div className="validationResultsList">
-                  {toddMemory.previousUpdateLog.slice().reverse().map((entry) => (
-                    <div key={entry.id} className={`validationResultCard validationResultCard--${entry.status === "success" || entry.status === "no_changes" ? "pass" : "fail"}`}>
-                      <span className="validationResultType">{entry.goal}</span>
-                      <span className={`validationResultStatus${entry.status === "success" || entry.status === "no_changes" ? " pmStatusDone" : ""}`}>
-                        {entry.status.replace(/_/g, " ")}
-                      </span>
-                      <p>{entry.outcome}</p>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <em className="coreDetailEmpty">No completed execution entries yet.</em>
-              )}
-            </div>
-            <div className="agentInfoPanelSection">
-              <h5 style={{ margin: "12px 0 8px", fontSize: "0.8rem", color: "var(--text-muted)" }}>Trouble Log</h5>
-              {toddMemory.troubleLog.length > 0 ? (
-                <div className="validationResultsList">
-                  {toddMemory.troubleLog.map((entry) => (
-                    <div key={entry.id} className="validationResultCard validationResultCard--fail">
-                      <span className="validationResultType">{entry.title}</span>
-                      <span className="validationResultStatus">{entry.priority}</span>
-                      <p>{entry.details}</p>
-                      <p className="helperText">Seen {entry.occurrences} time(s). Last seen {formatDate(entry.lastSeenAt)}</p>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <em className="coreDetailEmpty">No recurring issues logged.</em>
-              )}
-            </div>
+            <ToddMemoryAccordion toddMemory={toddMemory} corePillars={session.corePillars} />
           </div>
         </>
       );
@@ -848,6 +1042,398 @@ export function DirectorFunctionsPanel({
   );
 }
 
+type MemoryView = "soft" | "hard" | "backup";
+type SharedMemoryView = DirectorSharedMemorySource["kind"];
+
+function renderSharedMemorySourceContent({
+  source,
+  session,
+  onViewExecutionReport,
+}: {
+  source: DirectorSharedMemorySource;
+  session: AgentSession;
+  onViewExecutionReport?: (report: JeffExecutionReport) => void;
+}): ReactNode {
+  const renderSummaryCard = (
+    title: string,
+    statusText: string,
+    tone: "action_required" | "confirmed" | "info" | "neutral",
+    summary: string,
+    extra?: ReactNode,
+  ) => (
+    <article className="agentDetailsCard">
+      <div className="agentDetailsSubsectionHead">
+        <h5 style={{ margin: 0 }}>{title}</h5>
+        <StatusChip tone={tone}>{statusText}</StatusChip>
+      </div>
+      <p className="agentDetailsDescription">{summary}</p>
+      {extra}
+    </article>
+  );
+
+  switch (source.kind) {
+    case "dan-core-details":
+      return (
+        <ConceptOverview
+          concept={getConfirmedConcept(session)}
+          emptyLabel="No confirmed core-details yet."
+        />
+      );
+    case "todd-update-context": {
+      const queuedUpdates = session.toddMemory.futureUpdatePlan.filter((update) =>
+        update.status === "pending" || update.status === "in_progress",
+      );
+
+      return (
+        <>
+          <details className="agentSummaryDetails">
+            <summary>Programming Queue</summary>
+            <div className="agentSummaryDetailsBody">
+              {queuedUpdates.length > 0 ? (
+                <div className="programmingQueue">
+                  {queuedUpdates.map((update) => (
+                    <div key={update.id} className="agentPlannedUpdateItem">
+                      <div className="updateContent">
+                        <div className="updateTitle">{update.title}</div>
+                        <div className="updateDescription">{update.description}</div>
+                      </div>
+                      <StatusChip tone={update.status === "in_progress" ? "info" : "neutral"}>
+                        {update.status.replace(/_/g, " ")}
+                      </StatusChip>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="coreDetailEmpty">No updates are waiting for Ping.</p>
+              )}
+            </div>
+          </details>
+
+          <details className="agentSummaryDetails">
+            <summary>Execution Context</summary>
+            <div className="agentSummaryDetailsBody">
+              <p className="coreDetailValue">
+                {session.pingMemory.activeTask
+                  ? `Active task: ${session.pingMemory.activeTask}`
+                  : "Ping is waiting for the next Todd-approved update."}
+              </p>
+              {session.pingMemory.context ? (
+                <p className="coreDetailValue" style={{ marginTop: 8 }}>{session.pingMemory.context}</p>
+              ) : null}
+              {session.pingMemory.codebaseMapSummary ? (
+                <p className="helperText" style={{ marginTop: 8 }}>{session.pingMemory.codebaseMapSummary}</p>
+              ) : null}
+              {session.pingMemory.latestRawReport ? (
+                <div className="validationResultCard validationResultCard--pass" style={{ marginTop: 12 }}>
+                  <span className="validationResultType">Latest execution</span>
+                  <span className="validationResultStatus">{session.pingMemory.latestRawReport.status.replace(/_/g, " ")}</span>
+                  <p>{session.pingMemory.latestRawReport.summary}</p>
+                </div>
+              ) : null}
+            </div>
+          </details>
+        </>
+      );
+    }
+    case "jeff-latest-report": {
+      const report = session.pingMemory.latestJeffReport;
+      return report ? (
+        renderSummaryCard(
+          report.title,
+          report.decision ?? report.toddRecommendedDecision ?? report.rawReport.status.replace(/_/g, " "),
+          report.decision === "successful" || report.rawReport.status === "success" || report.rawReport.status === "no_changes"
+            ? "confirmed"
+            : report.decision === "failure" || report.rawReport.status === "blocked"
+              ? "action_required"
+              : "info",
+          report.summary,
+          onViewExecutionReport ? (
+            <button
+              type="button"
+              className="agentChatViewMoreButton"
+              style={{ marginTop: 12 }}
+              onClick={() => onViewExecutionReport(report)}
+            >
+              View Project Status Report
+            </button>
+          ) : null
+        )
+      ) : (
+        <p className="coreDetailEmpty">No latest Jeff report yet.</p>
+      );
+    }
+    case "todd-validation-request": {
+      const validationRequest = session.pongMemory.validationRequest ?? null;
+      const currentTask = session.pongTaskContext?.currentTask ?? null;
+      const relevantPillars = session.pongTaskContext?.relevantPillarIds ?? validationRequest?.relevantPillarIds ?? [];
+      const pillarNames = relevantPillars
+        .map((pillarId) => session.corePillars.find((pillar) => pillar.id === pillarId)?.name ?? pillarId)
+        .filter((value, index, values) => values.indexOf(value) === index);
+      const instruction = validationRequest?.instruction ?? session.pongMemory.jeffInstruction ?? null;
+
+      return instruction ? (
+        <>
+          <details className="agentSummaryDetails">
+            <summary>Validation Request</summary>
+            <div className="agentSummaryDetailsBody">
+              <p className="coreDetailValue">{instruction}</p>
+              {currentTask ? (
+                <p className="helperText" style={{ marginTop: 8 }}>Task: {currentTask}</p>
+              ) : null}
+              {validationRequest?.updateId ? (
+                <p className="helperText">Update ID: {validationRequest.updateId}</p>
+              ) : null}
+              {pillarNames.length > 0 ? (
+                <div style={{ marginTop: 8 }}>
+                  <span className="pmStatusLabel">Relevant Pillars</span>
+                  <ul className="agentSummaryList">
+                    {pillarNames.map((name) => <li key={name}>{name}</li>)}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+          </details>
+        </>
+      ) : (
+        <p className="coreDetailEmpty">No validation request recorded yet.</p>
+      );
+    }
+    case "pong-validation-history": {
+      const previousReports = session.pongMemory.previousValidationReports;
+      const validationResults = session.validationResults;
+      const pendingValidations = session.jeffMemory.pendingValidations;
+
+      return (
+        <>
+          <details className="agentSummaryDetails">
+            <summary>Recent Validation Reports</summary>
+            <div className="agentSummaryDetailsBody">
+              {previousReports.length > 0 ? (
+                <div className="validationResultsList">
+                  {previousReports.slice(-5).reverse().map((report) => (
+                    <article key={report.id} className="agentDetailsCard">
+                      <div className="agentDetailsSubsectionHead">
+                        <h5 style={{ margin: 0 }}>Validation Report</h5>
+                        <StatusChip tone={report.passed === false ? "action_required" : report.passed === true ? "confirmed" : "info"}>
+                          {report.passed === null ? "pending" : report.passed ? "pass" : "fail"}
+                        </StatusChip>
+                      </div>
+                      <p className="agentDetailsDescription">{report.summary}</p>
+                      {report.details ? <p className="helperText">{report.details}</p> : null}
+                    </article>
+                  ))}
+                </div>
+              ) : validationResults.length > 0 ? (
+                <div className="validationResultsList">
+                  {validationResults.slice(-5).reverse().map((result) => (
+                    <article key={result.id} className="agentDetailsCard">
+                      <div className="agentDetailsSubsectionHead">
+                        <h5 style={{ margin: 0 }}>{result.validationType}</h5>
+                        <StatusChip tone={result.passed ? "confirmed" : "action_required"}>
+                          {result.passed ? "PASS" : "FAIL"}
+                        </StatusChip>
+                      </div>
+                      <p className="agentDetailsDescription">{result.summary}</p>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p className="coreDetailEmpty">No validation results yet.</p>
+              )}
+            </div>
+          </details>
+
+          {pendingValidations.length > 0 ? (
+            <details className="agentSummaryDetails">
+              <summary>Pending Validations</summary>
+              <div className="agentSummaryDetailsBody">
+                <div className="validationResultsList">
+                  {pendingValidations.slice(-5).reverse().map((report) => (
+                    <article key={report.id} className="agentDetailsCard">
+                      <div className="agentDetailsSubsectionHead">
+                        <h5 style={{ margin: 0 }}>Pending Validation</h5>
+                        <StatusChip tone="info">pending</StatusChip>
+                      </div>
+                      <p className="agentDetailsDescription">{report.summary}</p>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            </details>
+          ) : null}
+        </>
+      );
+    }
+    case "todd-roadmap-and-updates": {
+      const roadmap = session.toddMemory.hardMemory ?? session.toddMemory.roadmap ?? null;
+      const queuedUpdates = session.toddMemory.futureUpdatePlan.filter((update) =>
+        update.status === "pending" || update.status === "in_progress",
+      );
+      const updateReports = session.toddMemory.previousUpdateLog;
+      const troubleLog = session.toddMemory.troubleLog;
+
+      return (
+        <>
+          <details className="agentSummaryDetails">
+            <summary>Roadmap</summary>
+            <div className="agentSummaryDetailsBody">
+              {roadmap ? (
+                <div className="agentInfoPanelSection">
+                  <p className="coreDetailValue">
+                    {roadmap.priorityUpdate
+                      ? `Priority update: ${roadmap.priorityUpdate.title}`
+                      : "No priority update locked in yet."}
+                  </p>
+                  <p className="helperText" style={{ marginTop: 8 }}>
+                    {session.toddMemory.currentState ? `Current state: ${session.toddMemory.currentState}` : "Current state not set."}
+                  </p>
+                  <p className="helperText">
+                    {session.toddMemory.endStateGoal ? `End state: ${session.toddMemory.endStateGoal}` : "End state not set."}
+                  </p>
+                  <p className="helperText">
+                    {roadmap.currentState.length} current-state item(s), {roadmap.pathway.length} pathway item(s), {roadmap.endState.length} end-state item(s)
+                  </p>
+                </div>
+              ) : (
+                <p className="coreDetailEmpty">No roadmap has been locked yet.</p>
+              )}
+            </div>
+          </details>
+
+          <details className="agentSummaryDetails">
+            <summary>Update Queue</summary>
+            <div className="agentSummaryDetailsBody">
+              {queuedUpdates.length > 0 ? (
+                <div className="programmingQueue">
+                  {queuedUpdates.map((update) => (
+                    <div key={update.id} className="agentPlannedUpdateItem">
+                      <div className="updateContent">
+                        <div className="updateTitle">{update.title}</div>
+                        <div className="updateDescription">{update.description}</div>
+                      </div>
+                      <StatusChip tone={update.status === "in_progress" ? "info" : "neutral"}>
+                        {update.status.replace(/_/g, " ")}
+                      </StatusChip>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="coreDetailEmpty">No updates are queued right now.</p>
+              )}
+            </div>
+          </details>
+
+          <details className="agentSummaryDetails">
+            <summary>Update Reports</summary>
+            <div className="agentSummaryDetailsBody">
+              {updateReports.length > 0 ? (
+                <div className="validationResultsList">
+                  {updateReports.slice(-5).reverse().map((entry) => (
+                    <article key={entry.id} className="agentDetailsCard">
+                      <div className="agentDetailsSubsectionHead">
+                        <h5 style={{ margin: 0 }}>{entry.goal}</h5>
+                        <StatusChip tone={entry.status === "success" || entry.status === "no_changes" ? "confirmed" : "action_required"}>
+                          {entry.status.replace(/_/g, " ")}
+                        </StatusChip>
+                      </div>
+                      <p className="agentDetailsDescription">{entry.outcome}</p>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p className="coreDetailEmpty">No update reports have been recorded yet.</p>
+              )}
+            </div>
+          </details>
+
+          {troubleLog.length > 0 ? (
+            <details className="agentSummaryDetails">
+              <summary>Trouble Log</summary>
+              <div className="agentSummaryDetailsBody">
+                <div className="validationResultsList">
+                  {troubleLog.map((entry) => (
+                    <article key={entry.id} className="agentDetailsCard">
+                      <div className="agentDetailsSubsectionHead">
+                        <h5 style={{ margin: 0 }}>{entry.title}</h5>
+                        <StatusChip tone="action_required">{entry.priority}</StatusChip>
+                      </div>
+                      <p className="agentDetailsDescription">{entry.details}</p>
+                      <p className="helperText">Seen {entry.occurrences} time(s). Last seen {formatDate(entry.lastSeenAt)}</p>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            </details>
+          ) : null}
+        </>
+      );
+    }
+    case "ping-execution-reports": {
+      const pendingReports = session.jeffMemory.pendingReports;
+      const outcomeLog = session.jeffMemory.outcomeLog;
+
+      return (
+        <>
+          <details className="agentSummaryDetails">
+            <summary>Pending Reports</summary>
+            <div className="agentSummaryDetailsBody">
+              {pendingReports.length > 0 ? (
+                <div className="validationResultsList">
+                  {pendingReports.slice(-5).reverse().map((report) => {
+                    const statusText = report.decision ?? report.toddRecommendedDecision ?? report.rawReport.status.replace(/_/g, " ");
+                    const tone = report.decision === "failure"
+                      || report.rawReport.status === "blocked"
+                      ? "action_required"
+                      : report.decision === "successful" || report.rawReport.status === "success" || report.rawReport.status === "no_changes"
+                        ? "confirmed"
+                        : "info";
+                    return (
+                      <article key={report.id} className="agentDetailsCard">
+                        <div className="agentDetailsSubsectionHead">
+                          <h5 style={{ margin: 0 }}>{report.title}</h5>
+                          <StatusChip tone={tone}>{statusText.replace(/_/g, " ")}</StatusChip>
+                        </div>
+                        <p className="agentDetailsDescription">{report.summary}</p>
+                      </article>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="coreDetailEmpty">No pending reports yet.</p>
+              )}
+            </div>
+          </details>
+
+          <details className="agentSummaryDetails">
+            <summary>Outcome Log</summary>
+            <div className="agentSummaryDetailsBody">
+              {outcomeLog.length > 0 ? (
+                <div className="validationResultsList">
+                  {outcomeLog.slice(-5).reverse().map((entry) => (
+                    <article key={entry.id} className="agentDetailsCard">
+                      <div className="agentDetailsSubsectionHead">
+                        <h5 style={{ margin: 0 }}>{entry.decision.replace(/_/g, " ")}</h5>
+                        <StatusChip tone={entry.decision === "failure" ? "action_required" : "confirmed"}>
+                          {entry.decision}
+                        </StatusChip>
+                      </div>
+                      <p className="agentDetailsDescription">{entry.summary}</p>
+                    </article>
+                  ))}
+                </div>
+              ) : (
+                <p className="coreDetailEmpty">No outcome log entries yet.</p>
+              )}
+            </div>
+          </details>
+        </>
+      );
+    }
+  }
+
+  return null;
+}
+
 export function DirectorMemoryPanel({
   directorId,
   session,
@@ -863,7 +1449,49 @@ export function DirectorMemoryPanel({
   pushToast?: (message: string, level: "info" | "success" | "error") => void;
   onViewExecutionReport?: (report: JeffExecutionReport) => void;
 }) {
+  const [memoryView, setMemoryView] = useState<MemoryView>("hard");
+  const [sharedMemoryView, setSharedMemoryView] = useState<SharedMemoryView | null>(null);
+  const sharedMemorySources = useMemo(
+    () => buildDirectorSharedMemorySources(directorId, session),
+    [directorId, session],
+  );
+
   if (!session) return null;
+
+  const personalMemoryTitle = `${DIRECTOR_NAMES[directorId]} Personal Memory`;
+  const personalMemoryAccent = DIRECTOR_COLORS[directorId];
+  const personalMemoryCardStyle = ({ "--memory-accent": personalMemoryAccent } as CSSProperties);
+  const activeSharedMemorySource = sharedMemorySources.find((source) => source.kind === sharedMemoryView) ?? sharedMemorySources[0] ?? null;
+  const sharedMemoryAccent = activeSharedMemorySource ? DIRECTOR_COLORS[activeSharedMemorySource.directorId] : null;
+  const sharedMemoryCard = activeSharedMemorySource ? (
+    <section
+      className="agentSummaryCard agentSummaryCard--shared"
+      style={sharedMemoryAccent ? ({ "--memory-accent": sharedMemoryAccent } as CSSProperties) : undefined}
+    >
+      <div className="agentSummaryHeader">
+        <span className="agentSummaryEyebrow">Shared Memory</span>
+        <div className="speedToggle memoryToggle memoryToggle--wrap">
+          {sharedMemorySources.map((source) => (
+            <button
+              key={source.kind}
+              type="button"
+              className={`toggleOption${activeSharedMemorySource.kind === source.kind ? " active" : ""}`}
+              onClick={() => setSharedMemoryView(source.kind)}
+            >
+              {source.label}
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="agentSummarySharedBody">
+        {renderSharedMemorySourceContent({
+          source: activeSharedMemorySource,
+          session,
+          onViewExecutionReport,
+        })}
+      </div>
+    </section>
+  ) : null;
 
   if (directorId === "creative-director") {
     const danMemory = session.danMemory;
@@ -880,13 +1508,17 @@ export function DirectorMemoryPanel({
     const hasSoftMemory = Boolean(discussedConcept || derivedConcept || hasCreativeNotes || hasDerivedNotes || hasHandoffNotes);
     return (
       <div className="agentInfoPanel agentSummaryPanel">
-        <div className="agentSummaryGrid">
-          <section className="agentSummaryCard">
+      <div className="agentSummaryGrid">
+          <section className="agentSummaryCard agentSummaryCard--personal" style={personalMemoryCardStyle}>
             <div className="agentSummaryHeader">
-              <span className="agentSummaryEyebrow">Memory</span>
+              <span className="agentSummaryEyebrow">{personalMemoryTitle}</span>
+              <div className="speedToggle memoryToggle">
+                <button className={`toggleOption${memoryView === "soft" ? " active" : ""}`} onClick={() => setMemoryView("soft")}>Soft</button>
+                <button className={`toggleOption${memoryView === "hard" ? " active" : ""}`} onClick={() => setMemoryView("hard")}>Hard</button>
+                <button className={`toggleOption${memoryView === "backup" ? " active" : ""}`} onClick={() => setMemoryView("backup")}>Backup</button>
+              </div>
             </div>
-            <details className="agentSummaryDetails" open>
-              <summary>Soft-Memory</summary>
+            {memoryView === "soft" ? (
               <div className="agentSummaryDetailsBody">
                 {conflictCount > 0 ? (
                   <div className="memoryQuestionCard">
@@ -952,9 +1584,8 @@ export function DirectorMemoryPanel({
                   <p className="coreDetailEmpty">No active session notes.</p>
                 ) : null}
               </div>
-            </details>
-            <details className="agentSummaryDetails">
-              <summary>Hard-Memory</summary>
+            ) : null}
+            {memoryView === "hard" ? (
               <div className="agentSummaryDetailsBody">
                 <ConceptOverview
                   concept={confirmedConcept}
@@ -962,9 +1593,8 @@ export function DirectorMemoryPanel({
                   emptyLabel="No confirmed concept yet."
                 />
               </div>
-            </details>
-            <details className="agentSummaryDetails">
-              <summary>Backup Memory</summary>
+            ) : null}
+            {memoryView === "backup" ? (
               <div className="agentSummaryDetailsBody">
                 {hasRawMemories ? (
                   <div>
@@ -996,8 +1626,9 @@ export function DirectorMemoryPanel({
                   <p className="coreDetailEmpty">No backup memory stored.</p>
                 ) : null}
               </div>
-            </details>
+            ) : null}
           </section>
+          {sharedMemoryCard}
         </div>
       </div>
     );
@@ -1005,87 +1636,60 @@ export function DirectorMemoryPanel({
 
   if (directorId === "rd-director") {
     const toddMemory = session.toddMemory;
-    const hasNotes = (toddMemory.notes ?? []).length > 0;
-    const hasPendingHandoff = Boolean(toddMemory.pendingHandoff);
-    const hasBackup = (toddMemory.backupNotes ?? []).length > 0;
+    const softMemory = toddMemory.softMemory ?? toddMemory.notes ?? [];
+    const handoffNotes = softMemory.filter((note) => (typeof note === "string" ? false : note.tag === "handoff-to-todd"));
+    const hasNotes = softMemory.length > 0;
     return (
       <div className="agentInfoPanel agentSummaryPanel">
-        <div className="agentSummaryGrid">
-          <section className="agentSummaryCard">
+      <div className="agentSummaryGrid">
+          <section className="agentSummaryCard agentSummaryCard--personal" style={personalMemoryCardStyle}>
             <div className="agentSummaryHeader">
-              <span className="agentSummaryEyebrow">Memory</span>
+              <span className="agentSummaryEyebrow">{personalMemoryTitle}</span>
+              <div className="speedToggle memoryToggle">
+                <button className={`toggleOption${memoryView === "soft" ? " active" : ""}`} onClick={() => setMemoryView("soft")}>Soft</button>
+                <button className={`toggleOption${memoryView === "hard" ? " active" : ""}`} onClick={() => setMemoryView("hard")}>Hard</button>
+                <button className={`toggleOption${memoryView === "backup" ? " active" : ""}`} onClick={() => setMemoryView("backup")}>Backup</button>
+              </div>
             </div>
-            <details className="agentSummaryDetails" open>
-              <summary>Soft-Memory</summary>
+            {memoryView === "soft" ? (
               <div className="agentSummaryDetailsBody">
-                {hasPendingHandoff ? (
+                {handoffNotes.length > 0 ? (
                   <div className="memoryPendingHandoffCard">
                     <span className="pmStatusLabel">
                       <span className="memoryHandoffBadge memoryHandoffBadge--dan">From Dan</span>
                     </span>
-                    <p className="coreDetailValue" style={{ marginTop: 4 }}>{toddMemory.pendingHandoff!.summary}</p>
-                    {toddMemory.pendingHandoff!.context ? (
-                      <p className="helperText" style={{ marginTop: 4 }}>{toddMemory.pendingHandoff!.context}</p>
-                    ) : null}
-                    <p className="helperText" style={{ marginTop: 2 }}>
-                      Received {toddMemory.pendingHandoff!.receivedAt.split("T")[0]}
-                    </p>
-                  </div>
-                ) : null}
-                {hasNotes ? (
-                  <div style={{ marginTop: hasPendingHandoff ? 10 : 0 }}>
-                    <span className="pmStatusLabel">Planning Notes</span>
-                    <ul className="agentSummaryList">
-                      {toddMemory.notes.map((note, i) => <li key={`todd-note-${i}`}>{typeof note === "string" ? note : note.content}</li>)}
+                    <ul className="agentSummaryList" style={{ marginTop: 8 }}>
+                      {handoffNotes.map((note) => <li key={note.id}>{typeof note === "string" ? note : note.content}</li>)}
                     </ul>
                   </div>
                 ) : null}
-                {!hasNotes && !hasPendingHandoff ? (
+                {hasNotes ? (
+                  <div style={{ marginTop: handoffNotes.length > 0 ? 10 : 0 }}>
+                    <span className="pmStatusLabel">Planning Notes</span>
+                    <ul className="agentSummaryList">
+                      {softMemory.map((note, i) => <li key={`todd-note-${i}`}>{typeof note === "string" ? note : note.content}</li>)}
+                    </ul>
+                  </div>
+                ) : null}
+                {!hasNotes ? (
                   <p className="coreDetailEmpty">No active planning notes.</p>
                 ) : null}
               </div>
-            </details>
-            <details className="agentSummaryDetails">
-              <summary>Hard-Memory</summary>
+            ) : null}
+            {memoryView === "hard" ? (
+              <ToddMemoryAccordion toddMemory={toddMemory} corePillars={session.corePillars} />
+            ) : null}
+            {memoryView === "backup" ? (
               <div className="agentSummaryDetailsBody">
-                {toddMemory.confirmedConcept ? (
+                {(toddMemory.backupMemory ?? toddMemory.backupNotes ?? []).length > 0 ? (
                   <div>
-                    <span className="pmStatusLabel">Core-Details</span>
-                    <p className="coreDetailValue">
-                      {toddMemory.confirmedConcept.function?.summary ?? "Function TBD"}
-                    </p>
-                  </div>
-                ) : (
-                  <p className="coreDetailEmpty">Waiting for Dan to lock the concept.</p>
-                )}
-                {toddMemory.successChain.length > 0 ? (
-                  <div style={{ marginTop: 8 }}>
-                    <span className="pmStatusLabel">Success Chain</span>
-                    <p className="helperText" style={{ marginTop: 2 }}>
-                      {toddMemory.successChain.filter((s) => s.satisfied).length}/{toddMemory.successChain.length} steps complete
-                      {toddMemory.nextUpdate ? ` — next: ${toddMemory.nextUpdate.title}` : ""}
-                    </p>
-                  </div>
-                ) : null}
-                {toddMemory.futureUpdatePlan.length > 0 ? (
-                  <p className="helperText" style={{ marginTop: 6 }}>
-                    {toddMemory.futureUpdatePlan.length} update(s) planned
-                  </p>
-                ) : null}
-              </div>
-            </details>
-            <details className="agentSummaryDetails">
-              <summary>Backup Memory</summary>
-              <div className="agentSummaryDetailsBody">
-                {hasBackup ? (
-                  <div>
-                    <span className="pmStatusLabel">Archived Planning Notes ({toddMemory.backupNotes.length})</span>
+                    <span className="pmStatusLabel">Resolved Notes ({(toddMemory.backupMemory ?? toddMemory.backupNotes ?? []).length})</span>
                     <ul className="agentSummaryList">
-                      {toddMemory.backupNotes.slice(-5).map((note, i) => (
+                      {(toddMemory.backupMemory ?? toddMemory.backupNotes ?? []).slice(-5).map((note, i) => (
                         <li key={`todd-backup-${i}`}>{typeof note === "string" ? note : note.content}</li>
                       ))}
-                      {toddMemory.backupNotes.length > 5 ? (
-                        <li className="helperText">...and {toddMemory.backupNotes.length - 5} more</li>
+                      {(toddMemory.backupMemory ?? toddMemory.backupNotes ?? []).length > 5 ? (
+                        <li className="helperText">...and {(toddMemory.backupMemory ?? toddMemory.backupNotes ?? []).length - 5} more</li>
                       ) : null}
                     </ul>
                   </div>
@@ -1093,8 +1697,9 @@ export function DirectorMemoryPanel({
                   <p className="coreDetailEmpty">No backup notes stored.</p>
                 )}
               </div>
-            </details>
+            ) : null}
           </section>
+          {sharedMemoryCard}
         </div>
       </div>
     );
@@ -1105,10 +1710,10 @@ export function DirectorMemoryPanel({
     const queuedUpdates = session.toddMemory.futureUpdatePlan.filter((update) => update.status === "pending" || update.status === "in_progress");
     return (
       <div className="agentInfoPanel agentSummaryPanel">
-        <div className="agentSummaryGrid">
-          <section className="agentSummaryCard">
+      <div className="agentSummaryGrid">
+          <section className="agentSummaryCard agentSummaryCard--personal" style={personalMemoryCardStyle}>
             <div className="agentSummaryHeader">
-              <span className="agentSummaryEyebrow">Memory</span>
+              <span className="agentSummaryEyebrow">{personalMemoryTitle}</span>
             </div>
             <details className="agentSummaryDetails" open>
               <summary>Programming Queue</summary>
@@ -1173,6 +1778,7 @@ export function DirectorMemoryPanel({
               </div>
             </details>
           </section>
+          {sharedMemoryCard}
         </div>
       </div>
     );
@@ -1182,9 +1788,9 @@ export function DirectorMemoryPanel({
     return (
       <div className="agentInfoPanel agentSummaryPanel">
         <div className="agentSummaryGrid">
-          <section className="agentSummaryCard">
+          <section className="agentSummaryCard agentSummaryCard--personal" style={personalMemoryCardStyle}>
             <div className="agentSummaryHeader">
-              <span className="agentSummaryEyebrow">Memory</span>
+              <span className="agentSummaryEyebrow">{personalMemoryTitle}</span>
             </div>
             <details className="agentSummaryDetails" open>
               <summary>Validation State</summary>
@@ -1206,77 +1812,66 @@ export function DirectorMemoryPanel({
               </div>
             </details>
           </section>
+          {sharedMemoryCard}
         </div>
       </div>
     );
   }
 
   if (directorId === "project-manager") {
-    const stateEntries = Object.entries(session.directorStateMap ?? {}).filter(([, state]) => Boolean(state));
     const liveApprovals = getLivePendingApprovals(session);
-    const pendingReports = session.jeffMemory.pendingReports ?? [];
+    const managerSummary = session.jeffMemory.managerSummary ?? session.jeffMemory.hardMemory ?? null;
+    const currentProjectStatus = session.jeffMemory.currentProjectStatus ?? null;
+    const projectStatusHistory = session.jeffMemory.projectStatusHistory ?? [];
     return (
       <div className="agentInfoPanel agentSummaryPanel">
         <div className="agentSummaryGrid">
-          <section className="agentSummaryCard">
+          <section className="agentSummaryCard agentSummaryCard--personal" style={personalMemoryCardStyle}>
             <div className="agentSummaryHeader">
-              <span className="agentSummaryEyebrow">Memory</span>
+              <span className="agentSummaryEyebrow">{personalMemoryTitle}</span>
             </div>
             <details className="agentSummaryDetails" open>
               <summary>Coordination State</summary>
               <div className="agentSummaryDetailsBody">
                 <p className="coreDetailValue">
-                  {`${liveApprovals.length} pending approval(s) and ${stateEntries.length} tracked director state snapshot(s).`}
+                  {`${liveApprovals.length} pending approval(s) are visible to Jeff.`}
                 </p>
-                {stateEntries.length > 0 ? (
-                  <ul className="agentSummaryList" style={{ marginTop: 10 }}>
-                    {stateEntries.map(([id, state]) => (
-                      <li key={id}>
-                        {DIRECTOR_NAMES[id as DirectorId]}: {state?.currentState ?? state?.idealState ?? "State tracked"}
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-                {pendingReports.length > 0 ? (
+                {managerSummary ? (
                   <div style={{ marginTop: 12 }}>
-                    <span className="pmStatusLabel">Execution Reports Awaiting Jeff Decision</span>
-                    <div className="validationResultsList" style={{ marginTop: 8 }}>
-                      {pendingReports.map((report) => (
-                        <div
-                          key={report.id}
-                          className={`validationResultCard validationResultCard--${(report.toddRecommendedDecision ?? report.decision) === "failure" ? "fail" : "pass"}`}
-                        >
-                          <span className="validationResultType">{report.title}</span>
-                          <span className="validationResultStatus">
-                            {report.toddRecommendedDecision
-                              ? `Todd recommends ${report.toddRecommendedDecision.replace(/[-_]/g, " ")}`
-                              : report.decision
-                                ? report.decision.replace(/[-_]/g, " ")
-                                : "awaiting decision"}
-                          </span>
-                          <p style={{ gridColumn: "1 / -1" }}>{report.summary}</p>
-                          {onViewExecutionReport ? (
-                            <button
-                              type="button"
-                              className="agentChatViewMoreButton"
-                              style={{ marginTop: 8 }}
-                              onClick={() => onViewExecutionReport(report)}
-                            >
-                              Review Report
-                            </button>
-                          ) : null}
-                        </div>
-                      ))}
-                    </div>
+                    <span className="pmStatusLabel">Manager Summary</span>
+                    <ul className="agentSummaryList" style={{ marginTop: 8 }}>
+                      {managerSummary.danSummary ? <li>Dan: {managerSummary.danSummary}</li> : null}
+                      {managerSummary.toddSummary ? <li>Todd: {managerSummary.toddSummary}</li> : null}
+                      {managerSummary.currentProjectStatus ? <li>Status: {managerSummary.currentProjectStatus}</li> : null}
+                    </ul>
+                  </div>
+                ) : null}
+                {currentProjectStatus ? (
+                  <div style={{ marginTop: 12 }}>
+                    <span className="pmStatusLabel">Current Project Status</span>
+                    <p className="coreDetailValue" style={{ marginTop: 8 }}>
+                      {currentProjectStatus.status.replace(/-/g, " ")}: {currentProjectStatus.summary}
+                    </p>
                   </div>
                 ) : (
                   <p className="coreDetailEmpty" style={{ marginTop: 12 }}>
-                    Jeff does not have any execution reports waiting on a decision.
+                    Jeff does not have a current project-status summary yet.
                   </p>
                 )}
+                {projectStatusHistory.length > 0 ? (
+                  <div style={{ marginTop: 12 }}>
+                    <span className="pmStatusLabel">Project Status History</span>
+                    <ul className="agentSummaryList" style={{ marginTop: 8 }}>
+                      {projectStatusHistory.slice(-5).reverse().map((entry) => (
+                        <li key={entry.id}>{entry.status.replace(/-/g, " ")}: {entry.summary}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
               </div>
             </details>
           </section>
+          {sharedMemoryCard}
         </div>
       </div>
     );
@@ -1312,21 +1907,21 @@ export function DirectorProfilePanel({
   return (
     <div className="directorProfilePanel directorProfilePanel--scrollable">
       <div className="directorProfilePanelContent">
-        <div
-          className="directorProfileCard"
-          style={{ "--director-profile-color": profile.color } as CSSProperties}
-        >
-          <div className="directorProfileAvatar" aria-hidden="true" />
-          <div className="directorProfileName">{profile.name}</div>
-          <span
-            className="agentActiveLabel directorProfileFunction"
-            style={{ borderColor: profile.color, color: profile.color }}
+        <div className="directorProfileTopRow">
+          <div
+            className="directorProfileCard"
+            style={{ "--director-profile-color": profile.color } as CSSProperties}
           >
-            {profile.functionLabel}
-          </span>
-        </div>
+            <div className="directorProfileAvatar" aria-hidden="true" />
+            <div className="directorProfileName">{profile.name}</div>
+            <span
+              className="agentActiveLabel directorProfileFunction"
+              style={{ borderColor: profile.color, color: profile.color }}
+            >
+              {profile.functionLabel}
+            </span>
+          </div>
 
-        <div className="directorProfileLowerGrid">
           <DirectorFunctionsPanel
             directorId={directorId}
             session={session}
@@ -1334,15 +1929,16 @@ export function DirectorProfilePanel({
             onNavigateToDirector={onNavigateToDirector}
             onSessionUpdate={onSessionUpdate}
           />
-          <DirectorMemoryPanel
-            directorId={directorId}
-            session={session}
-            projectId={projectId}
-            onSessionUpdate={onSessionUpdate}
-            pushToast={_pushToast}
-            onViewExecutionReport={setExecutionReport}
-          />
         </div>
+
+        <DirectorMemoryPanel
+          directorId={directorId}
+          session={session}
+          projectId={projectId}
+          onSessionUpdate={onSessionUpdate}
+          pushToast={_pushToast}
+          onViewExecutionReport={setExecutionReport}
+        />
         {executionReport ? (
           <ErrorBoundaryPanel onClose={() => setExecutionReport(null)}>
             <ExecutionReportPanel

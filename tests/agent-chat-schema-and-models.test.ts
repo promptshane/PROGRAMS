@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import * as agentChatSchemaExports from "../src/main/utils/agent-chat-schema.ts";
+import * as directorChatSchemaExports from "../src/main/utils/director-chat-schema.ts";
+import * as sharedSchemaExports from "../src/main/utils/shared-schema.ts";
 import { DEFAULT_MODEL_CATALOG } from "../src/shared/types.ts";
 import { selectPreferredCodexModels } from "../src/main/utils/codex-model-catalog.ts";
 import { buildAgentChatResponseContract } from "../src/main/utils/agent-chat-flow.ts";
@@ -24,6 +27,51 @@ import {
   toddUpdateAgentChatSchema,
   toddVersionAgentChatSchema,
 } from "../src/main/utils/agent-chat-schema.ts";
+
+type SchemaObject = {
+  required?: readonly string[];
+  properties?: Record<string, unknown>;
+  items?: unknown;
+};
+
+const isSchemaRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
+
+const assertSchemaRequiredMatchesProperties = (schema: SchemaObject, label: string): void => {
+  assert.ok(isSchemaRecord(schema.properties), `${label} should declare object properties`);
+  assert.ok(Array.isArray(schema.required), `${label} should declare required keys`);
+  assert.deepEqual(
+    [...schema.required!].sort(),
+    Object.keys(schema.properties!).sort(),
+    `${label} required keys should match declared properties`,
+  );
+};
+
+const assertStrictSchemaRecursively = (
+  schema: unknown,
+  label: string,
+  seen: Set<unknown> = new Set(),
+): void => {
+  if (!isSchemaRecord(schema) || seen.has(schema)) {
+    return;
+  }
+  seen.add(schema);
+
+  if (isSchemaRecord(schema.properties)) {
+    assertSchemaRequiredMatchesProperties(schema, label);
+    for (const [key, childSchema] of Object.entries(schema.properties)) {
+      assertStrictSchemaRecursively(childSchema, `${label}.properties.${key}`, seen);
+    }
+  }
+
+  if (Array.isArray(schema.items)) {
+    for (const [index, itemSchema] of schema.items.entries()) {
+      assertStrictSchemaRecursively(itemSchema, `${label}.items[${index}]`, seen);
+    }
+  } else if (schema.items !== undefined) {
+    assertStrictSchemaRecursively(schema.items, `${label}.items`, seen);
+  }
+};
 
 test("Agent chat strict schemas require every declared property", () => {
   const schemaPairs = [
@@ -93,6 +141,41 @@ test("Todd nested planning schemas require every declared item property", () => 
   assert.deepEqual(
     [...agentChatUpdateItem.required].sort(),
     Object.keys(agentChatUpdateItem.properties).sort(),
+  );
+});
+
+test("Exported agent, director, and shared schemas stay strict recursively", () => {
+  const schemaModules = [
+    ["agent", agentChatSchemaExports],
+    ["director", directorChatSchemaExports],
+    ["shared", sharedSchemaExports],
+  ] as const;
+
+  for (const [moduleLabel, schemaExports] of schemaModules) {
+    for (const [exportName, schema] of Object.entries(schemaExports)) {
+      if (isSchemaRecord(schema) && schema.type === "object") {
+        assertStrictSchemaRecursively(schema, `${moduleLabel}.${exportName}`);
+      }
+    }
+  }
+});
+
+test("Known nested schema regressions keep required keys aligned", () => {
+  assertSchemaRequiredMatchesProperties(
+    danAgentChatSchema.properties.draftOperations.items as SchemaObject,
+    "danAgentChatSchema.properties.draftOperations.items",
+  );
+  assertSchemaRequiredMatchesProperties(
+    danAgentChatSchema.properties.draftOperations.items.properties.threadMemberships.items as SchemaObject,
+    "danAgentChatSchema.properties.draftOperations.items.properties.threadMemberships.items",
+  );
+  assertSchemaRequiredMatchesProperties(
+    refreshMappingSchema.properties.currentCorePillars.items as SchemaObject,
+    "refreshMappingSchema.properties.currentCorePillars.items",
+  );
+  assertSchemaRequiredMatchesProperties(
+    refreshMappingSchema.properties.currentCorePillars.items.properties.children.items as SchemaObject,
+    "refreshMappingSchema.properties.currentCorePillars.items.properties.children.items",
   );
 });
 

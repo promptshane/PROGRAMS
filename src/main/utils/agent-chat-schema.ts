@@ -1,4 +1,10 @@
-import { buildStrictObjectSchema, toddVersionItemSchema, toddUpdateItemSchema, pingRawReportSchema } from "./shared-schema.ts";
+import {
+  buildStrictObjectSchema,
+  toddRoadmapSchema,
+  toddVersionItemSchema,
+  toddUpdateItemSchema,
+  pingRawReportSchema,
+} from "./shared-schema.ts";
 
 export const directorAgentChatSchema = buildStrictObjectSchema({
   response: { type: "string" },
@@ -29,6 +35,7 @@ export const toddVersionAgentChatSchema = buildStrictObjectSchema({
   currentState: { type: ["string", "null"] },
   idealState: { type: ["string", "null"] },
   confirmationSuggested: { type: "boolean" },
+  roadmap: { ...toddRoadmapSchema, type: ["object", "null"] as const },
   versions: {
     type: ["array", "null"] as const,
     items: toddVersionItemSchema,
@@ -46,6 +53,7 @@ export const toddUpdateAgentChatSchema = buildStrictObjectSchema({
   currentState: { type: ["string", "null"] },
   idealState: { type: ["string", "null"] },
   confirmationSuggested: { type: "boolean" },
+  roadmap: { ...toddRoadmapSchema, type: ["object", "null"] as const },
   updates: {
     type: ["array", "null"] as const,
     items: toddUpdateItemSchema,
@@ -54,6 +62,11 @@ export const toddUpdateAgentChatSchema = buildStrictObjectSchema({
     type: "array" as const,
     items: { type: "string" },
   },
+});
+
+const danThreadMembershipSchema = buildStrictObjectSchema({
+  threadName: { type: "string" },
+  role: { type: ["string", "null"] },
 });
 
 const danDraftPillarSchema = buildStrictObjectSchema({
@@ -73,10 +86,7 @@ const danDraftPillarSchema = buildStrictObjectSchema({
   },
   threadMemberships: {
     type: ["array", "null"] as const,
-    items: buildStrictObjectSchema({
-      threadName: { type: "string" },
-      role: { type: ["string", "null"] },
-    }),
+    items: danThreadMembershipSchema,
   },
   endState: { type: ["string", "null"] },
 });
@@ -98,44 +108,31 @@ const danDraftCoreDetailsSchema = buildStrictObjectSchema({
   },
 });
 
-const danDraftOperationSchema = {
-  type: "object" as const,
-  additionalProperties: false as const,
-  required: ["type"] as const,
-  properties: {
-    type: { type: "string" },
-    target: { type: ["string", "null"] },
-    value: { type: ["string", "null"] },
-    name: { type: ["string", "null"] },
-    previousName: { type: ["string", "null"] },
-    parentName: { type: ["string", "null"] },
-    pillarType: { type: ["string", "null"] },
-    function: { type: ["string", "null"] },
-    thesis: { type: ["string", "null"] },
-    fullFlow: { type: ["string", "null"] },
-    description: { type: ["string", "null"] },
-    assumptionText: { type: ["string", "null"] },
-    assumptionSource: { type: ["string", "null"] },
-    order: { type: ["number", "null"] },
-    connectedPillarNames: {
-      type: ["array", "null"] as const,
-      items: { type: "string" },
-    },
-    threadMemberships: {
-      type: ["array", "null"] as const,
-      items: {
-        type: "object" as const,
-        additionalProperties: false as const,
-        required: ["threadName"] as const,
-        properties: {
-          threadName: { type: "string" },
-          role: { type: ["string", "null"] },
-        },
-      },
-    },
-    endState: { type: ["string", "null"] },
+const danDraftOperationSchema = buildStrictObjectSchema({
+  type: { type: "string" },
+  target: { type: ["string", "null"] },
+  value: { type: ["string", "null"] },
+  name: { type: ["string", "null"] },
+  previousName: { type: ["string", "null"] },
+  parentName: { type: ["string", "null"] },
+  pillarType: { type: ["string", "null"] },
+  function: { type: ["string", "null"] },
+  thesis: { type: ["string", "null"] },
+  fullFlow: { type: ["string", "null"] },
+  description: { type: ["string", "null"] },
+  assumptionText: { type: ["string", "null"] },
+  assumptionSource: { type: ["string", "null"] },
+  order: { type: ["number", "null"] },
+  connectedPillarNames: {
+    type: ["array", "null"] as const,
+    items: { type: "string" },
   },
-};
+  threadMemberships: {
+    type: ["array", "null"] as const,
+    items: danThreadMembershipSchema,
+  },
+  endState: { type: ["string", "null"] },
+});
 
 export const danAgentChatSchema = buildStrictObjectSchema({
   response: { type: "string" },
@@ -202,30 +199,22 @@ export const refreshScanSchema = buildStrictObjectSchema({
   passToCreativeDirector: { type: ["string", "null"] },
 });
 
-const corePillarItemSchema = {
-  type: "object" as const,
-  properties: {
-    name: { type: "string" },
-    function: { type: ["string", "null"] },
-    thesis: { type: ["string", "null"] },
-    order: { type: "number" },
-    children: {
-      type: "array" as const,
-      items: {
-        type: "object",
-        properties: {
-          name: { type: "string" },
-          function: { type: ["string", "null"] },
-          order: { type: "number" },
-        },
-        required: ["name", "order"],
-        additionalProperties: false,
-      },
-    },
+const corePillarChildSchema = buildStrictObjectSchema({
+  name: { type: "string" },
+  function: { type: ["string", "null"] },
+  order: { type: "number" },
+});
+
+const corePillarItemSchema = buildStrictObjectSchema({
+  name: { type: "string" },
+  function: { type: ["string", "null"] },
+  thesis: { type: ["string", "null"] },
+  order: { type: "number" },
+  children: {
+    type: "array" as const,
+    items: corePillarChildSchema,
   },
-  required: ["name", "order"],
-  additionalProperties: false,
-};
+});
 
 export const refreshMappingSchema = buildStrictObjectSchema({
   response: { type: "string" },

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { sortPillarsByOrder } from "@shared/pillar-flow";
 import type { AgentCoreDetails, AgentSession, CorePillar } from "@shared/types";
 
@@ -15,76 +15,9 @@ export function CoreDetailsReport({
     threads: [],
   };
 
-  const functionSummary = safeCoreDetails.function?.summary.trim() ? safeCoreDetails.function.summary : "Not yet defined.";
-  const thesisSummary = safeCoreDetails.thesis?.summary.trim() ? safeCoreDetails.thesis.summary : "Not yet defined.";
-  const fullFlowSummary = safeCoreDetails.fullFlow?.summary.trim() ? safeCoreDetails.fullFlow.summary : "Not yet defined.";
-  const isFunctionAssumed = safeCoreDetails.function?.status === "assumed" || safeCoreDetails.function?.status === "edited";
-  const isThesisAssumed = safeCoreDetails.thesis?.status === "assumed" || safeCoreDetails.thesis?.status === "edited";
-  const isFullFlowAssumed = safeCoreDetails.fullFlow?.status === "assumed" || safeCoreDetails.fullFlow?.status === "edited";
-
   return (
     <div className="coreDetailsReport">
-      <article className="coreDetailCard coreDetailsReportSection">
-        <h4>Function</h4>
-        <p className={`coreDetailValue${isFunctionAssumed ? " assumedText" : ""}`}>{functionSummary}</p>
-      </article>
-      <article className="coreDetailCard coreDetailsReportSection">
-        <h4>Thesis</h4>
-        <p className={`coreDetailValue${isThesisAssumed ? " assumedText" : ""}`}>{thesisSummary}</p>
-      </article>
-      <article className="coreDetailCard coreDetailsReportSection coreDetailsReportSection-pillars">
-        <h4>Core Pillars</h4>
-        {safeCoreDetails.corePillars.length > 0 ? (
-          <ConceptThreadList pillars={safeCoreDetails.corePillars} />
-        ) : (
-          <p className="coreDetailEmpty">No core pillars have been confirmed yet.</p>
-        )}
-      </article>
-      <article className="coreDetailCard coreDetailsReportSection coreDetailsReportSection-flow">
-        <h4>Full flow</h4>
-        {safeCoreDetails.fullFlow ? (
-          <>
-            <p className={`coreDetailValue${isFullFlowAssumed ? " assumedText" : ""}`}>{fullFlowSummary}</p>
-            {safeCoreDetails.fullFlow.currentState ? (
-              <div className="pillarDetailRow">
-                <span className="pillarDetailLabel">Current state</span>
-                <span className={isFullFlowAssumed ? "assumedText" : ""}>{safeCoreDetails.fullFlow.currentState}</span>
-              </div>
-            ) : null}
-            {safeCoreDetails.fullFlow.finalGoal ? (
-              <div className="pillarDetailRow">
-                <span className="pillarDetailLabel">Final goal</span>
-                <span className={isFullFlowAssumed ? "assumedText" : ""}>{safeCoreDetails.fullFlow.finalGoal}</span>
-              </div>
-            ) : null}
-            {safeCoreDetails.fullFlow.steps && safeCoreDetails.fullFlow.steps.length > 0 ? (
-              <ol className="flowStepList">
-                {safeCoreDetails.fullFlow.steps.map((step) => (
-                  <li key={step.id} className="flowStepItem">
-                    <div>
-                      <div>{step.description}</div>
-                      {step.pillarIds.length > 0 ? (
-                        <div className="flowStepPillars">
-                          {step.pillarIds.map((pillarId) => {
-                            const pillar = safeCoreDetails.corePillars.find((candidate) => candidate.id === pillarId);
-                            return pillar ? (
-                              <span key={pillarId} className="flowStepPillarTag">
-                                {pillar.name}
-                              </span>
-                            ) : null;
-                          })}
-                        </div>
-                      ) : null}
-                    </div>
-                  </li>
-                ))}
-              </ol>
-            ) : null}
-          </>
-        ) : (
-          <p className="coreDetailEmpty">Not yet defined.</p>
-        )}
-      </article>
+      <ConceptOverview concept={safeCoreDetails} emptyLabel="Not yet defined." />
     </div>
   );
 }
@@ -186,7 +119,24 @@ export function ConceptThreadList({
   );
 }
 
-export type CorePillarsView = "Linear" | "Threads" | "Total";
+function ConceptOverviewSection({
+  title,
+  children,
+  className,
+}: {
+  title: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <details className={`agentSummaryDetails conceptOverviewDetails${className ? ` ${className}` : ""}`}>
+      <summary>{title}</summary>
+      <div className="conceptOverviewDetailsBody">
+        {children}
+      </div>
+    </details>
+  );
+}
 
 export function ConceptOverview({
   concept,
@@ -197,52 +147,83 @@ export function ConceptOverview({
   title?: string;
   emptyLabel: string;
 }) {
-  const [pillarsView, setPillarsView] = useState<CorePillarsView>("Threads");
-
   if (!concept) {
     return <p className="coreDetailEmpty">{emptyLabel}</p>;
   }
 
+  const rootTitle = title?.trim() || "Core Details";
+  const functionSummary = concept.function?.summary.trim() ? concept.function.summary : "Not yet defined.";
+  const thesisSummary = concept.thesis?.summary.trim() ? concept.thesis.summary : "Not yet defined.";
+  const fullFlowSummary = concept.fullFlow?.summary.trim() ? concept.fullFlow.summary : "Not yet defined.";
+  const isFunctionAssumed = concept.function?.status === "assumed" || concept.function?.status === "edited";
+  const isThesisAssumed = concept.thesis?.status === "assumed" || concept.thesis?.status === "edited";
+  const isFullFlowAssumed = concept.fullFlow?.status === "assumed" || concept.fullFlow?.status === "edited";
+
   return (
     <div className="conceptOverview">
-      {title ? <h5 className="conceptOverviewTitle">{title}</h5> : null}
-      <div className="conceptOverviewGrid">
-        <article className="coreDetailCard">
-          <h4>Function</h4>
-          <p className="coreDetailValue">{concept.function?.summary ?? "Not yet defined."}</p>
-        </article>
-        <article className="coreDetailCard">
-          <h4>Thesis</h4>
-          <p className="coreDetailValue">{concept.thesis?.summary ?? "Not yet defined."}</p>
-        </article>
-        <article className="coreDetailCard coreDetailCard-full">
-          <h4>User Experience</h4>
-          <p className="coreDetailValue">
-            {concept.fullFlow?.summary ?? "The full experience has not been described yet."}
-          </p>
-        </article>
-        <article className="coreDetailCard coreDetailCard-full">
-          <div className="corePillarsCardHeader">
-            <h4>Core-Pillars</h4>
-            <div className="corePillarsToggle">
-              {(["Linear", "Threads", "Total"] as CorePillarsView[]).map((opt) => (
-                <button
-                  key={opt}
-                  className={`corePillarsToggleBtn${pillarsView === opt ? " corePillarsToggleBtn--active" : ""}`}
-                  onClick={() => setPillarsView(opt)}
-                >
-                  {opt}
-                </button>
-              ))}
-            </div>
-          </div>
-          {concept.corePillars.length > 0 ? (
-            <ConceptThreadList pillars={concept.corePillars} />
-          ) : (
-            <p className="coreDetailEmpty">No core-pillars have been locked in yet.</p>
-          )}
-        </article>
-      </div>
+      <details className="agentSummaryDetails conceptOverviewDetails conceptOverviewDetails--root">
+        <summary>{rootTitle}</summary>
+        <div className="conceptOverviewDetailsBody">
+          <ConceptOverviewSection title="Function" className="conceptOverviewDetails--function">
+            <p className={`coreDetailValue${isFunctionAssumed ? " assumedText" : ""}`}>{functionSummary}</p>
+          </ConceptOverviewSection>
+
+          <ConceptOverviewSection title="Thesis" className="conceptOverviewDetails--thesis">
+            <p className={`coreDetailValue${isThesisAssumed ? " assumedText" : ""}`}>{thesisSummary}</p>
+          </ConceptOverviewSection>
+
+          <ConceptOverviewSection title="User Experience" className="conceptOverviewDetails--experience">
+            <p className={`coreDetailValue${isFullFlowAssumed ? " assumedText" : ""}`}>{fullFlowSummary}</p>
+            {concept.fullFlow ? (
+              <>
+                {concept.fullFlow.currentState ? (
+                  <div className="pillarDetailRow">
+                    <span className="pillarDetailLabel">Current state</span>
+                    <span className={isFullFlowAssumed ? "assumedText" : ""}>{concept.fullFlow.currentState}</span>
+                  </div>
+                ) : null}
+                {concept.fullFlow.finalGoal ? (
+                  <div className="pillarDetailRow">
+                    <span className="pillarDetailLabel">Final goal</span>
+                    <span className={isFullFlowAssumed ? "assumedText" : ""}>{concept.fullFlow.finalGoal}</span>
+                  </div>
+                ) : null}
+                {concept.fullFlow.steps && concept.fullFlow.steps.length > 0 ? (
+                  <ol className="flowStepList">
+                    {concept.fullFlow.steps.map((step) => (
+                      <li key={step.id} className="flowStepItem">
+                        <div>
+                          <div>{step.description}</div>
+                          {step.pillarIds.length > 0 ? (
+                            <div className="flowStepPillars">
+                              {step.pillarIds.map((pillarId) => {
+                                const pillar = concept.corePillars.find((candidate) => candidate.id === pillarId);
+                                return pillar ? (
+                                  <span key={pillarId} className="flowStepPillarTag">
+                                    {pillar.name}
+                                  </span>
+                                ) : null;
+                              })}
+                            </div>
+                          ) : null}
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                ) : null}
+              </>
+            ) : null}
+          </ConceptOverviewSection>
+
+          <ConceptOverviewSection title="Core-Pillars" className="conceptOverviewDetails--pillars">
+            {concept.corePillars.length > 0 ? (
+              <ConceptThreadList pillars={concept.corePillars} />
+            ) : (
+              <p className="coreDetailEmpty">No core-pillars have been locked in yet.</p>
+            )}
+          </ConceptOverviewSection>
+        </div>
+      </details>
     </div>
   );
 }

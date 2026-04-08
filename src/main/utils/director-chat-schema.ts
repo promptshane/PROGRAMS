@@ -1,4 +1,4 @@
-import { buildStrictObjectSchema, toddVersionItemSchema, toddUpdateItemSchema, toddSuccessChainStepSchema, toddNextUpdateSchema, pingRawReportSchema } from "./shared-schema.ts";
+import { buildStrictObjectSchema, toddVersionItemSchema, toddUpdateItemSchema, toddSuccessChainStepSchema, toddNextUpdateSchema, pingRawReportSchema, toddRoadmapSchema } from "./shared-schema.ts";
 
 const toddFeasibilityAssessmentSchema = buildStrictObjectSchema({
   area: { type: "string" },
@@ -37,6 +37,10 @@ export const directorToddVersionSchema = buildStrictObjectSchema({
   currentState: { type: ["string", "null"] },
   idealState: { type: ["string", "null"] },
   confirmationSuggested: { type: "boolean" },
+  roadmap: {
+    ...toddRoadmapSchema,
+    type: ["object", "null"] as const,
+  },
   versions: {
     type: ["array", "null"] as const,
     items: toddVersionItemSchema,
@@ -54,6 +58,10 @@ export const directorToddUpdateSchema = buildStrictObjectSchema({
   currentState: { type: ["string", "null"] },
   idealState: { type: ["string", "null"] },
   confirmationSuggested: { type: "boolean" },
+  roadmap: {
+    ...toddRoadmapSchema,
+    type: ["object", "null"] as const,
+  },
   updates: {
     type: ["array", "null"] as const,
     items: toddUpdateItemSchema,
@@ -142,6 +150,10 @@ export const directorToddRegenerateSchema = buildStrictObjectSchema({
   },
   nextUpdate: {
     ...toddNextUpdateSchema,
+    type: ["object", "null"] as const,
+  },
+  roadmap: {
+    ...toddRoadmapSchema,
     type: ["object", "null"] as const,
   },
   response: { type: "string" },

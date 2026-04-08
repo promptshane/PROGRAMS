@@ -155,8 +155,12 @@ import type {
   DanRawMemory,
   DanHistoryLogEntry,
   JeffMemory,
+  JeffManagerSummary,
+  JeffProjectStatusEntry,
   JeffOutcomeDecision,
   JeffOutcomeEntry,
+  MemoryResolution,
+  MemorySourceRef,
   PongMemory,
   PongValidationReport,
   TaggedNote,
@@ -205,6 +209,7 @@ import type {
   UsageCapture,
   ValidationResult,
   ToddCodebaseIndexedMap,
+  ToddIndexedMapSnapshot,
   ToddMemory,
   ToddSuccessChainStep,
   ToddNextUpdate,
@@ -242,6 +247,12 @@ import type {
   ToddUpdateKind,
   ToddUpdatePlanDraftPayload,
   ToddUpdatePlanSource,
+  ToddRoadmap,
+  ToddCurrentStateItem,
+  ToddEndStateItem,
+  ToddPathwayItem,
+  ToddPriorityUpdate,
+  ToddValidationRequest,
   UpdatePendingApprovalStatusInput,
 } from "@shared/types";
 
@@ -333,8 +344,34 @@ function isLargeModelSelection(
     : model === BIG_CODEX_MODEL;
 }
 
-function buildPingUpdatePrompt(update: VersionUpdate): string {
-  return `Update: ${update.title}\n\nDescription: ${update.description}`;
+function buildPingUpdatePrompt(input: {
+  update: VersionUpdate;
+  priorityUpdate: ToddPriorityUpdate | null;
+  currentStateItems: ToddCurrentStateItem[];
+}): string {
+  const priorityContext = input.priorityUpdate?.currentStateContext?.trim() || null;
+  const currentStateSummary = input.currentStateItems.length > 0
+    ? input.currentStateItems
+      .map((item) => `- [${item.itemStatus.toUpperCase()}] ${item.title}: ${item.description}`)
+      .join("\n")
+    : "";
+  const successDefinitions = input.priorityUpdate
+    ? [
+        input.priorityUpdate.successDefinition ? `Success: ${input.priorityUpdate.successDefinition}` : null,
+        input.priorityUpdate.partialSuccessDefinition ? `Partial Success: ${input.priorityUpdate.partialSuccessDefinition}` : null,
+        input.priorityUpdate.partialFailureDefinition ? `Partial Failure: ${input.priorityUpdate.partialFailureDefinition}` : null,
+        input.priorityUpdate.failureDefinition ? `Failure: ${input.priorityUpdate.failureDefinition}` : null,
+      ].filter(Boolean).join("\n")
+    : "";
+  const sections = [
+    `Priority Update: ${input.update.title}`,
+    "",
+    `Exact Scope: ${input.update.description}`,
+    priorityContext ? `\nCurrent State Context:\n${priorityContext}` : "",
+    currentStateSummary ? `\nCurrent-State Map:\n${currentStateSummary}` : "",
+    successDefinitions ? `\nOutcome Definitions:\n${successDefinitions}` : "",
+  ].filter((section) => section.length > 0);
+  return sections.join("\n");
 }
 
 function buildToddApprovedPingTaskSnapshot(
@@ -356,18 +393,29 @@ function buildToddApprovedPingTaskSnapshot(
     input.model,
     input.claudeModel,
   );
+  const roadmap = session.toddMemory.hardMemory ?? session.toddMemory.roadmap ?? null;
+  const priorityUpdate = roadmap?.priorityUpdate ?? null;
+  const currentStateItems = roadmap?.currentState ?? [];
+  const updateTitle = priorityUpdate?.title ?? input.update.title;
+  const updateDescription = priorityUpdate?.description ?? input.update.description;
+  const relevantPillarIds = priorityUpdate?.pillarIds ?? input.update.pillarIds ?? [];
+  const sourceRefs = priorityUpdate?.sourceRefs ?? [];
 
   return buildPingTaskSnapshot({
     source: "todd-approved-update",
     projectId: input.projectId,
     updateId: input.update.id,
-    updateTitle: input.update.title,
-    updateDescription: input.update.description,
-    originalUserRequest: resolveLatestHumanRequest(session, `${input.update.title}: ${input.update.description}`),
-    toddExplanation: input.update.description,
-    relevantPillarIds: input.update.pillarIds ?? [],
-    toddCodebaseMapSummary: session.toddMemory.codebaseIndexedMap?.summary ?? null,
-    coreDetailsContext: formatCoreDetails(session) || null,
+    updateTitle,
+    updateDescription,
+    originalUserRequest: resolveLatestHumanRequest(session, `${updateTitle}: ${updateDescription}`),
+    toddExplanation: updateDescription,
+    relevantPillarIds,
+    currentStateItems,
+    priorityUpdate,
+    sourceRefs,
+    indexedMap: session.toddMemory.codebaseIndexedMap ? { ...session.toddMemory.codebaseIndexedMap } : null,
+    toddCodebaseMapSummary: null,
+    coreDetailsContext: null,
     runtime: {
       provider: input.provider,
       model: pingModelSelections.execution.model,
@@ -1861,6 +1909,86 @@ const normalizeToddUpdatePlanSource = (value: unknown): ToddUpdatePlanSource =>
 const normalizeOptionalToddText = (value: unknown): string | null =>
   typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 
+const normalizeRoadmapUpdateKind = (value: unknown): "create" | "expand" | "refine" =>
+  value === "create" || value === "expand" || value === "refine" ? value : "create";
+
+const normalizeToddRoadmap = (raw: Record<string, unknown>): ToddRoadmap => {
+  const now = new Date().toISOString();
+
+  const currentState: ToddCurrentStateItem[] = Array.isArray(raw.currentState)
+    ? (raw.currentState as unknown[]).map((item) => {
+        const r = item as Record<string, unknown>;
+        return {
+          id: typeof r.id === "string" && r.id ? r.id : randomUUID(),
+          title: typeof r.title === "string" ? r.title.trim() : "Untitled",
+          description: typeof r.description === "string" ? r.description.trim() : "",
+          pillarIds: Array.isArray(r.pillarIds) ? (r.pillarIds as unknown[]).filter((p): p is string => typeof p === "string") : [],
+          itemStatus: r.itemStatus === "done" ? "done" : "tbd",
+          detailLines: Array.isArray(r.detailLines) ? (r.detailLines as unknown[]).filter((line): line is string => typeof line === "string") : [],
+          sourceRefs: Array.isArray(r.sourceRefs) ? (r.sourceRefs as MemorySourceRef[]).filter(Boolean) : [],
+        };
+      })
+    : [];
+
+  const endState: ToddEndStateItem[] = Array.isArray(raw.endState)
+    ? (raw.endState as unknown[]).map((item) => {
+        const r = item as Record<string, unknown>;
+        return {
+          id: typeof r.id === "string" && r.id ? r.id : randomUUID(),
+          title: typeof r.title === "string" ? r.title.trim() : "Untitled",
+          description: typeof r.description === "string" ? r.description.trim() : "",
+          pillarIds: Array.isArray(r.pillarIds) ? (r.pillarIds as unknown[]).filter((p): p is string => typeof p === "string") : [],
+          detailLines: Array.isArray(r.detailLines) ? (r.detailLines as unknown[]).filter((line): line is string => typeof line === "string") : [],
+          sourceRefs: Array.isArray(r.sourceRefs) ? (r.sourceRefs as MemorySourceRef[]).filter(Boolean) : [],
+        };
+      })
+    : [];
+
+  const pathway: ToddPathwayItem[] = Array.isArray(raw.pathway)
+    ? (raw.pathway as unknown[]).map((item, idx) => {
+        const r = item as Record<string, unknown>;
+        return {
+          id: typeof r.id === "string" && r.id ? r.id : randomUUID(),
+          title: typeof r.title === "string" ? r.title.trim() : "Untitled",
+          description: typeof r.description === "string" ? r.description.trim() : "",
+          pillarIds: Array.isArray(r.pillarIds) ? (r.pillarIds as unknown[]).filter((p): p is string => typeof p === "string") : [],
+          updateKind: normalizeRoadmapUpdateKind(r.updateKind),
+          order: typeof r.order === "number" ? r.order : idx,
+          detailLines: Array.isArray(r.detailLines) ? (r.detailLines as unknown[]).filter((line): line is string => typeof line === "string") : [],
+          sourceRefs: Array.isArray(r.sourceRefs) ? (r.sourceRefs as MemorySourceRef[]).filter(Boolean) : [],
+        };
+      })
+    : [];
+
+  let priorityUpdate: ToddPriorityUpdate | null = null;
+  const rawPu = raw.priorityUpdate && typeof raw.priorityUpdate === "object"
+    ? raw.priorityUpdate as Record<string, unknown>
+    : null;
+  if (rawPu) {
+    priorityUpdate = {
+      id: typeof rawPu.id === "string" && rawPu.id ? rawPu.id : randomUUID(),
+      title: typeof rawPu.title === "string" ? rawPu.title.trim() : "Priority Update",
+      description: typeof rawPu.description === "string" ? rawPu.description.trim() : "",
+      pillarIds: Array.isArray(rawPu.pillarIds) ? (rawPu.pillarIds as unknown[]).filter((p): p is string => typeof p === "string") : [],
+      updateKind: normalizeRoadmapUpdateKind(rawPu.updateKind),
+      currentStateContext: typeof rawPu.currentStateContext === "string" ? rawPu.currentStateContext.trim() : "",
+      successDefinition: normalizeOptionalToddText(rawPu.successDefinition),
+      partialSuccessDefinition: normalizeOptionalToddText(rawPu.partialSuccessDefinition),
+      partialFailureDefinition: normalizeOptionalToddText(rawPu.partialFailureDefinition),
+      failureDefinition: normalizeOptionalToddText(rawPu.failureDefinition),
+      sourceRefs: Array.isArray(rawPu.sourceRefs) ? (rawPu.sourceRefs as MemorySourceRef[]).filter(Boolean) : [],
+    };
+  }
+
+  return {
+    currentState,
+    endState,
+    pathway,
+    priorityUpdate,
+    generatedAt: typeof raw.generatedAt === "string" ? raw.generatedAt : now,
+  };
+};
+
 const isToddUpdatePlanDraftPayload = (payload: Record<string, unknown> | null | undefined): payload is ToddUpdatePlanDraftPayload =>
   Boolean(
     payload
@@ -2010,17 +2138,391 @@ const mergeTaggedNotes = (
   return result;
 };
 
+const buildLegacyMemorySourceRef = (
+  rawText: string,
+  directorId: DirectorId | null,
+  index = 0,
+): MemorySourceRef => ({
+  id: `legacy-source-${directorId ?? "unknown"}-${index}`,
+  messageId: null,
+  rawText,
+  directorId,
+  kind: "legacy",
+  createdAt: new Date(0).toISOString(),
+});
+
+const normalizeTaggedNotes = (
+  notes: TaggedNote[],
+  directorId: DirectorId | null,
+): TaggedNote[] =>
+  notes.map((note, index) => ({
+    ...note,
+    sourceRefs: note.sourceRefs?.length
+      ? note.sourceRefs
+      : [buildLegacyMemorySourceRef(note.content, directorId, index)],
+    resolution: note.resolution ?? null,
+  }));
+
+const mergeTaggedNoteCollections = (
+  ...collections: Array<TaggedNote[] | null | undefined>
+): TaggedNote[] => {
+  const merged: TaggedNote[] = [];
+  const seen = new Set<string>();
+  for (const collection of collections) {
+    for (const note of collection ?? []) {
+      const key = `${note.tag ?? "general"}::${note.content.trim()}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      merged.push(note);
+    }
+  }
+  return merged;
+};
+
+const resolveTaggedNotes = (
+  notes: TaggedNote[],
+  resolution: MemoryResolution,
+): TaggedNote[] =>
+  notes.map((note) => ({
+    ...note,
+    resolution,
+  }));
+
+const deriveFallbackPillarIds = (concept: AgentCoreDetails | null): string[] =>
+  (concept?.corePillars ?? [])
+    .map((pillar) => pillar.id)
+    .filter((pillarId) => typeof pillarId === "string" && pillarId.trim().length > 0);
+
+const ensureRoadmapItemPillarIds = (
+  pillarIds: string[] | null | undefined,
+  fallbackPillarIds: string[],
+): string[] => {
+  const normalized = Array.isArray(pillarIds)
+    ? pillarIds.filter((pillarId): pillarId is string => typeof pillarId === "string" && pillarId.trim().length > 0)
+    : [];
+  return normalized.length > 0 ? normalized : [...fallbackPillarIds];
+};
+
+const deriveLegacyToddFieldsFromRoadmap = (
+  roadmap: ToddRoadmap | null,
+  existing: ToddMemory,
+): Pick<ToddMemory, "currentState" | "endStateGoal" | "successChain" | "nextUpdate" | "futureUpdatePlan"> => {
+  if (!roadmap) {
+    return {
+      currentState: existing.currentState ?? null,
+      endStateGoal: existing.endStateGoal ?? null,
+      successChain: existing.successChain ?? [],
+      nextUpdate: existing.nextUpdate ?? null,
+      futureUpdatePlan: normalizeFutureUpdatePlan(existing.futureUpdatePlan ?? []),
+    };
+  }
+
+  const currentState = roadmap.currentState.length > 0
+    ? roadmap.currentState.map((item) => `${item.title}: ${item.description}`).join("\n")
+    : null;
+  const endStateGoal = roadmap.endState.length > 0
+    ? roadmap.endState.map((item) => `${item.title}: ${item.description}`).join("\n")
+    : null;
+  const successChain = roadmap.pathway.map((item, index) => {
+    const existingStep = existing.successChain?.find((step) => step.id === item.id || step.title === item.title) ?? null;
+    const satisfiedFromCurrentState = roadmap.currentState.some((stateItem) => stateItem.title === item.title && stateItem.itemStatus === "done");
+    return {
+      id: item.id,
+      title: item.title,
+      description: item.description,
+      order: item.order ?? index,
+      satisfied: existingStep?.satisfied ?? satisfiedFromCurrentState,
+      satisfiedAt: existingStep?.satisfiedAt ?? (satisfiedFromCurrentState ? roadmap.generatedAt : null),
+    };
+  });
+  const nextUpdate = roadmap.priorityUpdate
+    ? {
+        id: roadmap.priorityUpdate.id,
+        title: roadmap.priorityUpdate.title,
+        description: roadmap.priorityUpdate.description,
+        updateKind: roadmap.priorityUpdate.updateKind,
+        simplificationMode: null,
+        structuralReason: null,
+        supportsNextStep: null,
+        skillsNeeded: [],
+        dependencies: [],
+      }
+    : null;
+  const futureUpdatePlan = normalizeFutureUpdatePlan(
+    roadmap.pathway.map((item, index) => {
+      const existingUpdate = existing.futureUpdatePlan?.find((update) => update.id === item.id || update.title === item.title) ?? null;
+      const completed = roadmap.currentState.some((stateItem) => stateItem.title === item.title && stateItem.itemStatus === "done");
+      return {
+        id: item.id,
+        versionId: null,
+        title: item.title,
+        description: item.description,
+        order: item.order ?? index,
+        status: existingUpdate?.status ?? (completed ? "completed" : roadmap.priorityUpdate?.id === item.id ? "pending" : "pending"),
+        dependencies: existingUpdate?.dependencies ?? [],
+        pillarIds: item.pillarIds,
+        skillsNeeded: existingUpdate?.skillsNeeded ?? [],
+        updateKind: item.updateKind,
+        simplificationMode: existingUpdate?.simplificationMode ?? null,
+        structuralReason: existingUpdate?.structuralReason ?? null,
+        supportsNextStep: existingUpdate?.supportsNextStep ?? null,
+      };
+    }),
+  );
+
+  return {
+    currentState,
+    endStateGoal,
+    successChain,
+    nextUpdate,
+    futureUpdatePlan,
+  };
+};
+
+const hasToddRoadmapContent = (roadmap: ToddRoadmap | null | undefined): boolean =>
+  Boolean(
+    roadmap
+    && (
+      roadmap.currentState.length > 0
+      || roadmap.endState.length > 0
+      || roadmap.pathway.length > 0
+      || roadmap.priorityUpdate
+    ),
+  );
+
+const hasToddLegacyRoadmapContent = (toddMemory: ToddMemory): boolean =>
+  Boolean(
+    (toddMemory.currentState && toddMemory.currentState.trim().length > 0)
+    || (toddMemory.endStateGoal && toddMemory.endStateGoal.trim().length > 0)
+    || toddMemory.nextUpdate
+    || (toddMemory.futureUpdatePlan?.length ?? 0) > 0
+    || (toddMemory.successChain?.length ?? 0) > 0
+  );
+
+const buildToddRoadmapFromLegacy = (
+  toddMemory: ToddMemory,
+  fallbackPillarIds: string[],
+): ToddRoadmap | null => {
+  if (!hasToddLegacyRoadmapContent(toddMemory)) {
+    return null;
+  }
+
+  const now = new Date().toISOString();
+  const currentState: ToddCurrentStateItem[] = toddMemory.currentState
+    ? [{
+        id: randomUUID(),
+        title: "Current State",
+        description: toddMemory.currentState,
+        pillarIds: ensureRoadmapItemPillarIds([], fallbackPillarIds),
+        itemStatus: "tbd",
+        detailLines: [],
+        sourceRefs: [],
+      }]
+    : [];
+
+  const endState: ToddEndStateItem[] = toddMemory.endStateGoal
+    ? [{
+        id: randomUUID(),
+        title: "End State Goal",
+        description: toddMemory.endStateGoal,
+        pillarIds: ensureRoadmapItemPillarIds([], fallbackPillarIds),
+        detailLines: [],
+        sourceRefs: [],
+      }]
+    : [];
+
+  const pathway: ToddPathwayItem[] = (toddMemory.futureUpdatePlan ?? [])
+    .filter((update) => update.status !== "completed" && update.status !== "failed")
+    .map((update, index) => ({
+      id: update.id,
+      title: update.title,
+      description: update.description,
+      pillarIds: ensureRoadmapItemPillarIds(update.pillarIds, fallbackPillarIds),
+      updateKind: ((update.updateKind === "simplify" ? "refine" : update.updateKind) as "create" | "expand" | "refine" | null) ?? "create",
+      order: update.order ?? index,
+      detailLines: [],
+      sourceRefs: [],
+    }));
+
+  const prioritySource = toddMemory.nextUpdate
+    ? {
+        id: toddMemory.nextUpdate.id,
+        title: toddMemory.nextUpdate.title,
+        description: toddMemory.nextUpdate.description,
+        pillarIds: ensureRoadmapItemPillarIds([], fallbackPillarIds),
+        updateKind: ((toddMemory.nextUpdate.updateKind === "simplify" ? "refine" : toddMemory.nextUpdate.updateKind) as "create" | "expand" | "refine" | null) ?? "create",
+      }
+    : (() => {
+        const nextQueuedUpdate = (toddMemory.futureUpdatePlan ?? [])
+          .filter((update) => update.status === "pending" || update.status === "in_progress")
+          .slice()
+          .sort((left, right) => left.order - right.order)[0] ?? null;
+        if (!nextQueuedUpdate) {
+          return null;
+        }
+        return {
+          id: nextQueuedUpdate.id,
+          title: nextQueuedUpdate.title,
+          description: nextQueuedUpdate.description,
+          pillarIds: ensureRoadmapItemPillarIds(nextQueuedUpdate.pillarIds, fallbackPillarIds),
+          updateKind: ((nextQueuedUpdate.updateKind === "simplify" ? "refine" : nextQueuedUpdate.updateKind) as "create" | "expand" | "refine" | null) ?? "create",
+        };
+      })();
+
+  const priorityUpdate: ToddPriorityUpdate | null = prioritySource
+    ? {
+        ...prioritySource,
+        currentStateContext: toddMemory.currentState ?? "",
+        successDefinition: null,
+        partialSuccessDefinition: null,
+        partialFailureDefinition: null,
+        failureDefinition: null,
+        sourceRefs: [],
+      }
+    : null;
+
+  return {
+    currentState,
+    endState,
+    pathway,
+    priorityUpdate,
+    generatedAt: now,
+  };
+};
+
+const mergeToddRoadmapWithLegacy = (
+  roadmap: ToddRoadmap,
+  legacyRoadmap: ToddRoadmap | null,
+): ToddRoadmap => {
+  if (!legacyRoadmap) {
+    return roadmap;
+  }
+
+  return {
+    currentState: roadmap.currentState.length > 0 ? roadmap.currentState : legacyRoadmap.currentState,
+    endState: roadmap.endState.length > 0 ? roadmap.endState : legacyRoadmap.endState,
+    pathway: roadmap.pathway.length > 0 ? roadmap.pathway : legacyRoadmap.pathway,
+    priorityUpdate: roadmap.priorityUpdate ?? legacyRoadmap.priorityUpdate,
+    generatedAt: roadmap.generatedAt ?? legacyRoadmap.generatedAt,
+  };
+};
+
+const migrateToddMemoryToRoadmap = (
+  toddMemory: ToddMemory,
+  fallbackPillarIds: string[],
+): ToddMemory => {
+  const existingRoadmap = toddMemory.hardMemory ?? toddMemory.roadmap ?? null;
+  const legacyRoadmap = buildToddRoadmapFromLegacy(toddMemory, fallbackPillarIds);
+  if (existingRoadmap) {
+    const normalizedExistingRoadmap: ToddRoadmap = {
+      currentState: existingRoadmap.currentState.map((item) => ({
+        ...item,
+        pillarIds: ensureRoadmapItemPillarIds(item.pillarIds, fallbackPillarIds),
+        detailLines: item.detailLines ?? [],
+        sourceRefs: item.sourceRefs ?? [],
+      })),
+      endState: existingRoadmap.endState.map((item) => ({
+        ...item,
+        pillarIds: ensureRoadmapItemPillarIds(item.pillarIds, fallbackPillarIds),
+        detailLines: item.detailLines ?? [],
+        sourceRefs: item.sourceRefs ?? [],
+      })),
+      pathway: existingRoadmap.pathway.map((item) => ({
+        ...item,
+        pillarIds: ensureRoadmapItemPillarIds(item.pillarIds, fallbackPillarIds),
+        detailLines: item.detailLines ?? [],
+        sourceRefs: item.sourceRefs ?? [],
+      })),
+      priorityUpdate: existingRoadmap.priorityUpdate
+        ? {
+            ...existingRoadmap.priorityUpdate,
+            pillarIds: ensureRoadmapItemPillarIds(existingRoadmap.priorityUpdate.pillarIds, fallbackPillarIds),
+            sourceRefs: existingRoadmap.priorityUpdate.sourceRefs ?? [],
+          }
+        : null,
+      generatedAt: existingRoadmap.generatedAt,
+    };
+    const roadmap = hasToddRoadmapContent(normalizedExistingRoadmap)
+      ? mergeToddRoadmapWithLegacy(normalizedExistingRoadmap, legacyRoadmap)
+      : legacyRoadmap ?? normalizedExistingRoadmap;
+    const legacy = deriveLegacyToddFieldsFromRoadmap(roadmap, toddMemory);
+    return {
+      ...toddMemory,
+      hardMemory: roadmap,
+      roadmap,
+      ...legacy,
+    };
+  }
+
+  if (!legacyRoadmap) {
+    return {
+      ...toddMemory,
+      hardMemory: null,
+      roadmap: null,
+      futureUpdatePlan: normalizeFutureUpdatePlan(toddMemory.futureUpdatePlan ?? []),
+    };
+  }
+
+  const roadmap: ToddRoadmap = legacyRoadmap;
+  const legacy = deriveLegacyToddFieldsFromRoadmap(roadmap, toddMemory);
+  return { ...toddMemory, hardMemory: roadmap, roadmap, ...legacy };
+};
+
+const summarizeDanForJeff = (concept: AgentCoreDetails | null): string | null => {
+  if (!concept) {
+    return null;
+  }
+  const parts = [
+    concept.function?.summary ? `Function: ${concept.function.summary}` : null,
+    concept.thesis?.summary ? `Thesis: ${concept.thesis.summary}` : null,
+    concept.corePillars.length > 0 ? `Pillars: ${concept.corePillars.map((pillar) => pillar.name).join(", ")}` : null,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(" | ") : null;
+};
+
+const summarizeToddForJeff = (roadmap: ToddRoadmap | null): string | null => {
+  if (!roadmap) {
+    return null;
+  }
+  const priority = roadmap.priorityUpdate?.title ? `Priority: ${roadmap.priorityUpdate.title}` : null;
+  const current = roadmap.currentState.length > 0 ? `${roadmap.currentState.length} current-state item(s)` : null;
+  const pathway = roadmap.pathway.length > 0 ? `${roadmap.pathway.length} pathway item(s)` : null;
+  const end = roadmap.endState.length > 0 ? `${roadmap.endState.length} end-state item(s)` : null;
+  const parts = [priority, current, pathway, end].filter(Boolean);
+  return parts.length > 0 ? parts.join(" | ") : null;
+};
+
 const syncAgentMemories = (session: AgentSession): AgentSession => {
   const confirmedConcept = buildConfirmedConceptFromSession(session);
   const hasDanMemory = Boolean(session.danMemory);
   const hasToddMemory = Boolean(session.toddMemory);
   const hasPingMemory = Boolean(session.pingMemory);
+  const fallbackPillarIds = deriveFallbackPillarIds(confirmedConcept);
+  const danSeedSoftNotes = mergeTaggedNoteCollections(
+    hasDanMemory ? [...(session.danMemory!.softMemory ?? [])] : [],
+    hasDanMemory ? [...(session.danMemory!.notes ?? [])] : [],
+    hasDanMemory ? [...(session.danMemory!.toddHandoffNotes ?? [])] : [],
+    !hasDanMemory ? migrateToTaggedNotes(session.danInternalNotes ?? []) : [],
+  );
+  const danSoftMemory = normalizeTaggedNotes(danSeedSoftNotes, "creative-director");
+  const danBackupMemory = normalizeTaggedNotes(mergeTaggedNoteCollections(
+    hasDanMemory ? [...(session.danMemory!.backupMemory ?? [])] : [],
+    hasDanMemory ? migrateToTaggedNotes(session.danMemory!.archivedNotes ?? [], "likely-backup") : [],
+    !hasDanMemory ? migrateToTaggedNotes(session.danArchivedNotes ?? [], "likely-backup") : [],
+  ), "creative-director");
   const danMemory: DanMemory = {
-    confirmedConcept: confirmedConcept ?? session.danMemory?.confirmedConcept ?? null,
+    softMemory: danSoftMemory,
+    hardMemory: session.danMemory?.hardMemory ?? session.danMemory?.confirmedConcept ?? confirmedConcept ?? null,
+    backupMemory: danBackupMemory,
+    hardMemoryUpdatedAt: session.danMemory?.hardMemoryUpdatedAt ?? null,
+    latestReportId: session.danMemory?.latestReportId ?? null,
+    confirmedConcept: session.danMemory?.hardMemory ?? session.danMemory?.confirmedConcept ?? confirmedConcept ?? null,
     draftConcept: hasDanMemory ? session.danMemory!.draftConcept : session.danDraftCoreDetails ?? null,
     derivedConcept: hasDanMemory ? session.danMemory!.derivedConcept ?? null : null,
-    notes: migrateToTaggedNotes(hasDanMemory ? [...session.danMemory!.notes] : (session.danInternalNotes ?? [])),
-    derivedNotes: migrateToTaggedNotes(hasDanMemory ? [...(session.danMemory!.derivedNotes ?? [])] : []),
+    notes: danSoftMemory.filter((note) => note.tag !== "handoff-to-todd"),
+    derivedNotes: normalizeTaggedNotes(migrateToTaggedNotes(hasDanMemory ? [...(session.danMemory!.derivedNotes ?? [])] : []), "creative-director"),
     sideNotes: hasDanMemory ? [...session.danMemory!.sideNotes] : session.danSideNotes ?? [],
     draftChangeSummary: hasDanMemory ? [...session.danMemory!.draftChangeSummary] : session.danDraftChangeSummary ?? [],
     draftStatus: hasDanMemory ? session.danMemory!.draftStatus : session.danDraftStatus ?? null,
@@ -2028,19 +2530,53 @@ const syncAgentMemories = (session: AgentSession): AgentSession => {
     fullExperienceDescription: session.danMemory?.fullExperienceDescription
       ?? confirmedConcept?.fullFlow?.summary
       ?? null,
-    archivedNotes: hasDanMemory ? [...session.danMemory!.archivedNotes] : session.danArchivedNotes ?? [],
+    archivedNotes: danBackupMemory.map((note) => note.content),
     deletedNotes: hasDanMemory ? [...session.danMemory!.deletedNotes] : session.deletedNotes ?? [],
     rawMemories: hasDanMemory ? [...(session.danMemory!.rawMemories ?? [])] : [],
     forgottenMemories: hasDanMemory
       ? [...(session.danMemory!.forgottenMemories ?? [])]
       : [...(session.danSideNotes ?? []), ...(session.deletedNotes ?? [])],
     creativeHistory: hasDanMemory ? [...(session.danMemory!.creativeHistory ?? [])] : [],
-    toddHandoffNotes: migrateToTaggedNotes(hasDanMemory ? [...(session.danMemory!.toddHandoffNotes ?? [])] : [], "handoff-to-todd"),
+    toddHandoffNotes: danSoftMemory.filter((note) => note.tag === "handoff-to-todd"),
     threads: hasDanMemory ? [...(session.danMemory!.threads ?? [])] : [],
   };
 
-  const toddMemory: ToddMemory = {
+  const pendingHandoffNotes = hasToddMemory && session.toddMemory!.pendingHandoff
+    ? session.toddMemory!.pendingHandoff.rawInputs.map((input, index): TaggedNote => ({
+        id: `todd-handoff-${index}`,
+        content: input,
+        tag: "handoff-to-todd",
+        createdAt: session.toddMemory!.pendingHandoff!.receivedAt,
+        sourceRefs: [
+          {
+            id: `todd-handoff-source-${index}`,
+            messageId: null,
+            rawText: input,
+            directorId: "creative-director",
+            kind: "handoff",
+            createdAt: session.toddMemory!.pendingHandoff!.receivedAt,
+          },
+        ],
+        resolution: null,
+      }))
+    : [];
+  const toddSoftMemory = normalizeTaggedNotes(mergeTaggedNoteCollections(
+    hasToddMemory ? [...(session.toddMemory!.softMemory ?? [])] : [],
+    hasToddMemory ? [...(session.toddMemory!.notes ?? [])] : [],
+    pendingHandoffNotes,
+  ), "rd-director");
+  const toddBackupMemory = normalizeTaggedNotes(mergeTaggedNoteCollections(
+    hasToddMemory ? [...(session.toddMemory!.backupMemory ?? [])] : [],
+    hasToddMemory ? [...(session.toddMemory!.backupNotes ?? [])] : [],
+  ), "rd-director");
+  const toddMemoryBase: ToddMemory = {
+    softMemory: toddSoftMemory,
+    hardMemory: hasToddMemory ? (session.toddMemory!.hardMemory ?? session.toddMemory!.roadmap ?? null) : null,
+    backupMemory: toddBackupMemory,
+    hardMemoryUpdatedAt: hasToddMemory ? session.toddMemory!.hardMemoryUpdatedAt ?? null : null,
+    latestReportId: hasToddMemory ? session.toddMemory!.latestReportId ?? null : null,
     confirmedConcept: danMemory.confirmedConcept,
+    roadmap: hasToddMemory ? (session.toddMemory!.hardMemory ?? session.toddMemory!.roadmap ?? null) : null,
     currentState: hasToddMemory ? (session.toddMemory!.currentState ?? null) : null,
     endStateGoal: hasToddMemory ? (session.toddMemory!.endStateGoal ?? null) : null,
     successChain: hasToddMemory ? (session.toddMemory!.successChain ?? []) : [],
@@ -2051,33 +2587,77 @@ const syncAgentMemories = (session: AgentSession): AgentSession => {
     previousUpdateLog: hasToddMemory ? [...session.toddMemory!.previousUpdateLog] : [],
     troubleLog: hasToddMemory ? [...session.toddMemory!.troubleLog] : [],
     codebaseIndexedMap: buildToddCodebaseMapFromSession(session, hasToddMemory ? session.toddMemory!.codebaseIndexedMap ?? null : null),
-    notes: migrateToTaggedNotes(hasToddMemory ? [...(session.toddMemory!.notes ?? [])] : []),
-    pendingHandoff: hasToddMemory ? session.toddMemory!.pendingHandoff ?? null : null,
-    backupNotes: migrateToTaggedNotes(hasToddMemory ? [...(session.toddMemory!.backupNotes ?? [])] : [], "likely-backup"),
+    notes: toddSoftMemory,
+    pendingHandoff: null,
+    backupNotes: toddBackupMemory,
   };
+  const toddMemory = migrateToddMemoryToRoadmap(toddMemoryBase, fallbackPillarIds);
 
   const pingMemory: PingMemory = {
     activeUpdateId: hasPingMemory ? session.pingMemory!.activeUpdateId : null,
     activeTask: hasPingMemory ? session.pingMemory!.activeTask : session.pingTaskContext?.currentTask ?? null,
     context: hasPingMemory ? session.pingMemory!.context : session.pingTaskContext?.toddUpdateExplanation ?? null,
     codebaseMapSummary: hasPingMemory ? session.pingMemory!.codebaseMapSummary : toddMemory.codebaseIndexedMap?.summary ?? null,
+    latestPlanReport: hasPingMemory ? session.pingMemory!.latestPlanReport ?? null : null,
+    latestIndexedMap: hasPingMemory ? session.pingMemory!.latestIndexedMap ?? (toddMemory.codebaseIndexedMap ? { ...toddMemory.codebaseIndexedMap } : null) : (toddMemory.codebaseIndexedMap ? { ...toddMemory.codebaseIndexedMap } : null),
     latestRawReport: hasPingMemory ? session.pingMemory!.latestRawReport : null,
     latestJeffReport: hasPingMemory ? session.pingMemory!.latestJeffReport : null,
     currentRun: hasPingMemory ? session.pingMemory!.currentRun ?? null : null,
   };
 
   const hasJeffMemory = Boolean(session.jeffMemory);
+  const currentProjectStatus = hasJeffMemory
+    ? session.jeffMemory!.currentProjectStatus ?? session.jeffMemory!.projectStatusHistory?.at(-1) ?? null
+    : null;
+  const managerSummary: JeffManagerSummary = {
+    danSummary: summarizeDanForJeff(danMemory.hardMemory),
+    toddSummary: summarizeToddForJeff(toddMemory.hardMemory),
+    currentProjectStatus: currentProjectStatus?.summary ?? null,
+  };
   const jeffMemory: JeffMemory = {
+    softMemory: normalizeTaggedNotes(mergeTaggedNoteCollections(
+      hasJeffMemory ? [...(session.jeffMemory!.softMemory ?? [])] : [],
+      hasJeffMemory ? [...(session.jeffMemory!.notes ?? [])] : [],
+    ), "project-manager"),
+    hardMemory: managerSummary,
+    backupMemory: normalizeTaggedNotes(mergeTaggedNoteCollections(
+      hasJeffMemory ? [...(session.jeffMemory!.backupMemory ?? [])] : [],
+      hasJeffMemory ? [...(session.jeffMemory!.backupNotes ?? [])] : [],
+    ), "project-manager"),
+    hardMemoryUpdatedAt: hasJeffMemory ? session.jeffMemory!.hardMemoryUpdatedAt ?? null : null,
+    latestReportId: hasJeffMemory ? session.jeffMemory!.latestReportId ?? null : null,
     pendingReports: hasJeffMemory ? [...(session.jeffMemory!.pendingReports ?? [])] : [],
     pendingValidations: hasJeffMemory ? [...(session.jeffMemory!.pendingValidations ?? [])] : [],
     outcomeLog: hasJeffMemory ? [...(session.jeffMemory!.outcomeLog ?? [])] : [],
-    notes: migrateToTaggedNotes(hasJeffMemory ? [...(session.jeffMemory!.notes ?? [])] : []),
-    backupNotes: migrateToTaggedNotes(hasJeffMemory ? [...(session.jeffMemory!.backupNotes ?? [])] : [], "likely-backup"),
+    managerSummary,
+    projectStatusHistory: hasJeffMemory ? [...(session.jeffMemory!.projectStatusHistory ?? [])] : [],
+    currentProjectStatus,
+    notes: normalizeTaggedNotes(mergeTaggedNoteCollections(
+      hasJeffMemory ? [...(session.jeffMemory!.softMemory ?? [])] : [],
+      hasJeffMemory ? [...(session.jeffMemory!.notes ?? [])] : [],
+    ), "project-manager"),
+    backupNotes: normalizeTaggedNotes(mergeTaggedNoteCollections(
+      hasJeffMemory ? [...(session.jeffMemory!.backupMemory ?? [])] : [],
+      hasJeffMemory ? [...(session.jeffMemory!.backupNotes ?? [])] : [],
+    ), "project-manager"),
   };
 
   const hasPongMemory = Boolean(session.pongMemory);
+  const validationRequest: ToddValidationRequest | null = hasPongMemory
+    ? session.pongMemory!.validationRequest ?? (session.pongMemory!.jeffInstruction
+      ? {
+          id: "legacy-validation-request",
+          instruction: session.pongMemory!.jeffInstruction,
+          updateId: session.pingMemory?.currentRun?.task.updateId ?? session.pingMemory?.latestRawReport?.updateId ?? null,
+          relevantPillarIds: session.pongTaskContext?.relevantPillarIds ?? [],
+          sourceRefs: [buildLegacyMemorySourceRef(session.pongMemory!.jeffInstruction, "rd-director")],
+          createdAt: new Date(0).toISOString(),
+        }
+      : null)
+    : null;
   const pongMemory: PongMemory = {
-    jeffInstruction: hasPongMemory ? session.pongMemory!.jeffInstruction ?? null : null,
+    jeffInstruction: validationRequest?.instruction ?? null,
+    validationRequest,
     previousValidationReports: hasPongMemory ? [...(session.pongMemory!.previousValidationReports ?? [])] : [],
     latestValidationReport: hasPongMemory ? session.pongMemory!.latestValidationReport ?? null : null,
     screenshotPaths: hasPongMemory ? [...(session.pongMemory!.screenshotPaths ?? [])] : [],
@@ -2095,7 +2675,7 @@ const syncAgentMemories = (session: AgentSession): AgentSession => {
   session.danDraftCoreDetails = danMemory.draftConcept;
   session.danDraftChangeSummary = [...danMemory.draftChangeSummary];
   session.danDraftStatus = danMemory.draftStatus;
-  session.danArchivedNotes = [...danMemory.archivedNotes];
+  session.danArchivedNotes = [...danMemory.backupMemory.map((note) => note.content)];
   session.deletedNotes = [...danMemory.deletedNotes];
   session.automation = buildDefaultAutomationState(session.automation);
   return session;
@@ -2162,6 +2742,10 @@ const buildPingTaskSnapshot = (input: {
   originalUserRequest: string;
   toddExplanation?: string | null;
   relevantPillarIds?: string[];
+  currentStateItems?: ToddCurrentStateItem[];
+  priorityUpdate?: ToddPriorityUpdate | null;
+  sourceRefs?: MemorySourceRef[];
+  indexedMap?: ToddIndexedMapSnapshot | null;
   toddCodebaseMapSummary?: string | null;
   coreDetailsContext?: string | null;
   runtime: PingRuntimeSnapshot;
@@ -2175,6 +2759,10 @@ const buildPingTaskSnapshot = (input: {
   originalUserRequest: input.originalUserRequest,
   toddExplanation: input.toddExplanation ?? null,
   relevantPillarIds: input.relevantPillarIds ?? [],
+  currentStateItems: input.currentStateItems ?? [],
+  priorityUpdate: input.priorityUpdate ?? null,
+  sourceRefs: input.sourceRefs ?? [],
+  indexedMap: input.indexedMap ?? null,
   toddCodebaseMapSummary: input.toddCodebaseMapSummary ?? null,
   coreDetailsContext: input.coreDetailsContext ?? null,
   runtime: input.runtime,
@@ -2487,6 +3075,202 @@ const rerouteRestrictedAgentTarget = (directorId: DirectorId | null): DirectorId
     : directorId
 );
 
+const isToddExecutorDirector = (directorId: DirectorId | null): boolean =>
+  directorId === "programming-director" || directorId === "validation-director";
+
+const coerceAllowedDirectorHandoff = (
+  fromDirectorId: DirectorId,
+  handoffTo: DirectorId | null,
+): DirectorId | null => {
+  if (!handoffTo) {
+    return null;
+  }
+
+  if (fromDirectorId === "project-manager") {
+    return handoffTo === "creative-director" || handoffTo === "rd-director" ? handoffTo : null;
+  }
+
+  if (fromDirectorId === "creative-director") {
+    return handoffTo === "rd-director" ? handoffTo : null;
+  }
+
+  if (fromDirectorId === "rd-director") {
+    return handoffTo === "project-manager" || handoffTo === "programming-director" || handoffTo === "validation-director"
+      ? handoffTo
+      : null;
+  }
+
+  if (fromDirectorId === "programming-director" || fromDirectorId === "validation-director") {
+    return handoffTo === "rd-director" ? handoffTo : null;
+  }
+
+  return null;
+};
+
+const getToddRoadmap = (session: AgentSession): ToddRoadmap | null =>
+  session.toddMemory.hardMemory ?? session.toddMemory.roadmap ?? null;
+
+const findToddTrackedUpdate = (
+  session: AgentSession,
+  updateId: string | null,
+  updateTitle: string | null,
+): VersionUpdate | null => {
+  if (!updateId && !updateTitle) {
+    return null;
+  }
+
+  return session.toddMemory.futureUpdatePlan.find((update) =>
+    (updateId && update.id === updateId) || (updateTitle && update.title === updateTitle)
+  ) ?? null;
+};
+
+const buildCompatibilityUpdateFromPriority = (
+  session: AgentSession,
+  priorityUpdate: ToddPriorityUpdate,
+): VersionUpdate => {
+  const tracked = findToddTrackedUpdate(session, priorityUpdate.id, priorityUpdate.title);
+  return {
+    id: tracked?.id ?? priorityUpdate.id,
+    versionId: tracked?.versionId ?? null,
+    title: priorityUpdate.title,
+    description: priorityUpdate.description,
+    order: tracked?.order ?? 0,
+    status: tracked?.status ?? "pending",
+    dependencies: tracked?.dependencies ?? [],
+    pillarIds: priorityUpdate.pillarIds,
+    skillsNeeded: tracked?.skillsNeeded ?? [],
+    updateKind: priorityUpdate.updateKind,
+    simplificationMode: tracked?.simplificationMode ?? null,
+    structuralReason: tracked?.structuralReason ?? null,
+    supportsNextStep: tracked?.supportsNextStep ?? null,
+  };
+};
+
+const upsertToddTrackedUpdate = (
+  session: AgentSession,
+  update: VersionUpdate,
+): VersionUpdate => {
+  const existingIndex = session.toddMemory.futureUpdatePlan.findIndex((item) =>
+    item.id === update.id || item.title === update.title
+  );
+
+  if (existingIndex >= 0) {
+    const existing = session.toddMemory.futureUpdatePlan[existingIndex];
+    const merged: VersionUpdate = {
+      ...existing,
+      ...update,
+      dependencies: update.dependencies ?? existing.dependencies ?? [],
+      pillarIds: update.pillarIds ?? existing.pillarIds ?? [],
+      skillsNeeded: update.skillsNeeded ?? existing.skillsNeeded ?? [],
+    };
+    session.toddMemory.futureUpdatePlan[existingIndex] = merged;
+    session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
+    return merged;
+  }
+
+  session.toddMemory.futureUpdatePlan = normalizeFutureUpdatePlan([
+    ...session.toddMemory.futureUpdatePlan,
+    update,
+  ]);
+  session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
+  return session.toddMemory.futureUpdatePlan.find((item) => item.id === update.id) ?? update;
+};
+
+const updateToddRoadmapPriorityStatus = (
+  session: AgentSession,
+  decision: JeffProjectStatusEntry["status"],
+): void => {
+  const roadmap = getToddRoadmap(session);
+  const priorityUpdate = roadmap?.priorityUpdate;
+  if (!roadmap || !priorityUpdate) {
+    return;
+  }
+
+  if (decision === "success" || decision === "partial-success") {
+    const existingItemIndex = roadmap.currentState.findIndex((item) => item.id === priorityUpdate.id || item.title === priorityUpdate.title);
+    const nextCurrentStateItem: ToddCurrentStateItem = {
+      id: priorityUpdate.id,
+      title: priorityUpdate.title,
+      description: priorityUpdate.description,
+      pillarIds: [...priorityUpdate.pillarIds],
+      itemStatus: decision === "success" ? "done" : "tbd",
+      detailLines: roadmap.currentState[existingItemIndex]?.detailLines ?? [],
+      sourceRefs: priorityUpdate.sourceRefs ?? roadmap.currentState[existingItemIndex]?.sourceRefs ?? [],
+    };
+    if (existingItemIndex >= 0) {
+      roadmap.currentState[existingItemIndex] = nextCurrentStateItem;
+    } else {
+      roadmap.currentState = [...roadmap.currentState, nextCurrentStateItem];
+    }
+  }
+
+  if (decision === "success") {
+    const remainingPathway = roadmap.pathway
+      .filter((item) => item.id !== priorityUpdate.id)
+      .sort((left, right) => left.order - right.order)
+      .map((item, index) => ({ ...item, order: index }));
+    const nextPriority = remainingPathway[0] ?? null;
+    roadmap.pathway = remainingPathway;
+    roadmap.priorityUpdate = nextPriority
+      ? {
+          id: nextPriority.id,
+          title: nextPriority.title,
+          description: nextPriority.description,
+          pillarIds: [...nextPriority.pillarIds],
+          updateKind: nextPriority.updateKind,
+          currentStateContext: roadmap.currentState
+            .map((item) => `${item.title}: ${item.description}`)
+            .join("\n"),
+          successDefinition: null,
+          partialSuccessDefinition: null,
+          partialFailureDefinition: null,
+          failureDefinition: null,
+          sourceRefs: nextPriority.sourceRefs ?? [],
+        }
+      : null;
+  }
+
+  roadmap.generatedAt = new Date().toISOString();
+  session.toddMemory.hardMemory = roadmap;
+  session.toddMemory.roadmap = roadmap;
+};
+
+const refreshJeffManagerMemory = (session: AgentSession): void => {
+  const managerSummary: JeffManagerSummary = {
+    danSummary: summarizeDanForJeff(session.danMemory.hardMemory ?? session.danMemory.confirmedConcept ?? null),
+    toddSummary: summarizeToddForJeff(getToddRoadmap(session)),
+    currentProjectStatus: session.jeffMemory.currentProjectStatus?.summary ?? null,
+  };
+  session.jeffMemory.managerSummary = managerSummary;
+  session.jeffMemory.hardMemory = managerSummary;
+};
+
+const appendJeffProjectStatusEntry = (
+  session: AgentSession,
+  input: {
+    summary: string;
+    status: JeffProjectStatusEntry["status"];
+    reportId: string | null;
+    sourceDirectorId: DirectorId | null;
+  },
+): JeffProjectStatusEntry => {
+  const entry: JeffProjectStatusEntry = {
+    id: randomUUID(),
+    summary: input.summary,
+    status: input.status,
+    reportId: input.reportId,
+    sourceDirectorId: input.sourceDirectorId,
+    createdAt: new Date().toISOString(),
+  };
+  session.jeffMemory.currentProjectStatus = entry;
+  session.jeffMemory.projectStatusHistory = [
+    ...(session.jeffMemory.projectStatusHistory ?? []),
+    entry,
+  ];
+  refreshJeffManagerMemory(session);
+  return entry;
+};
+
 const buildUsageCapture = (
   provider: AiProvider,
   usage: UsageSnapshot,
@@ -2583,7 +3367,21 @@ const formatToddPendingHandoffPrompt = (
   const moreCount = pendingHandoff.rawInputs.length - Math.min(pendingHandoff.rawInputs.length, 3);
   const moreLine = moreCount > 0 ? `\n- ...and ${moreCount} more handoff note(s)` : "";
 
-  return `\nPending Handoff from Dan:\nSummary: ${pendingHandoff.summary}\nContext: ${pendingHandoff.context}\nKey notes:\n${excerpt}${moreLine}\nReceived: ${pendingHandoff.receivedAt}\n\nAcknowledge this handoff once if it matters to the reply. After this response it will move to backup memory automatically.\n`;
+  return `\nLegacy Dan Handoff:\nSummary: ${pendingHandoff.summary}\nContext: ${pendingHandoff.context}\nKey notes:\n${excerpt}${moreLine}\nReceived: ${pendingHandoff.receivedAt}\n\nTreat this as Todd soft memory that still needs manual processing.\n`;
+};
+
+const formatToddSoftMemoryPrompt = (
+  softMemory: TaggedNote[] | null | undefined,
+  pendingHandoff: ToddMemory["pendingHandoff"],
+): string => {
+  const softMemoryLines = (softMemory ?? [])
+    .map((note) => `- ${clipMemoryText(note.content, 220)}`);
+  const legacySection = formatToddPendingHandoffPrompt(pendingHandoff);
+  if (softMemoryLines.length === 0) {
+    return legacySection;
+  }
+
+  return `\nTodd Soft Memory (manual processing required):\n${softMemoryLines.join("\n")}\n${legacySection}`;
 };
 
 const archiveToddPendingHandoff = (
@@ -3745,14 +4543,13 @@ You are in a team agent chat. Your role:
 - You have access to web search and web fetch tools for this turn. Use them when the request depends on current external facts.
 - Keep "response" conversational and direct
 - Provide "generalSummary" and "projectSummary" only as external-research summaries for this turn
-- Set handoffTo to null unless another director needs to act on your findings
+- Jeff manages user-facing coordination. Only set handoffTo when Jeff should coordinate next, or when Ping/Pong should execute or validate under your direction.
+- If a concept gap blocks technical planning, explain it plainly in "response" and keep handoffTo null unless Jeff explicitly needs to step in.
 - When you finish your current function, end your response with a brief completion line: "[Done: <1-sentence summary of what you accomplished and any next step>]"
 
 Valid director IDs for handoff (use the exact ID string, not the name):
 - "project-manager" (Jeff)
-- "creative-director" (Dan)
 - "programming-director" (Ping)
-- "validation-director" (Pong)
 - "validation-director" (Pong)
 
 Current project status:
@@ -3765,7 +4562,10 @@ ${conversationSection}
 ${buildAgentChatResponseContract(directorId, mode)}`;
     }
 
-    const toddPendingHandoff = formatToddPendingHandoffPrompt(session.toddMemory?.pendingHandoff ?? null);
+    const toddSoftMemory = formatToddSoftMemoryPrompt(
+      session.toddMemory?.softMemory ?? session.toddMemory?.notes ?? [],
+      session.toddMemory?.pendingHandoff ?? null,
+    );
     return `You are Todd, the R&D Director for "${projectName}".
 You are in a team agent chat. Your role:
 - Analyze technical questions, repo architecture, and implementation risks
@@ -3773,7 +4573,8 @@ You are in a team agent chat. Your role:
 - Assess feasibility and make recommendations
 - Plan only from confirmed concept details plus your own codebase map and logs
 - Dan owns conceptual truth. Treat confirmed concept details as read-only source of truth from Dan.
-- If the user changes conceptual goals, asks for creative reinterpretation, or exposes a concept gap, set handoffTo to "creative-director" and explain why.
+- Jeff manages user-facing coordination. Only set handoffTo when Jeff should coordinate next, or when Ping/Pong should execute or validate under your direction.
+- If a concept gap blocks technical planning, explain it plainly in "response" and keep handoffTo null unless Jeff explicitly needs to step in.
 - Keep "response" conversational and direct
 - Do not use external web research summaries in this mode
 - Set handoffTo to null unless another director needs to act on your findings
@@ -3781,15 +4582,15 @@ You are in a team agent chat. Your role:
 
 Valid director IDs for handoff (use the exact ID string, not the name):
 - "project-manager" (Jeff)
-- "creative-director" (Dan)
 - "programming-director" (Ping)
+- "validation-director" (Pong)
 
 Current project status:
 ${statusContext}
 
 ${codebaseSummary}
 ${toddCoreContext}
-${toddPlanSection ? `\nPlanning State:\n${toddPlanSection}\n` : ""}${futureUpdateSection}${toddPendingHandoff}
+${toddPlanSection ? `\nPlanning State:\n${toddPlanSection}\n` : ""}${futureUpdateSection}${toddSoftMemory}
 ${stateContext}
 ${conversationSection}
 ${buildAgentChatResponseContract(directorId, mode)}`;
@@ -4017,7 +4818,10 @@ Respond as JSON: {"response": string, "routeTo": string|null, "routeReason": str
     }
 
     case "rd-director": {
-      const toddPendingHandoffDm = formatToddPendingHandoffPrompt(session.toddMemory?.pendingHandoff ?? null);
+      const toddSoftMemoryDm = formatToddSoftMemoryPrompt(
+        session.toddMemory?.softMemory ?? session.toddMemory?.notes ?? [],
+        session.toddMemory?.pendingHandoff ?? null,
+      );
       const toddNotesSectionDm = (session.toddMemory?.notes ?? []).length > 0
         ? `\nPlanning Notes (working assumptions):\n${session.toddMemory!.notes.map((note) => `- ${typeof note === "string" ? note : note.content}`).join("\n")}`
         : "";
@@ -4032,12 +4836,13 @@ You are in Research mode — researching what is possible given the user's const
 - Recommend stack/technology decisions
 - Lock in exactly what technical bridges/APIs are needed for the total function
 - Plan only from confirmed concept details plus your current codebase map
-- Dan owns the concept. If the user changes conceptual goals, asks for creative reinterpretation, or you hit a concept gap, hand the turn back to Dan.
+- Dan owns the concept. If a concept gap blocks technical planning, explain it plainly in "response" and keep handoffTo null unless Jeff explicitly needs to coordinate next.
+- Only use handoffTo for Jeff, Ping, or Pong.
 - Use "notesToAppend" to store planning notes and working assumptions as soft memory. Use [] when nothing new should be stored.
 
 ${coreContext}
 ${toddCodebaseContext}
-${feasContext}${toddPendingHandoffDm}${toddNotesSectionDm}
+${feasContext}${toddSoftMemoryDm}${toddNotesSectionDm}
 ${conversationSection}
 When you have feasibility assessments to propose, include them in the feasibilityAssessments array. Each item must include area, assessment, complexity (low/medium/high), stackRecommendation, and costNotes. Use null for stackRecommendation or costNotes when they do not apply. Set feasibilityAssessments to null if just chatting.
 
@@ -4057,17 +4862,20 @@ You are in Version Planning mode — outlining the version roadmap. Your role:
 - V2 features a functional user experience
 - V3 features a polished releasable state
 - Use only confirmed concept details plus the codebase map to shape the roadmap order
-- Dan owns the concept. If the user changes conceptual goals, asks for creative reinterpretation, or you hit a concept gap, hand the turn back to Dan.
+- Dan owns the concept. If a concept gap blocks technical planning, explain it plainly in "response" and keep handoffTo null unless Jeff explicitly needs to coordinate next.
+- Only use handoffTo for Jeff, Ping, or Pong.
 - Use "notesToAppend" to store planning notes and working assumptions as soft memory. Use [] when nothing new should be stored.
 
 ${coreContext}
 ${toddCodebaseContext}
 ${feasContext}
-${versionsContext}${toddPendingHandoffDm}${toddNotesSectionDm}
+${versionsContext}${toddSoftMemoryDm}${toddNotesSectionDm}
 ${conversationSection}
 When you have version plans to propose, set confirmationSuggested to true and include them in the versions array. Set versions to null if just chatting.
 
-Respond as JSON: {"response": string, "handoffTo": string|null, "handoffReason": string|null, "currentState": string|null, "idealState": string|null, "confirmationSuggested": boolean, "versions": [...]|null, "notesToAppend": [...]}`;
+When proposing a roadmap, include a "roadmap" object (same structure as update-planning mode). Set roadmap to null if not proposing one.
+
+Respond as JSON: {"response": string, "handoffTo": string|null, "handoffReason": string|null, "currentState": string|null, "idealState": string|null, "confirmationSuggested": boolean, "roadmap": {...}|null, "versions": [...]|null, "notesToAppend": [...]}`;
       }
 
       // Default: update-planning mode
@@ -4092,17 +4900,20 @@ You are in Update Planning mode — specifying core updates from current state t
 - Simplify means structural optimization that preserves intended function while reducing friction, coupling, confusion, or risk
 - Trigger structural concern when responsibilities are mixed, one change would touch too many places, the module split no longer matches the concept, testing is messy because concerns are mixed, Ping would need workaround edits, coupling recently increased, or the next clean structure is blocked by the current shape
 - File size alone is not enough reason to simplify
-- Dan owns the concept. If the user changes conceptual goals, asks for creative reinterpretation, or you hit a concept gap, hand the turn back to Dan.
+- Dan owns the concept. If a concept gap blocks technical planning, explain it plainly in "response" and keep handoffTo null unless Jeff explicitly needs to coordinate next.
+- Only use handoffTo for Jeff, Ping, or Pong.
 - Use "notesToAppend" to store planning notes and working assumptions as soft memory. Use [] when nothing new should be stored.
 
 ${coreContext}
 ${toddCodebaseContext}
 ${versionsContext}
-${updatesContext}${toddPendingHandoffDm}${toddNotesSectionDm}
+${updatesContext}${toddSoftMemoryDm}${toddNotesSectionDm}
 ${conversationSection}
 When you have updates to propose, set confirmationSuggested to true and include them in the updates array. Each update must include title, description, versionLabel, dependencies, area, skillsNeeded, updateKind, simplificationMode, structuralReason, and supportsNextStep. Use [] for dependencies when none exist. Use null for area, simplificationMode, structuralReason, or supportsNextStep when they do not apply. Always set updateKind to one of create, expand, refine, or simplify. Use inline simplification only for small local cleanup; use staged or overhaul when cleanup deserves its own structural pass. Set updates to null if just chatting.
 
-Respond as JSON: {"response": string, "handoffTo": string|null, "handoffReason": string|null, "currentState": string|null, "idealState": string|null, "confirmationSuggested": boolean, "updates": [...]|null, "notesToAppend": [...]}`;
+When proposing a roadmap, include a "roadmap" object with currentState (array of {id,title,description,pillarIds,itemStatus:"done"|"tbd"}), endState (array of {id,title,description,pillarIds}), pathway (array of {id,title,description,pillarIds,updateKind:"create"|"expand"|"refine",order}), priorityUpdate ({id,title,description,pillarIds,updateKind,currentStateContext,successDefinition,partialSuccessDefinition,partialFailureDefinition,failureDefinition}|null), and generatedAt (ISO timestamp). Every item must reference at least one pillarId. Set roadmap to null if not proposing one.
+
+Respond as JSON: {"response": string, "handoffTo": string|null, "handoffReason": string|null, "currentState": string|null, "idealState": string|null, "confirmationSuggested": boolean, "roadmap": {...}|null, "updates": [...]|null, "notesToAppend": [...]}`;
     }
 
     case "programming-director": {
@@ -4239,6 +5050,15 @@ function resolveNextProgrammingUpdate(
     if (activeUpdate) {
       return activeUpdate;
     }
+  }
+
+  const roadmap = getToddRoadmap(session);
+  const priorityUpdate = roadmap?.priorityUpdate ?? null;
+  if (priorityUpdate) {
+    if (requestedUpdateId && priorityUpdate.id !== requestedUpdateId) {
+      return null;
+    }
+    return buildCompatibilityUpdateFromPriority(session, priorityUpdate);
   }
 
   const nextPendingUpdate = session.toddMemory.futureUpdatePlan
@@ -4761,6 +5581,11 @@ export class ProgramsBackend {
       directorSettingsOverrides: {},
       directorStateMap: {},
       danMemory: {
+        softMemory: [],
+        hardMemory: null,
+        backupMemory: [],
+        hardMemoryUpdatedAt: null,
+        latestReportId: null,
         confirmedConcept: null,
         draftConcept: null,
         derivedConcept: null,
@@ -4780,7 +5605,13 @@ export class ProgramsBackend {
         threads: [],
       },
       toddMemory: {
+        softMemory: [],
+        hardMemory: null,
+        backupMemory: [],
+        hardMemoryUpdatedAt: null,
+        latestReportId: null,
         confirmedConcept: null,
+        roadmap: null,
         currentState: null,
         endStateGoal: null,
         successChain: [],
@@ -4798,19 +5629,30 @@ export class ProgramsBackend {
         activeTask: null,
         context: null,
         codebaseMapSummary: null,
+        latestPlanReport: null,
+        latestIndexedMap: null,
         latestRawReport: null,
         latestJeffReport: null,
         currentRun: null,
       },
       jeffMemory: {
+        softMemory: [],
+        hardMemory: null,
+        backupMemory: [],
+        hardMemoryUpdatedAt: null,
+        latestReportId: null,
         pendingReports: [],
         pendingValidations: [],
         outcomeLog: [],
+        managerSummary: null,
+        projectStatusHistory: [],
+        currentProjectStatus: null,
         notes: [],
         backupNotes: [],
       },
       pongMemory: {
         jeffInstruction: null,
+        validationRequest: null,
         previousValidationReports: [],
         latestValidationReport: null,
         screenshotPaths: [],
@@ -4959,6 +5801,7 @@ export class ProgramsBackend {
     idealState: string | null;
     changeSummary?: string[];
     draftCoreDetails?: AgentCoreDetails | null;
+    roadmap?: ToddRoadmap | null;
     roadmapVersions?: VersionPlan[] | null;
     versionUpdates?: HardMemoryReportUpdate[] | null;
     createdAt?: string;
@@ -4974,6 +5817,7 @@ export class ProgramsBackend {
       idealState: input.idealState,
       changeSummary: input.changeSummary ?? [],
       draftCoreDetails: input.draftCoreDetails ?? null,
+      roadmap: input.roadmap ?? null,
       roadmapVersions: input.roadmapVersions ?? null,
       versionUpdates: input.versionUpdates ?? null,
       createdAt: input.createdAt ?? new Date().toISOString(),
@@ -5466,22 +6310,6 @@ export class ProgramsBackend {
     });
     session.danMemory.fullExperienceDescription = idealState;
 
-    // Only package Todd-bound handoff notes during an explicit hard-memory pass.
-    if (
-      allowHardMemoryProcessing
-      && conversationStatus === "ready-to-confirm"
-      && (session.danMemory.toddHandoffNotes ?? []).length > 0
-    ) {
-      session.toddMemory.pendingHandoff = buildToddHandoffPackage(
-        [
-          ...(session.toddMemory.pendingHandoff?.rawInputs ?? []),
-          ...extractNoteContents(session.danMemory.toddHandoffNotes),
-        ],
-        session.danMemory.fullExperienceDescription ?? session.toddMemory.pendingHandoff?.context ?? "Creative session handoff",
-      );
-      session.danMemory.toddHandoffNotes = [];
-    }
-
     syncAgentMemories(session);
 
     let hardMemoryApprovalId: string | null = null;
@@ -5624,7 +6452,7 @@ export class ProgramsBackend {
             const isConfirmed = allowDanHardMemoryProcessing && session.danMemory.draftStatus === "ready-to-confirm";
             hardMemoryReportMetadata = this.buildHardMemoryReportMetadata({
               directorId: "creative-director",
-              dataType: "danDraftCoreDetails",
+              dataType: isConfirmed ? "danCoreDetails" : "danDraftCoreDetails",
               reportStage: isConfirmed ? "hard" : "soft",
               approvalId: danTurnState.hardMemoryApprovalId,
               summary: sanitizeSlackResponseContent(parsed.response, "creative-director"),
@@ -5682,7 +6510,7 @@ export class ProgramsBackend {
               : [];
             session.toddMemory.notes = mergeTaggedNotes(session.toddMemory.notes ?? [], toddNotesToAppend);
             if (consumeToddHandoff) {
-              consumeToddPendingHandoff(session, "Todd processed Dan handoff");
+              syncAgentMemories(session);
             }
           }
           this.applySlackDirectorStateSnapshot(session, directorId, parsed);
@@ -5708,7 +6536,10 @@ export class ProgramsBackend {
           status: "complete",
           metadata: assistantMetadata,
         });
-        const handoffTarget = normalizeDirectorId(typeof parsed.handoffTo === "string" ? parsed.handoffTo : null);
+        const handoffTarget = coerceAllowedDirectorHandoff(
+          directorId,
+          normalizeDirectorId(typeof parsed.handoffTo === "string" ? parsed.handoffTo : null),
+        );
         if (handoffTarget) {
           session.slackPresenceGuestId = handoffTarget === "project-manager" ? null : handoffTarget;
           session.slackActiveDirectorId = handoffTarget;
@@ -5811,7 +6642,10 @@ export class ProgramsBackend {
         chainedMessages.push(assistantMessage);
       }
 
-      lastHandoffTo = normalizeDirectorId(typeof parsed.handoffTo === "string" ? parsed.handoffTo : null);
+      lastHandoffTo = coerceAllowedDirectorHandoff(
+        currentDirectorId,
+        normalizeDirectorId(typeof parsed.handoffTo === "string" ? parsed.handoffTo : null),
+      );
       lastHandoffReason = typeof parsed.handoffReason === "string" ? parsed.handoffReason : null;
 
       if (!lastHandoffTo || !canAutoRouteAgentChatDirector(lastHandoffTo) || lastHandoffTo === currentDirectorId) {
@@ -6404,17 +7238,24 @@ Instructions:
       planningMode,
     });
 
-    update.status = "in_progress";
-    session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
+    const trackedUpdate = upsertToddTrackedUpdate(session, {
+      ...update,
+      status: "in_progress",
+    });
     this.seedPingStartupState(session, pingTaskSnapshot, options.usageBefore ?? null);
     session.updatedAt = new Date().toISOString();
     await this.store.saveAgentSession(session);
     this.emit({ type: "agent.session", projectId: input.projectId, session });
 
+    const roadmap = getToddRoadmap(session);
     const planInput: StartPlanInput = {
       projectId: input.projectId,
       provider: input.provider,
-      prompt: buildPingUpdatePrompt(update),
+      prompt: buildPingUpdatePrompt({
+        update: trackedUpdate,
+        priorityUpdate: roadmap?.priorityUpdate ?? null,
+        currentStateItems: roadmap?.currentState ?? [],
+      }),
       speed: "normal",
       model: pingModelSelections.planning.model,
       claudeModel: pingModelSelections.planning.claudeModel,
@@ -7180,7 +8021,13 @@ Your response must be ONLY strict JSON (no markdown fences).`;
 
     // Jeff — routing
     if (input.directorId === "project-manager" && parsed.routeTo) {
-      routeSuggestion = { directorId: parsed.routeTo as DirectorId, reason: parsed.routeReason ?? "" };
+      const routeTo = coerceAllowedDirectorHandoff(
+        "project-manager",
+        normalizeDirectorId(parsed.routeTo as string),
+      );
+      if (routeTo) {
+        routeSuggestion = { directorId: routeTo, reason: parsed.routeReason ?? "" };
+      }
     }
 
     if (input.directorId === "creative-director") {
@@ -7192,7 +8039,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
         const isConfirmed = allowDanHardMemoryProcessing && session.danMemory.draftStatus === "ready-to-confirm";
         hardMemoryReportMetadata = this.buildHardMemoryReportMetadata({
           directorId: "creative-director",
-          dataType: "danDraftCoreDetails",
+          dataType: isConfirmed ? "danCoreDetails" : "danDraftCoreDetails",
           reportStage: isConfirmed ? "hard" : "soft",
           approvalId: danTurnState.hardMemoryApprovalId,
           summary: sanitizeSlackResponseContent(parsed.response, "creative-director"),
@@ -7203,7 +8050,10 @@ Your response must be ONLY strict JSON (no markdown fences).`;
           createdAt: assistantCreatedAt,
         });
       }
-      const handoffTo = normalizeDirectorId(typeof parsed.handoffTo === "string" ? parsed.handoffTo : null);
+      const handoffTo = coerceAllowedDirectorHandoff(
+        "creative-director",
+        normalizeDirectorId(typeof parsed.handoffTo === "string" ? parsed.handoffTo : null),
+      );
       if (handoffTo) {
         routeSuggestion = {
           directorId: handoffTo,
@@ -7218,7 +8068,37 @@ Your response must be ONLY strict JSON (no markdown fences).`;
         ? (parsed.notesToAppend as unknown[]).filter((note): note is string => typeof note === "string" && note.trim().length > 0)
         : [];
       session.toddMemory.notes = mergeTaggedNotes(session.toddMemory.notes ?? [], toddNotesToAppend);
-      const handoffTo = normalizeDirectorId(typeof parsed.handoffTo === "string" ? parsed.handoffTo : null);
+      // Queue roadmap for approval when Todd provides one with confirmationSuggested
+      const rawRoadmapFromChat = parsed.roadmap && typeof parsed.roadmap === "object"
+        ? parsed.roadmap as Record<string, unknown>
+        : null;
+      if (rawRoadmapFromChat && parsed.confirmationSuggested === true) {
+        const roadmapApprovalSummary = this.buildApprovalSummary(
+          "Confirm Todd's roadmap",
+          typeof parsed.response === "string" ? parsed.response : "Todd has proposed a roadmap update.",
+        );
+        session.pendingApprovals = (session.pendingApprovals ?? []).filter((approval) => !(
+          approval.requestedByDirectorId === "rd-director"
+          && approval.kind === "store-data"
+          && approval.draftPayload?.dataType === "toddRoadmap"
+        ));
+        this.queueApproval(session, {
+          kind: "store-data",
+          requestedByDirectorId: "rd-director",
+          targetDirectorId: "rd-director",
+          summary: roadmapApprovalSummary,
+          draftMessage: typeof parsed.response === "string" ? parsed.response : null,
+          draftPayload: {
+            action: "applyStoredData",
+            dataType: "toddRoadmap",
+            roadmap: rawRoadmapFromChat,
+          },
+        });
+      }
+      const handoffTo = coerceAllowedDirectorHandoff(
+        "rd-director",
+        normalizeDirectorId(typeof parsed.handoffTo === "string" ? parsed.handoffTo : null),
+      );
       if (handoffTo) {
         routeSuggestion = {
           directorId: handoffTo,
@@ -7227,7 +8107,7 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       }
       this.applySlackDirectorStateSnapshot(session, input.directorId, parsed);
       if (consumeToddHandoff) {
-        consumeToddPendingHandoff(session, "Todd processed Dan handoff");
+        syncAgentMemories(session);
       }
     }
 
@@ -7482,7 +8362,10 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       mode: initialMode,
     });
     const message = firstTurn.assistantMessage;
-    const handoffTo = normalizeDirectorId(typeof firstTurn.parsed.handoffTo === "string" ? firstTurn.parsed.handoffTo : null);
+    const handoffTo = coerceAllowedDirectorHandoff(
+      currentDirectorId,
+      normalizeDirectorId(typeof firstTurn.parsed.handoffTo === "string" ? firstTurn.parsed.handoffTo : null),
+    );
     const handoffReason = typeof firstTurn.parsed.handoffReason === "string" ? firstTurn.parsed.handoffReason : null;
     const chainedMessages: AgentChatMessage[] = [];
     if (currentDirectorId === "rd-director" && handoffTo) {
@@ -7627,8 +8510,8 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     const session = await this.store.getAgentSession(projectId);
     if (!session) throw new Error("No agent session found");
     session.slackMessages = [];
-    session.slackActiveDirectorId = "project-manager";
-    session.slackPresenceGuestId = null;
+    session.slackActiveDirectorId = "rd-director";
+    session.slackPresenceGuestId = "rd-director";
     session.updatedAt = new Date().toISOString();
     await this.store.saveAgentSession(session);
     this.emit({ type: "agent.session", projectId, session });
@@ -8402,6 +9285,14 @@ Return ONLY strict JSON matching:
       session.toddMemory.successChain = newSuccessChain;
       session.toddMemory.nextUpdate = newNextUpdate;
 
+      // Parse and store the new roadmap structure if the AI provided it
+      const rawRoadmap = parsed.roadmap && typeof parsed.roadmap === "object"
+        ? parsed.roadmap as Record<string, unknown>
+        : null;
+      if (rawRoadmap) {
+        session.toddMemory.roadmap = normalizeToddRoadmap(rawRoadmap);
+      }
+
       if (newNextUpdate) {
         const alreadyQueued = session.toddMemory.futureUpdatePlan.some(
           (u) => u.status === "pending" && u.title === newNextUpdate.title,
@@ -8611,6 +9502,7 @@ Return ONLY strict JSON matching:
     const payload = approval.draftPayload ?? {};
     const dataType = payload.dataType;
     session.directorStateMap = session.directorStateMap ?? {};
+    syncAgentMemories(session);
 
     if (dataType === "feasibilityAssessments" && Array.isArray(payload.assessments)) {
       session.feasibilityAssessments = payload.assessments as FeasibilityAssessment[];
@@ -8625,22 +9517,37 @@ Return ONLY strict JSON matching:
       return;
     }
     if (dataType === "versionUpdates" && Array.isArray(payload.updates)) {
+      const resolvedAt = new Date().toISOString();
       session.toddMemory.futureUpdatePlan = normalizeFutureUpdatePlan(payload.updates as VersionUpdate[]);
       session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
+      session.toddMemory = migrateToddMemoryToRoadmap(
+        {
+          ...session.toddMemory,
+          hardMemoryUpdatedAt: resolvedAt,
+          latestReportId: approval.id,
+          backupMemory: normalizeTaggedNotes([
+            ...(session.toddMemory.backupMemory ?? []),
+            ...resolveTaggedNotes(session.toddMemory.softMemory ?? [], {
+              target: "hard",
+              resolvedAt,
+              reportId: approval.id,
+            }),
+          ], "rd-director"),
+          softMemory: [],
+          notes: [],
+          backupNotes: normalizeTaggedNotes([
+            ...(session.toddMemory.backupMemory ?? []),
+            ...resolveTaggedNotes(session.toddMemory.softMemory ?? [], {
+              target: "hard",
+              resolvedAt,
+              reportId: approval.id,
+            }),
+          ], "rd-director"),
+        },
+        deriveFallbackPillarIds(session.danMemory.hardMemory ?? session.danMemory.confirmedConcept ?? null),
+      );
+      refreshJeffManagerMemory(session);
       const updatePlanMeta = getToddUpdatePlanDraftMetadata(payload);
-      // Move Todd's soft notes to backup on confirmation
-      if ((session.toddMemory.notes ?? []).length > 0) {
-        const timestamp = new Date().toISOString();
-        session.toddMemory.backupNotes = [
-          ...(session.toddMemory.backupNotes ?? []),
-          ...session.toddMemory.notes.map((note) => ({
-            ...note,
-            tag: "likely-backup" as const,
-            content: `[${timestamp}] ${note.content}`,
-          })),
-        ];
-        session.toddMemory.notes = [];
-      }
       this.appendJeffSlackMessage(
         session,
         updatePlanMeta.supersedesConfirmedPlan
@@ -8648,6 +9555,38 @@ Return ONLY strict JSON matching:
           : "Todd's future update plan is now confirmed in hard memory. That's the update queue we'll run from.",
       );
       session.projectCategory = this.deriveProjectCategoryFromSession(session);
+      await this.saveAgentSession(session.projectId, session);
+      return;
+    }
+    if (dataType === "toddRoadmap" && payload.roadmap && typeof payload.roadmap === "object") {
+      const resolvedAt = new Date().toISOString();
+      const roadmap = normalizeToddRoadmap(payload.roadmap as Record<string, unknown>);
+      const resolvedSoftMemory = resolveTaggedNotes(session.toddMemory.softMemory ?? [], {
+        target: "hard",
+        resolvedAt,
+        reportId: approval.id,
+      });
+      const backupMemory = normalizeTaggedNotes([
+        ...(session.toddMemory.backupMemory ?? []),
+        ...resolvedSoftMemory,
+      ], "rd-director");
+      session.toddMemory = migrateToddMemoryToRoadmap(
+        {
+          ...session.toddMemory,
+          roadmap,
+          hardMemory: roadmap,
+          hardMemoryUpdatedAt: resolvedAt,
+          latestReportId: approval.id,
+          softMemory: [],
+          notes: [],
+          backupMemory,
+          backupNotes: backupMemory,
+          pendingHandoff: null,
+        },
+        deriveFallbackPillarIds(session.danMemory.hardMemory ?? session.danMemory.confirmedConcept ?? null),
+      );
+      refreshJeffManagerMemory(session);
+      this.appendJeffSlackMessage(session, "Todd's roadmap is now confirmed in hard memory.");
       await this.saveAgentSession(session.projectId, session);
       return;
     }
@@ -8670,9 +9609,23 @@ Return ONLY strict JSON matching:
       if (!draftCoreDetails) {
         throw new Error("Dan draft approval is missing draft core-details.");
       }
+      const resolvedAt = new Date().toISOString();
+      const resolvedDanSoftMemory = resolveTaggedNotes(session.danMemory.softMemory ?? [], {
+        target: "hard",
+        resolvedAt,
+        reportId: approval.id,
+      });
+      const resolvedToddHandoffNotes = resolveTaggedNotes(session.danMemory.toddHandoffNotes ?? [], {
+        target: "hard",
+        resolvedAt,
+        reportId: approval.id,
+      });
 
       applyDanDraftCoreDetailsToSession(session, draftCoreDetails);
-      session.danMemory.confirmedConcept = buildConfirmedConceptFromSession(session);
+      session.danMemory.hardMemory = buildConfirmedConceptFromSession(session);
+      session.danMemory.confirmedConcept = session.danMemory.hardMemory;
+      session.danMemory.hardMemoryUpdatedAt = resolvedAt;
+      session.danMemory.latestReportId = approval.id;
       session.danMemory.fullExperienceDescription = summarizeDanDraftIdealState(
         draftCoreDetails,
         typeof payload.idealState === "string" ? payload.idealState : null,
@@ -8693,29 +9646,14 @@ Return ONLY strict JSON matching:
         createdAt: new Date().toISOString(),
       });
 
-      // Move soft notes to forgotten memories before clearing
-      session.danMemory.forgottenMemories = session.danMemory.forgottenMemories ?? [];
-      const timestamp = new Date().toISOString();
-      for (const note of session.danMemory.notes ?? []) {
-        session.danMemory.forgottenMemories.push(`[${timestamp} | confirmed] ${note.content}`);
-      }
-      for (const note of session.danMemory.derivedNotes ?? []) {
-        session.danArchivedNotes.push(`[${timestamp} | derived confirmed] ${note.content}`);
-      }
-
-      if ((session.danMemory.toddHandoffNotes ?? []).length > 0) {
-        session.toddMemory.pendingHandoff = buildToddHandoffPackage(
-          [
-            ...(session.toddMemory.pendingHandoff?.rawInputs ?? []),
-            ...extractNoteContents(session.danMemory.toddHandoffNotes),
-          ],
-          session.danMemory.fullExperienceDescription ?? session.toddMemory.pendingHandoff?.context ?? "Creative confirmation handoff",
-        );
-      }
-
-      archiveDanNotes(session, "dan draft confirmed", session.danMemory.notes ?? []);
-      session.danMemory.archivedNotes = session.danArchivedNotes;
+      session.danMemory.backupMemory = normalizeTaggedNotes([
+        ...(session.danMemory.backupMemory ?? []),
+        ...resolvedDanSoftMemory,
+        ...resolvedToddHandoffNotes,
+      ], "creative-director");
+      session.danMemory.archivedNotes = session.danMemory.backupMemory.map((note) => note.content);
       session.danMemory.notes = [];
+      session.danMemory.softMemory = [];
       session.danMemory.draftConcept = null;
       session.danMemory.derivedConcept = null;
       session.danMemory.derivedNotes = [];
@@ -8724,12 +9662,38 @@ Return ONLY strict JSON matching:
       session.danMemory.draftStatus = null;
       session.danMemory.toddHandoffNotes = [];
       session.danInternalNotes = [];
+      session.danArchivedNotes = session.danMemory.archivedNotes;
       session.danDraftCoreDetails = null;
       session.danDraftChangeSummary = [];
       session.danDraftStatus = null;
+      const toddSoftMemorySeed: TaggedNote[] = resolvedToddHandoffNotes.length > 0
+        ? resolvedToddHandoffNotes.map((note) => ({
+            ...note,
+            id: randomUUID(),
+            tag: "handoff-to-todd",
+            resolution: null,
+          }))
+        : [{
+            id: randomUUID(),
+            content: session.danMemory.fullExperienceDescription
+              ? `Dan Core-Details updated: ${session.danMemory.fullExperienceDescription}`
+              : "Dan Core-Details updated and Todd should review the change against the roadmap.",
+            tag: "handoff-to-todd",
+            createdAt: resolvedAt,
+            sourceRefs: resolvedDanSoftMemory.flatMap((note) => note.sourceRefs ?? []),
+            resolution: null,
+          }];
+      const nextToddSoftMemory = normalizeTaggedNotes([
+        ...(session.toddMemory.softMemory ?? []),
+        ...toddSoftMemorySeed,
+      ], "rd-director");
+      session.toddMemory.softMemory = nextToddSoftMemory;
+      session.toddMemory.notes = nextToddSoftMemory;
+      session.toddMemory.pendingHandoff = null;
+      refreshJeffManagerMemory(session);
       this.appendJeffSlackMessage(
         session,
-        "Dan's confirmed concept is now part of shared hard memory. We have a cleaner foundation for Todd's planning from here.",
+        "Dan's confirmed core-details are now in hard memory. Todd has new soft memory to review against the roadmap.",
       );
       session.projectCategory = this.deriveProjectCategoryFromSession(session);
       await this.saveAgentSession(session.projectId, session);
@@ -9037,8 +10001,10 @@ Return ONLY strict JSON matching:
       planningMode: "auto",
     });
 
-    update.status = "in_progress";
-    session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
+    const trackedUpdate = upsertToddTrackedUpdate(session, {
+      ...update,
+      status: "in_progress",
+    });
     session.slackMessages = session.slackMessages ?? [];
     session.slackActiveDirectorId = "programming-director";
     session.slackPresenceGuestId = "rd-director";
@@ -9059,10 +10025,15 @@ Return ONLY strict JSON matching:
     this.emit({ type: "agent.session", projectId: input.projectId, session });
 
     const usageBefore = buildUsageCapture(input.provider, await this.readUsage());
+    const roadmap = getToddRoadmap(session);
     return this.startPlanNow({
       projectId: input.projectId,
       provider: input.provider,
-      prompt: buildPingUpdatePrompt(update),
+      prompt: buildPingUpdatePrompt({
+        update: trackedUpdate,
+        priorityUpdate: roadmap?.priorityUpdate ?? null,
+        currentStateItems: roadmap?.currentState ?? [],
+      }),
       speed: "normal",
       model: pingModelSelections.planning.model,
       claudeModel: pingModelSelections.planning.claudeModel,
@@ -9117,7 +10088,10 @@ Return ONLY strict JSON matching:
         draftMessage: `Ping is ready to plan and execute "${update.title}". Confirm before PROGRAMS spends tokens on the big-model update run.`,
         draftPayload: {
           action: "routeUpdateToProgramming",
-          input,
+          input: {
+            ...input,
+            updateId: update.id,
+          },
         },
       });
       this.appendSlackAssistantMessage(
@@ -9301,18 +10275,36 @@ Return ONLY strict JSON matching:
     const session = await this.store.getAgentSession(input.projectId);
     if (!session) return;
     syncAgentMemories(session);
-
+    const roadmap = getToddRoadmap(session);
+    const update = input.updateId
+      ? findToddTrackedUpdate(session, input.updateId, null)
+      : roadmap?.priorityUpdate
+        ? buildCompatibilityUpdateFromPriority(session, roadmap.priorityUpdate)
+        : null;
+    const validationRequest: ToddValidationRequest = {
+      id: randomUUID(),
+      instruction: input.instruction,
+      updateId: update?.id ?? input.updateId ?? null,
+      relevantPillarIds: update?.pillarIds ?? roadmap?.priorityUpdate?.pillarIds ?? [],
+      sourceRefs: [{
+        id: randomUUID(),
+        messageId: null,
+        rawText: input.instruction,
+        directorId: "rd-director",
+        kind: "handoff",
+        createdAt: new Date().toISOString(),
+      }],
+      createdAt: new Date().toISOString(),
+    };
+    session.pongMemory.validationRequest = validationRequest;
     session.pongMemory.jeffInstruction = input.instruction;
-    if (input.updateId) {
-      const update = session.toddMemory.futureUpdatePlan.find((item) => item.id === input.updateId) ?? null;
-      session.pongTaskContext = {
-        currentTask: update ? `Validate: ${update.title}` : "Validate the latest project state",
-        lastResult: session.pongTaskContext?.lastResult ?? null,
-        lastFailureReason: session.pongTaskContext?.lastFailureReason ?? null,
-        toddUpdateExplanation: update?.description ?? null,
-        relevantPillarIds: update?.pillarIds ?? [],
-      };
-    }
+    session.pongTaskContext = {
+      currentTask: update ? `Validate: ${update.title}` : "Validate the latest project state",
+      lastResult: session.pongTaskContext?.lastResult ?? null,
+      lastFailureReason: session.pongTaskContext?.lastFailureReason ?? null,
+      toddUpdateExplanation: update?.description ?? validationRequest.instruction,
+      relevantPillarIds: validationRequest.relevantPillarIds,
+    };
     this.appendSlackAssistantMessage(
       session,
       "rd-director",
@@ -9326,7 +10318,7 @@ Return ONLY strict JSON matching:
     );
     const validationInput: RunValidationInput = {
       projectId: input.projectId,
-      updateId: input.updateId ?? "",
+      updateId: validationRequest.updateId ?? "",
       validationType: input.updateId
         ? resolveAutomationValidationType(
           session.toddMemory.futureUpdatePlan.find((item) => item.id === input.updateId)
@@ -9381,6 +10373,17 @@ Return ONLY strict JSON matching:
 
     let session = await this.store.getAgentSession(input.projectId);
     if (!session) throw new Error("No agent session found for this program.");
+    syncAgentMemories(session);
+    const validationRequest = session.pongMemory.validationRequest ?? (session.pongMemory.jeffInstruction
+      ? {
+          id: randomUUID(),
+          instruction: session.pongMemory.jeffInstruction,
+          updateId: input.updateId,
+          relevantPillarIds: session.pongTaskContext?.relevantPillarIds ?? [],
+          sourceRefs: [buildLegacyMemorySourceRef(session.pongMemory.jeffInstruction, "rd-director")],
+          createdAt: new Date().toISOString(),
+        } satisfies ToddValidationRequest
+      : null);
 
     // Try to use Playwright for screenshots if the project is running
     let screenshotPaths: string[] = [];
@@ -9400,13 +10403,13 @@ Return ONLY strict JSON matching:
     }
 
     // Populate Pong's short-horizon task context
-    const relatedUpdate = session.versionUpdates.find((u) => u.id === input.updateId);
+    const relatedUpdate = findToddTrackedUpdate(session, input.updateId, null);
     session.pongTaskContext = {
       currentTask: `Validating: ${relatedUpdate?.title ?? "project state"}`,
       lastResult: session.pongTaskContext?.lastResult ?? null,
       lastFailureReason: session.pongTaskContext?.lastFailureReason ?? null,
-      toddUpdateExplanation: relatedUpdate?.description ?? null,
-      relevantPillarIds: relatedUpdate?.pillarIds ?? [],
+      toddUpdateExplanation: validationRequest?.instruction ?? relatedUpdate?.description ?? null,
+      relevantPillarIds: validationRequest?.relevantPillarIds ?? relatedUpdate?.pillarIds ?? [],
     };
 
     // Ask AI to validate — scoped to confirmed details for relevant pillars
@@ -9417,12 +10420,12 @@ Return ONLY strict JSON matching:
     const updateExplanation = session.pongTaskContext?.toddUpdateExplanation
       ? `\nTodd's explanation of what this update should achieve: ${session.pongTaskContext.toddUpdateExplanation}`
       : "";
-    const jeffInstruction = session.pongMemory.jeffInstruction
-      ? `\nTodd's validation instruction: ${session.pongMemory.jeffInstruction}`
+    const toddValidationInstruction = validationRequest?.instruction
+      ? `\nTodd's validation instruction: ${validationRequest.instruction}`
       : "";
     const validationPrompt = input.validationType === "visual"
-      ? `You are validating the visual output of "${project.name}". Compare the current state against the confirmed intended visual direction.\n${coreContext}${updateExplanation}${jeffInstruction}\n${screenshotPaths.length > 0 ? `Screenshots taken: ${screenshotPaths.length}` : "No screenshots available."}\nDoes the current output match the intended visual direction? Report any mismatches.`
-      : `You are validating the functional output of "${project.name}". Test whether the latest update works correctly.\n${coreContext}${updateExplanation}${jeffInstruction}\nDoes the feature work as intended? Report any issues.`;
+      ? `You are validating the visual output of "${project.name}". Compare the current state against the confirmed intended visual direction.\n${coreContext}${updateExplanation}${toddValidationInstruction}\n${screenshotPaths.length > 0 ? `Screenshots taken: ${screenshotPaths.length}` : "No screenshots available."}\nDoes the current output match the intended visual direction? Report any mismatches.`
+      : `You are validating the functional output of "${project.name}". Test whether the latest update works correctly.\n${coreContext}${updateExplanation}${toddValidationInstruction}\nDoes the feature work as intended? Report any issues.`;
 
     const service = this.aiService(input.provider);
     const model = input.provider === "claude" ? input.claudeModel : input.model;
@@ -9448,7 +10451,9 @@ Return ONLY strict JSON matching:
       createdAt: new Date().toISOString(),
     };
     const linkedJeffReport = input.updateId
-      ? session.jeffMemory.pendingReports.find((report) => report.updateId === input.updateId) ?? null
+      ? session.pingMemory.latestJeffReport?.updateId === input.updateId
+        ? session.pingMemory.latestJeffReport
+        : null
       : null;
     const validationReport: PongValidationReport = {
       id: randomUUID(),
@@ -9473,6 +10478,7 @@ Return ONLY strict JSON matching:
     session.pongMemory.previousValidationReports.push(validationReport);
     session.pongMemory.latestValidationReport = validationReport;
     session.pongMemory.screenshotPaths = [...screenshotPaths];
+    session.pongMemory.validationRequest = null;
     session.pongMemory.jeffInstruction = null;
     if (session.pingMemory.currentRun) {
       session.pingMemory.currentRun.validationReport = validationReport;
@@ -11358,12 +12364,26 @@ Return strict JSON with:
       revertHistoryUpdateId: historyUpdateId,
       revertCommitSha: commitSha,
     });
+    const projectStatus: JeffProjectStatusEntry["status"] = input.decision === "successful"
+      ? "success"
+      : input.decision === "failure"
+        ? "failure"
+        : input.validationReport?.passed === false || rawReport.status === "blocked"
+          ? "partial-failure"
+          : "partial-success";
+    const trackedUpdateStatus: VersionUpdate["status"] = input.decision === "successful"
+      ? "completed"
+      : input.decision === "failure"
+        ? "failed"
+        : input.validationReport?.passed === false || rawReport.status === "blocked"
+          ? "failed"
+          : "completed";
 
     session.pingMemory.latestJeffReport = report;
-    session.jeffMemory.pendingReports = [
-      ...session.jeffMemory.pendingReports.filter((item) => item.id !== report.id && item.updateId !== report.updateId),
-      report,
-    ];
+    session.jeffMemory.pendingReports = session.jeffMemory.pendingReports
+      .filter((item) => item.id !== report.id && item.updateId !== report.updateId);
+    session.jeffMemory.pendingValidations = session.jeffMemory.pendingValidations
+      .filter((item) => item.updateId !== report.updateId);
     if (session.pingMemory.currentRun?.report && session.pingMemory.currentRun.report.rawReport.updateId === updateId) {
       session.pingMemory.currentRun.report = {
         ...session.pingMemory.currentRun.report,
@@ -11371,21 +12391,46 @@ Return strict JSON with:
         jeffSummary: input.summary,
       };
     }
+    if (activeUpdate) {
+      upsertToddTrackedUpdate(session, {
+        ...activeUpdate,
+        status: trackedUpdateStatus,
+      });
+    }
+    updateToddRoadmapPriorityStatus(session, projectStatus);
+    appendJeffProjectStatusEntry(session, {
+      summary: input.summary,
+      status: projectStatus,
+      reportId: report.id,
+      sourceDirectorId: "rd-director",
+    });
 
     this.appendJeffSlackMessage(
       session,
-      `Todd finished his review. He recommends ${formatJeffOutcomeDecisionLabel(input.decision)}. Review the Project Status Report and mark it successful, partially successful, or failure.`,
+      input.decision === "successful"
+        ? "Todd finalized the latest execution as a success and updated project status."
+        : input.decision === "failure"
+          ? "Todd finalized the latest execution as a failure and recorded what changed in project status."
+          : "Todd finalized the latest execution as a partial result and recorded the follow-up state.",
       report,
     );
     session.slackActiveDirectorId = "project-manager";
     session.slackPresenceGuestId = null;
     session.automation.updatedAt = new Date().toISOString();
 
-    if (session.automation.status === "running") {
+    if (input.decision === "failure") {
+      session.automation.pendingRevertReportId = commitSha && historyUpdateId ? report.id : null;
+      session.automation.pendingRevertHistoryUpdateId = historyUpdateId;
+      session.automation.pendingRevertCommitSha = commitSha;
+    }
+
+    if (session.automation.status === "running" && (input.decision === "failure" || Boolean(replanProposal))) {
       this.patchAutomationState(session, {
         status: "stopped",
         stopReason: "awaiting-user",
-        stopSummary: "Automation paused while Jeff waits for your decision on the latest Ping report.",
+        stopSummary: input.decision === "failure"
+          ? "Automation paused after a failed Todd review."
+          : "Automation paused while Todd waits for the structural replan to be confirmed.",
         currentStep: "awaiting-user",
         nextUpdateId: null,
       });

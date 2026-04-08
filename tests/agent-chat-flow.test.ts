@@ -85,16 +85,16 @@ test("approval descriptors preserve Todd roadmap and update-planning handoffs", 
   assert.equal(updateDescriptor.payload.mode, "update-planning");
 });
 
-test("automatic agent-chat routing excludes Pong for this pass", () => {
+test("automatic agent-chat routing excludes Ping and Pong from Ghost auto-routing", () => {
   assert.equal(canAutoRouteAgentChatDirector("project-manager"), true);
   assert.equal(canAutoRouteAgentChatDirector("creative-director"), true);
   assert.equal(canAutoRouteAgentChatDirector("rd-director"), true);
-  assert.equal(canAutoRouteAgentChatDirector("programming-director"), true);
+  assert.equal(canAutoRouteAgentChatDirector("programming-director"), false);
   assert.equal(canAutoRouteAgentChatDirector("validation-director"), false);
 });
 
-test("direct routing keeps the active non-Jeff director without treating passive guests as the target", () => {
-  assert.equal(resolveAgentChatDirectRoute("Can you take another look?", "programming-director"), "programming-director");
+test("direct routing reroutes active Ping/Pong context back through Todd", () => {
+  assert.equal(resolveAgentChatDirectRoute("Can you take another look?", "programming-director"), "rd-director");
   assert.equal(resolveAgentChatDirectRoute("Can you take another look?", null), null);
 });
 

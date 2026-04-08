@@ -231,6 +231,45 @@ test("refreshProject queues a new live approval even when a legacy later refresh
   );
 });
 
+test("deferPendingApproval keeps the approval in the queue as later instead of deleting it", async () => {
+  const backend = createBackend() as Record<string, unknown>;
+  (backend.ensureInitialized as Function) = async () => {};
+
+  let storedSession = (backend.createEmptyAgentSession as Function)("project-1", "claude") as AgentSession;
+  storedSession.pendingApprovals = [
+    {
+      id: "approval-refresh",
+      kind: "codebase-scan",
+      status: "pending",
+      requestedByDirectorId: "project-manager",
+      targetDirectorId: "rd-director",
+      summary: "Refresh project",
+      draftMessage: "Refresh now.",
+      draftPayload: { action: "refreshProject" },
+      createdAt: "2026-04-04T00:45:00.000Z",
+      updatedAt: "2026-04-04T00:45:00.000Z",
+    },
+  ];
+
+  const store = backend.store as {
+    getAgentSession: (projectId: string) => Promise<AgentSession | null>;
+    saveAgentSession: (session: AgentSession) => Promise<void>;
+  };
+  store.getAgentSession = async () => storedSession;
+  store.saveAgentSession = async (session: AgentSession) => {
+    storedSession = JSON.parse(JSON.stringify(session)) as AgentSession;
+  };
+
+  const updated = await (backend.deferPendingApproval as Function)({
+    projectId: "project-1",
+    approvalId: "approval-refresh",
+  }) as AgentSession;
+
+  assert.equal(updated.pendingApprovals[0]?.status, "later");
+  assert.equal(storedSession.pendingApprovals.length, 1);
+  assert.equal(storedSession.pendingApprovals[0]?.status, "later");
+});
+
 test("Ping execution helper queues approval before the big-model planning pass", async () => {
   const backend = createBackend() as Record<string, unknown>;
   (backend.ensureInitialized as Function) = async () => {};

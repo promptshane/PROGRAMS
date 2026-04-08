@@ -8,9 +8,7 @@ export type AgentAlertAction =
   | "review-dan-memory"
   | "reconcile-dan-memory"
   | "review-todd-memory"
-  | "regenerate-todd-plan"
-  | "run-ping-update"
-  | "run-pong-validation";
+  | "regenerate-todd-plan";
 
 export interface AgentAlertState {
   tone: AgentAlertTone;
@@ -21,20 +19,13 @@ export interface AgentAlertState {
 export const hasDanActionableMemory = (session: AgentSession | null): boolean =>
   Boolean(
     session
-    && (
-      session.danMemory.notes.length > 0
-      || (session.danMemory.toddHandoffNotes?.length ?? 0) > 0
-      || session.danMemory.draftConcept
-    ),
+    && ((session.danMemory.softMemory?.length ?? 0) > 0),
   );
 
 export const hasToddActionableMemory = (session: AgentSession | null): boolean =>
   Boolean(
     session
-    && (
-      session.toddMemory.pendingHandoff
-      || (session.danMemory.toddHandoffNotes?.length ?? 0) > 0
-    ),
+    && ((session.toddMemory.softMemory?.length ?? 0) > 0),
   );
 
 export const hasPingPendingUpdate = (session: AgentSession | null): boolean =>
@@ -50,13 +41,11 @@ export const hasPingActiveTask = (session: AgentSession | null): boolean =>
 export const hasJeffFailureReport = (session: AgentSession | null): boolean =>
   Boolean(
     session
-    && session.jeffMemory?.pendingReports?.some(
-      (report) => report.toddRecommendedDecision === "failure" || report.decision === "failure",
+    && (
+      (session.jeffMemory?.softMemory?.length ?? 0) > 0
+      || session.jeffMemory?.currentProjectStatus?.status === "needs-refresh"
     ),
   );
-
-export const hasPongPendingWork = (session: AgentSession | null): boolean =>
-  Boolean(session?.pongMemory?.jeffInstruction);
 
 export const needsProjectRefresh = (session: AgentSession | null): boolean =>
   session?.knowledgeStatus === "stale" || session?.knowledgeStatus === "needs-initial-refresh";
@@ -67,6 +56,25 @@ export const getNextPendingProgrammingUpdate = (session: AgentSession | null): V
   }
   if (hasToddSupersedingDraftUpdatePlan(session)) {
     return null;
+  }
+  const roadmap = session.toddMemory.hardMemory ?? session.toddMemory.roadmap ?? null;
+  if (roadmap?.priorityUpdate) {
+    const tracked = session.toddMemory.futureUpdatePlan.find((update) => update.id === roadmap.priorityUpdate!.id) ?? null;
+    return tracked ?? {
+      id: roadmap.priorityUpdate.id,
+      versionId: null,
+      title: roadmap.priorityUpdate.title,
+      description: roadmap.priorityUpdate.description,
+      order: 0,
+      status: "pending",
+      dependencies: [],
+      pillarIds: roadmap.priorityUpdate.pillarIds,
+      skillsNeeded: [],
+      updateKind: roadmap.priorityUpdate.updateKind,
+      simplificationMode: null,
+      structuralReason: null,
+      supportsNextStep: null,
+    };
   }
   return session.toddMemory.futureUpdatePlan
     .filter((update) => update.status === "pending")
@@ -84,7 +92,7 @@ export const resolveAgentAlertState = (
   if (directorId === "project-manager") {
     if (needsProjectRefresh(session)) {
       return {
-        tone: hasPingPendingUpdate(session) || hasPingActiveTask(session) ? "red" : "white",
+        tone: "white",
         warningTargetDirectorId: null,
         action: "refresh-project",
       };
@@ -109,39 +117,8 @@ export const resolveAgentAlertState = (
   }
 
   if (directorId === "rd-director") {
-    // Todd's button is always visible. Tone escalates when a Dan handoff is pending.
-    const hasPendingHandoff = hasToddActionableMemory(session);
-    return {
-      tone: hasPendingHandoff ? "red" : "white",
-      warningTargetDirectorId: hasPendingHandoff && hasDanActionableMemory(session) ? "creative-director" : null,
-      action: "regenerate-todd-plan",
-    };
-  }
-
-  if (directorId === "programming-director") {
-    if (!hasPingPendingUpdate(session)) {
-      return null;
-    }
-    return {
-      tone: needsProjectRefresh(session) || hasToddActionableMemory(session) ? "red" : "white",
-      warningTargetDirectorId: needsProjectRefresh(session)
-        ? "project-manager"
-        : hasToddActionableMemory(session)
-          ? "rd-director"
-          : null,
-      action: "run-ping-update",
-    };
-  }
-
-  if (directorId === "validation-director") {
-    if (!hasPongPendingWork(session)) {
-      return null;
-    }
-    return {
-      tone: hasPingActiveTask(session) ? "red" : "white",
-      warningTargetDirectorId: hasPingActiveTask(session) ? "programming-director" : null,
-      action: "run-pong-validation",
-    };
+    if (!hasToddActionableMemory(session)) return null;
+    return { tone: "white", warningTargetDirectorId: null, action: "review-todd-memory" };
   }
 
   return null;

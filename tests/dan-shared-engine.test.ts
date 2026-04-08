@@ -981,7 +981,7 @@ test("Dan soft reports keep metadata light and resolve against the live draft", 
 });
 
 
-test("Todd research turns can hand concept questions back to Dan without consuming Dan's pending handoff", async () => {
+test("Todd research turns keep concept-gap notes in Todd soft memory instead of routing back to Dan", async () => {
   const session = createSession();
   session.toddMemory.pendingHandoff = {
     summary: "Dan needs the implementation plan to respect a guided onboarding tone.",
@@ -1023,23 +1023,16 @@ test("Todd research turns can hand concept questions back to Dan without consumi
     focusMode: "research",
   });
 
-  assert.deepEqual(result.routeSuggestion, {
-    directorId: "creative-director",
-    reason: "Dan needs to lock the conceptual behavior of the workspace before the technical plan can settle.",
-  });
+  assert.equal(result.routeSuggestion, null);
   assert.deepEqual(
-    session.toddMemory.notes.map((note) => typeof note === "string" ? note : note.content),
-    ["Wait for Dan to confirm the final workspace behavior before finalizing the stack."],
-  );
-  assert.deepEqual(session.toddMemory.pendingHandoff, {
-    summary: "Dan needs the implementation plan to respect a guided onboarding tone.",
-    rawInputs: [
+    session.toddMemory.softMemory.map((note) => note.content).sort(),
+    [
       "The onboarding should feel guided, not overwhelming.",
       "The workspace should feel ready immediately after setup.",
-    ],
-    context: "Creative session handoff",
-    receivedAt: NOW,
-  });
+      "Wait for Dan to confirm the final workspace behavior before finalizing the stack.",
+    ].sort(),
+  );
+  assert.equal(session.toddMemory.pendingHandoff, null);
   assert.equal((session.toddMemory.backupNotes ?? []).some((note) => note.includes("Handoff summary: Dan needs the implementation plan")), false);
   assert.deepEqual(session.directorStateMap["rd-director"], {
     currentState: "The creative handoff is still a working draft.",
@@ -1048,7 +1041,7 @@ test("Todd research turns can hand concept questions back to Dan without consumi
   });
 });
 
-test("Todd research Slack turns keep Dan handoff context live until a synthesis turn processes it", async () => {
+test("Todd research Slack turns surface Dan handoff context as Todd soft memory until the user processes it", async () => {
   const session = createSession();
   session.toddMemory.pendingHandoff = {
     summary: "Dan captured rollout-sensitive planning notes.",
@@ -1110,17 +1103,18 @@ test("Todd research Slack turns keep Dan handoff context live until a synthesis 
     mode: "codebase-analysis",
   });
 
-  assert.match(harness.prompts[0] ?? "", /Pending Handoff from Dan/);
-  assert.match(harness.prompts[1] ?? "", /Pending Handoff from Dan/);
-  assert.deepEqual(session.toddMemory.pendingHandoff, {
-    summary: "Dan captured rollout-sensitive planning notes.",
-    rawInputs: [
+  assert.match(harness.prompts[0] ?? "", /Todd Soft Memory/);
+  assert.match(harness.prompts[1] ?? "", /Todd Soft Memory/);
+  assert.match(harness.prompts[0] ?? "", /Start with onboarding before extending the workspace\./);
+  assert.match(harness.prompts[1] ?? "", /Keep the follow-up branch optional after launch\./);
+  assert.equal(session.toddMemory.pendingHandoff, null);
+  assert.deepEqual(
+    session.toddMemory.softMemory.map((note) => note.content).sort(),
+    [
       "Start with onboarding before extending the workspace.",
       "Keep the follow-up branch optional after launch.",
-    ],
-    context: "Creative session handoff",
-    receivedAt: NOW,
-  });
+    ].sort(),
+  );
   assert.equal((session.toddMemory.backupNotes ?? []).some((note) => note.includes("Handoff raw: Start with onboarding before extending the workspace.")), false);
 });
 
@@ -1642,7 +1636,7 @@ test("Automation targets fall back to Todd's live draft update plan when no conf
   assert.equal(response.candidates[0]?.draft, true);
 });
 
-test("Todd review can finalize success and queue a superseding structural replan draft", async () => {
+test("Todd review finalizes success directly and queues a superseding structural replan draft", async () => {
   const session = createSession();
   session.toddMemory.futureUpdatePlan = [
     createVersionUpdate({
@@ -1741,15 +1735,17 @@ test("Todd review can finalize success and queue a superseding structural replan
 
   const latest = harness.getStoredSession();
   assert.ok(latest);
-  assert.equal(latest?.toddMemory.futureUpdatePlan[0]?.status, "in_progress");
+  assert.equal(latest?.toddMemory.futureUpdatePlan[0]?.status, "completed");
   assert.equal(latest?.toddMemory.futureUpdatePlan[1]?.status, "pending");
   assert.equal(latest?.pendingApprovals.length, 1);
-  assert.equal(latest?.jeffMemory.pendingReports.length, 1);
+  assert.equal(latest?.jeffMemory.pendingReports.length, 0);
   assert.equal(latest?.pendingApprovals[0]?.draftPayload?.planSource, "post-run-structural-check");
   assert.equal(latest?.pendingApprovals[0]?.draftPayload?.supersedesConfirmedPlan, true);
   assert.equal(latest?.pingMemory.latestJeffReport?.decision ?? null, null);
   assert.equal(latest?.pingMemory.latestJeffReport?.toddRecommendedDecision, "successful");
   assert.equal(latest?.pingMemory.latestJeffReport?.toddReplanNeeded, true);
+  assert.equal(latest?.jeffMemory.currentProjectStatus?.status, "success");
+  assert.equal(latest?.jeffMemory.projectStatusHistory.length, 1);
   assert.equal(
     latest?.pingMemory.latestJeffReport?.toddReplanApprovalId,
     latest?.pendingApprovals[0]?.id ?? null,

@@ -27,6 +27,7 @@ export const RESEARCH_AGENT_CHAT_RESPONSE_FIELDS = [
 export const TODD_VERSION_AGENT_CHAT_RESPONSE_FIELDS = [
   ...STANDARD_AGENT_CHAT_RESPONSE_FIELDS,
   "confirmationSuggested",
+  "roadmap",
   "versions",
   "notesToAppend",
 ] as const;
@@ -34,6 +35,7 @@ export const TODD_VERSION_AGENT_CHAT_RESPONSE_FIELDS = [
 export const TODD_UPDATE_AGENT_CHAT_RESPONSE_FIELDS = [
   ...STANDARD_AGENT_CHAT_RESPONSE_FIELDS,
   "confirmationSuggested",
+  "roadmap",
   "updates",
   "notesToAppend",
 ] as const;
@@ -88,7 +90,6 @@ const AUTO_ROUTED_AGENT_CHAT_DIRECTORS: DirectorId[] = [
   "project-manager",
   "creative-director",
   "rd-director",
-  "programming-director",
 ] as const;
 
 /**
@@ -114,7 +115,9 @@ export const resolveAgentChatDirectRoute = (
   // If a director is already active in the channel, keep routing to them
   // unless the message explicitly addresses Jeff or another director
   if (activeDirectorId && activeDirectorId !== "project-manager") {
-    return activeDirectorId;
+    return activeDirectorId === "programming-director" || activeDirectorId === "validation-director"
+      ? "rd-director"
+      : activeDirectorId;
   }
 
   return null;

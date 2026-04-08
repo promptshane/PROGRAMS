@@ -6,7 +6,6 @@ import {
 import {
   DIRECTOR_NAMES,
   type AgentSession,
-  type HardMemoryReportMetadata,
   type PendingApproval,
   type PlanDraft,
   type UpdateStageStatus,
@@ -20,6 +19,7 @@ import {
   getToddUpdatePlanDraftMeta,
 } from "../lib/session-helpers";
 import { HardMemoryReportSections } from "./hard-memory-report";
+import { Modal } from "./ui-primitives";
 
 const labelForPendingApprovalKind = (kind: PendingApproval["kind"]): string => {
   switch (kind) {
@@ -70,7 +70,8 @@ export function PendingApprovalsPanel({
         projectId,
         approvalId: approval.id,
       });
-      onSessionUpdate(updated);
+      const refreshed = await window.programs.getAgentSession(projectId);
+      onSessionUpdate(refreshed ?? updated);
       pushToast("Approval confirmed.", "success");
     } catch (error) {
       pushToast(error instanceof Error ? error.message : "Could not confirm the approval.", "error");
@@ -79,70 +80,74 @@ export function PendingApprovalsPanel({
     }
   };
 
-  const cancelApproval = async (approvalId: string) => {
+  const deferApproval = async (approvalId: string) => {
     if (!projectId) return;
     setBusyApprovalId(approvalId);
     try {
-      const updated = await window.programs.dismissPendingApproval({ projectId, approvalId });
-      onSessionUpdate(updated);
-      pushToast("Action cancelled.", "info");
+      const updated = await window.programs.deferPendingApproval({ projectId, approvalId });
+      const refreshed = await window.programs.getAgentSession(projectId);
+      onSessionUpdate(refreshed ?? updated);
+      pushToast("Saved for later.", "info");
     } catch (error) {
-      pushToast(error instanceof Error ? error.message : "Could not dismiss the approval.", "error");
+      pushToast(error instanceof Error ? error.message : "Could not defer the approval.", "error");
     } finally {
       setBusyApprovalId(null);
     }
   };
 
   return (
-    <div className="pendingApprovalsPanel">
-      <div className="pendingApprovalsHeader">
-        <div>
-          <h4>Approvals</h4>
-          <p>Actions stay here until you confirm or cancel them.</p>
-        </div>
-        <span className="pendingApprovalsCount">{approvals.length}</span>
-      </div>
-      <div className="pendingApprovalsList">
-        {approvals.map((approval) => {
-          const isBusy = busyApprovalId === approval.id;
-          const hardMemoryReport = approval.kind === "store-data"
-            ? buildHardMemoryReportFromApproval(session, approval)
-            : null;
-          const approvalDraftMeta = hardMemoryReport ? getToddUpdatePlanDraftMeta(approval) : null;
-          return (
-            <div key={approval.id} className="pendingApprovalCard">
-              <div className="pendingApprovalCardHead">
-                <div>
-                  <div className="pendingApprovalTitle">{approval.summary}</div>
-                  <div className="pendingApprovalMeta">
-                    <span>{labelForPendingApprovalKind(approval.kind)}</span>
-                    {approval.requestedByDirectorId ? <span>From {DIRECTOR_NAMES[approval.requestedByDirectorId]}</span> : null}
-                    {approval.targetDirectorId ? <span>To {DIRECTOR_NAMES[approval.targetDirectorId]}</span> : null}
+    <Modal
+      title="Approvals"
+      headerLeading={<span className="pendingApprovalsCount">{approvals.length}</span>}
+      onClose={() => {}}
+      compact
+      showCloseButton={false}
+      dismissOnOverlayClick={false}
+    >
+      <div className="pendingApprovalsPanel">
+        <div className="modalLead">Actions stay here until you confirm or save them for later.</div>
+        <div className="pendingApprovalsList">
+          {approvals.map((approval) => {
+            const isBusy = busyApprovalId === approval.id;
+            const hardMemoryReport = approval.kind === "store-data"
+              ? buildHardMemoryReportFromApproval(session, approval)
+              : null;
+            const approvalDraftMeta = hardMemoryReport ? getToddUpdatePlanDraftMeta(approval) : null;
+            return (
+              <div key={approval.id} className="pendingApprovalCard">
+                <div className="pendingApprovalCardHead">
+                  <div>
+                    <div className="pendingApprovalTitle">{approval.summary}</div>
+                    <div className="pendingApprovalMeta">
+                      <span>{labelForPendingApprovalKind(approval.kind)}</span>
+                      {approval.requestedByDirectorId ? <span>From {DIRECTOR_NAMES[approval.requestedByDirectorId]}</span> : null}
+                      {approval.targetDirectorId ? <span>To {DIRECTOR_NAMES[approval.targetDirectorId]}</span> : null}
+                    </div>
                   </div>
                 </div>
+                {hardMemoryReport ? (
+                  <HardMemoryReportSections report={hardMemoryReport} session={session} draftMeta={approvalDraftMeta} />
+                ) : (
+                  <p className="pendingApprovalCopy">
+                    {approval.draftMessage
+                      ? approval.draftMessage
+                      : `Allow ${approval.requestedByDirectorId ? DIRECTOR_NAMES[approval.requestedByDirectorId] : "the system"} to ${approval.summary.toLowerCase()}?`}
+                  </p>
+                )}
+                <div className="pendingApprovalActions">
+                  <button className="primaryButton" onClick={() => void confirmApproval(approval)} disabled={isBusy}>
+                    Confirm
+                  </button>
+                  <button className="secondaryButton" onClick={() => void deferApproval(approval.id)} disabled={isBusy}>
+                    Later
+                  </button>
+                </div>
               </div>
-              {hardMemoryReport ? (
-                <HardMemoryReportSections report={hardMemoryReport} session={session} draftMeta={approvalDraftMeta} />
-              ) : (
-                <p className="pendingApprovalCopy">
-                  {approval.draftMessage
-                    ? approval.draftMessage
-                    : `Allow ${approval.requestedByDirectorId ? DIRECTOR_NAMES[approval.requestedByDirectorId] : "the system"} to ${approval.summary.toLowerCase()}?`}
-                </p>
-              )}
-              <div className="pendingApprovalActions">
-                <button className="primaryButton" onClick={() => void confirmApproval(approval)} disabled={isBusy}>
-                  Confirm
-                </button>
-                <button className="secondaryButton" onClick={() => void cancelApproval(approval.id)} disabled={isBusy}>
-                  Cancel
-                </button>
-              </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 

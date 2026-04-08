@@ -65,6 +65,51 @@ export const toddNextUpdateSchema = buildStrictObjectSchema({
   },
 });
 
+export const toddCurrentStateItemSchema = buildStrictObjectSchema({
+  id: { type: "string" },
+  title: { type: "string" },
+  description: { type: "string" },
+  pillarIds: { type: "array" as const, items: { type: "string" } },
+  itemStatus: { type: "string", enum: ["done", "tbd"] },
+});
+
+export const toddEndStateItemSchema = buildStrictObjectSchema({
+  id: { type: "string" },
+  title: { type: "string" },
+  description: { type: "string" },
+  pillarIds: { type: "array" as const, items: { type: "string" } },
+});
+
+export const toddPathwayItemSchema = buildStrictObjectSchema({
+  id: { type: "string" },
+  title: { type: "string" },
+  description: { type: "string" },
+  pillarIds: { type: "array" as const, items: { type: "string" } },
+  updateKind: { type: "string", enum: ["create", "expand", "refine"] },
+  order: { type: "number" },
+});
+
+export const toddPriorityUpdateSchema = buildStrictObjectSchema({
+  id: { type: "string" },
+  title: { type: "string" },
+  description: { type: "string" },
+  pillarIds: { type: "array" as const, items: { type: "string" } },
+  updateKind: { type: "string", enum: ["create", "expand", "refine"] },
+  currentStateContext: { type: "string" },
+  successDefinition: { type: ["string", "null"] },
+  partialSuccessDefinition: { type: ["string", "null"] },
+  partialFailureDefinition: { type: ["string", "null"] },
+  failureDefinition: { type: ["string", "null"] },
+});
+
+export const toddRoadmapSchema = buildStrictObjectSchema({
+  currentState: { type: "array" as const, items: toddCurrentStateItemSchema },
+  endState: { type: "array" as const, items: toddEndStateItemSchema },
+  pathway: { type: "array" as const, items: toddPathwayItemSchema },
+  priorityUpdate: { ...toddPriorityUpdateSchema, type: ["object", "null"] as const },
+  generatedAt: { type: "string" },
+});
+
 export const pingRawReportSchema = buildStrictObjectSchema({
   summary: { type: "string" },
   changedFiles: {

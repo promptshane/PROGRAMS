@@ -12,27 +12,35 @@ export function Modal({
   children,
   onClose,
   wide = false,
+  compact = false,
   fullscreen = false,
   headerLeading,
+  showCloseButton = true,
+  dismissOnOverlayClick = true,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   wide?: boolean;
+  compact?: boolean;
   fullscreen?: boolean;
   headerLeading?: ReactNode;
+  showCloseButton?: boolean;
+  dismissOnOverlayClick?: boolean;
 }) {
   return (
-    <div className="modalOverlay" onClick={onClose}>
-      <div className={`modalFrame${wide ? " wide" : ""}${fullscreen ? " fullscreen" : ""}`} onClick={(event) => event.stopPropagation()}>
+    <div className="modalOverlay" onClick={dismissOnOverlayClick ? onClose : undefined}>
+      <div className={`modalFrame${wide ? " wide" : ""}${compact ? " compact" : ""}${fullscreen ? " fullscreen" : ""}`} onClick={(event) => event.stopPropagation()}>
         <div className="modalHeader">
           <div className="modalHeaderLead">
             {headerLeading ? <div className="modalHeaderLeading">{headerLeading}</div> : null}
             {title ? <h3>{title}</h3> : null}
           </div>
-          <button className="textButton" onClick={onClose}>
-            Close
-          </button>
+          {showCloseButton ? (
+            <button className="textButton" onClick={onClose}>
+              Close
+            </button>
+          ) : null}
         </div>
         {children}
       </div>

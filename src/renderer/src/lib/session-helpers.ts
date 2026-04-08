@@ -284,6 +284,123 @@ export const getDirectorProjectNotes = (directorId: DirectorId, session: AgentSe
     ? (session?.danMemory.notes ?? []).map((n) => typeof n === "string" ? n : n.content)
     : [];
 
+export type DirectorSharedMemorySourceKind =
+  | "dan-core-details"
+  | "todd-update-context"
+  | "jeff-latest-report"
+  | "todd-validation-request"
+  | "pong-validation-history"
+  | "todd-roadmap-and-updates"
+  | "ping-execution-reports";
+
+export interface DirectorSharedMemorySource {
+  kind: DirectorSharedMemorySourceKind;
+  directorId: DirectorId;
+  label: string;
+  bodyTitle: string;
+}
+
+const hasAnyItems = (...collections: Array<{ length?: number } | null | undefined>): boolean =>
+  collections.some((collection) => (collection?.length ?? 0) > 0);
+
+const createSharedMemorySource = (
+  directorId: DirectorId,
+  kind: DirectorSharedMemorySourceKind,
+  bodyTitle: string,
+): DirectorSharedMemorySource => ({
+  kind,
+  directorId,
+  label: DIRECTOR_NAMES[directorId],
+  bodyTitle,
+});
+
+export const buildDirectorSharedMemorySources = (
+  directorId: DirectorId,
+  session: AgentSession | null,
+): DirectorSharedMemorySource[] => {
+  if (!session) {
+    return [];
+  }
+
+  const confirmedConcept = getConfirmedConcept(session);
+
+  switch (directorId) {
+    case "creative-director":
+      return [];
+    case "rd-director":
+      return confirmedConcept
+        ? [createSharedMemorySource("creative-director", "dan-core-details", "Dan's Core-details")]
+        : [];
+    case "programming-director": {
+      const sources: DirectorSharedMemorySource[] = [];
+      const hasUpdateContext =
+        Boolean(session.pingTaskContext?.currentTask)
+        || Boolean(session.pingTaskContext?.toddUpdateExplanation)
+        || Boolean(session.pingTaskContext?.lastResult)
+        || Boolean(session.pingTaskContext?.lastFailureReason)
+        || Boolean(session.pingMemory?.activeTask)
+        || Boolean(session.pingMemory?.context)
+        || Boolean(session.pingMemory?.codebaseMapSummary)
+        || Boolean(session.pingMemory?.latestRawReport)
+        || Boolean(session.pingMemory?.currentRun)
+        || hasAnyItems(session.toddMemory?.futureUpdatePlan);
+
+      if (hasUpdateContext) {
+        sources.push(createSharedMemorySource("rd-director", "todd-update-context", "Todd's Update Context"));
+      }
+      if (session.pingMemory?.latestJeffReport) {
+        sources.push(createSharedMemorySource("project-manager", "jeff-latest-report", "Jeff's Latest Report"));
+      }
+      return sources;
+    }
+    case "validation-director": {
+      const sources: DirectorSharedMemorySource[] = [];
+      const hasValidationRequest =
+        Boolean(session.pongTaskContext?.currentTask)
+        || Boolean(session.pongTaskContext?.toddUpdateExplanation)
+        || Boolean(session.pongTaskContext?.lastResult)
+        || Boolean(session.pongTaskContext?.lastFailureReason)
+        || Boolean(session.pongMemory?.validationRequest)
+        || Boolean(session.pongMemory?.jeffInstruction);
+
+      if (hasValidationRequest) {
+        sources.push(createSharedMemorySource("rd-director", "todd-validation-request", "Todd's Validation Request"));
+      }
+      if (
+        hasAnyItems(session.pongMemory?.previousValidationReports, session.validationResults)
+        || Boolean(session.pongMemory?.latestValidationReport)
+      ) {
+        sources.push(createSharedMemorySource("validation-director", "pong-validation-history", "Pong's Validation History"));
+      }
+      return sources;
+    }
+    case "project-manager": {
+      const sources: DirectorSharedMemorySource[] = [];
+      if (confirmedConcept) {
+        sources.push(createSharedMemorySource("creative-director", "dan-core-details", "Dan's Core-details"));
+      }
+      if (
+        session.toddMemory?.roadmap
+        || Boolean(session.toddMemory?.currentState)
+        || Boolean(session.toddMemory?.endStateGoal)
+        || hasAnyItems(session.toddMemory?.futureUpdatePlan, session.toddMemory?.previousUpdateLog, session.toddMemory?.troubleLog)
+      ) {
+        sources.push(createSharedMemorySource("rd-director", "todd-roadmap-and-updates", "Todd's Roadmap & Update Reports"));
+      }
+      if (hasAnyItems(session.jeffMemory?.pendingReports, session.jeffMemory?.outcomeLog)) {
+        sources.push(createSharedMemorySource("programming-director", "ping-execution-reports", "Ping's Execution Reports"));
+      }
+      if (
+        hasAnyItems(session.jeffMemory?.pendingValidations, session.pongMemory?.previousValidationReports, session.validationResults)
+        || Boolean(session.pongMemory?.latestValidationReport)
+      ) {
+        sources.push(createSharedMemorySource("validation-director", "pong-validation-history", "Pong's Validation History"));
+      }
+      return sources;
+    }
+  }
+};
+
 export const computeExpectedPercent = (window: UsageWindow): number | null => {
   if (!window.resetsAt || !window.windowDurationMins) return null;
   const resetsAt = new Date(window.resetsAt).getTime();
@@ -360,7 +477,7 @@ export const buildHardMemoryReportFromApproval = (
   if (payload.dataType === "danDraftCoreDetails" && payload.draftCoreDetails) {
     return {
       type: "hard-memory-report",
-      dataType: "danDraftCoreDetails",
+      dataType: "danCoreDetails",
       directorId: "creative-director",
       approvalId: approval.id,
       reportStage: "hard",
@@ -371,6 +488,25 @@ export const buildHardMemoryReportFromApproval = (
         ? payload.draftChangeSummary.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
         : [],
       draftCoreDetails: payload.draftCoreDetails as AgentCoreDetails,
+      roadmapVersions: null,
+      versionUpdates: null,
+      createdAt,
+    };
+  }
+
+  if (payload.dataType === "toddRoadmap" && payload.roadmap && typeof payload.roadmap === "object") {
+    return {
+      type: "hard-memory-report",
+      dataType: "toddRoadmap",
+      directorId: "rd-director",
+      approvalId: approval.id,
+      reportStage: "hard",
+      summary: approval.draftMessage ?? approval.summary,
+      currentState: null,
+      idealState: null,
+      changeSummary: [],
+      draftCoreDetails: null,
+      roadmap: payload.roadmap as HardMemoryReportMetadata["roadmap"],
       roadmapVersions: null,
       versionUpdates: null,
       createdAt,
@@ -549,8 +685,10 @@ export const getHardMemoryReportDirectorName = (report: HardMemoryReportMetadata
 export const getHardMemoryReportScopeLabel = (report: HardMemoryReportMetadata): string => {
   switch (report.dataType) {
     case "danDraftCoreDetails":
+    case "danCoreDetails":
       return "Core Details";
     case "versions":
+    case "toddRoadmap":
       return "Roadmap";
     case "versionUpdates":
       return "Updates";
@@ -559,6 +697,8 @@ export const getHardMemoryReportScopeLabel = (report: HardMemoryReportMetadata):
 
 export const HARD_MEMORY_REPORT_TITLES: Record<HardMemoryReportMetadata["dataType"], string> = {
   danDraftCoreDetails: "Dan Core-Details Draft",
+  danCoreDetails: "Core-Details Report",
   versions: "Todd Roadmap",
   versionUpdates: "Todd Update Plan",
+  toddRoadmap: "Roadmap Report",
 };

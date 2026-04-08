@@ -513,7 +513,7 @@ export interface StageAgentMessage {
   metadata?: AgentChatMessageMetadata | null;
 }
 
-export type HardMemoryReportDataType = "danDraftCoreDetails" | "versions" | "versionUpdates";
+export type HardMemoryReportDataType = "danCoreDetails" | "toddRoadmap" | "danDraftCoreDetails" | "versions" | "versionUpdates";
 
 export interface HardMemoryReportUpdate {
   id: string;
@@ -540,6 +540,7 @@ export interface HardMemoryReportMetadata {
   idealState: string | null;
   changeSummary: string[];
   draftCoreDetails: AgentCoreDetails | null;
+  roadmap?: ToddRoadmap | null;
   roadmapVersions: VersionPlan[] | null;
   versionUpdates: HardMemoryReportUpdate[] | null;
   createdAt: string;
@@ -944,6 +945,33 @@ export interface TaggedNote {
   content: string;
   tag: SoftMemoryTag;
   createdAt: string;
+  sourceRefs?: MemorySourceRef[];
+  resolution?: MemoryResolution | null;
+}
+
+export type MemoryOwner = "dan" | "todd" | "jeff";
+
+export interface MemorySourceRef {
+  id: string;
+  messageId: string | null;
+  rawText: string;
+  directorId: DirectorId | null;
+  kind: "user-message" | "assistant-message" | "handoff" | "report" | "legacy";
+  createdAt: string;
+}
+
+export interface MemoryResolution {
+  target: "hard" | "backup";
+  resolvedAt: string;
+  reportId: string | null;
+}
+
+export interface MemoryBucket<T> {
+  softMemory: TaggedNote[];
+  hardMemory: T | null;
+  backupMemory: TaggedNote[];
+  hardMemoryUpdatedAt: string | null;
+  latestReportId: string | null;
 }
 
 export type JeffOutcomeDecision = "successful" | "partially-successful" | "failure";
@@ -1019,26 +1047,6 @@ export interface DanHistoryLogEntry {
   createdAt: string;
 }
 
-export interface DanMemory {
-  confirmedConcept: AgentCoreDetails | null;
-  draftConcept: AgentCoreDetails | null;
-  derivedConcept: AgentCoreDetails | null;
-  notes: TaggedNote[];
-  derivedNotes: TaggedNote[];
-  sideNotes: string[];
-  draftChangeSummary: string[];
-  draftStatus: DanDraftStatus | null;
-  derivedUpdatedAt: string | null;
-  fullExperienceDescription: string | null;
-  archivedNotes: string[];
-  deletedNotes: string[];
-  rawMemories: DanRawMemory[];
-  forgottenMemories: string[];
-  creativeHistory: DanHistoryLogEntry[];
-  toddHandoffNotes: TaggedNote[];
-  threads: PillarThread[];
-}
-
 export interface ProjectKnowledgeFingerprint {
   headSha: string | null;
   digest: string;
@@ -1051,6 +1059,14 @@ export interface ProjectKnowledgeFingerprint {
 export type ProjectKnowledgeStatus = "fresh" | "stale" | "needs-initial-refresh";
 
 export interface ToddCodebaseIndexedMap {
+  summary: string | null;
+  indexedAt: string | null;
+  featureAreas: string[];
+  repoNotes: string[];
+  lastIndexedFingerprint: ProjectKnowledgeFingerprint | null;
+}
+
+export interface ToddIndexedMapSnapshot {
   summary: string | null;
   indexedAt: string | null;
   featureAreas: string[];
@@ -1108,8 +1124,71 @@ export interface ToddNextUpdate {
   dependencies: string[];
 }
 
-export interface ToddMemory {
+export interface ToddRoadmapItem {
+  id: string;
+  title: string;
+  description: string;
+  pillarIds: string[];
+  detailLines?: string[];
+  sourceRefs?: MemorySourceRef[];
+}
+
+export interface ToddCurrentStateItem extends ToddRoadmapItem {
+  itemStatus: "done" | "tbd";
+}
+
+export type ToddEndStateItem = ToddRoadmapItem;
+
+export interface ToddPathwayItem extends ToddRoadmapItem {
+  updateKind: "create" | "expand" | "refine";
+  order: number;
+}
+
+export interface ToddPriorityUpdate {
+  id: string;
+  title: string;
+  description: string;
+  pillarIds: string[];
+  updateKind: "create" | "expand" | "refine";
+  currentStateContext: string;
+  successDefinition: string | null;
+  partialSuccessDefinition: string | null;
+  partialFailureDefinition: string | null;
+  failureDefinition: string | null;
+  sourceRefs?: MemorySourceRef[];
+}
+
+export interface ToddRoadmap {
+  currentState: ToddCurrentStateItem[];
+  endState: ToddEndStateItem[];
+  pathway: ToddPathwayItem[];
+  priorityUpdate: ToddPriorityUpdate | null;
+  generatedAt: string;
+}
+
+export interface DanMemory extends MemoryBucket<AgentCoreDetails> {
   confirmedConcept: AgentCoreDetails | null;
+  draftConcept: AgentCoreDetails | null;
+  derivedConcept: AgentCoreDetails | null;
+  notes: TaggedNote[];
+  derivedNotes: TaggedNote[];
+  sideNotes: string[];
+  draftChangeSummary: string[];
+  draftStatus: DanDraftStatus | null;
+  derivedUpdatedAt: string | null;
+  fullExperienceDescription: string | null;
+  archivedNotes: string[];
+  deletedNotes: string[];
+  rawMemories: DanRawMemory[];
+  forgottenMemories: string[];
+  creativeHistory: DanHistoryLogEntry[];
+  toddHandoffNotes: TaggedNote[];
+  threads: PillarThread[];
+}
+
+export interface ToddMemory extends MemoryBucket<ToddRoadmap> {
+  confirmedConcept: AgentCoreDetails | null;
+  roadmap: ToddRoadmap | null;
   currentState: string | null;
   endStateGoal: string | null;
   successChain: ToddSuccessChainStep[];
@@ -1185,6 +1264,10 @@ export interface PingTaskSnapshot {
   originalUserRequest: string;
   toddExplanation: string | null;
   relevantPillarIds: string[];
+  currentStateItems?: ToddCurrentStateItem[];
+  priorityUpdate?: ToddPriorityUpdate | null;
+  sourceRefs?: MemorySourceRef[];
+  indexedMap?: ToddIndexedMapSnapshot | null;
   toddCodebaseMapSummary: string | null;
   coreDetailsContext: string | null;
   runtime: PingRuntimeSnapshot;
@@ -1265,21 +1348,51 @@ export interface PingMemory {
   activeTask: string | null;
   context: string | null;
   codebaseMapSummary: string | null;
+  latestPlanReport: string | null;
+  latestIndexedMap: ToddIndexedMapSnapshot | null;
   latestRawReport: PingRawReport | null;
   latestJeffReport: JeffExecutionReport | null;
   currentRun: PingRunSnapshot | null;
 }
 
-export interface JeffMemory {
+export interface JeffProjectStatusEntry {
+  id: string;
+  summary: string;
+  status: "success" | "partial-success" | "partial-failure" | "failure" | "in-progress" | "needs-refresh";
+  reportId: string | null;
+  sourceDirectorId: DirectorId | null;
+  createdAt: string;
+}
+
+export interface JeffManagerSummary {
+  danSummary: string | null;
+  toddSummary: string | null;
+  currentProjectStatus: string | null;
+}
+
+export interface JeffMemory extends MemoryBucket<JeffManagerSummary> {
   pendingReports: JeffExecutionReport[];
   pendingValidations: PongValidationReport[];
   outcomeLog: JeffOutcomeEntry[];
+  managerSummary: JeffManagerSummary | null;
+  projectStatusHistory: JeffProjectStatusEntry[];
+  currentProjectStatus: JeffProjectStatusEntry | null;
   notes: TaggedNote[];
   backupNotes: TaggedNote[];
 }
 
+export interface ToddValidationRequest {
+  id: string;
+  instruction: string;
+  updateId: string | null;
+  relevantPillarIds: string[];
+  sourceRefs: MemorySourceRef[];
+  createdAt: string;
+}
+
 export interface PongMemory {
   jeffInstruction: string | null;
+  validationRequest: ToddValidationRequest | null;
   previousValidationReports: PongValidationReport[];
   latestValidationReport: PongValidationReport | null;
   screenshotPaths: string[];

@@ -19,7 +19,7 @@ test("agent session save statement keeps columns and placeholders aligned", asyn
   const placeholders = match[2]!.split(",").map((value) => value.trim()).filter(Boolean);
 
   assert.equal(columns.length, placeholders.length);
-  assert.equal(columns.length, 48);
+  assert.equal(columns.length, 50);
   assert.ok(columns.includes("dan_side_notes_json"));
   assert.ok(columns.includes("dan_draft_core_details_json"));
   assert.ok(columns.includes("dan_draft_change_summary_json"));
@@ -27,6 +27,8 @@ test("agent session save statement keeps columns and placeholders aligned", asyn
   assert.ok(columns.includes("dan_memory_json"));
   assert.ok(columns.includes("todd_memory_json"));
   assert.ok(columns.includes("ping_memory_json"));
+  assert.ok(columns.includes("jeff_memory_json"));
+  assert.ok(columns.includes("pong_memory_json"));
   assert.ok(columns.includes("automation_json"));
   assert.equal(columns.includes("agent_conversations_json"), false);
   assert.equal(columns.includes("active_agent_id"), false);

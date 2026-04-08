@@ -17,9 +17,11 @@ import type {
   DirectorId,
   DirectorFocusMode,
   JeffExecutionReport,
+  JeffMemory,
   PendingApproval,
   PingMemory,
   PingRawReport,
+  PongMemory,
   ProjectCategory,
   ProjectDirectorProgress,
   ProjectOutlineReport,
@@ -39,7 +41,9 @@ import type {
 } from "../../shared/types.ts";
 import {
   sanitizeDirectorStateMap,
+  sanitizeJeffMemory,
   sanitizePendingApprovals,
+  sanitizePongMemory,
   sanitizeSlackMessages,
 } from "../../shared/agent-session.ts";
 import { DEFAULT_SETTINGS, DEFAULT_SETUP_STATE } from "../defaults.ts";
@@ -181,11 +185,19 @@ const buildDanMemory = (session: {
   deletedNotes: string[];
 }): AgentSession["danMemory"] => {
   const confirmedConcept = buildConfirmedConceptFromLegacy(session) ?? session.danMemory?.confirmedConcept ?? null;
+  const hardMemory = session.danMemory?.hardMemory ?? confirmedConcept ?? null;
+  const softMemory = session.danMemory?.softMemory ?? session.danMemory?.notes ?? (session.danInternalNotes ?? []).map((n, i): TaggedNote => typeof n === "string" ? { id: `legacy-${i}`, content: n, tag: "general", createdAt: new Date(0).toISOString(), sourceRefs: [], resolution: null } : n);
+  const backupMemory = session.danMemory?.backupMemory ?? (session.danMemory?.archivedNotes ?? session.danArchivedNotes ?? []).map((n, i): TaggedNote => typeof n === "string" ? { id: `dan-backup-${i}`, content: n, tag: "likely-backup", createdAt: new Date(0).toISOString(), sourceRefs: [], resolution: { target: "backup", resolvedAt: new Date(0).toISOString(), reportId: null } } : n);
   return {
-    confirmedConcept,
+    softMemory,
+    hardMemory,
+    backupMemory,
+    hardMemoryUpdatedAt: session.danMemory?.hardMemoryUpdatedAt ?? null,
+    latestReportId: session.danMemory?.latestReportId ?? null,
+    confirmedConcept: hardMemory ?? confirmedConcept,
     draftConcept: session.danMemory?.draftConcept ?? session.danDraftCoreDetails ?? null,
     derivedConcept: session.danMemory?.derivedConcept ?? null,
-    notes: session.danMemory?.notes ?? (session.danInternalNotes ?? []).map((n, i): TaggedNote => typeof n === "string" ? { id: `legacy-${i}`, content: n, tag: "general", createdAt: new Date(0).toISOString() } : n),
+    notes: softMemory,
     derivedNotes: session.danMemory?.derivedNotes ?? [],
     sideNotes: session.danMemory?.sideNotes ?? session.danSideNotes ?? [],
     draftChangeSummary: session.danMemory?.draftChangeSummary ?? session.danDraftChangeSummary ?? [],
@@ -194,7 +206,7 @@ const buildDanMemory = (session: {
     fullExperienceDescription: session.danMemory?.fullExperienceDescription
       ?? confirmedConcept?.fullFlow?.summary
       ?? null,
-    archivedNotes: session.danMemory?.archivedNotes ?? session.danArchivedNotes ?? [],
+    archivedNotes: backupMemory.map((note) => note.content),
     deletedNotes: session.danMemory?.deletedNotes ?? session.deletedNotes ?? [],
     rawMemories: session.danMemory?.rawMemories ?? [],
     forgottenMemories: session.danMemory?.forgottenMemories ?? [],
@@ -230,8 +242,17 @@ const buildToddMemory = (session: {
         }]
       : [];
 
+  const hardMemory = session.toddMemory?.hardMemory ?? session.toddMemory?.roadmap ?? null;
+  const softMemory = session.toddMemory?.softMemory ?? session.toddMemory?.notes ?? [];
+  const backupMemory = session.toddMemory?.backupMemory ?? session.toddMemory?.backupNotes ?? [];
   return {
+    softMemory,
+    hardMemory,
+    backupMemory,
+    hardMemoryUpdatedAt: session.toddMemory?.hardMemoryUpdatedAt ?? null,
+    latestReportId: session.toddMemory?.latestReportId ?? null,
     confirmedConcept: session.danMemory.confirmedConcept,
+    roadmap: hardMemory ?? session.toddMemory?.roadmap ?? null,
     currentState: session.toddMemory?.currentState ?? null,
     endStateGoal: session.toddMemory?.endStateGoal ?? null,
     successChain: session.toddMemory?.successChain ?? [],
@@ -240,9 +261,9 @@ const buildToddMemory = (session: {
     previousUpdateLog: session.toddMemory?.previousUpdateLog ?? [],
     troubleLog,
     codebaseIndexedMap: buildToddCodebaseIndexedMap(session, session.toddMemory?.codebaseIndexedMap ?? null),
-    notes: session.toddMemory?.notes ?? [],
+    notes: softMemory,
     pendingHandoff: session.toddMemory?.pendingHandoff ?? null,
-    backupNotes: session.toddMemory?.backupNotes ?? [],
+    backupNotes: backupMemory,
   };
 };
 
@@ -255,9 +276,39 @@ const buildPingMemory = (session: {
   activeTask: session.pingMemory?.activeTask ?? session.pingTaskContext?.currentTask ?? null,
   context: session.pingMemory?.context ?? session.pingTaskContext?.toddUpdateExplanation ?? null,
   codebaseMapSummary: session.pingMemory?.codebaseMapSummary ?? session.toddMemory.codebaseIndexedMap?.summary ?? null,
+  latestPlanReport: session.pingMemory?.latestPlanReport ?? null,
+  latestIndexedMap: session.pingMemory?.latestIndexedMap ?? (session.toddMemory.codebaseIndexedMap ? { ...session.toddMemory.codebaseIndexedMap } : null),
   latestRawReport: session.pingMemory?.latestRawReport ?? null,
   latestJeffReport: session.pingMemory?.latestJeffReport ?? null,
   currentRun: session.pingMemory?.currentRun ?? null,
+});
+
+const buildJeffMemory = (session: {
+  jeffMemory?: JeffMemory;
+}): JeffMemory => ({
+  softMemory: session.jeffMemory?.softMemory ?? session.jeffMemory?.notes ?? [],
+  hardMemory: session.jeffMemory?.hardMemory ?? session.jeffMemory?.managerSummary ?? null,
+  backupMemory: session.jeffMemory?.backupMemory ?? session.jeffMemory?.backupNotes ?? [],
+  hardMemoryUpdatedAt: session.jeffMemory?.hardMemoryUpdatedAt ?? null,
+  latestReportId: session.jeffMemory?.latestReportId ?? null,
+  pendingReports: session.jeffMemory?.pendingReports ?? [],
+  pendingValidations: session.jeffMemory?.pendingValidations ?? [],
+  outcomeLog: session.jeffMemory?.outcomeLog ?? [],
+  managerSummary: session.jeffMemory?.managerSummary ?? null,
+  projectStatusHistory: session.jeffMemory?.projectStatusHistory ?? [],
+  currentProjectStatus: session.jeffMemory?.currentProjectStatus ?? null,
+  notes: session.jeffMemory?.softMemory ?? session.jeffMemory?.notes ?? [],
+  backupNotes: session.jeffMemory?.backupMemory ?? session.jeffMemory?.backupNotes ?? [],
+});
+
+const buildPongMemory = (session: {
+  pongMemory?: PongMemory;
+}): PongMemory => ({
+  jeffInstruction: session.pongMemory?.jeffInstruction ?? null,
+  validationRequest: session.pongMemory?.validationRequest ?? null,
+  previousValidationReports: session.pongMemory?.previousValidationReports ?? [],
+  latestValidationReport: session.pongMemory?.latestValidationReport ?? null,
+  screenshotPaths: session.pongMemory?.screenshotPaths ?? [],
 });
 
 const buildAutomationState = (
@@ -293,12 +344,12 @@ const buildAutomationState = (
 });
 
 const syncLegacyFieldsFromMemory = (session: AgentSession): AgentSession => {
-  session.danInternalNotes = session.danMemory.notes.map((n) => typeof n === "string" ? n : n.content);
+  session.danInternalNotes = session.danMemory.softMemory.map((n) => typeof n === "string" ? n : n.content);
   session.danSideNotes = [...session.danMemory.sideNotes];
   session.danDraftCoreDetails = session.danMemory.draftConcept;
   session.danDraftChangeSummary = [...session.danMemory.draftChangeSummary];
   session.danDraftStatus = session.danMemory.draftStatus;
-  session.danArchivedNotes = [...session.danMemory.archivedNotes];
+  session.danArchivedNotes = [...session.danMemory.backupMemory.map((note) => note.content)];
   session.deletedNotes = [...session.danMemory.deletedNotes];
   session.versions = [];
   session.versionUpdates = session.toddMemory.futureUpdatePlan.map(normalizeVersionUpdate);
@@ -558,6 +609,8 @@ export class ProjectStore {
     this.ensureColumn("agent_sessions", "dan_memory_json", "TEXT");
     this.ensureColumn("agent_sessions", "todd_memory_json", "TEXT");
     this.ensureColumn("agent_sessions", "ping_memory_json", "TEXT");
+    this.ensureColumn("agent_sessions", "jeff_memory_json", "TEXT");
+    this.ensureColumn("agent_sessions", "pong_memory_json", "TEXT");
     this.ensureColumn("agent_sessions", "automation_json", "TEXT");
 
     this.db.exec(`
@@ -1171,12 +1224,16 @@ export class ProjectStore {
       danMemory: JSON.parse((r.dan_memory_json as string) || "null") as AgentSession["danMemory"] | null,
       toddMemory: JSON.parse((r.todd_memory_json as string) || "null") as ToddMemory | null,
       pingMemory: JSON.parse((r.ping_memory_json as string) || "null") as PingMemory | null,
+      jeffMemory: sanitizeJeffMemory(JSON.parse((r.jeff_memory_json as string) || "null")),
+      pongMemory: sanitizePongMemory(JSON.parse((r.pong_memory_json as string) || "null")),
       automation: buildAutomationState(JSON.parse((r.automation_json as string) || "null") as AgentSession["automation"] | null),
     } as AgentSession;
 
     baseSession.danMemory = buildDanMemory(baseSession);
     baseSession.toddMemory = buildToddMemory(baseSession);
     baseSession.pingMemory = buildPingMemory(baseSession);
+    baseSession.jeffMemory = buildJeffMemory(baseSession);
+    baseSession.pongMemory = buildPongMemory(baseSession);
 
     return syncLegacyFieldsFromMemory(baseSession);
   }
@@ -1216,6 +1273,8 @@ export class ProjectStore {
           danMemory: buildDanMemory(session),
         }),
       }),
+      jeffMemory: buildJeffMemory(session),
+      pongMemory: buildPongMemory(session),
     } as AgentSession);
     this.run(
       `REPLACE INTO agent_sessions (
@@ -1234,8 +1293,8 @@ export class ProjectStore {
          director_settings_overrides_json, current_core_pillars_json,
          director_state_map_json, deleted_notes_json, dan_archived_notes_json,
          ping_task_context_json, pong_task_context_json, slack_presence_guest_id,
-         dan_memory_json, todd_memory_json, ping_memory_json, automation_json
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         dan_memory_json, todd_memory_json, ping_memory_json, jeff_memory_json, pong_memory_json, automation_json
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         prepared.id,
         prepared.projectId,
@@ -1285,6 +1344,8 @@ export class ProjectStore {
         JSON.stringify(prepared.danMemory),
         JSON.stringify(prepared.toddMemory),
         JSON.stringify(prepared.pingMemory),
+        JSON.stringify(prepared.jeffMemory),
+        JSON.stringify(prepared.pongMemory),
         JSON.stringify(prepared.automation),
       ],
     );

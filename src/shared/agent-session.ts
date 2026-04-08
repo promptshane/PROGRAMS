@@ -6,6 +6,8 @@ import {
   type JeffExecutionReport,
   type JeffMemory,
   type JeffOutcomeEntry,
+  type MemoryResolution,
+  type MemorySourceRef,
   type PendingApproval,
   type PendingApprovalKind,
   type PendingApprovalStatus,
@@ -241,6 +243,30 @@ const normalizeSoftMemoryTag = (value: unknown): SoftMemoryTag =>
 export const sanitizeTaggedNotes = (value: unknown): TaggedNote[] => {
   if (!Array.isArray(value)) return [];
   const notes: TaggedNote[] = [];
+  const sanitizeSourceRefs = (input: unknown): MemorySourceRef[] => {
+    if (!Array.isArray(input)) return [];
+    return input
+      .filter(isRecord)
+      .map((item, index) => ({
+        id: typeof item.id === "string" && item.id.trim() ? item.id : `source-${index}`,
+        messageId: typeof item.messageId === "string" && item.messageId.trim() ? item.messageId : null,
+        rawText: typeof item.rawText === "string" ? item.rawText : "",
+        directorId: normalizeDirectorId(typeof item.directorId === "string" ? item.directorId : null),
+        kind: item.kind === "user-message" || item.kind === "assistant-message" || item.kind === "handoff" || item.kind === "report" || item.kind === "legacy"
+          ? item.kind as MemorySourceRef["kind"]
+          : "legacy",
+        createdAt: normalizeIsoString(item.createdAt, new Date(0).toISOString()),
+      }))
+      .filter((item) => item.rawText.trim().length > 0);
+  };
+  const sanitizeResolution = (input: unknown): MemoryResolution | null => {
+    if (!isRecord(input)) return null;
+    return {
+      target: input.target === "backup" ? "backup" : "hard",
+      resolvedAt: normalizeIsoString(input.resolvedAt, new Date(0).toISOString()),
+      reportId: typeof input.reportId === "string" && input.reportId.trim() ? input.reportId : null,
+    };
+  };
   for (let i = 0; i < value.length; i += 1) {
     const item = value[i];
     if (typeof item === "string" && item.trim()) {
@@ -249,6 +275,8 @@ export const sanitizeTaggedNotes = (value: unknown): TaggedNote[] => {
         content: item,
         tag: "general",
         createdAt: new Date(0).toISOString(),
+        sourceRefs: [],
+        resolution: null,
       });
     } else if (isRecord(item) && typeof item.content === "string" && item.content.trim()) {
       notes.push({
@@ -256,6 +284,8 @@ export const sanitizeTaggedNotes = (value: unknown): TaggedNote[] => {
         content: item.content,
         tag: normalizeSoftMemoryTag(item.tag),
         createdAt: normalizeIsoString(item.createdAt, new Date(0).toISOString()),
+        sourceRefs: sanitizeSourceRefs(item.sourceRefs),
+        resolution: sanitizeResolution(item.resolution),
       });
     }
   }
@@ -292,19 +322,35 @@ const sanitizeJeffOutcomeLog = (value: unknown): JeffOutcomeEntry[] => {
 export const sanitizeJeffMemory = (value: unknown): JeffMemory => {
   if (!isRecord(value)) {
     return {
+      softMemory: [],
+      hardMemory: null,
+      backupMemory: [],
+      hardMemoryUpdatedAt: null,
+      latestReportId: null,
       pendingReports: [],
       pendingValidations: [],
       outcomeLog: [],
+      managerSummary: null,
+      projectStatusHistory: [],
+      currentProjectStatus: null,
       notes: [],
       backupNotes: [],
     };
   }
   return {
+    softMemory: sanitizeTaggedNotes(value.softMemory ?? value.notes),
+    hardMemory: isRecord(value.hardMemory) ? value.hardMemory as unknown as JeffMemory["hardMemory"] : null,
+    backupMemory: sanitizeTaggedNotes(value.backupMemory ?? value.backupNotes),
+    hardMemoryUpdatedAt: typeof value.hardMemoryUpdatedAt === "string" ? value.hardMemoryUpdatedAt : null,
+    latestReportId: typeof value.latestReportId === "string" ? value.latestReportId : null,
     pendingReports: sanitizeJeffExecutionReports(value.pendingReports),
     pendingValidations: sanitizePongValidationReports(value.pendingValidations),
     outcomeLog: sanitizeJeffOutcomeLog(value.outcomeLog),
-    notes: sanitizeTaggedNotes(value.notes),
-    backupNotes: sanitizeTaggedNotes(value.backupNotes),
+    managerSummary: isRecord(value.managerSummary) ? value.managerSummary as unknown as JeffMemory["managerSummary"] : null,
+    projectStatusHistory: Array.isArray(value.projectStatusHistory) ? value.projectStatusHistory as unknown as JeffMemory["projectStatusHistory"] : [],
+    currentProjectStatus: isRecord(value.currentProjectStatus) ? value.currentProjectStatus as unknown as JeffMemory["currentProjectStatus"] : null,
+    notes: sanitizeTaggedNotes(value.notes ?? value.softMemory),
+    backupNotes: sanitizeTaggedNotes(value.backupNotes ?? value.backupMemory),
   };
 };
 
@@ -312,6 +358,7 @@ export const sanitizePongMemory = (value: unknown): PongMemory => {
   if (!isRecord(value)) {
     return {
       jeffInstruction: null,
+      validationRequest: null,
       previousValidationReports: [],
       latestValidationReport: null,
       screenshotPaths: [],
@@ -319,6 +366,7 @@ export const sanitizePongMemory = (value: unknown): PongMemory => {
   }
   return {
     jeffInstruction: typeof value.jeffInstruction === "string" ? value.jeffInstruction : null,
+    validationRequest: isRecord(value.validationRequest) ? value.validationRequest as unknown as PongMemory["validationRequest"] : null,
     previousValidationReports: sanitizePongValidationReports(value.previousValidationReports),
     latestValidationReport:
       isRecord(value.latestValidationReport)

@@ -66,7 +66,7 @@ export function HardMemoryReportSections({
         </div>
       ) : null}
 
-      {report.dataType === "danDraftCoreDetails" ? (
+      {report.dataType === "danDraftCoreDetails" || report.dataType === "danCoreDetails" ? (
         <>
           {report.changeSummary.length > 0 ? (
             <div className="pendingProposalCard">
@@ -95,6 +95,70 @@ export function HardMemoryReportSections({
             <CoreDetailsReport coreDetails={danDraftCoreDetails} />
           )}
         </>
+      ) : null}
+
+      {report.dataType === "toddRoadmap" && report.roadmap ? (
+        <div className="pendingProposalCard">
+          <h5>Roadmap</h5>
+          <div className="proposalField">
+            <div className="proposalFieldLabel">Current-State</div>
+            {report.roadmap.currentState.length > 0 ? (
+              <ul className="agentSummaryList">
+                {report.roadmap.currentState.map((item) => (
+                  <li key={item.id}>
+                    [{item.itemStatus}] {item.title}: {item.description}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="emptyFieldText">No current-state items captured.</p>
+            )}
+          </div>
+          <div className="proposalField">
+            <div className="proposalFieldLabel">Priority Update</div>
+            {report.roadmap.priorityUpdate ? (
+              <>
+                <div className="proposalFieldValue">
+                  {report.roadmap.priorityUpdate.title}: {report.roadmap.priorityUpdate.description}
+                </div>
+                <p className="helperText">{report.roadmap.priorityUpdate.currentStateContext}</p>
+              </>
+            ) : (
+              <p className="emptyFieldText">No priority update captured.</p>
+            )}
+          </div>
+          <div className="proposalField">
+            <div className="proposalFieldLabel">Pathway</div>
+            {report.roadmap.pathway.length > 0 ? (
+              <ul className="agentSummaryList">
+                {report.roadmap.pathway
+                  .slice()
+                  .sort((left, right) => left.order - right.order)
+                  .map((item) => (
+                    <li key={item.id}>
+                      {item.order + 1}. [{item.updateKind}] {item.title}: {item.description}
+                    </li>
+                  ))}
+              </ul>
+            ) : (
+              <p className="emptyFieldText">No pathway items captured.</p>
+            )}
+          </div>
+          <div className="proposalField">
+            <div className="proposalFieldLabel">End-State</div>
+            {report.roadmap.endState.length > 0 ? (
+              <ul className="agentSummaryList">
+                {report.roadmap.endState.map((item) => (
+                  <li key={item.id}>
+                    {item.title}: {item.description}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="emptyFieldText">No end-state items captured.</p>
+            )}
+          </div>
+        </div>
       ) : null}
 
       {report.dataType === "versions" ? (
@@ -231,18 +295,19 @@ export function HardMemoryReportPanel({
           approvalId: liveApproval.id,
         });
       } else {
-        updatedSession = await window.programs.dismissPendingApproval({
+        updatedSession = await window.programs.deferPendingApproval({
           projectId,
           approvalId: liveApproval.id,
         });
       }
 
-      onSessionUpdate(updatedSession);
+      const refreshed = await window.programs.getAgentSession(projectId);
+      onSessionUpdate(refreshed ?? updatedSession);
       onClose();
       pushToast(
         action === "confirm"
           ? "Approval confirmed."
-          : "Action cancelled.",
+          : "Saved for later.",
         action === "confirm" ? "success" : "info",
       );
     } catch (error) {
@@ -276,7 +341,7 @@ export function HardMemoryReportPanel({
               Confirm
             </button>
             <button className="secondaryButton" onClick={() => void handleApprovalAction("cancel")} disabled={busyAction !== null}>
-              Cancel
+              Later
             </button>
           </div>
         ) : (

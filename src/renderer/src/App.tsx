@@ -1864,7 +1864,7 @@ function App() {
       ) : null}
 
       {unlinkProjectId && unlinkProject ? (
-        <Modal title="Unlink Project" onClose={() => setUnlinkProjectId(null)}>
+        <Modal title="Unlink Project" onClose={() => setUnlinkProjectId(null)} compact>
           <div className="projectEditorStack">
             <p className="modalLead">
               Remove <strong>{unlinkProject.name}</strong> from the dashboard. The project folder and its files stay on disk.
@@ -1975,7 +1975,7 @@ function App() {
       ) : null}
 
       {setupConfirmCheck?.actionKind === "installGit" ? (
-        <Modal title="Install Git" onClose={() => setSetupConfirmCheck(null)}>
+        <Modal title="Install Git" onClose={() => setSetupConfirmCheck(null)} compact>
           <p className="modalLead">PROGRAMS will ask macOS to install Git. You may see one system prompt.</p>
           <details className="inlineDetails">
             <summary>More detail</summary>

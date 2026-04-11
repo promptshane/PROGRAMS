@@ -5754,6 +5754,42 @@ select {
   list-style: none;
 }
 
+.memoryAlertButton,
+.memoryReportSummaryMeta {
+  display: inline-flex;
+  align-items: center;
+}
+
+.memoryAlertButton {
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--text) 18%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text);
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+.memoryAlertButton:hover,
+.memoryAlertButton:focus-visible {
+  border-color: color-mix(in srgb, var(--text) 28%, transparent);
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
+
+.memoryAlertButton svg {
+  width: 13px;
+  height: 13px;
+}
+
+.memoryReportSummaryMeta {
+  gap: 8px;
+  margin-left: auto;
+  margin-right: 4px;
+}
+
 .agentSummaryDetails summary::-webkit-details-marker {
   display: none;
 }
@@ -5859,9 +5895,144 @@ select {
   margin: 0;
 }
 
+.agentSummaryDetails--selected {
+  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.toddRoadmapSummaryPanel {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--accent) 6%, var(--panel-soft));
+  margin-bottom: 12px;
+}
+
+.toddRoadmapSummaryHeader {
+  display: grid;
+  gap: 4px;
+}
+
+.toddRoadmapSummaryRail {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.toddRoadmapSummarySegment {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  min-width: 0;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border));
+  background: color-mix(in srgb, var(--panel) 92%, var(--panel-soft));
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  transition: transform 140ms ease, border-color 140ms ease, background 140ms ease, box-shadow 140ms ease;
+}
+
+.toddRoadmapSummarySegment:hover {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border));
+}
+
+.toddRoadmapSummarySegment.is-active {
+  border-color: color-mix(in srgb, var(--accent) 54%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, var(--panel-soft));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.toddRoadmapSummaryMarker {
+  display: block;
+}
+
+.toddRoadmapSummaryMarker--continuous {
+  width: 100%;
+  height: 5px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 58%, transparent), color-mix(in srgb, var(--accent) 16%, transparent));
+}
+
+.toddRoadmapSummaryMarker--node {
+  width: 14px;
+  height: 14px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 78%, var(--text));
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.toddRoadmapSummaryLabel {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.toddRoadmapSummaryValue {
+  font-size: 0.84rem;
+  line-height: 1.35;
+  color: var(--text);
+}
+
+.toddRoadmapSummaryText {
+  font-size: 0.75rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+.toddRoadmapSummaryTroubleLane {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.7rem;
+  line-height: 1.35;
+  color: #cc6b6b;
+}
+
+.toddRoadmapSummaryTroubleLane::before {
+  content: "";
+  width: 18px;
+  height: 3px;
+  border-radius: 999px;
+  background: currentColor;
+  flex-shrink: 0;
+}
+
+.toddMemorySectionSubblock {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 92%, var(--panel-soft));
+}
+
+.toddMemorySectionSubblock--danger {
+  border-color: color-mix(in srgb, #cc6b6b 30%, var(--border));
+  background: color-mix(in srgb, #cc6b6b 8%, var(--panel-soft));
+}
+
 .agentSummarySharedBody {
   display: grid;
   gap: 10px;
+}
+
+.agentSummaryMemoryRail {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  min-width: 0;
+}
+
+.agentSummarySupplemental {
+  padding: 0 12px 12px;
 }
 
 @media (max-width: 960px) {
@@ -5880,6 +6051,10 @@ select {
 
   .agentSummaryGrid,
   .agentSummaryLists {
+    grid-template-columns: 1fr;
+  }
+
+  .toddRoadmapSummaryRail {
     grid-template-columns: 1fr;
   }
 

@@ -97,8 +97,6 @@ export const registerIpc = (backend: ProgramsBackend): void => {
     backend.startPingDirectUpdate(input));
   ipcMain.handle("agents.chat", (_event, input: AgentChatInput) =>
     backend.agentChat(input));
-  ipcMain.handle("slack.chat", (_event, input: AgentChatInput) =>
-    backend.slackChat(input));
   ipcMain.handle("approvals.list", (_event, input: ListPendingApprovalsInput) =>
     backend.listPendingApprovals(input));
   ipcMain.handle("approvals.approve", (_event, input: ApprovePendingApprovalInput) =>
@@ -111,12 +109,8 @@ export const registerIpc = (backend: ProgramsBackend): void => {
     backend.dismissPendingApproval(input));
   ipcMain.handle("agents.deleteMessages", (_event, input: DeleteAgentMessagesInput) =>
     backend.deleteAgentMessages(input));
-  ipcMain.handle("slack.deleteMessages", (_event, input: DeleteAgentMessagesInput) =>
-    backend.deleteSlackMessages(input));
   ipcMain.handle("agents.clearMessages", (_event, projectId: string) =>
     backend.clearAgentMessages(projectId));
-  ipcMain.handle("slack.clearAll", (_event, projectId: string) =>
-    backend.clearSlackMessages(projectId));
   ipcMain.handle("agents.refreshProject", (_event, input: import("@shared/types").RefreshProjectInput) =>
     backend.refreshProject(input));
   ipcMain.handle("slack.refreshProject", (_event, input: import("@shared/types").RefreshProjectInput) =>

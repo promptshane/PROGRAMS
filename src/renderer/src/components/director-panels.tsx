@@ -1,9 +1,11 @@
-import { useLayoutEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 import { getDirectorMetadata, type DirectorFlowLink } from "@shared/director-metadata";
 import { ConceptOverview } from "./core-details";
 import { StatusChip } from "./ui-primitives";
 import { ExecutionReportPanel } from "./execution-panels";
-import { ErrorBoundaryPanel } from "./hard-memory-report";
+import { ErrorBoundaryPanel, HardMemoryReportSections } from "./hard-memory-report";
+import { ExclamationIcon } from "./icons";
+import { AgentChatMarkdown } from "../lib/agent-chat-markdown";
 import {
   resolveModelOptions,
   fallbackCodexModelLabel,
@@ -25,6 +27,10 @@ import {
   describeDirectorFocusMode,
   buildDirectorLiveContextItems,
   buildDirectorSharedMemorySources,
+  buildDirectorExportedMemoryTargets,
+  buildDirectorReportStream,
+  collectToddRoadmapReportHistory,
+  collectToddResearchReportHistory,
   getLivePendingApprovals,
   getDirectorProjectNotes,
   getConfirmedConcept,
@@ -33,6 +39,10 @@ import {
   getWorkingConcept,
   type DirectorSharedMemorySource,
 } from "../lib/session-helpers";
+import {
+  buildToddHardMemoryViewModel,
+  type ToddHardMemorySectionKey,
+} from "../lib/todd-hard-memory";
 import type {
   DirectorId,
   DirectorFocusMode,
@@ -47,7 +57,7 @@ import type {
   PlanningMode,
   VersionUpdate,
   JeffExecutionReport,
-  ToddRoadmap,
+  HardMemoryReportMetadata,
 } from "@shared/types";
 import { DIRECTOR_COLORS, DIRECTOR_NAMES } from "@shared/types";
 
@@ -334,23 +344,146 @@ export function DirectorSummaryPanel({
   );
 }
 
-function getPillarNames(pillarIds: string[], corePillars: CorePillar[] | null | undefined): string[] {
-  if (!corePillars || !pillarIds.length) return [];
-  return pillarIds
-    .map((id) => corePillars.find((p) => p.id === id)?.name)
-    .filter((name): name is string => typeof name === "string");
-}
+const TODD_HARD_MEMORY_SECTIONS: Array<{
+  key: ToddHardMemorySectionKey;
+  title: string;
+  style: "continuous" | "node";
+}> = [
+  { key: "history", title: "History", style: "continuous" },
+  { key: "current-state", title: "Current State", style: "node" },
+  { key: "priority-update", title: "Priority Update", style: "node" },
+  { key: "success-chain", title: "Success Chain", style: "continuous" },
+  { key: "end-state", title: "End State", style: "node" },
+];
+
+const createToddHardMemoryOpenState = (): Record<ToddHardMemorySectionKey, boolean> => ({
+  history: false,
+  "current-state": false,
+  "priority-update": false,
+  "success-chain": false,
+  "end-state": false,
+});
+
+const formatToddHistorySummary = (
+  viewModel: ReturnType<typeof buildToddHardMemoryViewModel>,
+): { value: string; summary: string; alert: string | null } => {
+  if (viewModel.history.updateCount === 0 && viewModel.history.troubleCount === 0) {
+    return {
+      value: "Nothing recorded",
+      summary: "No completed updates or trouble reports yet.",
+      alert: null,
+    };
+  }
+
+  return {
+    value: `${viewModel.history.updateCount} update${viewModel.history.updateCount === 1 ? "" : "s"}`,
+    summary: viewModel.history.latestGoal ?? "Completed update history is available below.",
+    alert: viewModel.history.troubleCount > 0
+      ? `${viewModel.history.troubleCount} trouble item${viewModel.history.troubleCount === 1 ? "" : "s"}`
+      : null,
+  };
+};
+
+const formatToddCurrentStateSummary = (
+  viewModel: ReturnType<typeof buildToddHardMemoryViewModel>,
+): { value: string; summary: string } => ({
+  value: viewModel.currentState.summary ? "Mapped" : "Missing",
+  summary: viewModel.currentState.summary ?? "No current-state summary is stored yet.",
+});
+
+const formatToddPriorityUpdateSummary = (
+  viewModel: ReturnType<typeof buildToddHardMemoryViewModel>,
+): { value: string; summary: string } => ({
+  value: viewModel.priorityUpdate?.title ?? "Needs mapping",
+  summary: viewModel.priorityUpdate?.description
+    ?? viewModel.sectionStatus["priority-update"].reason
+    ?? "Todd has not selected the next update yet.",
+});
+
+const formatToddSuccessChainSummary = (
+  viewModel: ReturnType<typeof buildToddHardMemoryViewModel>,
+): { value: string; summary: string } => {
+  if (viewModel.successChain.trackedCount === 0) {
+    return {
+      value: "No chain yet",
+      summary: "No ordered success chain has been defined yet.",
+    };
+  }
+
+  return {
+    value: viewModel.successChain.remainingCount > 0
+      ? `${viewModel.successChain.remainingCount} remaining`
+      : "No remaining steps",
+    summary: viewModel.successChain.nextPendingTitle
+      ? `Next step: ${viewModel.successChain.nextPendingTitle}`
+      : "No remaining future steps are currently mapped.",
+  };
+};
+
+const formatToddEndStateSummary = (
+  viewModel: ReturnType<typeof buildToddHardMemoryViewModel>,
+): { value: string; summary: string } => ({
+  value: viewModel.endState.summary ? "Target locked" : "Missing",
+  summary: viewModel.endState.summary ?? "No end-state summary is stored yet.",
+});
 
 type ToddMemorySectionProps = {
+  sectionKey: ToddHardMemorySectionKey;
   title: string;
-  open?: boolean;
+  open: boolean;
+  selected: boolean;
+  incomplete: boolean;
+  incompleteReason: string | null;
+  sectionRef: (node: HTMLDetailsElement | null) => void;
+  onToggle: (sectionKey: ToddHardMemorySectionKey, open: boolean) => void;
+  onTriggerAlert: (sectionKey: ToddHardMemorySectionKey) => void;
+  showAlertButton?: boolean;
   children: ReactNode;
 };
 
-function ToddMemorySection({ title, open = false, children }: ToddMemorySectionProps) {
+function ToddMemorySection({
+  sectionKey,
+  title,
+  open,
+  selected,
+  incomplete,
+  incompleteReason,
+  sectionRef,
+  onToggle,
+  onTriggerAlert,
+  showAlertButton = true,
+  children,
+}: ToddMemorySectionProps) {
   return (
-    <details className="agentSummaryDetails" open={open}>
-      <summary>{title}</summary>
+    <details
+      ref={sectionRef}
+      className={`agentSummaryDetails${selected ? " agentSummaryDetails--selected" : ""}`}
+      open={open}
+      onToggle={(event) => onToggle(sectionKey, event.currentTarget.open)}
+      data-todd-section={sectionKey}
+    >
+      <summary>
+        <span>{title}</span>
+        {showAlertButton && incomplete ? (
+          <button
+            type="button"
+            className="memoryAlertButton"
+            aria-label={`Regenerate Todd plan for ${title}`}
+            title={incompleteReason ?? "Regenerate Todd plan"}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onTriggerAlert(sectionKey);
+            }}
+          >
+            <ExclamationIcon />
+          </button>
+        ) : null}
+      </summary>
       <div className="agentSummaryDetailsBody">
         {children}
       </div>
@@ -358,110 +491,384 @@ function ToddMemorySection({ title, open = false, children }: ToddMemorySectionP
   );
 }
 
+function ToddRoadmapSummary({
+  viewModel,
+  selectedSection,
+  onSelectSection,
+}: {
+  viewModel: ReturnType<typeof buildToddHardMemoryViewModel>;
+  selectedSection: ToddHardMemorySectionKey | null;
+  onSelectSection: (sectionKey: ToddHardMemorySectionKey) => void;
+}) {
+  return (
+    <section className="toddRoadmapSummaryPanel">
+      <div className="toddRoadmapSummaryHeader">
+        <span className="pmStatusLabel">Roadmap</span>
+      </div>
+
+      <div className="toddRoadmapSummaryRail">
+        {TODD_HARD_MEMORY_SECTIONS.map((section) => {
+          const content = section.key === "history"
+            ? formatToddHistorySummary(viewModel)
+            : section.key === "current-state"
+              ? formatToddCurrentStateSummary(viewModel)
+              : section.key === "priority-update"
+                ? formatToddPriorityUpdateSummary(viewModel)
+                : section.key === "success-chain"
+                  ? formatToddSuccessChainSummary(viewModel)
+                  : formatToddEndStateSummary(viewModel);
+
+          const historyAlert = section.key === "history"
+            ? formatToddHistorySummary(viewModel).alert
+            : null;
+
+          return (
+            <button
+              key={section.key}
+              type="button"
+              className={`toddRoadmapSummarySegment toddRoadmapSummarySegment--${section.style}${selectedSection === section.key ? " is-active" : ""}`}
+              aria-pressed={selectedSection === section.key}
+              onClick={() => onSelectSection(section.key)}
+            >
+              <span className={`toddRoadmapSummaryMarker toddRoadmapSummaryMarker--${section.style}`} aria-hidden="true" />
+              <span className="toddRoadmapSummaryLabel">{section.title}</span>
+              <strong className="toddRoadmapSummaryValue">{content.value}</strong>
+              <span className="toddRoadmapSummaryText">{content.summary}</span>
+              {historyAlert ? (
+                <span className="toddRoadmapSummaryTroubleLane">{historyAlert}</span>
+              ) : null}
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function ToddMemoryAccordion({
   toddMemory,
-  corePillars,
+  viewModel,
+  openSections,
+  selectedSection,
+  sectionRefs,
+  onToggleSection,
+  onTriggerAlert,
+  showAlertButton = true,
+  showHistoricalCurrentStateReports = false,
+  roadmapReports,
 }: {
   toddMemory: AgentSession["toddMemory"];
-  corePillars: CorePillar[];
+  viewModel: ReturnType<typeof buildToddHardMemoryViewModel>;
+  openSections: Record<ToddHardMemorySectionKey, boolean>;
+  selectedSection: ToddHardMemorySectionKey | null;
+  sectionRefs: MutableRefObject<Partial<Record<ToddHardMemorySectionKey, HTMLDetailsElement | null>>>;
+  onToggleSection: (sectionKey: ToddHardMemorySectionKey, open: boolean) => void;
+  onTriggerAlert: (sectionKey: ToddHardMemorySectionKey) => void;
+  showAlertButton?: boolean;
+  showHistoricalCurrentStateReports?: boolean;
+  roadmapReports?: ReturnType<typeof collectToddRoadmapReportHistory>;
 }) {
-  const roadmap = toddMemory.hardMemory ?? toddMemory.roadmap ?? null;
-  const successChain = [...toddMemory.successChain].sort((left, right) => left.order - right.order);
-  const nextUpdate = toddMemory.nextUpdate;
-  const updateQueue = [...toddMemory.futureUpdatePlan].sort((left, right) => left.order - right.order);
-  const previousUpdateLog = [...toddMemory.previousUpdateLog].slice().reverse();
-  const troubleLog = [...toddMemory.troubleLog];
-  const backupNotes = toddMemory.backupMemory ?? toddMemory.backupNotes ?? [];
   const codebaseIndex = toddMemory.codebaseIndexedMap ?? null;
-  const roadmapPillarNames = roadmap?.priorityUpdate ? getPillarNames(roadmap.priorityUpdate.pillarIds, corePillars) : [];
+  const historicalRoadmapReports: ReturnType<typeof collectToddRoadmapReportHistory> = roadmapReports ?? [];
+  const shouldShowHistoricalCurrentStateReports = showHistoricalCurrentStateReports && historicalRoadmapReports.length > 0;
 
   return (
     <>
-      <ToddMemorySection title="Roadmap Overview">
-        {roadmap ? (
-          <div className="agentInfoPanelSection" style={{ marginTop: 10 }}>
-            <span className="pmStatusLabel">Roadmap</span>
-            <p className="coreDetailValue">
-              {roadmap.priorityUpdate
-                ? `Priority Update: ${roadmap.priorityUpdate.title}`
-                : "No priority update locked in."}
-            </p>
-            {roadmap.priorityUpdate ? (
-              <>
-                <p className="helperText" style={{ marginTop: 4 }}>
-                  {roadmap.priorityUpdate.description}
-                </p>
-                <div className="flowStepPillars" style={{ marginTop: 8 }}>
-                  <span className="flowStepPillarTag roadmapKindTag">
-                    {roadmap.priorityUpdate.updateKind === "create"
-                      ? "Create"
-                      : roadmap.priorityUpdate.updateKind === "expand"
-                        ? "Expand"
-                        : "Refine"}
+      <ToddMemorySection
+        sectionKey="history"
+        title="History"
+        open={openSections.history}
+        selected={selectedSection === "history"}
+        incomplete={viewModel.sectionStatus.history.incomplete}
+        incompleteReason={viewModel.sectionStatus.history.reason}
+        sectionRef={(node) => {
+          sectionRefs.current.history = node;
+        }}
+        onToggle={onToggleSection}
+        onTriggerAlert={onTriggerAlert}
+        showAlertButton={showAlertButton}
+      >
+        {viewModel.history.previousUpdateLog.length > 0 ? (
+          <div className="toddMemorySectionSubblock">
+            <span className="pmStatusLabel">Completed Updates</span>
+            <div className="validationResultsList">
+              {viewModel.history.previousUpdateLog.map((entry) => (
+                <div
+                  key={entry.id}
+                  className={`validationResultCard validationResultCard--${entry.status === "success" || entry.status === "no_changes" ? "pass" : "fail"}`}
+                >
+                  <span className="validationResultType">{entry.goal}</span>
+                  <span className={`validationResultStatus${entry.status === "success" || entry.status === "no_changes" ? " pmStatusDone" : ""}`}>
+                    {entry.status.replace(/_/g, " ")}
                   </span>
-                  {roadmapPillarNames.map((name) => (
-                    <span key={name} className="roadmapPillarTag">{name}</span>
-                  ))}
+                  <p>{entry.outcome}</p>
                 </div>
-                {roadmap.priorityUpdate.currentStateContext ? (
-                  <p className="coreDetailValue" style={{ marginTop: 8 }}>
-                    {roadmap.priorityUpdate.currentStateContext}
-                  </p>
-                ) : null}
-              </>
-            ) : null}
-            <p className="helperText" style={{ marginTop: 4 }}>
-              {roadmap.currentState.length} current-state item(s), {roadmap.pathway.length} pathway item(s), {roadmap.endState.length} end-state item(s)
-            </p>
+              ))}
+            </div>
           </div>
         ) : (
-          <p className="coreDetailEmpty" style={{ marginTop: 10 }}>No roadmap locked yet.</p>
+          <p className="coreDetailEmpty">No completed execution log entries yet.</p>
         )}
-        {(toddMemory.currentState || toddMemory.endStateGoal) ? (
-          <div className="agentInfoPanelSection" style={{ marginTop: 10 }}>
-            {toddMemory.currentState ? (
-              <div>
-                <span className="pmStatusLabel">Current State</span>
-                <p className="coreDetailValue">{toddMemory.currentState}</p>
-              </div>
-            ) : null}
-            {toddMemory.endStateGoal ? (
-              <div style={{ marginTop: toddMemory.currentState ? 10 : 0 }}>
-                <span className="pmStatusLabel">End State Goal</span>
-                <p className="coreDetailValue">{toddMemory.endStateGoal}</p>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-        {codebaseIndex ? (
-          <div className="agentInfoPanelSection" style={{ marginTop: 10 }}>
-            <span className="pmStatusLabel">Codebase Index</span>
-            <p className="coreDetailValue">{codebaseIndex.summary ?? "No codebase summary yet."}</p>
-            {codebaseIndex.featureAreas.length > 0 ? (
-              <div className="flowStepPillars" style={{ marginTop: 8 }}>
-                {codebaseIndex.featureAreas.map((area) => (
-                  <span key={area} className="flowStepPillarTag">{area}</span>
-                ))}
-              </div>
-            ) : null}
-            {codebaseIndex.repoNotes.length > 0 ? (
-              <ul className="agentSummaryList" style={{ marginTop: 8 }}>
-                {codebaseIndex.repoNotes.map((note, index) => (
-                  <li key={`codebase-note-${index}`}>{note}</li>
-                ))}
-              </ul>
-            ) : null}
-            <p className="helperText" style={{ marginTop: 6 }}>
-              Indexed {formatDate(codebaseIndex.indexedAt)}
-            </p>
-          </div>
-        ) : null}
+
+        <div className="toddMemorySectionSubblock toddMemorySectionSubblock--danger">
+          <span className="pmStatusLabel">Trouble Lane</span>
+          {viewModel.history.troubleLog.length > 0 ? (
+            <div className="validationResultsList">
+              {viewModel.history.troubleLog.map((entry) => (
+                <div key={entry.id} className="validationResultCard validationResultCard--fail">
+                  <span className="validationResultType">{entry.title}</span>
+                  <span className="validationResultStatus">{entry.priority}</span>
+                  <p>{entry.details}</p>
+                  <p className="helperText">
+                    Seen {entry.occurrences} time(s). Last seen {formatDate(entry.lastSeenAt)}
+                  </p>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="coreDetailEmpty">No trouble log entries yet.</p>
+          )}
+        </div>
       </ToddMemorySection>
 
-      <ToddMemorySection title="Success Chain">
-        {successChain.length > 0 ? (
+      <ToddMemorySection
+        sectionKey="current-state"
+        title="Current State"
+        open={openSections["current-state"]}
+        selected={selectedSection === "current-state"}
+        incomplete={viewModel.sectionStatus["current-state"].incomplete}
+        incompleteReason={viewModel.sectionStatus["current-state"].reason}
+        sectionRef={(node) => {
+          sectionRefs.current["current-state"] = node;
+        }}
+        onToggle={onToggleSection}
+        onTriggerAlert={onTriggerAlert}
+        showAlertButton={showAlertButton}
+      >
+        {shouldShowHistoricalCurrentStateReports ? (
+          <>
+            {historicalRoadmapReports.map((report) => {
+              const currentStateSummary = report.message.metadata.currentState?.trim() ?? null;
+              const currentStateItems = report.message.metadata.roadmap?.currentState ?? [];
+
+              return (
+                <details key={report.id} className="agentSummaryDetails">
+                  <summary>
+                    <span>{report.createdAtLabel}</span>
+                  </summary>
+                  <div className="agentSummaryDetailsBody">
+                    <div className="toddMemorySectionSubblock">
+                      <span className="pmStatusLabel">Current Summary</span>
+                      {currentStateSummary ? (
+                        <p className="coreDetailValue">{currentStateSummary}</p>
+                      ) : (
+                        <p className="coreDetailEmpty">Current-state summary unavailable.</p>
+                      )}
+                    </div>
+
+                    <div className="toddMemorySectionSubblock">
+                      <span className="pmStatusLabel">Roadmap State Items</span>
+                      {currentStateItems.length > 0 ? (
+                        <div className="updatePlanList">
+                          {currentStateItems.map((item) => (
+                            <div key={item.id} className="agentPlannedUpdateItem">
+                              <div className="updateContent">
+                                <div className="updateTitle">{item.title}</div>
+                                <div className="updateDescription">{item.description}</div>
+                              </div>
+                              <StatusChip tone={item.itemStatus === "done" ? "confirmed" : "neutral"}>
+                                {item.itemStatus}
+                              </StatusChip>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="coreDetailEmpty">No roadmap current-state items were captured in this report.</p>
+                      )}
+                    </div>
+                  </div>
+                </details>
+              );
+            })}
+          </>
+        ) : (
+          <>
+            {viewModel.currentState.summary ? (
+              <div className="toddMemorySectionSubblock">
+                <span className="pmStatusLabel">Current Summary</span>
+                <p className="coreDetailValue">{viewModel.currentState.summary}</p>
+              </div>
+            ) : (
+              <p className="coreDetailEmpty">No current-state summary is stored yet.</p>
+            )}
+
+            <div className="toddMemorySectionSubblock">
+              <span className="pmStatusLabel">Roadmap State Items</span>
+              {viewModel.currentState.items.length > 0 ? (
+                <div className="updatePlanList">
+                  {viewModel.currentState.items.map((item) => (
+                    <div key={item.id} className="agentPlannedUpdateItem">
+                      <div className="updateContent">
+                        <div className="updateTitle">{item.title}</div>
+                        <div className="updateDescription">{item.description}</div>
+                      </div>
+                      <StatusChip tone={item.itemStatus === "done" ? "confirmed" : "neutral"}>
+                        {item.itemStatus}
+                      </StatusChip>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="coreDetailEmpty">No roadmap current-state items are stored yet.</p>
+              )}
+            </div>
+          </>
+        )}
+
+        <div className="toddMemorySectionSubblock">
+          <span className="pmStatusLabel">Codebase Index</span>
+          {codebaseIndex ? (
+            <>
+              <p className="coreDetailValue">{codebaseIndex.summary ?? "No codebase summary yet."}</p>
+              {codebaseIndex.featureAreas.length > 0 ? (
+                <div className="flowStepPillars" style={{ marginTop: 8 }}>
+                  {codebaseIndex.featureAreas.map((area) => (
+                    <span key={area} className="flowStepPillarTag">{area}</span>
+                  ))}
+                </div>
+              ) : null}
+              {codebaseIndex.repoNotes.length > 0 ? (
+                <ul className="agentSummaryList" style={{ marginTop: 8 }}>
+                  {codebaseIndex.repoNotes.map((note, index) => (
+                    <li key={`codebase-note-${index}`}>{note}</li>
+                  ))}
+                </ul>
+              ) : null}
+              <p className="helperText" style={{ marginTop: 6 }}>
+                Indexed {formatDate(codebaseIndex.indexedAt)}
+              </p>
+            </>
+          ) : (
+            <p className="coreDetailEmpty">Todd has not indexed the codebase yet.</p>
+          )}
+        </div>
+      </ToddMemorySection>
+
+      <ToddMemorySection
+        sectionKey="priority-update"
+        title="Priority Update"
+        open={openSections["priority-update"]}
+        selected={selectedSection === "priority-update"}
+        incomplete={viewModel.sectionStatus["priority-update"].incomplete}
+        incompleteReason={viewModel.sectionStatus["priority-update"].reason}
+        sectionRef={(node) => {
+          sectionRefs.current["priority-update"] = node;
+        }}
+        onToggle={onToggleSection}
+        onTriggerAlert={onTriggerAlert}
+        showAlertButton={showAlertButton}
+      >
+        {viewModel.priorityUpdate ? (() => {
+          const priorityUpdate = viewModel.priorityUpdate;
+          return (
+            <>
+              <div className="agentPlannedUpdateItem">
+                <div className="updateContent">
+                  <div className="updateTitle">{priorityUpdate.title}</div>
+                  <div className="updateDescription">{priorityUpdate.description}</div>
+                  <div className="flowStepPillars" style={{ marginTop: 8 }}>
+                    {priorityUpdate.updateKind ? (
+                      <span className="flowStepPillarTag">{labelForToddUpdateKind(priorityUpdate.updateKind)}</span>
+                    ) : null}
+                    {priorityUpdate.simplificationMode ? (
+                      <span className="flowStepPillarTag">{labelForToddSimplificationMode(priorityUpdate.simplificationMode)}</span>
+                    ) : null}
+                    {priorityUpdate.pillarNames.map((name) => (
+                      <span key={`${priorityUpdate.id}-${name}`} className="flowStepPillarTag">{name}</span>
+                    ))}
+                  </div>
+                </div>
+                <StatusChip tone={priorityUpdate.source === "live" ? "info" : "neutral"}>
+                  {priorityUpdate.source === "live" ? "live" : "roadmap"}
+                </StatusChip>
+              </div>
+
+              <div className="toddMemorySectionSubblock">
+                <span className="pmStatusLabel">Ping Contract</span>
+                {priorityUpdate.currentStateContext ? (
+                  <p className="helperText">Current-state context: {priorityUpdate.currentStateContext}</p>
+                ) : (
+                  <p className="coreDetailEmpty">Current-state context has not been mapped yet.</p>
+                )}
+                {priorityUpdate.successDefinition ? (
+                  <p className="helperText">Success: {priorityUpdate.successDefinition}</p>
+                ) : (
+                  <p className="coreDetailEmpty">Success definition is missing.</p>
+                )}
+                {priorityUpdate.partialSuccessDefinition ? (
+                  <p className="helperText">Partial success: {priorityUpdate.partialSuccessDefinition}</p>
+                ) : (
+                  <p className="coreDetailEmpty">Partial-success definition is missing.</p>
+                )}
+                {priorityUpdate.partialFailureDefinition ? (
+                  <p className="helperText">Partial failure: {priorityUpdate.partialFailureDefinition}</p>
+                ) : (
+                  <p className="coreDetailEmpty">Partial-failure definition is missing.</p>
+                )}
+                {priorityUpdate.failureDefinition ? (
+                  <p className="helperText">Failure: {priorityUpdate.failureDefinition}</p>
+                ) : (
+                  <p className="coreDetailEmpty">Failure definition is missing.</p>
+                )}
+              </div>
+
+              <div className="toddMemorySectionSubblock">
+                <span className="pmStatusLabel">Execution Framing</span>
+                {priorityUpdate.structuralReason ? (
+                  <p className="helperText">Structural reason: {priorityUpdate.structuralReason}</p>
+                ) : null}
+                {priorityUpdate.supportsNextStep ? (
+                  <p className="helperText">Supports next: {priorityUpdate.supportsNextStep}</p>
+                ) : null}
+                {priorityUpdate.dependencies.length > 0 ? (
+                  <p className="helperText">Depends on: {priorityUpdate.dependencies.join(", ")}</p>
+                ) : (
+                  <p className="coreDetailEmpty">No explicit dependencies are stored.</p>
+                )}
+                {priorityUpdate.skillsNeeded.length > 0 ? (
+                  <div className="flowStepPillars">
+                    {priorityUpdate.skillsNeeded.map((skill) => (
+                      <span key={`${priorityUpdate.id}-${skill}`} className="flowStepPillarTag">{skill}</span>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="coreDetailEmpty">No explicit skills are stored for this step.</p>
+                )}
+              </div>
+            </>
+          );
+        })() : (
+          <p className="coreDetailEmpty">No priority update is selected yet.</p>
+        )}
+      </ToddMemorySection>
+
+      <ToddMemorySection
+        sectionKey="success-chain"
+        title="Success Chain"
+        open={openSections["success-chain"]}
+        selected={selectedSection === "success-chain"}
+        incomplete={viewModel.sectionStatus["success-chain"].incomplete}
+        incompleteReason={viewModel.sectionStatus["success-chain"].reason}
+        sectionRef={(node) => {
+          sectionRefs.current["success-chain"] = node;
+        }}
+        onToggle={onToggleSection}
+        onTriggerAlert={onTriggerAlert}
+        showAlertButton={showAlertButton}
+      >
+        {viewModel.successChain.steps.length > 0 ? (
           <div className="updatePlanList">
-            {successChain.map((step, index) => (
+            {viewModel.successChain.steps.map((step, index) => (
               <div key={step.id} className="agentPlannedUpdateItem">
                 <div className="updateContent">
                   <div className="updateTitle">{step.title}</div>
@@ -476,154 +883,277 @@ function ToddMemoryAccordion({
               </div>
             ))}
           </div>
+        ) : viewModel.successChain.trackedCount > 0 ? (
+          <p className="coreDetailEmpty">No remaining future steps are currently mapped beyond the current state.</p>
         ) : (
           <p className="coreDetailEmpty">No success chain steps have been defined yet.</p>
         )}
-      </ToddMemorySection>
 
-      <ToddMemorySection title="Next Update">
-        {nextUpdate ? (
-          <div className="agentPlannedUpdateItem">
-            <div className="updateContent">
-              <div className="updateTitle">{nextUpdate.title}</div>
-              <div className="updateDescription">{nextUpdate.description}</div>
-              <div className="flowStepPillars" style={{ marginTop: 8 }}>
-                {nextUpdate.updateKind ? (
-                  <span className="flowStepPillarTag">{labelForToddUpdateKind(nextUpdate.updateKind)}</span>
-                ) : null}
-                {nextUpdate.simplificationMode ? (
-                  <span className="flowStepPillarTag">{labelForToddSimplificationMode(nextUpdate.simplificationMode)}</span>
-                ) : null}
-              </div>
-              {nextUpdate.structuralReason ? (
-                <p className="helperText" style={{ marginTop: 8 }}>{nextUpdate.structuralReason}</p>
-              ) : null}
-              {nextUpdate.supportsNextStep ? (
-                <p className="helperText" style={{ marginTop: 4 }}>Supports next: {nextUpdate.supportsNextStep}</p>
-              ) : null}
-              {nextUpdate.skillsNeeded.length > 0 ? (
-                <div className="flowStepPillars" style={{ marginTop: 8 }}>
-                  {nextUpdate.skillsNeeded.map((skill) => (
-                    <span key={`${nextUpdate.id}-${skill}`} className="flowStepPillarTag">{skill}</span>
-                  ))}
-                </div>
-              ) : null}
-              {nextUpdate.dependencies.length > 0 ? (
-                <p className="helperText" style={{ marginTop: 6 }}>
-                  Depends on: {nextUpdate.dependencies.join(", ")}
-                </p>
-              ) : null}
-            </div>
-          </div>
-        ) : (
-          <p className="coreDetailEmpty">No next update is selected yet.</p>
-        )}
-      </ToddMemorySection>
-
-      <ToddMemorySection title="Update Queue">
-        {updateQueue.length > 0 ? (
-          <div className="programmingQueue">
-            {updateQueue.map((update) => (
-              <div key={update.id} className="agentPlannedUpdateItem">
-                <div className="updateContent">
-                  <div className="updateTitle">{update.title}</div>
-                  <div className="updateDescription">{update.description}</div>
-                  <div className="flowStepPillars" style={{ marginTop: 8 }}>
-                    {update.updateKind ? (
-                      <span className="flowStepPillarTag">{labelForToddUpdateKind(update.updateKind)}</span>
-                    ) : null}
-                    {update.simplificationMode ? (
-                      <span className="flowStepPillarTag">{labelForToddSimplificationMode(update.simplificationMode)}</span>
-                    ) : null}
-                  </div>
-                  {update.structuralReason ? (
-                    <p className="helperText" style={{ marginTop: 8 }}>{update.structuralReason}</p>
-                  ) : null}
-                  {update.supportsNextStep ? (
-                    <p className="helperText" style={{ marginTop: 4 }}>Supports next: {update.supportsNextStep}</p>
-                  ) : null}
-                  {update.skillsNeeded.length > 0 ? (
+        <div className="toddMemorySectionSubblock">
+          <span className="pmStatusLabel">Supporting Queue</span>
+          {viewModel.successChain.supportingQueuedUpdates.length > 0 ? (
+            <div className="programmingQueue">
+              {viewModel.successChain.supportingQueuedUpdates.map((update) => (
+                <div key={update.id} className="agentPlannedUpdateItem">
+                  <div className="updateContent">
+                    <div className="updateTitle">{update.title}</div>
+                    <div className="updateDescription">{update.description}</div>
                     <div className="flowStepPillars" style={{ marginTop: 8 }}>
-                      {update.skillsNeeded.map((skill) => (
-                        <span key={`${update.id}-${skill}`} className="flowStepPillarTag">{skill}</span>
-                      ))}
+                      {update.updateKind ? (
+                        <span className="flowStepPillarTag">{labelForToddUpdateKind(update.updateKind)}</span>
+                      ) : null}
+                      {update.simplificationMode ? (
+                        <span className="flowStepPillarTag">{labelForToddSimplificationMode(update.simplificationMode)}</span>
+                      ) : null}
                     </div>
-                  ) : null}
+                  </div>
+                  <StatusChip
+                    tone={update.status === "in_progress"
+                      ? "info"
+                      : update.status === "completed"
+                        ? "confirmed"
+                        : update.status === "failed"
+                          ? "action_required"
+                          : "neutral"}
+                  >
+                    {update.status.replace(/_/g, " ")}
+                  </StatusChip>
                 </div>
-                <StatusChip
-                  tone={update.status === "completed"
-                    ? "confirmed"
-                    : update.status === "failed"
-                      ? "action_required"
-                      : update.status === "in_progress"
-                        ? "info"
-                        : "neutral"}
-                >
-                  {update.status.replace(/_/g, " ")}
-                </StatusChip>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="coreDetailEmpty">No future updates are queued yet.</p>
-        )}
+              ))}
+            </div>
+          ) : (
+            <p className="coreDetailEmpty">No remaining queued updates beyond the priority update.</p>
+          )}
+        </div>
       </ToddMemorySection>
 
-      <ToddMemorySection title="Previous Update Log">
-        {previousUpdateLog.length > 0 ? (
-          <div className="validationResultsList">
-            {previousUpdateLog.map((entry) => (
-              <div
-                key={entry.id}
-                className={`validationResultCard validationResultCard--${entry.status === "success" || entry.status === "no_changes" ? "pass" : "fail"}`}
-              >
-                <span className="validationResultType">{entry.goal}</span>
-                <span className={`validationResultStatus${entry.status === "success" || entry.status === "no_changes" ? " pmStatusDone" : ""}`}>
-                  {entry.status.replace(/_/g, " ")}
-                </span>
-                <p>{entry.outcome}</p>
-              </div>
-            ))}
+      <ToddMemorySection
+        sectionKey="end-state"
+        title="End State"
+        open={openSections["end-state"]}
+        selected={selectedSection === "end-state"}
+        incomplete={viewModel.sectionStatus["end-state"].incomplete}
+        incompleteReason={viewModel.sectionStatus["end-state"].reason}
+        sectionRef={(node) => {
+          sectionRefs.current["end-state"] = node;
+        }}
+        onToggle={onToggleSection}
+        onTriggerAlert={onTriggerAlert}
+        showAlertButton={showAlertButton}
+      >
+        {viewModel.endState.summary ? (
+          <div className="toddMemorySectionSubblock">
+            <span className="pmStatusLabel">End-State Summary</span>
+            <p className="coreDetailValue">{viewModel.endState.summary}</p>
           </div>
         ) : (
-          <p className="coreDetailEmpty">No completed execution log entries yet.</p>
+          <p className="coreDetailEmpty">No end-state summary is stored yet.</p>
         )}
-      </ToddMemorySection>
 
-      <ToddMemorySection title="Trouble Log">
-        {troubleLog.length > 0 ? (
-          <div className="validationResultsList">
-            {troubleLog.map((entry) => (
-              <div key={entry.id} className="validationResultCard validationResultCard--fail">
-                <span className="validationResultType">{entry.title}</span>
-                <span className="validationResultStatus">{entry.priority}</span>
-                <p>{entry.details}</p>
-                <p className="helperText">
-                  Seen {entry.occurrences} time(s). Last seen {formatDate(entry.lastSeenAt)}
-                </p>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="coreDetailEmpty">No trouble log entries yet.</p>
-        )}
-      </ToddMemorySection>
-
-      <ToddMemorySection title="Backup Notes">
-        {backupNotes.length > 0 ? (
-          <ul className="agentSummaryList">
-            {backupNotes.slice(-5).map((note, index) => (
-              <li key={`todd-backup-${index}`}>{typeof note === "string" ? note : note.content}</li>
-            ))}
-            {backupNotes.length > 5 ? (
-              <li className="helperText">...and {backupNotes.length - 5} more</li>
-            ) : null}
-          </ul>
-        ) : (
-          <p className="coreDetailEmpty">No backup notes stored.</p>
-        )}
+        <div className="toddMemorySectionSubblock">
+          <span className="pmStatusLabel">Roadmap End-State Items</span>
+          {viewModel.endState.items.length > 0 ? (
+            <div className="updatePlanList">
+              {viewModel.endState.items.map((item) => (
+                <div key={item.id} className="agentPlannedUpdateItem">
+                  <div className="updateContent">
+                    <div className="updateTitle">{item.title}</div>
+                    <div className="updateDescription">{item.description}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="coreDetailEmpty">No roadmap end-state items are stored yet.</p>
+          )}
+        </div>
       </ToddMemorySection>
     </>
+  );
+}
+
+function ToddHardMemoryPanel({
+  toddMemory,
+  corePillars,
+  onRegeneratePlan,
+}: {
+  toddMemory: AgentSession["toddMemory"];
+  corePillars: CorePillar[];
+  onRegeneratePlan: () => void;
+}) {
+  const viewModel = useMemo(
+    () => buildToddHardMemoryViewModel(toddMemory, corePillars),
+    [corePillars, toddMemory],
+  );
+  const [openSections, setOpenSections] = useState<Record<ToddHardMemorySectionKey, boolean>>(createToddHardMemoryOpenState);
+  const [selectedSection, setSelectedSection] = useState<ToddHardMemorySectionKey | null>(null);
+  const sectionRefs = useRef<Partial<Record<ToddHardMemorySectionKey, HTMLDetailsElement | null>>>({});
+
+  const handleToggleSection = (sectionKey: ToddHardMemorySectionKey, open: boolean) => {
+    setOpenSections((current) => ({ ...current, [sectionKey]: open }));
+  };
+
+  const handleSelectSection = (sectionKey: ToddHardMemorySectionKey) => {
+    setSelectedSection(sectionKey);
+    setOpenSections((current) => ({ ...current, [sectionKey]: true }));
+
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        sectionRefs.current[sectionKey]?.scrollIntoView({
+          behavior: "smooth",
+          block: "nearest",
+        });
+      });
+    });
+  };
+
+  const handleTriggerAlert = (sectionKey: ToddHardMemorySectionKey) => {
+    setSelectedSection(sectionKey);
+    setOpenSections((current) => ({ ...current, [sectionKey]: true }));
+    onRegeneratePlan();
+  };
+
+  return (
+    <>
+      <ToddRoadmapSummary
+        viewModel={viewModel}
+        selectedSection={selectedSection}
+        onSelectSection={handleSelectSection}
+      />
+      <ToddMemoryAccordion
+        toddMemory={toddMemory}
+        viewModel={viewModel}
+        openSections={openSections}
+        selectedSection={selectedSection}
+        sectionRefs={sectionRefs}
+        onToggleSection={handleToggleSection}
+        onTriggerAlert={handleTriggerAlert}
+      />
+    </>
+  );
+}
+
+const createToddRoadmapReportOpenState = (): Record<ToddHardMemorySectionKey, boolean> => ({
+  history: true,
+  "current-state": true,
+  "priority-update": true,
+  "success-chain": true,
+  "end-state": true,
+});
+
+function ToddRoadmapReportSections({
+  toddMemory,
+  corePillars,
+  roadmapReports,
+}: {
+  toddMemory: AgentSession["toddMemory"];
+  corePillars: CorePillar[];
+  roadmapReports: ReturnType<typeof collectToddRoadmapReportHistory>;
+}) {
+  const viewModel = useMemo(
+    () => buildToddHardMemoryViewModel(toddMemory, corePillars),
+    [corePillars, toddMemory],
+  );
+  const openSections = useMemo(createToddRoadmapReportOpenState, []);
+  const sectionRefs = useRef<Partial<Record<ToddHardMemorySectionKey, HTMLDetailsElement | null>>>({});
+
+  return (
+    <ToddMemoryAccordion
+      toddMemory={toddMemory}
+      viewModel={viewModel}
+      openSections={openSections}
+      selectedSection={null}
+      sectionRefs={sectionRefs}
+      onToggleSection={() => {}}
+      onTriggerAlert={() => {}}
+      showAlertButton={false}
+      roadmapReports={roadmapReports}
+      showHistoricalCurrentStateReports
+    />
+  );
+}
+
+function ToddResearchReportSection({
+  researchReports,
+}: {
+  researchReports: ReturnType<typeof collectToddResearchReportHistory>;
+}) {
+  if (researchReports.length === 0) {
+    return <p className="coreDetailEmpty">No Todd research report has been captured yet.</p>;
+  }
+
+  return (
+    <>
+      {researchReports.map((report) => {
+        const researchPrompt = report.message.metadata.researchPrompt?.trim() || null;
+
+        return (
+          <details key={report.id} className="agentSummaryDetails">
+            <summary>
+              <span>{report.createdAtLabel}</span>
+            </summary>
+            <div className="agentSummaryDetailsBody">
+              <div className="toddMemorySectionSubblock">
+                <span className="pmStatusLabel">Research Prompt</span>
+                {researchPrompt ? (
+                  <p className="coreDetailValue">{researchPrompt}</p>
+                ) : (
+                  <p className="coreDetailEmpty">Research prompt unavailable.</p>
+                )}
+              </div>
+              <div className="toddMemorySectionSubblock">
+                <span className="pmStatusLabel">General Findings</span>
+                <AgentChatMarkdown text={report.message.metadata.generalSummary} />
+              </div>
+              <div className="toddMemorySectionSubblock">
+                <span className="pmStatusLabel">Project-Specific Findings</span>
+                <AgentChatMarkdown text={report.message.metadata.projectSummary} />
+              </div>
+            </div>
+          </details>
+        );
+      })}
+    </>
+  );
+}
+
+function ToddReportsPanel({
+  session,
+}: {
+  session: AgentSession;
+}) {
+  const roadmapReports = useMemo(() => collectToddRoadmapReportHistory(session), [session]);
+  const researchReports = useMemo(() => collectToddResearchReportHistory(session), [session]);
+
+  return (
+    <section
+      className="agentSummaryCard agentSummaryCard--personal"
+      style={{ "--memory-accent": DIRECTOR_COLORS["rd-director"] } as CSSProperties}
+    >
+      <div className="agentSummaryHeader">
+        <span className="agentSummaryEyebrow">Todd Reports</span>
+        <span className="usagePreviewLabel">{roadmapReports.length + researchReports.length}</span>
+      </div>
+      <div className="agentSummarySharedBody">
+        <details className="agentSummaryDetails" open>
+          <summary>Roadmap</summary>
+          <div className="agentSummaryDetailsBody">
+            <ToddRoadmapReportSections
+              toddMemory={session.toddMemory}
+              corePillars={session.corePillars}
+              roadmapReports={roadmapReports}
+            />
+          </div>
+        </details>
+
+        <details className="agentSummaryDetails" open>
+          <summary>Research</summary>
+          <div className="agentSummaryDetailsBody">
+            <ToddResearchReportSection researchReports={researchReports} />
+          </div>
+        </details>
+      </div>
+    </section>
   );
 }
 
@@ -821,7 +1351,24 @@ export function DirectorInfoPanel({
         <>
           {summaryPanel}
           <div className="agentInfoPanel">
-            <ToddMemoryAccordion toddMemory={toddMemory} corePillars={session.corePillars} />
+            <ToddHardMemoryPanel
+              toddMemory={toddMemory}
+              corePillars={session.corePillars}
+              onRegeneratePlan={() => {
+                void window.programs.regenerateToddPlan({
+                  projectId,
+                  provider: settings.advancedDefaults.provider,
+                  model: settings.advancedDefaults.model,
+                  claudeModel: settings.advancedDefaults.claudeModel,
+                }).then(() => window.programs.getAgentSession(projectId)).then((refreshed) => {
+                  if (refreshed) {
+                    onSessionUpdate(refreshed);
+                  }
+                }).catch((error) => {
+                  pushToast(error instanceof Error ? error.message : "Something went wrong.", "error");
+                });
+              }}
+            />
           </div>
         </>
       );
@@ -1434,10 +1981,156 @@ function renderSharedMemorySourceContent({
   return null;
 }
 
+const getPingUpdateReportTone = (
+  metadata: Extract<NonNullable<AgentSession["slackMessages"][number]["metadata"]>, { type: "ping-update-report" }>,
+): "action_required" | "confirmed" | "info" => (
+  metadata.rawReport.status === "blocked"
+    ? "action_required"
+    : metadata.rawReport.status === "success" || metadata.rawReport.status === "no_changes"
+      ? "confirmed"
+      : "info"
+);
+
+const getExecutionReportTone = (
+  decision: JeffExecutionReport["decision"],
+  status: JeffExecutionReport["rawReport"]["status"],
+): "action_required" | "confirmed" | "info" => (
+  decision === "failure" || status === "blocked"
+    ? "action_required"
+    : decision === "successful" || status === "success" || status === "no_changes"
+      ? "confirmed"
+      : "info"
+);
+
+function DirectorReportsPanel({
+  directorId,
+  session,
+  onViewExecutionReport,
+}: {
+  directorId: DirectorId;
+  session: AgentSession;
+  onViewExecutionReport?: (report: JeffExecutionReport) => void;
+}) {
+  const reports = useMemo(
+    () => buildDirectorReportStream(directorId, session),
+    [directorId, session],
+  );
+
+  if (directorId === "rd-director") {
+    return (
+      <div className="agentSummarySupplemental">
+        <ToddReportsPanel session={session} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="agentSummarySupplemental">
+      <section
+        className="agentSummaryCard agentSummaryCard--personal"
+        style={{ "--memory-accent": DIRECTOR_COLORS[directorId] } as CSSProperties}
+      >
+        <div className="agentSummaryHeader">
+          <span className="agentSummaryEyebrow">{`${DIRECTOR_NAMES[directorId]} Reports`}</span>
+          <span className="usagePreviewLabel">{reports.length}</span>
+        </div>
+        <div className="agentSummarySharedBody">
+          {reports.length > 0 ? reports.map((report) => (
+            <details key={report.id} className="agentSummaryDetails">
+              <summary>
+                <span>{report.title}</span>
+                <span className="memoryReportSummaryMeta">
+                  <StatusChip
+                    tone={report.kind === "hard-memory-report"
+                      ? "confirmed"
+                      : report.kind === "ping-update-report"
+                        ? getPingUpdateReportTone(report.metadata)
+                        : getExecutionReportTone(report.metadata.report.decision, report.metadata.report.rawReport.status)}
+                  >
+                    {report.kind === "hard-memory-report"
+                      ? "hard memory"
+                      : report.kind === "ping-update-report"
+                        ? report.metadata.rawReport.status.replace(/_/g, " ")
+                        : (report.metadata.report.decision ?? report.metadata.report.rawReport.status).replace(/_/g, " ")}
+                  </StatusChip>
+                  <span className="helperText">{formatDate(report.createdAt)}</span>
+                </span>
+              </summary>
+              <div className="agentSummaryDetailsBody">
+                {report.kind === "hard-memory-report" ? (
+                  <HardMemoryReportSections
+                    report={report.metadata}
+                    session={session}
+                  />
+                ) : null}
+                {report.kind === "ping-update-report" ? (
+                  <>
+                    <p className="coreDetailValue">{report.summary}</p>
+                    {report.metadata.report?.plan?.summary ? (
+                      <p className="helperText">Plan summary: {report.metadata.report.plan.summary}</p>
+                    ) : null}
+                    {report.metadata.rawReport.changedFiles.length > 0 ? (
+                      <div>
+                        <span className="pmStatusLabel">Changed Files</span>
+                        <ul className="agentSummaryList">
+                          {report.metadata.rawReport.changedFiles.map((filePath) => (
+                            <li key={`${report.id}-${filePath}`}>{filePath}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {report.metadata.rawReport.unexpectedNotes.length > 0 ? (
+                      <div>
+                        <span className="pmStatusLabel">Unexpected Notes</span>
+                        <ul className="agentSummaryList">
+                          {report.metadata.rawReport.unexpectedNotes.map((note, index) => (
+                            <li key={`${report.id}-unexpected-${index}`}>{note}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {report.metadata.rawReport.blocker ? (
+                      <div className="toddMemorySectionSubblock toddMemorySectionSubblock--danger">
+                        <span className="pmStatusLabel">Blocker</span>
+                        <p className="coreDetailValue">{report.metadata.rawReport.blocker}</p>
+                      </div>
+                    ) : null}
+                  </>
+                ) : null}
+                {report.kind === "execution-report" ? (
+                  <>
+                    <p className="coreDetailValue">{report.summary}</p>
+                    <p className="helperText">
+                      Outcome: {(report.metadata.report.decision ?? report.metadata.report.rawReport.status).replace(/_/g, " ")}
+                    </p>
+                    <p className="helperText">Raw status: {report.metadata.report.rawReport.status.replace(/_/g, " ")}</p>
+                    {onViewExecutionReport ? (
+                      <button
+                        type="button"
+                        className="agentChatViewMoreButton"
+                        onClick={() => onViewExecutionReport(report.metadata.report)}
+                      >
+                        View Project Status Report
+                      </button>
+                    ) : null}
+                  </>
+                ) : null}
+              </div>
+            </details>
+          )) : (
+            <p className="coreDetailEmpty">No formal reports are stored for this agent yet.</p>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
 export function DirectorMemoryPanel({
   directorId,
   session,
   projectId,
+  settings,
   onSessionUpdate,
   pushToast,
   onViewExecutionReport,
@@ -1445,38 +2138,68 @@ export function DirectorMemoryPanel({
   directorId: DirectorId;
   session: AgentSession | null;
   projectId?: string | null;
+  settings: Settings;
   onSessionUpdate?: (session: AgentSession) => void;
   pushToast?: (message: string, level: "info" | "success" | "error") => void;
   onViewExecutionReport?: (report: JeffExecutionReport) => void;
 }) {
   const [memoryView, setMemoryView] = useState<MemoryView>("hard");
-  const [sharedMemoryView, setSharedMemoryView] = useState<SharedMemoryView | null>(null);
-  const sharedMemorySources = useMemo(
+  const [importedMemoryView, setImportedMemoryView] = useState<SharedMemoryView | null>(null);
+  const [exportedMemoryView, setExportedMemoryView] = useState<DirectorId | null>(null);
+  const importedMemorySources = useMemo(
     () => buildDirectorSharedMemorySources(directorId, session),
+    [directorId, session],
+  );
+  const exportedMemoryTargets = useMemo(
+    () => buildDirectorExportedMemoryTargets(directorId, session),
     [directorId, session],
   );
 
   if (!session) return null;
 
+  const regenerateToddPlan = async () => {
+    if (!projectId || directorId !== "rd-director" || !onSessionUpdate || !pushToast) {
+      return;
+    }
+    try {
+      await window.programs.regenerateToddPlan({
+        projectId,
+        provider: settings.advancedDefaults.provider,
+        model: settings.advancedDefaults.model,
+        claudeModel: settings.advancedDefaults.claudeModel,
+      });
+      const refreshed = await window.programs.getAgentSession(projectId);
+      if (refreshed) {
+        onSessionUpdate(refreshed);
+      }
+      pushToast("Todd's plan regenerated.", "success");
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Something went wrong.", "error");
+    }
+  };
+
   const personalMemoryTitle = `${DIRECTOR_NAMES[directorId]} Personal Memory`;
   const personalMemoryAccent = DIRECTOR_COLORS[directorId];
   const personalMemoryCardStyle = ({ "--memory-accent": personalMemoryAccent } as CSSProperties);
-  const activeSharedMemorySource = sharedMemorySources.find((source) => source.kind === sharedMemoryView) ?? sharedMemorySources[0] ?? null;
-  const sharedMemoryAccent = activeSharedMemorySource ? DIRECTOR_COLORS[activeSharedMemorySource.directorId] : null;
-  const sharedMemoryCard = activeSharedMemorySource ? (
+  const memorySectionTitle = (kind: "Imported" | "Exported") => `${DIRECTOR_NAMES[directorId]} ${kind} Memory`;
+  const activeImportedMemorySource = importedMemorySources.find((source) => source.kind === importedMemoryView) ?? importedMemorySources[0] ?? null;
+  const activeExportedMemoryTarget = exportedMemoryTargets.find((target) => target.directorId === exportedMemoryView) ?? exportedMemoryTargets[0] ?? null;
+  const importedMemoryAccent = activeImportedMemorySource ? DIRECTOR_COLORS[activeImportedMemorySource.directorId] : null;
+  const exportedMemoryAccent = activeExportedMemoryTarget ? DIRECTOR_COLORS[activeExportedMemoryTarget.directorId] : DIRECTOR_COLORS[directorId];
+  const importedMemoryCard = activeImportedMemorySource ? (
     <section
       className="agentSummaryCard agentSummaryCard--shared"
-      style={sharedMemoryAccent ? ({ "--memory-accent": sharedMemoryAccent } as CSSProperties) : undefined}
+      style={importedMemoryAccent ? ({ "--memory-accent": importedMemoryAccent } as CSSProperties) : undefined}
     >
       <div className="agentSummaryHeader">
-        <span className="agentSummaryEyebrow">Shared Memory</span>
+        <span className="agentSummaryEyebrow">{memorySectionTitle("Imported")}</span>
         <div className="speedToggle memoryToggle memoryToggle--wrap">
-          {sharedMemorySources.map((source) => (
+          {importedMemorySources.map((source) => (
             <button
               key={source.kind}
               type="button"
-              className={`toggleOption${activeSharedMemorySource.kind === source.kind ? " active" : ""}`}
-              onClick={() => setSharedMemoryView(source.kind)}
+              className={`toggleOption${activeImportedMemorySource.kind === source.kind ? " active" : ""}`}
+              onClick={() => setImportedMemoryView(source.kind)}
             >
               {source.label}
             </button>
@@ -1485,13 +2208,60 @@ export function DirectorMemoryPanel({
       </div>
       <div className="agentSummarySharedBody">
         {renderSharedMemorySourceContent({
-          source: activeSharedMemorySource,
+          source: activeImportedMemorySource,
           session,
           onViewExecutionReport,
         })}
       </div>
     </section>
   ) : null;
+  const exportedMemoryCard = (
+    <section
+      className="agentSummaryCard agentSummaryCard--shared"
+      style={{ "--memory-accent": exportedMemoryAccent } as CSSProperties}
+    >
+      <div className="agentSummaryHeader">
+        <span className="agentSummaryEyebrow">{memorySectionTitle("Exported")}</span>
+        <div className="speedToggle memoryToggle memoryToggle--wrap">
+          {exportedMemoryTargets.length > 0 ? (
+            exportedMemoryTargets.map((target) => (
+              <button
+                key={target.directorId}
+                type="button"
+                className={`toggleOption${activeExportedMemoryTarget?.directorId === target.directorId ? " active" : ""}`}
+                onClick={() => setExportedMemoryView(target.directorId)}
+              >
+                {target.label}
+              </button>
+            ))
+          ) : (
+            <button type="button" className="toggleOption" disabled>
+              None
+            </button>
+          )}
+        </div>
+      </div>
+      <div className="agentSummarySharedBody">
+        {activeExportedMemoryTarget ? (
+          <div className="toddMemorySectionSubblock">
+            <span className="pmStatusLabel">Placeholder</span>
+            <p className="coreDetailEmpty">
+              Exported memory placeholder for {DIRECTOR_NAMES[directorId]} to {activeExportedMemoryTarget.label}.
+            </p>
+            <p className="helperText">Outbound memory data is not wired up yet.</p>
+          </div>
+        ) : (
+          <p className="coreDetailEmpty">No exported memory targets available yet.</p>
+        )}
+      </div>
+    </section>
+  );
+  const memoryRail = (
+    <div className="agentSummaryMemoryRail">
+      {importedMemoryCard}
+      {exportedMemoryCard}
+    </div>
+  );
 
   if (directorId === "creative-director") {
     const danMemory = session.danMemory;
@@ -1628,8 +2398,13 @@ export function DirectorMemoryPanel({
               </div>
             ) : null}
           </section>
-          {sharedMemoryCard}
+          {memoryRail}
         </div>
+        <DirectorReportsPanel
+          directorId={directorId}
+          session={session}
+          onViewExecutionReport={onViewExecutionReport}
+        />
       </div>
     );
   }
@@ -1677,7 +2452,13 @@ export function DirectorMemoryPanel({
               </div>
             ) : null}
             {memoryView === "hard" ? (
-              <ToddMemoryAccordion toddMemory={toddMemory} corePillars={session.corePillars} />
+              <ToddHardMemoryPanel
+                toddMemory={toddMemory}
+                corePillars={session.corePillars}
+                onRegeneratePlan={() => {
+                  void regenerateToddPlan();
+                }}
+              />
             ) : null}
             {memoryView === "backup" ? (
               <div className="agentSummaryDetailsBody">
@@ -1699,8 +2480,13 @@ export function DirectorMemoryPanel({
               </div>
             ) : null}
           </section>
-          {sharedMemoryCard}
+          {memoryRail}
         </div>
+        <DirectorReportsPanel
+          directorId={directorId}
+          session={session}
+          onViewExecutionReport={onViewExecutionReport}
+        />
       </div>
     );
   }
@@ -1715,7 +2501,7 @@ export function DirectorMemoryPanel({
             <div className="agentSummaryHeader">
               <span className="agentSummaryEyebrow">{personalMemoryTitle}</span>
             </div>
-            <details className="agentSummaryDetails" open>
+            <details className="agentSummaryDetails">
               <summary>Programming Queue</summary>
               <div className="agentSummaryDetailsBody">
                 {queuedUpdates.length > 0 ? (
@@ -1778,8 +2564,13 @@ export function DirectorMemoryPanel({
               </div>
             </details>
           </section>
-          {sharedMemoryCard}
+          {memoryRail}
         </div>
+        <DirectorReportsPanel
+          directorId={directorId}
+          session={session}
+          onViewExecutionReport={onViewExecutionReport}
+        />
       </div>
     );
   }
@@ -1792,7 +2583,7 @@ export function DirectorMemoryPanel({
             <div className="agentSummaryHeader">
               <span className="agentSummaryEyebrow">{personalMemoryTitle}</span>
             </div>
-            <details className="agentSummaryDetails" open>
+            <details className="agentSummaryDetails">
               <summary>Validation State</summary>
               <div className="agentSummaryDetailsBody">
                 <p className="coreDetailValue">Frequency: {session.validationFrequency}</p>
@@ -1812,8 +2603,13 @@ export function DirectorMemoryPanel({
               </div>
             </details>
           </section>
-          {sharedMemoryCard}
+          {memoryRail}
         </div>
+        <DirectorReportsPanel
+          directorId={directorId}
+          session={session}
+          onViewExecutionReport={onViewExecutionReport}
+        />
       </div>
     );
   }
@@ -1830,7 +2626,7 @@ export function DirectorMemoryPanel({
             <div className="agentSummaryHeader">
               <span className="agentSummaryEyebrow">{personalMemoryTitle}</span>
             </div>
-            <details className="agentSummaryDetails" open>
+            <details className="agentSummaryDetails">
               <summary>Coordination State</summary>
               <div className="agentSummaryDetailsBody">
                 <p className="coreDetailValue">
@@ -1871,8 +2667,13 @@ export function DirectorMemoryPanel({
               </div>
             </details>
           </section>
-          {sharedMemoryCard}
+          {memoryRail}
         </div>
+        <DirectorReportsPanel
+          directorId={directorId}
+          session={session}
+          onViewExecutionReport={onViewExecutionReport}
+        />
       </div>
     );
   }
@@ -1884,7 +2685,7 @@ export function DirectorProfilePanel({
   directorId,
   session,
   projectId,
-  settings: _settings,
+  settings,
   modelCatalog: _modelCatalog,
   onNavigateToDirector,
   onUpdateAgentDefaults: _onUpdateAgentDefaults,
@@ -1935,6 +2736,7 @@ export function DirectorProfilePanel({
           directorId={directorId}
           session={session}
           projectId={projectId}
+          settings={settings}
           onSessionUpdate={onSessionUpdate}
           pushToast={_pushToast}
           onViewExecutionReport={setExecutionReport}

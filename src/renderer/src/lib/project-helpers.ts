@@ -29,7 +29,6 @@ export interface AddProjectFormState {
 export type ProgramDetailsTab = "ideal" | "current" | "planned" | "history";
 
 export type HomeTileDotState = "ready" | "launching" | "running" | "updating" | "runningUpdating" | "error";
-export type UsageScheduleTone = "under" | "onTrack" | "over";
 export type HomeAppUpdateButtonState = "prepare" | "install" | "issue" | null;
 
 export const createEmptyForm = (): AddProjectFormState => ({

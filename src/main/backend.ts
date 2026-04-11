@@ -230,7 +230,6 @@ import type {
   ConfirmAutomationFailureRecoveryInput,
   RequestAutomationFailureRecoveryInput,
   DeleteAgentMessagesInput,
-  DeleteSlackMessagesInput,
   ApprovePendingApprovalInput,
   RevisePendingApprovalInput,
   DirectorSettingsOverride,
@@ -345,33 +344,87 @@ function isLargeModelSelection(
 }
 
 function buildPingUpdatePrompt(input: {
-  update: VersionUpdate;
-  priorityUpdate: ToddPriorityUpdate | null;
+  nextUpdate: ToddNextUpdate;
   currentStateItems: ToddCurrentStateItem[];
+  priorityUpdate?: ToddPriorityUpdate | null;
 }): string {
-  const priorityContext = input.priorityUpdate?.currentStateContext?.trim() || null;
+  const priorityContext = input.nextUpdate.currentStateContext?.trim()
+    || input.priorityUpdate?.currentStateContext?.trim()
+    || null;
   const currentStateSummary = input.currentStateItems.length > 0
     ? input.currentStateItems
       .map((item) => `- [${item.itemStatus.toUpperCase()}] ${item.title}: ${item.description}`)
       .join("\n")
     : "";
-  const successDefinitions = input.priorityUpdate
-    ? [
-        input.priorityUpdate.successDefinition ? `Success: ${input.priorityUpdate.successDefinition}` : null,
-        input.priorityUpdate.partialSuccessDefinition ? `Partial Success: ${input.priorityUpdate.partialSuccessDefinition}` : null,
-        input.priorityUpdate.partialFailureDefinition ? `Partial Failure: ${input.priorityUpdate.partialFailureDefinition}` : null,
-        input.priorityUpdate.failureDefinition ? `Failure: ${input.priorityUpdate.failureDefinition}` : null,
-      ].filter(Boolean).join("\n")
-    : "";
+  const successDefinitions = [
+    input.nextUpdate.successDefinition ? `Success: ${input.nextUpdate.successDefinition}` : null,
+    input.nextUpdate.partialSuccessDefinition ? `Partial Success: ${input.nextUpdate.partialSuccessDefinition}` : null,
+    input.nextUpdate.partialFailureDefinition ? `Partial Failure: ${input.nextUpdate.partialFailureDefinition}` : null,
+    input.nextUpdate.failureDefinition ? `Failure: ${input.nextUpdate.failureDefinition}` : null,
+  ].filter(Boolean).join("\n");
+  const executionFrame = [
+    input.nextUpdate.updateKind ? `Update Kind: ${input.nextUpdate.updateKind}` : null,
+    input.nextUpdate.simplificationMode ? `Simplification Mode: ${input.nextUpdate.simplificationMode}` : null,
+    input.nextUpdate.structuralReason ? `Structural Reason: ${input.nextUpdate.structuralReason}` : null,
+    input.nextUpdate.supportsNextStep ? `Supports Next Step: ${input.nextUpdate.supportsNextStep}` : null,
+    input.nextUpdate.dependencies.length > 0 ? `Dependencies: ${input.nextUpdate.dependencies.join(", ")}` : null,
+    input.nextUpdate.skillsNeeded.length > 0 ? `Skills Needed: ${input.nextUpdate.skillsNeeded.join(", ")}` : null,
+  ].filter(Boolean).join("\n");
   const sections = [
-    `Priority Update: ${input.update.title}`,
+    `Priority Update: ${input.nextUpdate.title}`,
     "",
-    `Exact Scope: ${input.update.description}`,
+    `Exact Scope: ${input.nextUpdate.description}`,
     priorityContext ? `\nCurrent State Context:\n${priorityContext}` : "",
     currentStateSummary ? `\nCurrent-State Map:\n${currentStateSummary}` : "",
     successDefinitions ? `\nOutcome Definitions:\n${successDefinitions}` : "",
+    executionFrame ? `\nExecution Frame:\n${executionFrame}` : "",
   ].filter((section) => section.length > 0);
   return sections.join("\n");
+}
+
+function buildToddNextUpdateFromExecutionContext(input: {
+  update: VersionUpdate;
+  nextUpdate: ToddNextUpdate | null;
+  priorityUpdate: ToddPriorityUpdate | null;
+  currentState: string | null;
+}): ToddNextUpdate {
+  const trackedNextUpdate = input.nextUpdate
+    && (input.nextUpdate.id === input.update.id || input.nextUpdate.title === input.update.title)
+    ? input.nextUpdate
+    : null;
+  const priorityUpdate = input.priorityUpdate
+    && (input.priorityUpdate.id === input.update.id || input.priorityUpdate.title === input.update.title)
+    ? input.priorityUpdate
+    : input.priorityUpdate;
+
+  return {
+    id: trackedNextUpdate?.id ?? input.update.id,
+    title: trackedNextUpdate?.title ?? input.update.title,
+    description: trackedNextUpdate?.description ?? input.update.description,
+    pillarIds: trackedNextUpdate?.pillarIds?.length
+      ? [...trackedNextUpdate.pillarIds]
+      : priorityUpdate?.pillarIds?.length
+        ? [...priorityUpdate.pillarIds]
+        : [...(input.update.pillarIds ?? [])],
+    currentStateContext: trackedNextUpdate?.currentStateContext
+      ?? priorityUpdate?.currentStateContext
+      ?? input.currentState
+      ?? null,
+    successDefinition: trackedNextUpdate?.successDefinition ?? priorityUpdate?.successDefinition ?? null,
+    partialSuccessDefinition: trackedNextUpdate?.partialSuccessDefinition ?? priorityUpdate?.partialSuccessDefinition ?? null,
+    partialFailureDefinition: trackedNextUpdate?.partialFailureDefinition ?? priorityUpdate?.partialFailureDefinition ?? null,
+    failureDefinition: trackedNextUpdate?.failureDefinition ?? priorityUpdate?.failureDefinition ?? null,
+    updateKind: trackedNextUpdate?.updateKind ?? input.update.updateKind ?? null,
+    simplificationMode: trackedNextUpdate?.simplificationMode ?? input.update.simplificationMode ?? null,
+    structuralReason: trackedNextUpdate?.structuralReason ?? input.update.structuralReason ?? null,
+    supportsNextStep: trackedNextUpdate?.supportsNextStep ?? input.update.supportsNextStep ?? null,
+    skillsNeeded: trackedNextUpdate?.skillsNeeded?.length
+      ? [...trackedNextUpdate.skillsNeeded]
+      : [...(input.update.skillsNeeded ?? [])],
+    dependencies: trackedNextUpdate?.dependencies?.length
+      ? [...trackedNextUpdate.dependencies]
+      : [...(input.update.dependencies ?? [])],
+  };
 }
 
 function buildToddApprovedPingTaskSnapshot(
@@ -396,10 +449,17 @@ function buildToddApprovedPingTaskSnapshot(
   const roadmap = session.toddMemory.hardMemory ?? session.toddMemory.roadmap ?? null;
   const priorityUpdate = roadmap?.priorityUpdate ?? null;
   const currentStateItems = roadmap?.currentState ?? [];
-  const updateTitle = priorityUpdate?.title ?? input.update.title;
-  const updateDescription = priorityUpdate?.description ?? input.update.description;
-  const relevantPillarIds = priorityUpdate?.pillarIds ?? input.update.pillarIds ?? [];
+  const handoffUpdate = buildToddNextUpdateFromExecutionContext({
+    update: input.update,
+    nextUpdate: session.toddMemory.nextUpdate,
+    priorityUpdate,
+    currentState: session.toddMemory.currentState,
+  });
+  const updateTitle = handoffUpdate.title;
+  const updateDescription = handoffUpdate.description;
+  const relevantPillarIds = handoffUpdate.pillarIds.length > 0 ? handoffUpdate.pillarIds : input.update.pillarIds ?? [];
   const sourceRefs = priorityUpdate?.sourceRefs ?? [];
+  const mirroredPriorityUpdate = buildToddPriorityUpdateFromNextUpdate(handoffUpdate, sourceRefs);
 
   return buildPingTaskSnapshot({
     source: "todd-approved-update",
@@ -411,7 +471,7 @@ function buildToddApprovedPingTaskSnapshot(
     toddExplanation: updateDescription,
     relevantPillarIds,
     currentStateItems,
-    priorityUpdate,
+    priorityUpdate: mirroredPriorityUpdate,
     sourceRefs,
     indexedMap: session.toddMemory.codebaseIndexedMap ? { ...session.toddMemory.codebaseIndexedMap } : null,
     toddCodebaseMapSummary: null,
@@ -1909,8 +1969,55 @@ const normalizeToddUpdatePlanSource = (value: unknown): ToddUpdatePlanSource =>
 const normalizeOptionalToddText = (value: unknown): string | null =>
   typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 
+const normalizeToddPillarIds = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+
 const normalizeRoadmapUpdateKind = (value: unknown): "create" | "expand" | "refine" =>
   value === "create" || value === "expand" || value === "refine" ? value : "create";
+
+const normalizeToddNextUpdate = (
+  raw: Record<string, unknown>,
+  fallback: Partial<ToddNextUpdate> = {},
+): ToddNextUpdate => ({
+  id: typeof raw.id === "string" && raw.id ? raw.id : fallback.id ?? randomUUID(),
+  title: typeof raw.title === "string" ? raw.title.trim() : fallback.title ?? "Next update",
+  description: typeof raw.description === "string" ? raw.description.trim() : fallback.description ?? "",
+  pillarIds: normalizeToddPillarIds(raw.pillarIds ?? fallback.pillarIds),
+  currentStateContext: normalizeOptionalToddText(raw.currentStateContext ?? fallback.currentStateContext),
+  successDefinition: normalizeOptionalToddText(raw.successDefinition ?? fallback.successDefinition),
+  partialSuccessDefinition: normalizeOptionalToddText(raw.partialSuccessDefinition ?? fallback.partialSuccessDefinition),
+  partialFailureDefinition: normalizeOptionalToddText(raw.partialFailureDefinition ?? fallback.partialFailureDefinition),
+  failureDefinition: normalizeOptionalToddText(raw.failureDefinition ?? fallback.failureDefinition),
+  updateKind: normalizeToddUpdateKind(raw.updateKind ?? fallback.updateKind),
+  simplificationMode: normalizeToddSimplificationMode(raw.simplificationMode ?? fallback.simplificationMode),
+  structuralReason: normalizeOptionalToddText(raw.structuralReason ?? fallback.structuralReason),
+  supportsNextStep: normalizeOptionalToddText(raw.supportsNextStep ?? fallback.supportsNextStep),
+  skillsNeeded: Array.isArray(raw.skillsNeeded ?? fallback.skillsNeeded)
+    ? ((raw.skillsNeeded ?? fallback.skillsNeeded) as unknown[]).filter((s): s is string => typeof s === "string")
+    : [],
+  dependencies: Array.isArray(raw.dependencies ?? fallback.dependencies)
+    ? ((raw.dependencies ?? fallback.dependencies) as unknown[]).filter((s): s is string => typeof s === "string")
+    : [],
+});
+
+const buildToddPriorityUpdateFromNextUpdate = (
+  nextUpdate: ToddNextUpdate,
+  sourceRefs: ToddPriorityUpdate["sourceRefs"] = [],
+): ToddPriorityUpdate => ({
+  id: nextUpdate.id,
+  title: nextUpdate.title,
+  description: nextUpdate.description,
+  pillarIds: [...nextUpdate.pillarIds],
+  updateKind: normalizeRoadmapUpdateKind(nextUpdate.updateKind === "simplify" ? "refine" : nextUpdate.updateKind),
+  currentStateContext: nextUpdate.currentStateContext ?? "",
+  successDefinition: nextUpdate.successDefinition,
+  partialSuccessDefinition: nextUpdate.partialSuccessDefinition,
+  partialFailureDefinition: nextUpdate.partialFailureDefinition,
+  failureDefinition: nextUpdate.failureDefinition,
+  sourceRefs: sourceRefs ?? [],
+});
 
 const normalizeToddRoadmap = (raw: Record<string, unknown>): ToddRoadmap => {
   const now = new Date().toISOString();
@@ -2242,6 +2349,12 @@ const deriveLegacyToddFieldsFromRoadmap = (
         id: roadmap.priorityUpdate.id,
         title: roadmap.priorityUpdate.title,
         description: roadmap.priorityUpdate.description,
+        pillarIds: [...roadmap.priorityUpdate.pillarIds],
+        currentStateContext: roadmap.priorityUpdate.currentStateContext ?? null,
+        successDefinition: roadmap.priorityUpdate.successDefinition ?? null,
+        partialSuccessDefinition: roadmap.priorityUpdate.partialSuccessDefinition ?? null,
+        partialFailureDefinition: roadmap.priorityUpdate.partialFailureDefinition ?? null,
+        failureDefinition: roadmap.priorityUpdate.failureDefinition ?? null,
         updateKind: roadmap.priorityUpdate.updateKind,
         simplificationMode: null,
         structuralReason: null,
@@ -2351,7 +2464,7 @@ const buildToddRoadmapFromLegacy = (
         id: toddMemory.nextUpdate.id,
         title: toddMemory.nextUpdate.title,
         description: toddMemory.nextUpdate.description,
-        pillarIds: ensureRoadmapItemPillarIds([], fallbackPillarIds),
+        pillarIds: ensureRoadmapItemPillarIds(toddMemory.nextUpdate.pillarIds, fallbackPillarIds),
         updateKind: ((toddMemory.nextUpdate.updateKind === "simplify" ? "refine" : toddMemory.nextUpdate.updateKind) as "create" | "expand" | "refine" | null) ?? "create",
       }
     : (() => {
@@ -2374,11 +2487,11 @@ const buildToddRoadmapFromLegacy = (
   const priorityUpdate: ToddPriorityUpdate | null = prioritySource
     ? {
         ...prioritySource,
-        currentStateContext: toddMemory.currentState ?? "",
-        successDefinition: null,
-        partialSuccessDefinition: null,
-        partialFailureDefinition: null,
-        failureDefinition: null,
+        currentStateContext: toddMemory.nextUpdate?.currentStateContext ?? toddMemory.currentState ?? "",
+        successDefinition: toddMemory.nextUpdate?.successDefinition ?? null,
+        partialSuccessDefinition: toddMemory.nextUpdate?.partialSuccessDefinition ?? null,
+        partialFailureDefinition: toddMemory.nextUpdate?.partialFailureDefinition ?? null,
+        failureDefinition: toddMemory.nextUpdate?.failureDefinition ?? null,
         sourceRefs: [],
       }
     : null;
@@ -2404,7 +2517,7 @@ const mergeToddRoadmapWithLegacy = (
     currentState: roadmap.currentState.length > 0 ? roadmap.currentState : legacyRoadmap.currentState,
     endState: roadmap.endState.length > 0 ? roadmap.endState : legacyRoadmap.endState,
     pathway: roadmap.pathway.length > 0 ? roadmap.pathway : legacyRoadmap.pathway,
-    priorityUpdate: roadmap.priorityUpdate ?? legacyRoadmap.priorityUpdate,
+    priorityUpdate: legacyRoadmap.priorityUpdate ?? roadmap.priorityUpdate,
     generatedAt: roadmap.generatedAt ?? legacyRoadmap.generatedAt,
   };
 };
@@ -3146,6 +3259,48 @@ const buildCompatibilityUpdateFromPriority = (
   };
 };
 
+const syncToddRoadmapPriorityFromNextUpdate = (session: AgentSession): void => {
+  const fallbackPillarIds = session.corePillars.map((pillar) => pillar.id);
+  const roadmap = getToddRoadmap(session) ?? buildToddRoadmapFromLegacy(session.toddMemory, fallbackPillarIds);
+  if (!roadmap) {
+    return;
+  }
+
+  const nextUpdate = session.toddMemory.nextUpdate;
+  if (nextUpdate) {
+    const pathwayIndex = roadmap.pathway.findIndex((item) => item.id === nextUpdate.id || item.title === nextUpdate.title);
+    if (pathwayIndex >= 0) {
+      const existingPathway = roadmap.pathway[pathwayIndex];
+      roadmap.pathway[pathwayIndex] = {
+        ...existingPathway,
+        title: nextUpdate.title,
+        description: nextUpdate.description,
+        pillarIds: nextUpdate.pillarIds.length > 0
+          ? ensureRoadmapItemPillarIds(nextUpdate.pillarIds, existingPathway.pillarIds)
+          : existingPathway.pillarIds,
+        updateKind: normalizeRoadmapUpdateKind(nextUpdate.updateKind === "simplify" ? "refine" : nextUpdate.updateKind),
+      };
+    }
+
+    roadmap.priorityUpdate = buildToddPriorityUpdateFromNextUpdate(
+      {
+        ...nextUpdate,
+        pillarIds: nextUpdate.pillarIds.length > 0
+          ? [...nextUpdate.pillarIds]
+          : ensureRoadmapItemPillarIds(roadmap.priorityUpdate?.pillarIds ?? [], fallbackPillarIds),
+        currentStateContext: nextUpdate.currentStateContext
+          ?? roadmap.priorityUpdate?.currentStateContext
+          ?? session.toddMemory.currentState,
+      },
+      roadmap.priorityUpdate?.sourceRefs ?? [],
+    );
+  }
+
+  roadmap.generatedAt = new Date().toISOString();
+  session.toddMemory.hardMemory = roadmap;
+  session.toddMemory.roadmap = roadmap;
+};
+
 const upsertToddTrackedUpdate = (
   session: AgentSession,
   update: VersionUpdate,
@@ -3228,6 +3383,21 @@ const updateToddRoadmapPriorityStatus = (
           sourceRefs: nextPriority.sourceRefs ?? [],
         }
       : null;
+  }
+
+  if (session.toddMemory.nextUpdate && roadmap.priorityUpdate) {
+    roadmap.priorityUpdate = buildToddPriorityUpdateFromNextUpdate(
+      {
+        ...session.toddMemory.nextUpdate,
+        pillarIds: session.toddMemory.nextUpdate.pillarIds.length > 0
+          ? [...session.toddMemory.nextUpdate.pillarIds]
+          : [...roadmap.priorityUpdate.pillarIds],
+        currentStateContext: session.toddMemory.nextUpdate.currentStateContext
+          ?? roadmap.priorityUpdate.currentStateContext
+          ?? session.toddMemory.currentState,
+      },
+      roadmap.priorityUpdate.sourceRefs ?? [],
+    );
   }
 
   roadmap.generatedAt = new Date().toISOString();
@@ -4732,12 +4902,15 @@ Your job is to produce four things:
 1. currentState — what is currently true about this project's technical implementation (1–3 sentences, grounded in the codebase map)
 2. endStateGoal — what the project is trying to become technically (1–3 sentences, grounded in the confirmed concept)
 3. successChain — an ordered dependency chain of steps that must be completed to reach the end state goal. Each step must be independent enough that completing it is clearly testable. Earlier steps must be prerequisites for later ones. Mark satisfied=true only for steps that the previous update log confirms are fully done.
-4. nextUpdate — the single most important next update for Ping to execute. This must be the first unsatisfied step from the success chain that is now unblocked. Provide full detail: title, description, updateKind, simplificationMode, structuralReason, supportsNextStep, skillsNeeded, dependencies.
+4. nextUpdate — the single most important next update for Ping to execute. This must be the first unsatisfied step from the success chain that is now unblocked. Treat this as the exact handoff contract Ping will receive with no extra rewrite. Provide full detail: title, description, pillarIds, currentStateContext, successDefinition, partialSuccessDefinition, partialFailureDefinition, failureDefinition, updateKind, simplificationMode, structuralReason, supportsNextStep, skillsNeeded, dependencies.
 
 Rules:
 - Plan only from confirmed concept details and the codebase map. Do not invent goals not present in either source.
 - successChain must have 3–10 steps. Keep each step title concise (under 60 chars).
 - nextUpdate must match the first unsatisfied and unblocked step in successChain.
+- nextUpdate.currentStateContext must tell Ping what is already true in the codebase that matters for this step.
+- nextUpdate.successDefinition, partialSuccessDefinition, partialFailureDefinition, and failureDefinition must be concrete enough that Ping can judge the result after the run.
+- nextUpdate.pillarIds should contain relevant pillar IDs when they are clear from stored roadmap/context. If they are not clear, use [] rather than inventing IDs.
 - If nextUpdate requires simplification first, make simplificationMode and structuralReason explicit.
 - Set nextUpdate to null only if successChain is empty or all steps are already satisfied.
 - Use updateKind exactly as: create = build a new piece that does not yet exist | expand = add meaningful capability onto an existing piece | refine = improve an existing piece while keeping its role | simplify = preserve intended function while improving structure so future work lands cleanly
@@ -4762,7 +4935,7 @@ Trouble log:
 ${troubleLog}
 
 Respond with strict JSON:
-{"currentState": string, "endStateGoal": string, "successChain": [{"title": string, "description": string, "satisfied": boolean}], "nextUpdate": {"title": string, "description": string, "updateKind": string|null, "simplificationMode": string|null, "structuralReason": string|null, "supportsNextStep": string|null, "skillsNeeded": string[], "dependencies": string[]} | null, "response": string}`;
+{"currentState": string, "endStateGoal": string, "successChain": [{"title": string, "description": string, "satisfied": boolean}], "nextUpdate": {"title": string, "description": string, "pillarIds": string[], "currentStateContext": string|null, "successDefinition": string|null, "partialSuccessDefinition": string|null, "partialFailureDefinition": string|null, "failureDefinition": string|null, "updateKind": string|null, "simplificationMode": string|null, "structuralReason": string|null, "supportsNextStep": string|null, "skillsNeeded": string[], "dependencies": string[]} | null, "response": string}`;
 
 function buildDirectorPrompt(
   directorId: DirectorId,
@@ -5822,6 +5995,42 @@ export class ProgramsBackend {
       versionUpdates: input.versionUpdates ?? null,
       createdAt: input.createdAt ?? new Date().toISOString(),
     };
+  }
+
+  private buildToddHardMemoryReportSnapshot(
+    session: AgentSession,
+    summary: string,
+    createdAt?: string,
+  ): HardMemoryReportMetadata {
+    return this.buildHardMemoryReportMetadata({
+      directorId: "rd-director",
+      dataType: "toddRoadmap",
+      approvalId: null,
+      reportStage: "hard",
+      summary,
+      currentState: session.toddMemory.currentState ?? null,
+      idealState: session.toddMemory.endStateGoal ?? null,
+      roadmap: getToddRoadmap(session),
+      createdAt,
+    });
+  }
+
+  private appendToddHardMemoryReportMessage(
+    session: AgentSession,
+    summary: string,
+    createdAt?: string,
+  ): AgentChatMessage {
+    const message = this.appendSlackAssistantMessage(
+      session,
+      "rd-director",
+      summary,
+      {
+        status: "complete",
+        metadata: this.buildToddHardMemoryReportSnapshot(session, summary, createdAt),
+      },
+    );
+    session.toddMemory.latestReportId = message.id;
+    return message;
   }
 
   private queueApproval(
@@ -7248,13 +7457,19 @@ Instructions:
     this.emit({ type: "agent.session", projectId: input.projectId, session });
 
     const roadmap = getToddRoadmap(session);
+    const nextUpdate = buildToddNextUpdateFromExecutionContext({
+      update: trackedUpdate,
+      nextUpdate: session.toddMemory.nextUpdate,
+      priorityUpdate: roadmap?.priorityUpdate ?? null,
+      currentState: session.toddMemory.currentState,
+    });
     const planInput: StartPlanInput = {
       projectId: input.projectId,
       provider: input.provider,
       prompt: buildPingUpdatePrompt({
-        update: trackedUpdate,
-        priorityUpdate: roadmap?.priorityUpdate ?? null,
+        nextUpdate,
         currentStateItems: roadmap?.currentState ?? [],
+        priorityUpdate: roadmap?.priorityUpdate ?? null,
       }),
       speed: "normal",
       model: pingModelSelections.planning.model,
@@ -8251,11 +8466,6 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     };
   }
 
-  /** @deprecated Use directorChat */
-  async multiAgentChat(input: DirectorChatInput): Promise<DirectorChatResponse> {
-    return this.directorChat(input);
-  }
-
   async agentChat(input: AgentChatInput): Promise<AgentChatResponse> {
 
     await this.ensureInitialized();
@@ -8482,11 +8692,6 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     };
   }
 
-  /** @deprecated Use agentChat */
-  async slackChat(input: AgentChatInput): Promise<AgentChatResponse> {
-    return this.agentChat(input);
-  }
-
   async deleteAgentMessages(input: DeleteAgentMessagesInput): Promise<void> {
 
     await this.ensureInitialized();
@@ -8497,11 +8702,6 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     session.updatedAt = new Date().toISOString();
     await this.store.saveAgentSession(session);
     this.emit({ type: "agent.session", projectId: input.projectId, session });
-  }
-
-  /** @deprecated Use deleteAgentMessages */
-  async deleteSlackMessages(input: DeleteSlackMessagesInput): Promise<void> {
-    return this.deleteAgentMessages(input);
   }
 
   async clearAgentMessages(projectId: string): Promise<void> {
@@ -8515,11 +8715,6 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     session.updatedAt = new Date().toISOString();
     await this.store.saveAgentSession(session);
     this.emit({ type: "agent.session", projectId, session });
-  }
-
-  /** @deprecated Use clearAgentMessages */
-  async clearSlackMessages(projectId: string): Promise<void> {
-    return this.clearAgentMessages(projectId);
   }
 
   private patchAutomationState(
@@ -9264,21 +9459,7 @@ Return ONLY strict JSON matching:
       const rawNext = parsed.nextUpdate && typeof parsed.nextUpdate === "object"
         ? parsed.nextUpdate as Record<string, unknown>
         : null;
-      const newNextUpdate: ToddNextUpdate | null = rawNext ? {
-        id: randomUUID(),
-        title: typeof rawNext.title === "string" ? rawNext.title.trim() : "Next update",
-        description: typeof rawNext.description === "string" ? rawNext.description.trim() : "",
-        updateKind: normalizeToddUpdateKind(rawNext.updateKind),
-        simplificationMode: normalizeToddSimplificationMode(rawNext.simplificationMode),
-        structuralReason: normalizeOptionalToddText(rawNext.structuralReason),
-        supportsNextStep: normalizeOptionalToddText(rawNext.supportsNextStep),
-        skillsNeeded: Array.isArray(rawNext.skillsNeeded)
-          ? (rawNext.skillsNeeded as unknown[]).filter((s): s is string => typeof s === "string")
-          : [],
-        dependencies: Array.isArray(rawNext.dependencies)
-          ? (rawNext.dependencies as unknown[]).filter((s): s is string => typeof s === "string")
-          : [],
-      } : null;
+      const newNextUpdate: ToddNextUpdate | null = rawNext ? normalizeToddNextUpdate(rawNext) : null;
 
       session.toddMemory.currentState = normalizeOptionalToddText(parsed.currentState) ?? session.toddMemory.currentState;
       session.toddMemory.endStateGoal = normalizeOptionalToddText(parsed.endStateGoal) ?? session.toddMemory.endStateGoal;
@@ -9290,8 +9471,11 @@ Return ONLY strict JSON matching:
         ? parsed.roadmap as Record<string, unknown>
         : null;
       if (rawRoadmap) {
-        session.toddMemory.roadmap = normalizeToddRoadmap(rawRoadmap);
+        const roadmap = normalizeToddRoadmap(rawRoadmap);
+        session.toddMemory.hardMemory = roadmap;
+        session.toddMemory.roadmap = roadmap;
       }
+      syncToddRoadmapPriorityFromNextUpdate(session);
 
       if (newNextUpdate) {
         const alreadyQueued = session.toddMemory.futureUpdatePlan.some(
@@ -9306,7 +9490,7 @@ Return ONLY strict JSON matching:
             order: session.toddMemory.futureUpdatePlan.length,
             status: "pending",
             dependencies: newNextUpdate.dependencies,
-            pillarIds: [],
+            pillarIds: newNextUpdate.pillarIds,
             skillsNeeded: newNextUpdate.skillsNeeded,
             updateKind: newNextUpdate.updateKind,
             simplificationMode: newNextUpdate.simplificationMode,
@@ -9321,13 +9505,15 @@ Return ONLY strict JSON matching:
         }
       }
 
+      const createdAt = new Date().toISOString();
       this.replaceSlackAssistantMessage(session, "rd-director", {
         ...responsePlaceholder,
         content: response,
-        createdAt: new Date().toISOString(),
+        createdAt,
         status: "complete",
-        metadata: null,
+        metadata: this.buildToddHardMemoryReportSnapshot(session, response, createdAt),
       });
+      session.toddMemory.latestReportId = responsePlaceholder.id;
       await this.saveAgentSession(input.projectId, session);
     } catch (error) {
       this.replaceSlackAssistantMessage(session, "rd-director", {
@@ -10026,13 +10212,19 @@ Return ONLY strict JSON matching:
 
     const usageBefore = buildUsageCapture(input.provider, await this.readUsage());
     const roadmap = getToddRoadmap(session);
+    const nextUpdate = buildToddNextUpdateFromExecutionContext({
+      update: trackedUpdate,
+      nextUpdate: session.toddMemory.nextUpdate,
+      priorityUpdate: roadmap?.priorityUpdate ?? null,
+      currentState: session.toddMemory.currentState,
+    });
     return this.startPlanNow({
       projectId: input.projectId,
       provider: input.provider,
       prompt: buildPingUpdatePrompt({
-        update: trackedUpdate,
-        priorityUpdate: roadmap?.priorityUpdate ?? null,
+        nextUpdate,
         currentStateItems: roadmap?.currentState ?? [],
+        priorityUpdate: roadmap?.priorityUpdate ?? null,
       }),
       speed: "normal",
       model: pingModelSelections.planning.model,
@@ -10262,6 +10454,10 @@ Return ONLY strict JSON matching:
     session.slackActiveDirectorId = "project-manager";
     session.slackPresenceGuestId = null;
     session.automation.updatedAt = new Date().toISOString();
+    this.appendToddHardMemoryReportMessage(
+      session,
+      `Todd hard memory updated after Jeff finalized "${finalizedReport.title}" as ${input.decision.replace(/-/g, " ")}.`,
+    );
 
     await this.saveAgentSession(input.projectId, session);
   }
@@ -11963,7 +12159,7 @@ Rules:
 - After deciding the current run, update the planning state:
   - updatedCurrentState: revise currentState to reflect what is now true after this run (required on all finalizing actions)
   - satisfiedStepTitles: list the exact titles of any success chain steps now fully satisfied by this run (empty array if none)
-  - newNextUpdate: the full next update for Ping — the first unsatisfied and unblocked step from the success chain. Set to null if retry_ping is chosen (retryInstruction handles the next step) or if all steps are done.
+  - newNextUpdate: the full next update for Ping — the first unsatisfied and unblocked step from the success chain. Treat it as the exact Ping handoff contract with no extra rewrite. Include pillarIds, currentStateContext, successDefinition, partialSuccessDefinition, partialFailureDefinition, failureDefinition, updateKind, simplificationMode, structuralReason, supportsNextStep, skillsNeeded, and dependencies. Set to null if retry_ping is chosen (retryInstruction handles the next step) or if all steps are done.
 - replanNeeded/replanUpdates: set replanNeeded=true and provide replanUpdates only if the code structure now makes the success chain invalid and a full replan is required. In that case, also set newNextUpdate to null.
 - Trigger structural concern when responsibilities are mixed, one change would touch too many places, the module split no longer matches the concept, testing is messy because concerns are mixed, Ping would need workaround edits, coupling recently increased, or the next clean structure is blocked by the current shape
 - File size alone is not enough reason to trigger a replan
@@ -11984,7 +12180,7 @@ Return strict JSON with:
   "replanUpdates": [...] | null,
   "updatedCurrentState": string | null,
   "satisfiedStepTitles": string[] | null,
-  "newNextUpdate": {"title": string, "description": string, "updateKind": string|null, "simplificationMode": string|null, "structuralReason": string|null, "supportsNextStep": string|null, "skillsNeeded": string[], "dependencies": string[]} | null
+  "newNextUpdate": {"title": string, "description": string, "pillarIds": string[], "currentStateContext": string|null, "successDefinition": string|null, "partialSuccessDefinition": string|null, "partialFailureDefinition": string|null, "failureDefinition": string|null, "updateKind": string|null, "simplificationMode": string|null, "structuralReason": string|null, "supportsNextStep": string|null, "skillsNeeded": string[], "dependencies": string[]} | null
 }`;
       const rawResult = await this.aiService(report.task.runtime.provider).runOneShot(
         project,
@@ -12012,21 +12208,7 @@ Return strict JSON with:
       const rawNewNextUpdate = parsed.newNextUpdate && typeof parsed.newNextUpdate === "object"
         ? parsed.newNextUpdate as Record<string, unknown>
         : null;
-      const newNextUpdate: ToddNextUpdate | null = rawNewNextUpdate ? {
-        id: randomUUID(),
-        title: typeof rawNewNextUpdate.title === "string" ? rawNewNextUpdate.title.trim() : "Next update",
-        description: typeof rawNewNextUpdate.description === "string" ? rawNewNextUpdate.description.trim() : "",
-        updateKind: normalizeToddUpdateKind(rawNewNextUpdate.updateKind),
-        simplificationMode: normalizeToddSimplificationMode(rawNewNextUpdate.simplificationMode),
-        structuralReason: normalizeOptionalToddText(rawNewNextUpdate.structuralReason),
-        supportsNextStep: normalizeOptionalToddText(rawNewNextUpdate.supportsNextStep),
-        skillsNeeded: Array.isArray(rawNewNextUpdate.skillsNeeded)
-          ? (rawNewNextUpdate.skillsNeeded as unknown[]).filter((s): s is string => typeof s === "string")
-          : [],
-        dependencies: Array.isArray(rawNewNextUpdate.dependencies)
-          ? (rawNewNextUpdate.dependencies as unknown[]).filter((s): s is string => typeof s === "string")
-          : [],
-      } : null;
+      const newNextUpdate: ToddNextUpdate | null = rawNewNextUpdate ? normalizeToddNextUpdate(rawNewNextUpdate) : null;
 
       if (updatedCurrentState) {
         session.toddMemory.currentState = updatedCurrentState;
@@ -12053,7 +12235,7 @@ Return strict JSON with:
             order: session.toddMemory.futureUpdatePlan.length,
             status: "pending",
             dependencies: newNextUpdate.dependencies,
-            pillarIds: [],
+            pillarIds: newNextUpdate.pillarIds,
             skillsNeeded: newNextUpdate.skillsNeeded,
             updateKind: newNextUpdate.updateKind,
             simplificationMode: newNextUpdate.simplificationMode,
@@ -12067,14 +12249,17 @@ Return strict JSON with:
           session.versionUpdates = [...session.toddMemory.futureUpdatePlan];
         }
       }
+      syncToddRoadmapPriorityFromNextUpdate(session);
 
+      const createdAt = new Date().toISOString();
       this.replaceSlackAssistantMessage(session, "rd-director", {
         ...responsePlaceholder,
         content: response,
-        createdAt: new Date().toISOString(),
+        createdAt,
         status: "complete",
-        metadata: null,
+        metadata: this.buildToddHardMemoryReportSnapshot(session, response, createdAt),
       });
+      session.toddMemory.latestReportId = responsePlaceholder.id;
       try {
         const postPingFingerprint = await buildProjectKnowledgeFingerprint(project.localPath);
         if (session.toddMemory.codebaseIndexedMap && postPingFingerprint) {
@@ -12417,6 +12602,10 @@ Return strict JSON with:
     session.slackActiveDirectorId = "project-manager";
     session.slackPresenceGuestId = null;
     session.automation.updatedAt = new Date().toISOString();
+    this.appendToddHardMemoryReportMessage(
+      session,
+      `Todd hard memory updated after finalizing "${report.title}" as ${input.decision.replace(/-/g, " ")}.`,
+    );
 
     if (input.decision === "failure") {
       session.automation.pendingRevertReportId = commitSha && historyUpdateId ? report.id : null;

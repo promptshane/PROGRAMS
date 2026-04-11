@@ -17,6 +17,7 @@ import {
   type VersionPlan,
   type VersionUpdate,
 } from "@shared/types";
+import { getDirectorMetadata } from "@shared/director-metadata";
 import { USAGE_SCHEDULE_TOLERANCE } from "./constants.ts";
 import { titleCaseWord, normalizeSentence, labelForDirectorStageStatus } from "./formatting.ts";
 
@@ -284,6 +285,14 @@ export const getDirectorProjectNotes = (directorId: DirectorId, session: AgentSe
     ? (session?.danMemory.notes ?? []).map((n) => typeof n === "string" ? n : n.content)
     : [];
 
+const DIRECTOR_DISPLAY_ORDER: DirectorId[] = [
+  "project-manager",
+  "creative-director",
+  "rd-director",
+  "programming-director",
+  "validation-director",
+];
+
 export type DirectorSharedMemorySourceKind =
   | "dan-core-details"
   | "todd-update-context"
@@ -298,6 +307,11 @@ export interface DirectorSharedMemorySource {
   directorId: DirectorId;
   label: string;
   bodyTitle: string;
+}
+
+export interface DirectorExportedMemoryTarget {
+  directorId: DirectorId;
+  label: string;
 }
 
 const hasAnyItems = (...collections: Array<{ length?: number } | null | undefined>): boolean =>
@@ -401,6 +415,42 @@ export const buildDirectorSharedMemorySources = (
   }
 };
 
+export const buildDirectorExportedMemoryTargets = (
+  directorId: DirectorId,
+  session: AgentSession | null,
+): DirectorExportedMemoryTarget[] => {
+  if (!session) {
+    return [];
+  }
+
+  const targetIds = new Set<DirectorId>();
+  const metadata = getDirectorMetadata(directorId);
+
+  for (const link of metadata.sendsTo) {
+    if (link.kind === "director" && link.directorId !== directorId) {
+      targetIds.add(link.directorId);
+    }
+  }
+
+  for (const candidateDirectorId of DIRECTOR_DISPLAY_ORDER) {
+    if (candidateDirectorId === directorId) {
+      continue;
+    }
+
+    const importedSources = buildDirectorSharedMemorySources(candidateDirectorId, session);
+    if (importedSources.some((source) => source.directorId === directorId)) {
+      targetIds.add(candidateDirectorId);
+    }
+  }
+
+  return DIRECTOR_DISPLAY_ORDER
+    .filter((candidateDirectorId) => candidateDirectorId !== directorId && targetIds.has(candidateDirectorId))
+    .map((candidateDirectorId) => ({
+      directorId: candidateDirectorId,
+      label: DIRECTOR_NAMES[candidateDirectorId],
+    }));
+};
+
 export const computeExpectedPercent = (window: UsageWindow): number | null => {
   if (!window.resetsAt || !window.windowDurationMins) return null;
   const resetsAt = new Date(window.resetsAt).getTime();
@@ -431,6 +481,268 @@ export const getReportMessages = (session: AgentSession | null): Array<StageAgen
     ...Object.values(session.directorConversations ?? {}).flatMap((conversation) => conversation.messages ?? []),
     ...(session.unifiedMessages ?? []),
   ];
+};
+
+const formatToddReportTimestampLabel = (...values: Array<string | null | undefined>): { createdAt: string | null; createdAtSortKey: number; createdAtLabel: string } => {
+  for (const value of values) {
+    if (typeof value !== "string") {
+      continue;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const parsed = new Date(trimmed);
+    if (Number.isNaN(parsed.getTime())) {
+      continue;
+    }
+
+    return {
+      createdAt: trimmed,
+      createdAtSortKey: parsed.getTime(),
+      createdAtLabel: new Intl.DateTimeFormat(undefined, {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(parsed),
+    };
+  }
+
+  return {
+    createdAt: null,
+    createdAtSortKey: Number.NEGATIVE_INFINITY,
+    createdAtLabel: "Date unavailable",
+  };
+};
+
+const compareToddReportTimestampSortKey = (left: number, right: number): number => {
+  if (left === right) {
+    return 0;
+  }
+  if (left === Number.NEGATIVE_INFINITY) {
+    return 1;
+  }
+  if (right === Number.NEGATIVE_INFINITY) {
+    return -1;
+  }
+  return right - left;
+};
+
+type ToddResearchResultMetadata = Extract<NonNullable<AgentChatMessage["metadata"]>, { type: "research-result" }>;
+
+export type ToddResearchResultMessage =
+  | (StageAgentMessage & {
+      metadata: ToddResearchResultMetadata;
+    })
+  | (AgentChatMessage & {
+      metadata: ToddResearchResultMetadata;
+    });
+
+type ToddRoadmapReportMetadata = HardMemoryReportMetadata & {
+  type: "hard-memory-report";
+  directorId: "rd-director";
+  dataType: "toddRoadmap";
+};
+
+export type ToddRoadmapReportMessage =
+  | (StageAgentMessage & {
+      metadata: ToddRoadmapReportMetadata;
+    })
+  | (AgentChatMessage & {
+      metadata: ToddRoadmapReportMetadata;
+    });
+
+export interface ToddRoadmapReportHistoryEntry {
+  id: string;
+  createdAt: string | null;
+  createdAtLabel: string;
+  message: ToddRoadmapReportMessage;
+}
+
+export interface ToddResearchReportHistoryEntry {
+  id: string;
+  createdAt: string | null;
+  createdAtLabel: string;
+  message: ToddResearchResultMessage;
+}
+
+const collectToddRoadmapHistoryEntries = (session: AgentSession | null): ToddRoadmapReportHistoryEntry[] => {
+  if (!session) {
+    return [];
+  }
+
+  const seenIds = new Set<string>();
+  const entries: Array<ToddRoadmapReportHistoryEntry & { createdAtSortKey: number }> = [];
+
+  for (const message of getReportMessages(session)) {
+    if (seenIds.has(message.id)) {
+      continue;
+    }
+    seenIds.add(message.id);
+
+    const metadata = message.metadata;
+    if (!metadata || metadata.type !== "hard-memory-report" || metadata.directorId !== "rd-director" || metadata.dataType !== "toddRoadmap") {
+      continue;
+    }
+
+    const timing = formatToddReportTimestampLabel(metadata.createdAt, message.createdAt);
+    entries.push({
+      id: message.id,
+      createdAt: timing.createdAt,
+      createdAtLabel: timing.createdAtLabel,
+      message: {
+        ...message,
+        metadata,
+      } as ToddRoadmapReportMessage,
+      createdAtSortKey: timing.createdAtSortKey,
+    });
+  }
+
+  return entries
+    .sort((left, right) => compareToddReportTimestampSortKey(left.createdAtSortKey, right.createdAtSortKey))
+    .map(({ createdAtSortKey: _createdAtSortKey, ...entry }) => entry);
+};
+
+export const collectToddRoadmapReportHistory = (session: AgentSession | null): ToddRoadmapReportHistoryEntry[] =>
+  collectToddRoadmapHistoryEntries(session);
+
+export const collectToddResearchReportHistory = (session: AgentSession | null): ToddResearchReportHistoryEntry[] => {
+  if (!session) {
+    return [];
+  }
+
+  const seenIds = new Set<string>();
+  const entries: Array<ToddResearchReportHistoryEntry & { createdAtSortKey: number }> = [];
+
+  for (const message of getReportMessages(session)) {
+    if (seenIds.has(message.id)) {
+      continue;
+    }
+    seenIds.add(message.id);
+
+    const metadata = message.metadata;
+    if (!metadata || metadata.type !== "research-result") {
+      continue;
+    }
+    if ("directorId" in message && message.directorId && message.directorId !== "rd-director") {
+      continue;
+    }
+
+    const timing = formatToddReportTimestampLabel(message.createdAt);
+    entries.push({
+      id: message.id,
+      createdAt: timing.createdAt,
+      createdAtLabel: timing.createdAtLabel,
+      message: {
+        ...message,
+        metadata,
+      } as ToddResearchResultMessage,
+      createdAtSortKey: timing.createdAtSortKey,
+    });
+  }
+
+  return entries
+    .sort((left, right) => compareToddReportTimestampSortKey(left.createdAtSortKey, right.createdAtSortKey))
+    .map(({ createdAtSortKey: _createdAtSortKey, ...entry }) => entry);
+};
+
+export type DirectorReportStreamItem =
+  | {
+      id: string;
+      kind: "hard-memory-report";
+      createdAt: string;
+      title: string;
+      summary: string;
+      metadata: HardMemoryReportMetadata;
+    }
+  | {
+      id: string;
+      kind: "ping-update-report";
+      createdAt: string;
+      title: string;
+      summary: string;
+      metadata: Extract<NonNullable<AgentChatMessage["metadata"]>, { type: "ping-update-report" }>;
+    }
+  | {
+      id: string;
+      kind: "execution-report";
+      createdAt: string;
+      title: string;
+      summary: string;
+      metadata: Extract<NonNullable<AgentChatMessage["metadata"]>, { type: "execution-report" }>;
+    };
+
+const getUniqueReportMessages = (session: AgentSession | null): Array<StageAgentMessage | AgentChatMessage> => {
+  const seenIds = new Set<string>();
+  const uniqueMessages: Array<StageAgentMessage | AgentChatMessage> = [];
+  for (const message of getReportMessages(session)) {
+    if (seenIds.has(message.id)) {
+      continue;
+    }
+    seenIds.add(message.id);
+    uniqueMessages.push(message);
+  }
+  return uniqueMessages;
+};
+
+export const buildDirectorReportStream = (
+  directorId: DirectorId,
+  session: AgentSession | null,
+): DirectorReportStreamItem[] => {
+  if (!session) {
+    return [];
+  }
+
+  return getUniqueReportMessages(session)
+    .flatMap((message): DirectorReportStreamItem[] => {
+      const metadata = message.metadata;
+      if (!metadata) {
+        return [];
+      }
+
+      if (metadata.type === "hard-memory-report") {
+        if (
+          (directorId === "creative-director" && metadata.directorId === "creative-director")
+          || (directorId === "rd-director" && metadata.directorId === "rd-director")
+        ) {
+          return [{
+            id: message.id,
+            kind: "hard-memory-report",
+            createdAt: metadata.createdAt ?? message.createdAt,
+            title: HARD_MEMORY_REPORT_TITLES[metadata.dataType],
+            summary: metadata.summary,
+            metadata,
+          }];
+        }
+        return [];
+      }
+
+      if (directorId === "programming-director" && metadata.type === "ping-update-report") {
+        return [{
+          id: message.id,
+          kind: "ping-update-report",
+          createdAt: metadata.report?.createdAt ?? metadata.rawReport.createdAt ?? message.createdAt,
+          title: metadata.report?.task.updateTitle ?? metadata.report?.task.originalUserRequest ?? "Ping Update Report",
+          summary: metadata.rawReport.summary,
+          metadata,
+        }];
+      }
+
+      if (directorId === "project-manager" && metadata.type === "execution-report") {
+        return [{
+          id: message.id,
+          kind: "execution-report",
+          createdAt: metadata.report.createdAt,
+          title: metadata.report.title,
+          summary: metadata.report.summary,
+          metadata,
+        }];
+      }
+
+      return [];
+    })
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 };
 
 export const findHardMemoryReportMetadata = (session: AgentSession | null, approvalId: string): HardMemoryReportMetadata | null => {

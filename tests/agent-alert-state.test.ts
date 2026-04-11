@@ -15,6 +15,7 @@ const loadAgentAlertStateModule = async () => {
   const modules = [
     "agent-alert-state.ts",
     "session-helpers.ts",
+    "todd-hard-memory.ts",
     "formatting.ts",
     "constants.ts",
   ] as const;
@@ -227,13 +228,17 @@ test("Dan alert appears when Dan still has actionable soft memory", () => {
   });
 });
 
-test("Todd alert stays hidden when there is no actionable memory", () => {
+test("Todd alert regenerates when hard memory is incomplete and no soft memory is pending", () => {
   const session = createSession();
 
-  assert.equal(resolveAgentAlertState("rd-director", session), null);
+  assert.deepEqual(resolveAgentAlertState("rd-director", session), {
+    tone: "white",
+    warningTargetDirectorId: null,
+    action: "regenerate-todd-plan",
+  });
 });
 
-test("Todd alert appears when Todd still has actionable memory", () => {
+test("Todd soft-memory review takes precedence over hard-memory regeneration", () => {
   const session = createSession();
   session.toddMemory.softMemory.push({
     id: "todd-soft-1",

@@ -949,8 +949,6 @@ export interface TaggedNote {
   resolution?: MemoryResolution | null;
 }
 
-export type MemoryOwner = "dan" | "todd" | "jeff";
-
 export interface MemorySourceRef {
   id: string;
   messageId: string | null;
@@ -997,14 +995,6 @@ export interface PongValidationReport {
   usageBefore?: UsageCapture | null;
   usageAfter?: UsageCapture | null;
   createdAt: string;
-}
-
-export interface HandoffPayload {
-  sourceDirectorId: DirectorId;
-  targetDirectorId: DirectorId;
-  summary: string;
-  rawUserText: string | null;
-  contextNotes: string[];
 }
 
 export type PendingApprovalKind =
@@ -1116,6 +1106,12 @@ export interface ToddNextUpdate {
   id: string;
   title: string;
   description: string;
+  pillarIds: string[];
+  currentStateContext: string | null;
+  successDefinition: string | null;
+  partialSuccessDefinition: string | null;
+  partialFailureDefinition: string | null;
+  failureDefinition: string | null;
   updateKind: ToddUpdateKind | null;
   simplificationMode: ToddSimplificationMode | null;
   structuralReason: string | null;

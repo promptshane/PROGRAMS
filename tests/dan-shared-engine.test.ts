@@ -334,6 +334,25 @@ const createVersionUpdate = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+const createToddNextUpdate = (overrides: Record<string, unknown> = {}) => ({
+  id: "next-update",
+  title: "Expand onboarding shell",
+  description: "Build the next onboarding slice.",
+  pillarIds: [],
+  currentStateContext: "The onboarding shell already exists and should remain stable.",
+  successDefinition: "The next onboarding slice lands cleanly.",
+  partialSuccessDefinition: "The slice lands but one non-critical follow-up remains.",
+  partialFailureDefinition: "The slice lands but regresses an existing onboarding path.",
+  failureDefinition: "The onboarding flow regresses or the new slice cannot be completed.",
+  updateKind: "expand",
+  simplificationMode: null,
+  structuralReason: null,
+  supportsNextStep: "Keeps the onboarding roadmap moving forward.",
+  skillsNeeded: [],
+  dependencies: [],
+  ...overrides,
+});
+
 const createDetail = (summary: string, status: "confirmed" | "assumed" | "edited" = "confirmed") => ({
   summary,
   status,
@@ -1469,6 +1488,16 @@ test("Ping routed Slack updates auto-approve planning for the next pending updat
       description: "Apply the latest update in Slack.",
     }),
   ];
+  session.toddMemory.nextUpdate = createToddNextUpdate({
+    id: "update-0",
+    title: "Ship Ping update",
+    description: "Apply the latest update in Slack.",
+    currentStateContext: "The Slack update path already works for the current shell.",
+    successDefinition: "Ping applies the update without regressing the current Slack flow.",
+    partialSuccessDefinition: "The update lands but one non-critical Slack edge remains.",
+    partialFailureDefinition: "The update lands but breaks a current Slack edge.",
+    failureDefinition: "The Slack update flow regresses or the requested change is not implemented.",
+  });
 
   const harness = createBackendHarness([]);
   harness.setStoredSession(session);
@@ -1505,6 +1534,9 @@ test("Ping routed Slack updates auto-approve planning for the next pending updat
   });
 
   assert.match(capturedPrompt ?? "", /Ship Ping update/);
+  assert.match(capturedPrompt ?? "", /Current State Context:\nThe Slack update path already works for the current shell\./);
+  assert.match(capturedPrompt ?? "", /Success: Ping applies the update without regressing the current Slack flow\./);
+  assert.match(capturedPrompt ?? "", /Failure: The Slack update flow regresses or the requested change is not implemented\./);
   assert.equal(capturedUpdateId, "update-0");
   assert.equal(session.toddMemory.futureUpdatePlan.find((update) => update.id === "update-0")?.status, "in_progress");
   assert.equal(session.versionUpdates.find((update) => update.id === "update-0")?.status, "in_progress");
@@ -1636,6 +1668,44 @@ test("Automation targets fall back to Todd's live draft update plan when no conf
   assert.equal(response.candidates[0]?.draft, true);
 });
 
+test("Todd regenerate stores the enriched next update contract and emits a formal hard-memory report", async () => {
+  const session = createSession();
+  const harness = createBackendHarness([
+    {
+      currentState: "The onboarding shell exists and is stable.",
+      endStateGoal: "Reach a polished onboarding flow with the next slice mapped cleanly.",
+      successChain: [
+        { title: "Expand onboarding shell", description: "Land the next onboarding slice.", satisfied: false },
+      ],
+      nextUpdate: createToddNextUpdate({
+        id: "update-1",
+        title: "Expand onboarding shell",
+        description: "Land the next onboarding slice.",
+        pillarIds: ["onboarding"],
+      }),
+      roadmap: null,
+      response: "Todd rebuilt the plan and locked the next Ping handoff.",
+    },
+  ]);
+  harness.setStoredSession(session);
+  harness.backend.getOrCreateAgentSession = async () => session;
+
+  await (harness.backend.regenerateToddPlan as Function)({
+    projectId: session.projectId,
+    provider: "codex",
+    model: "gpt-5.4",
+    claudeModel: "sonnet",
+  });
+
+  assert.equal(session.toddMemory.nextUpdate?.title, "Expand onboarding shell");
+  assert.equal(session.toddMemory.nextUpdate?.pillarIds[0], "onboarding");
+  assert.equal(session.toddMemory.nextUpdate?.successDefinition, "The next onboarding slice lands cleanly.");
+  assert.equal(session.toddMemory.roadmap?.priorityUpdate?.successDefinition, "The next onboarding slice lands cleanly.");
+  const rdMessage = [...session.slackMessages].reverse().find((message) => message.directorId === "rd-director");
+  assert.equal(rdMessage?.metadata?.type, "hard-memory-report");
+  assert.equal(session.toddMemory.latestReportId, rdMessage?.id ?? null);
+});
+
 test("Todd review finalizes success directly and queues a superseding structural replan draft", async () => {
   const session = createSession();
   session.toddMemory.futureUpdatePlan = [
@@ -1750,6 +1820,104 @@ test("Todd review finalizes success directly and queues a superseding structural
     latest?.pingMemory.latestJeffReport?.toddReplanApprovalId,
     latest?.pendingApprovals[0]?.id ?? null,
   );
+  assert.ok(latest?.slackMessages.some((message) => message.directorId === "rd-director" && message.metadata?.type === "hard-memory-report"));
+});
+
+test("Todd review stores the enriched next Ping handoff before validation follow-up", async () => {
+  const session = createSession();
+  session.toddMemory.futureUpdatePlan = [
+    createVersionUpdate({
+      id: "update-1",
+      title: "Ship onboarding shell",
+      description: "Build the first onboarding pass.",
+      status: "in_progress",
+    }),
+    createVersionUpdate({
+      id: "update-2",
+      title: "Expand onboarding logic",
+      description: "Layer the next onboarding capability.",
+      order: 1,
+      updateKind: "expand",
+      supportsNextStep: "Extends the onboarding flow.",
+    }),
+  ];
+
+  const harness = createBackendHarness([
+    {
+      response: "The implementation looks good enough to validate, and the next Ping step is now clearer.",
+      nextAction: "send_to_pong",
+      finalDecision: null,
+      finalSummary: null,
+      retryInstruction: null,
+      validationInstruction: "Validate the onboarding shell before continuing.",
+      replanNeeded: false,
+      replanReason: null,
+      replanCurrentState: null,
+      replanIdealState: null,
+      replanUpdates: null,
+      updatedCurrentState: "The onboarding shell is in place and ready for validation.",
+      satisfiedStepTitles: ["Ship onboarding shell"],
+      newNextUpdate: createToddNextUpdate({
+        id: "update-2",
+        title: "Expand onboarding logic",
+        description: "Layer the next onboarding capability.",
+        pillarIds: ["onboarding"],
+      }),
+    },
+  ]);
+  harness.setStoredSession(session);
+  harness.backend.assignPongValidation = async () => {};
+
+  await (harness.backend.reviewPingExecutionWithTodd as Function)(session.projectId, {
+    task: {
+      source: "todd-approved-update",
+      projectId: session.projectId,
+      updateId: "update-1",
+      updateTitle: "Ship onboarding shell",
+      updateDescription: "Build the first onboarding pass.",
+      originalUserRequest: "Ship onboarding shell",
+      toddExplanation: "Build the first onboarding pass.",
+      relevantPillarIds: [],
+      toddCodebaseMapSummary: "Onboarding shell is in one module.",
+      coreDetailsContext: null,
+      runtime: {
+        provider: "codex",
+        model: "gpt-5.4",
+        claudeModel: "sonnet",
+        reasoningEffort: "high",
+        planningMode: "auto",
+        contextPaths: [],
+      },
+      planPrompt: "Plan the onboarding shell update.",
+      createdAt: NOW,
+    },
+    plan: null,
+    rawReport: {
+      status: "success",
+      updateId: "update-1",
+      goal: "Build the first onboarding pass.",
+      summary: "The onboarding shell is now in place.",
+      zhResponse: "已完成。修改已保存。",
+      enTranslation: "Done. Changes saved.",
+      changedFiles: ["src/onboarding.tsx"],
+      blocker: null,
+      unexpectedNotes: [],
+      createdAt: NOW,
+    },
+    usageBefore: null,
+    usageAfter: null,
+    historyUpdateId: "history-1",
+    commitSha: "abc123",
+    jeffReportId: null,
+    jeffSummary: null,
+    createdAt: NOW,
+  });
+
+  assert.equal(session.toddMemory.currentState, "The onboarding shell is in place and ready for validation.");
+  assert.equal(session.toddMemory.nextUpdate?.title, "Expand onboarding logic");
+  assert.equal(session.toddMemory.nextUpdate?.successDefinition, "The next onboarding slice lands cleanly.");
+  assert.equal(session.toddMemory.roadmap?.priorityUpdate?.failureDefinition, "The onboarding flow regresses or the new slice cannot be completed.");
+  assert.ok(session.slackMessages.some((message) => message.directorId === "rd-director" && message.metadata?.type === "hard-memory-report"));
 });
 
 test("Automation step marks the run completed when the selected target is already done", async () => {
@@ -1928,6 +2096,7 @@ test("Jeff outcome recording finalizes the report and updates the roadmap state"
   assert.equal(session.pingMemory.latestJeffReport?.decision, "successful");
   assert.equal(session.automation.lastSuccessfulUpdateId, "update-1");
   assert.equal(session.automation.pendingRevertCommitSha, null);
+  assert.ok(session.slackMessages.some((message) => message.directorId === "rd-director" && message.metadata?.type === "hard-memory-report"));
 });
 
 test("Automation failure recovery queues a confirmation approval when a revert is available", async () => {

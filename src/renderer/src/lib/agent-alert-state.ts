@@ -1,5 +1,6 @@
-import type { AgentSession, DirectorId, RdFocusMode, VersionUpdate } from "@shared/types";
+import type { AgentSession, DirectorId, VersionUpdate } from "@shared/types";
 import { getDanConflictQuestionCount, hasToddSupersedingDraftUpdatePlan } from "./session-helpers.ts";
+import { hasToddIncompleteHardMemory } from "./todd-hard-memory.ts";
 
 export type AgentAlertTone = "white" | "red";
 export type AgentAlertAction =
@@ -35,9 +36,6 @@ export const hasPingPendingUpdate = (session: AgentSession | null): boolean =>
     && session.toddMemory.futureUpdatePlan.some((update) => update.status === "pending"),
   );
 
-export const hasPingActiveTask = (session: AgentSession | null): boolean =>
-  Boolean(session?.pingMemory.activeTask);
-
 export const hasJeffFailureReport = (session: AgentSession | null): boolean =>
   Boolean(
     session
@@ -56,6 +54,26 @@ export const getNextPendingProgrammingUpdate = (session: AgentSession | null): V
   }
   if (hasToddSupersedingDraftUpdatePlan(session)) {
     return null;
+  }
+  if (session.toddMemory.nextUpdate) {
+    const tracked = session.toddMemory.futureUpdatePlan.find((update) =>
+      update.id === session.toddMemory.nextUpdate!.id || update.title === session.toddMemory.nextUpdate!.title,
+    ) ?? null;
+    return tracked ?? {
+      id: session.toddMemory.nextUpdate.id,
+      versionId: null,
+      title: session.toddMemory.nextUpdate.title,
+      description: session.toddMemory.nextUpdate.description,
+      order: 0,
+      status: "pending",
+      dependencies: [...session.toddMemory.nextUpdate.dependencies],
+      pillarIds: [...session.toddMemory.nextUpdate.pillarIds],
+      skillsNeeded: [...session.toddMemory.nextUpdate.skillsNeeded],
+      updateKind: session.toddMemory.nextUpdate.updateKind,
+      simplificationMode: session.toddMemory.nextUpdate.simplificationMode,
+      structuralReason: session.toddMemory.nextUpdate.structuralReason,
+      supportsNextStep: session.toddMemory.nextUpdate.supportsNextStep,
+    };
   }
   const roadmap = session.toddMemory.hardMemory ?? session.toddMemory.roadmap ?? null;
   if (roadmap?.priorityUpdate) {
@@ -81,9 +99,6 @@ export const getNextPendingProgrammingUpdate = (session: AgentSession | null): V
     .slice()
     .sort((a, b) => a.order - b.order)[0] ?? null;
 };
-
-export const getToddMemoryProcessingFocusMode = (_session: AgentSession | null): RdFocusMode =>
-  "update-planning";
 
 export const resolveAgentAlertState = (
   directorId: DirectorId,
@@ -117,8 +132,12 @@ export const resolveAgentAlertState = (
   }
 
   if (directorId === "rd-director") {
-    if (!hasToddActionableMemory(session)) return null;
-    return { tone: "white", warningTargetDirectorId: null, action: "review-todd-memory" };
+    if (hasToddActionableMemory(session)) {
+      return { tone: "white", warningTargetDirectorId: null, action: "review-todd-memory" };
+    }
+    return session && hasToddIncompleteHardMemory(session.toddMemory)
+      ? { tone: "white", warningTargetDirectorId: null, action: "regenerate-todd-plan" }
+      : null;
   }
 
   return null;

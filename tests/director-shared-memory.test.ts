@@ -11,6 +11,7 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 const loadSessionHelpersModule = async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "programs-session-helpers-"));
   const sharedTypesUrl = pathToFileURL(path.join(projectRoot, "src/shared/types.ts")).href;
+  const directorMetadataUrl = pathToFileURL(path.join(projectRoot, "src/shared/director-metadata.ts")).href;
   const modules = [
     "session-helpers.ts",
     "formatting.ts",
@@ -22,6 +23,7 @@ const loadSessionHelpersModule = async () => {
       const sourcePath = path.join(projectRoot, "src/renderer/src/lib", fileName);
       let source = await readFile(sourcePath, "utf8");
       source = source.replaceAll('from "@shared/types"', `from ${JSON.stringify(sharedTypesUrl)}`);
+      source = source.replaceAll('from "@shared/director-metadata"', `from ${JSON.stringify(directorMetadataUrl)}`);
 
       for (const dependency of modules) {
         const specifier = `./${dependency}`;
@@ -44,6 +46,11 @@ const loadSessionHelpersModule = async () => {
 
 const {
   buildDirectorSharedMemorySources,
+  buildDirectorExportedMemoryTargets,
+  buildDirectorReportStream,
+  collectToddRoadmapReportHistory,
+  collectToddResearchReportHistory,
+  findLatestToddResearchMessage,
 } = await loadSessionHelpersModule();
 
 const createSession = (): AgentSession => ({
@@ -218,6 +225,75 @@ test("Todd only gets Dan's core-details", () => {
   ]);
 });
 
+test("per-agent report stream stays formal-only and filters by agent ownership", () => {
+  const session = createSession();
+  session.slackMessages = [
+    {
+      id: "todd-report",
+      role: "assistant",
+      directorId: "rd-director",
+      content: "Todd hard-memory report",
+      createdAt: "2026-04-09T12:00:00.000Z",
+      metadata: {
+        type: "hard-memory-report",
+        dataType: "toddRoadmap",
+        directorId: "rd-director",
+        approvalId: null,
+        reportStage: "hard",
+        summary: "Todd updated the roadmap.",
+        currentState: "Current state",
+        idealState: "End state",
+        changeSummary: [],
+        draftCoreDetails: null,
+        roadmap: null,
+        roadmapVersions: null,
+        versionUpdates: null,
+        createdAt: "2026-04-09T12:00:00.000Z",
+      },
+    },
+    {
+      id: "ping-report",
+      role: "assistant",
+      directorId: "programming-director",
+      content: "Ping update report",
+      createdAt: "2026-04-09T12:05:00.000Z",
+      metadata: {
+        type: "ping-update-report",
+        rawReport: {
+          status: "success",
+          updateId: "update-1",
+          goal: "Ship shell",
+          summary: "Ping shipped the shell.",
+          zhResponse: "已完成。",
+          enTranslation: "Done.",
+          changedFiles: ["src/shell.tsx"],
+          blocker: null,
+          unexpectedNotes: [],
+          createdAt: "2026-04-09T12:05:00.000Z",
+        },
+        report: null,
+      },
+    },
+    {
+      id: "plain-chat",
+      role: "assistant",
+      directorId: "rd-director",
+      content: "Plain Todd chat with no formal report metadata",
+      createdAt: "2026-04-09T12:06:00.000Z",
+      metadata: null,
+    },
+  ] as AgentSession["slackMessages"];
+
+  assert.deepEqual(
+    buildDirectorReportStream("rd-director", session).map((report) => report.id),
+    ["todd-report"],
+  );
+  assert.deepEqual(
+    buildDirectorReportStream("programming-director", session).map((report) => report.id),
+    ["ping-report"],
+  );
+});
+
 test("Ping gets Todd update context and Jeff's latest report", () => {
   const session = createSession();
   session.toddMemory.futureUpdatePlan = [{ id: "update-1" } as AgentSession["toddMemory"]["futureUpdatePlan"][number]];
@@ -371,4 +447,233 @@ test("Jeff gets the full shared memory stack", () => {
       },
     ],
   );
+});
+
+test("Dan exported memory targets prefer Jeff and Todd in display order", () => {
+  const session = createSession();
+  session.danMemory.confirmedConcept = {
+    function: null,
+    thesis: null,
+    corePillars: [],
+    fullFlow: null,
+    threads: [],
+  } as AgentSession["danMemory"]["confirmedConcept"];
+
+  const targets = buildDirectorExportedMemoryTargets("creative-director", session);
+
+  assert.deepEqual(targets.map((target) => target.directorId), ["project-manager", "rd-director"]);
+  assert.deepEqual(targets.map((target) => target.label), ["Jeff", "Todd"]);
+});
+
+test("Jeff exported memory targets keep the expected director order", () => {
+  const session = createSession();
+  session.pingMemory.latestJeffReport = { id: "report-1" } as AgentSession["pingMemory"]["latestJeffReport"];
+
+  const targets = buildDirectorExportedMemoryTargets("project-manager", session);
+
+  assert.deepEqual(targets.map((target) => target.directorId), ["creative-director", "rd-director", "programming-director"]);
+  assert.deepEqual(targets.map((target) => target.label), ["Dan", "Todd", "Ping"]);
+});
+
+test("Todd roadmap collector returns newest reports first, dedupes duplicates, and falls back on missing dates", () => {
+  const session = createSession();
+  session.slackMessages = [
+    {
+      id: "roadmap-duplicate",
+      role: "assistant",
+      directorId: "rd-director",
+      content: "Older Todd roadmap",
+      createdAt: "2026-04-09T10:00:00.000Z",
+      metadata: {
+        type: "hard-memory-report",
+        dataType: "toddRoadmap",
+        directorId: "rd-director",
+        approvalId: null,
+        reportStage: "hard",
+        summary: "Older roadmap snapshot.",
+        currentState: "Older current state.",
+        idealState: null,
+        changeSummary: [],
+        draftCoreDetails: null,
+        roadmap: null,
+        roadmapVersions: null,
+        versionUpdates: null,
+        createdAt: "2026-04-09T10:00:00.000Z",
+      },
+    } as AgentSession["slackMessages"][number],
+    {
+      id: "roadmap-legacy",
+      role: "assistant",
+      directorId: "rd-director",
+      content: "Legacy Todd roadmap",
+      createdAt: "",
+      metadata: {
+        type: "hard-memory-report",
+        dataType: "toddRoadmap",
+        directorId: "rd-director",
+        approvalId: null,
+        reportStage: "hard",
+        summary: "Legacy roadmap snapshot.",
+        currentState: "Legacy current state.",
+        idealState: null,
+        changeSummary: [],
+        draftCoreDetails: null,
+        roadmap: null,
+        roadmapVersions: null,
+        versionUpdates: null,
+        createdAt: "",
+      },
+    } as AgentSession["slackMessages"][number],
+  ];
+  session.unifiedMessages = [
+    {
+      id: "roadmap-newer",
+      role: "assistant",
+      content: "Newest Todd roadmap",
+      createdAt: "2026-04-09T12:00:00.000Z",
+      metadata: {
+        type: "hard-memory-report",
+        dataType: "toddRoadmap",
+        directorId: "rd-director",
+        approvalId: null,
+        reportStage: "hard",
+        summary: "Newest roadmap snapshot.",
+        currentState: "Newest current state.",
+        idealState: null,
+        changeSummary: [],
+        draftCoreDetails: null,
+        roadmap: null,
+        roadmapVersions: null,
+        versionUpdates: null,
+        createdAt: "2026-04-09T12:00:00.000Z",
+      },
+    } as AgentSession["unifiedMessages"][number],
+    {
+      id: "roadmap-duplicate",
+      role: "assistant",
+      content: "Duplicate Todd roadmap",
+      createdAt: "2026-04-09T10:05:00.000Z",
+      metadata: {
+        type: "hard-memory-report",
+        dataType: "toddRoadmap",
+        directorId: "rd-director",
+        approvalId: null,
+        reportStage: "hard",
+        summary: "Duplicate roadmap snapshot.",
+        currentState: "Duplicate current state.",
+        idealState: null,
+        changeSummary: [],
+        draftCoreDetails: null,
+        roadmap: null,
+        roadmapVersions: null,
+        versionUpdates: null,
+        createdAt: "2026-04-09T10:05:00.000Z",
+      },
+    } as AgentSession["unifiedMessages"][number],
+  ];
+
+  const history = collectToddRoadmapReportHistory(session);
+
+  assert.deepEqual(history.map((entry) => entry.id), ["roadmap-newer", "roadmap-duplicate", "roadmap-legacy"]);
+  assert.equal(history[1]?.message.metadata.currentState, "Older current state.");
+  assert.equal(history[2]?.createdAtLabel, "Date unavailable");
+});
+
+test("Todd research collector returns newest reports first and dedupes duplicates", () => {
+  const session = createSession();
+  session.slackMessages = [
+    {
+      id: "research-older",
+      role: "assistant",
+      directorId: "rd-director",
+      content: "Older Todd research",
+      createdAt: "2026-04-09T09:00:00.000Z",
+      metadata: {
+        type: "research-result",
+        researchPrompt: "Check the shell flow.",
+        generalSummary: "Older general findings.",
+        projectSummary: "Older project findings.",
+      },
+    } as AgentSession["slackMessages"][number],
+  ];
+  session.unifiedMessages = [
+    {
+      id: "research-newer",
+      role: "assistant",
+      content: "Newer Todd research",
+      createdAt: "2026-04-09T12:30:00.000Z",
+      metadata: {
+        type: "research-result",
+        researchPrompt: "Check the version plan.",
+        generalSummary: "Newer general findings.",
+        projectSummary: "Newer project findings.",
+      },
+    } as AgentSession["unifiedMessages"][number],
+    {
+      id: "research-older",
+      role: "assistant",
+      content: "Duplicate older Todd research",
+      createdAt: "2026-04-09T09:05:00.000Z",
+      metadata: {
+        type: "research-result",
+        researchPrompt: "Check the shell flow.",
+        generalSummary: "Duplicate general findings.",
+        projectSummary: "Duplicate project findings.",
+      },
+    } as AgentSession["unifiedMessages"][number],
+  ];
+
+  const history = collectToddResearchReportHistory(session);
+
+  assert.deepEqual(history.map((entry) => entry.id), ["research-newer", "research-older"]);
+  assert.equal(history[0]?.message.metadata.projectSummary, "Newer project findings.");
+  assert.equal(history[1]?.message.metadata.researchPrompt, "Check the shell flow.");
+});
+
+test("Todd research selector returns the latest Todd research result", () => {
+  const session = createSession();
+  session.slackMessages = [
+    {
+      id: "older-research",
+      role: "assistant",
+      directorId: "rd-director",
+      content: "Older Todd research",
+      createdAt: "2026-04-09T12:00:00.000Z",
+      metadata: {
+        type: "research-result",
+        researchPrompt: "Check the shell flow.",
+        generalSummary: "Older general findings.",
+        projectSummary: "Older project findings.",
+      },
+    } as AgentSession["slackMessages"][number],
+    {
+      id: "non-research",
+      role: "assistant",
+      directorId: "rd-director",
+      content: "Plain Todd chat",
+      createdAt: "2026-04-09T12:20:00.000Z",
+      metadata: null,
+    } as AgentSession["slackMessages"][number],
+  ];
+  session.unifiedMessages = [
+    {
+      id: "newer-research",
+      role: "assistant",
+      directorId: "rd-director",
+      content: "Newer Todd research",
+      createdAt: "2026-04-09T12:10:00.000Z",
+      metadata: {
+        type: "research-result",
+        researchPrompt: "Check the version plan.",
+        generalSummary: "Newer general findings.",
+        projectSummary: "Newer project findings.",
+      },
+    } as AgentSession["unifiedMessages"][number],
+  ];
+
+  const latest = findLatestToddResearchMessage(session);
+
+  assert.equal(latest?.id, "newer-research");
+  assert.equal(latest?.metadata.researchPrompt, "Check the version plan.");
+  assert.equal(latest?.metadata.projectSummary, "Newer project findings.");
 });

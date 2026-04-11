@@ -51,6 +51,15 @@ export const toddSuccessChainStepSchema = buildStrictObjectSchema({
 export const toddNextUpdateSchema = buildStrictObjectSchema({
   title: { type: "string" },
   description: { type: "string" },
+  pillarIds: {
+    type: "array" as const,
+    items: { type: "string" },
+  },
+  currentStateContext: { type: ["string", "null"] },
+  successDefinition: { type: ["string", "null"] },
+  partialSuccessDefinition: { type: ["string", "null"] },
+  partialFailureDefinition: { type: ["string", "null"] },
+  failureDefinition: { type: ["string", "null"] },
   updateKind: { type: ["string", "null"] as const },
   simplificationMode: { type: ["string", "null"] as const },
   structuralReason: { type: ["string", "null"] },

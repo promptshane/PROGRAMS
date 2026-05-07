@@ -38,6 +38,7 @@ import type {
   GenerateProjectOutlineReportInput,
   Project,
   ProjectAttachInput,
+  RunCommandSuggestions,
   ProjectCreateInput,
   ProjectDetail,
   ProjectOutlineReport,
@@ -55,6 +56,9 @@ import type {
   UpdateProjectInput,
   UsageSnapshot,
   WriteProjectEnvFileInput,
+  GithubAuthStatus,
+  GithubConnection,
+  GithubPublishInput,
 } from "@shared/types";
 
 const api = {
@@ -81,6 +85,21 @@ const api = {
   submitClaudeLoginCode: (code: string): Promise<void> =>
     ipcRenderer.invoke("auth.claude.submitLoginCode", code),
 
+  getGithubStatus: (): Promise<GithubAuthStatus> => ipcRenderer.invoke("auth.github.status"),
+  loginGithub: (): Promise<GithubAuthStatus> => ipcRenderer.invoke("auth.github.login"),
+  logoutGithub: (): Promise<GithubAuthStatus> => ipcRenderer.invoke("auth.github.logout"),
+
+  publishProjectToGithub: (input: GithubPublishInput): Promise<GithubConnection> =>
+    ipcRenderer.invoke("projects.github.publish", input),
+  pushProjectToGithub: (input: { projectId: string }): Promise<GithubConnection> =>
+    ipcRenderer.invoke("projects.github.push", input),
+  readProjectGithubDiffStats: (projectId: string): Promise<DiffStats | null> =>
+    ipcRenderer.invoke("projects.github.diffStats", projectId),
+  detectAndSyncGithubRemote: (projectId: string): Promise<GithubConnection | null> =>
+    ipcRenderer.invoke("projects.github.detectRemote", projectId),
+  saveToGithub: (projectId: string): Promise<GithubConnection> =>
+    ipcRenderer.invoke("projects.github.save", projectId),
+
   inspectAttachPath: (localPath: string): Promise<AttachPathInspection> =>
     ipcRenderer.invoke("projects.inspectAttachPath", localPath),
   readUsage: (): Promise<UsageSnapshot> => ipcRenderer.invoke("usage.read"),
@@ -90,6 +109,7 @@ const api = {
 
   listProjects: () => ipcRenderer.invoke("projects.list"),
   readProject: (projectId: string): Promise<ProjectDetail> => ipcRenderer.invoke("projects.read", projectId),
+  refreshProjectRelationships: (): Promise<Project[]> => ipcRenderer.invoke("projects.refreshRelationships"),
   createProject: (input: ProjectCreateInput) => ipcRenderer.invoke("projects.create", input),
   attachProject: (input: ProjectAttachInput) => ipcRenderer.invoke("projects.attach", input),
   renameProject: (input: RenameProjectInput) => ipcRenderer.invoke("projects.rename", input),
@@ -104,7 +124,15 @@ const api = {
   writeEnvFile: (input: WriteProjectEnvFileInput): Promise<EnvFileSnapshot> =>
     ipcRenderer.invoke("projects.writeEnvFile", input),
   runProject: (projectId: string) => ipcRenderer.invoke("projects.run", projectId),
+  prepareLaunchRepair: (projectId: string) => ipcRenderer.invoke("projects.prepareLaunchRepair", projectId),
+  setRunCommand: (projectId: string, runCommand: string) =>
+    ipcRenderer.invoke("projects.setRunCommand", projectId, runCommand),
+  getRunCommandSuggestions: (projectId: string): Promise<RunCommandSuggestions> =>
+    ipcRenderer.invoke("projects.getRunCommandSuggestions", projectId),
+  suggestRunCommand: (projectId: string): Promise<string | null> =>
+    ipcRenderer.invoke("projects.suggestRunCommand", projectId),
   killProject: (projectId: string) => ipcRenderer.invoke("projects.kill", projectId),
+  restartProject: (projectId: string) => ipcRenderer.invoke("projects.restart", projectId),
   openProject: (projectId: string) => ipcRenderer.invoke("projects.open", projectId),
 
   startPlan: (input: StartPlanInput) => ipcRenderer.invoke("updates.startPlan", input),
@@ -124,6 +152,8 @@ const api = {
     ipcRenderer.invoke("directors.ping.start", input),
   agentChat: (input: AgentChatInput): Promise<AgentChatResponse> =>
     ipcRenderer.invoke("agents.chat", input),
+  stopWorkingAgentMessages: (projectId: string): Promise<AgentSession | null> =>
+    ipcRenderer.invoke("agents.stopWorkingMessages", projectId),
   listPendingApprovals: (input: ListPendingApprovalsInput): Promise<PendingApproval[]> =>
     ipcRenderer.invoke("approvals.list", input),
   approvePendingApproval: (input: ApprovePendingApprovalInput): Promise<AgentSession> =>

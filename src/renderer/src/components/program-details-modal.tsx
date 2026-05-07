@@ -1,12 +1,16 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useState,
 } from "react";
 import type {
   AgentSession,
+  AuthSnapshot,
+  DiffStats,
   EnvFileSnapshot,
   EnvVariableEntry,
+  GithubConnection,
   Project,
   ProjectOutlineReport,
   RuntimeState,
@@ -15,24 +19,38 @@ import type {
 } from "@shared/types";
 import { Modal, StatusChip } from "./ui-primitives";
 import { CoreDetailsContent } from "./core-details";
+import { GithubIcon } from "./icons";
 import { formatDate, labelForRuntimeSource } from "../lib/formatting";
 
-type ProgramDetailsTab = "ideal" | "current" | "planned" | "history";
+type ProgramDetailsTab = "ideal" | "current" | "planned" | "history" | "github";
 
 export function ProgramDetailsModal({
   project,
   updates,
   agentSession,
+  auth,
+  busyKey,
   onClose,
   onUndo,
+  onConnectGithub,
+  onDisconnectGithub,
+  onPublishToGithub,
+  onPushToGithub,
 }: {
   project: Project;
   updates: UpdateRecord[];
   agentSession: AgentSession | null;
+  auth: AuthSnapshot;
+  busyKey: string | null;
   onClose: () => void;
   onUndo: (update: UpdateRecord) => void;
+  onConnectGithub: () => void;
+  onDisconnectGithub: () => void;
+  onPublishToGithub: (input: { projectId: string; repoName: string; isPrivate: boolean }) => void;
+  onPushToGithub: (input: { projectId: string }) => void;
 }) {
   const [activeTab, setActiveTab] = useState<ProgramDetailsTab>("ideal");
+  const [githubDiffStats, setGithubDiffStats] = useState<DiffStats | null | "loading">(null);
 
   const savedUpdates = useMemo(
     () => [...updates].filter((u) => u.kind === "update" && (u.status === "saved" || u.status === "reverted")).reverse(),
@@ -45,12 +63,14 @@ export function ProgramDetailsModal({
     current: true,
     planned: hasPlanned,
     history: hasHistory,
+    github: true,
   };
   const tabOptions: Array<{ id: ProgramDetailsTab; label: string }> = [
     { id: "ideal", label: "Ideal" },
     { id: "current", label: "Current" },
     { id: "planned", label: "Planned" },
     { id: "history", label: "History" },
+    { id: "github", label: "GitHub" },
   ];
 
   useEffect(() => {
@@ -60,6 +80,32 @@ export function ProgramDetailsModal({
       setActiveTab("ideal");
     }
   }, [activeTab, hasHistory, hasPlanned]);
+
+  // When the GitHub tab opens, auto-detect remote and load diff stats
+  useEffect(() => {
+    if (activeTab !== "github") {
+      return;
+    }
+
+    // Auto-detect an existing GitHub remote if no connection is stored
+    if (!project.githubConnection) {
+      void window.programs.detectAndSyncGithubRemote(project.id).catch(() => undefined);
+    }
+
+    // Load diff stats if we have a last-pushed commit
+    const sha = project.githubConnection?.lastPushedCommitSha;
+    if (!sha) {
+      setGithubDiffStats(null);
+      return;
+    }
+
+    setGithubDiffStats("loading");
+    void window.programs.readProjectGithubDiffStats(project.id).then((stats) => {
+      setGithubDiffStats(stats);
+    }).catch(() => {
+      setGithubDiffStats(null);
+    });
+  }, [activeTab, project.id, project.githubConnection?.lastPushedCommitSha, project.githubConnection]);
 
   return (
     <Modal title="" onClose={onClose} fullscreen>
@@ -73,7 +119,12 @@ export function ProgramDetailsModal({
             aria-selected={activeTab === tab.id}
             disabled={!tabAvailability[tab.id]}
           >
-            {tab.label}
+            {tab.id === "github" ? (
+              <span className="tabOptionWithIcon">
+                <GithubIcon />
+                {tab.label}
+              </span>
+            ) : tab.label}
           </button>
         ))}
       </div>
@@ -88,16 +139,26 @@ export function ProgramDetailsModal({
         <div className="detailsPanel">
           <div className="detailsPlaceholderGrid">
             <div className="detailsPlaceholderCard">
-              <span className="fieldLabel">Stored Data</span>
-              <p className="helperText">Data stores and persistence layers used by this project.</p>
+              <span className="fieldLabel">Run Command</span>
+              <p className="helperText">{project.runtimeConfig.runCommand ?? "Not detected yet."}</p>
             </div>
             <div className="detailsPlaceholderCard">
-              <span className="fieldLabel">Connections</span>
-              <p className="helperText">External services and APIs connected to this project.</p>
+              <span className="fieldLabel">Open URL</span>
+              <p className="helperText">{project.runtimeConfig.openUrl ?? "Not detected yet."}</p>
             </div>
             <div className="detailsPlaceholderCard">
-              <span className="fieldLabel">Runtime</span>
-              <p className="helperText">Runtime environment and process information.</p>
+              <span className="fieldLabel">Launch Provenance</span>
+              <p className="helperText">
+                {project.runtimeConfig.launch
+                  ? `${project.runtimeConfig.launch.origin} · ${project.runtimeConfig.launch.confidence} confidence${project.runtimeConfig.launch.locked ? " · locked" : ""}`
+                  : "No launch metadata yet."}
+              </p>
+              {project.runtimeConfig.launch?.workspacePath ? (
+                <p className="helperText">Workspace: {project.runtimeConfig.launch.workspacePath}</p>
+              ) : null}
+              {project.runtimeConfig.launch?.wrapperPath ? (
+                <p className="helperText">Wrapper: {project.runtimeConfig.launch.wrapperPath}</p>
+              ) : null}
             </div>
           </div>
         </div>
@@ -158,8 +219,220 @@ export function ProgramDetailsModal({
           </div>
         </div>
       ) : null}
+
+      {activeTab === "github" ? (
+        <div className="detailsPanel">
+          <GithubTabContent
+            project={project}
+            githubAuth={auth.github}
+            diffStats={githubDiffStats}
+            busyKey={busyKey}
+            onConnect={onConnectGithub}
+            onDisconnect={onDisconnectGithub}
+            onPublish={onPublishToGithub}
+            onPush={onPushToGithub}
+          />
+        </div>
+      ) : null}
       </div>
     </Modal>
+  );
+}
+
+function slugify(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function GithubTabContent({
+  project,
+  githubAuth,
+  diffStats,
+  busyKey,
+  onConnect,
+  onDisconnect,
+  onPublish,
+  onPush,
+}: {
+  project: Project;
+  githubAuth: AuthSnapshot["github"];
+  diffStats: DiffStats | null | "loading";
+  busyKey: string | null;
+  onConnect: () => void;
+  onDisconnect: () => void;
+  onPublish: (input: { projectId: string; repoName: string; isPrivate: boolean }) => void;
+  onPush: (input: { projectId: string }) => void;
+}) {
+  const [repoName, setRepoName] = useState(() => slugify(project.name) || "my-project");
+  const [isPrivate, setIsPrivate] = useState(true);
+
+  const connection = project.githubConnection;
+  const isPublishing = busyKey === `github.publish.${project.id}`;
+  const isPushing = busyKey === `github.push.${project.id}`;
+  const isConnecting = busyKey === "auth.github";
+
+  const handleOpenRepo = useCallback(() => {
+    if (connection?.repoUrl) {
+      void window.programs.openExternal(connection.repoUrl);
+    }
+  }, [connection?.repoUrl]);
+
+  // State 1: gh not installed
+  if (!githubAuth.available) {
+    return (
+      <div className="placeholderPanel">
+        <div className="githubIcon">
+          <GithubIcon />
+        </div>
+        <h4>GitHub CLI not found</h4>
+        <p>Install the GitHub CLI to push projects to GitHub.</p>
+        <button
+          className="secondaryButton"
+          onClick={() => void window.programs.openExternal("https://cli.github.com/")}
+        >
+          Download GitHub CLI
+        </button>
+      </div>
+    );
+  }
+
+  // State 2: Installed but not logged in
+  if (!githubAuth.loggedIn) {
+    return (
+      <div className="placeholderPanel">
+        <div className="githubIcon">
+          <GithubIcon />
+        </div>
+        <h4>Connect your GitHub account</h4>
+        <p>Sign in with GitHub to publish and push projects directly from PROGRAMS.</p>
+        <button className="primaryButton" onClick={onConnect} disabled={isConnecting}>
+          {isConnecting ? "Connecting..." : "Connect GitHub"}
+        </button>
+      </div>
+    );
+  }
+
+  // State 3: Logged in but no remote configured
+  if (!connection?.repoUrl) {
+    return (
+      <div className="detailsPanel">
+        <div className="detailsHeading">
+          <div>
+            <span className="fieldLabel">GitHub · {githubAuth.username}</span>
+            <h4>Publish to GitHub</h4>
+          </div>
+          <button className="textButton smallButton" onClick={onDisconnect}>
+            Disconnect
+          </button>
+        </div>
+
+        <p className="helperText">
+          Create a new GitHub repository and push this project to it.
+        </p>
+
+        <div className="detailsPlaceholderGrid">
+          <div className="detailsPlaceholderCard">
+            <label className="fieldLabel" htmlFor="github-repo-name">Repository name</label>
+            <input
+              id="github-repo-name"
+              className="textInput"
+              value={repoName}
+              onChange={(e) => setRepoName(e.target.value)}
+              placeholder="my-project"
+              spellCheck={false}
+            />
+          </div>
+
+          <div className="detailsPlaceholderCard">
+            <span className="fieldLabel">Visibility</span>
+            <div className="githubVisibilityToggle">
+              <button
+                className={isPrivate ? "toggleOption active" : "toggleOption"}
+                onClick={() => setIsPrivate(true)}
+              >
+                Private
+              </button>
+              <button
+                className={!isPrivate ? "toggleOption active" : "toggleOption"}
+                onClick={() => setIsPrivate(false)}
+              >
+                Public
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="modalActions">
+          <button
+            className="primaryButton"
+            onClick={() => onPublish({ projectId: project.id, repoName: repoName.trim(), isPrivate })}
+            disabled={isPublishing || !repoName.trim()}
+          >
+            {isPublishing ? "Publishing..." : "Publish to GitHub"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // State 4: Connected with a remote — show status and push button
+  const diffLabel = (() => {
+    if (diffStats === "loading") {
+      return "Calculating...";
+    }
+    if (!diffStats || (diffStats.added === 0 && diffStats.removed === 0)) {
+      return "Up to date";
+    }
+    return `+${diffStats.added} / -${diffStats.removed} lines since last push`;
+  })();
+
+  return (
+    <div className="detailsPanel">
+      <div className="detailsHeading">
+        <div>
+          <span className="fieldLabel">GitHub · {githubAuth.username}</span>
+          <h4>Repository</h4>
+        </div>
+        <button className="textButton smallButton" onClick={onDisconnect}>
+          Disconnect
+        </button>
+      </div>
+
+      <div className="detailsPlaceholderGrid">
+        <div className="detailsPlaceholderCard">
+          <span className="fieldLabel">Repository</span>
+          <button className="textButton repoLinkButton" onClick={handleOpenRepo}>
+            {connection.repoUrl.replace("https://github.com/", "")}
+          </button>
+        </div>
+
+        <div className="detailsPlaceholderCard">
+          <span className="fieldLabel">Last pushed</span>
+          <p className="helperText">
+            {connection.lastPushedAt ? formatDate(connection.lastPushedAt) : "Never pushed"}
+          </p>
+        </div>
+
+        <div className="detailsPlaceholderCard">
+          <span className="fieldLabel">Changes since last push</span>
+          <p className="helperText">{diffLabel}</p>
+        </div>
+      </div>
+
+      <div className="modalActions">
+        <button
+          className="primaryButton"
+          onClick={() => onPush({ projectId: project.id })}
+          disabled={isPushing}
+        >
+          {isPushing ? "Pushing..." : "Push to GitHub"}
+        </button>
+      </div>
+    </div>
   );
 }
 

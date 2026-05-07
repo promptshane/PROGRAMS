@@ -6,8 +6,12 @@ import type {
   Theme,
 } from "@shared/types";
 import {
+  FALLBACK_PROJECT_ICON_COLOR,
+  collectUsedProjectIconColors,
+  pickAvailableProjectIconColor,
+} from "@shared/project-colors";
+import {
   THEME_STORAGE_KEY,
-  DEFAULT_ICON_COLORS,
   COMPOSER_MIN_HEIGHT,
   COMPOSER_MAX_HEIGHT,
   type ComposerOptions,
@@ -27,6 +31,7 @@ export interface AddProjectFormState {
 }
 
 export type ProgramDetailsTab = "ideal" | "current" | "planned" | "history";
+export type ProjectSortMode = "lastOpened" | "lastUpdated" | "lastSaved";
 
 export type HomeTileDotState = "ready" | "launching" | "running" | "updating" | "runningUpdating" | "error";
 export type HomeAppUpdateButtonState = "prepare" | "install" | "issue" | null;
@@ -36,11 +41,12 @@ export const createEmptyForm = (): AddProjectFormState => ({
   createName: "",
   parentDirectory: "",
   attachDirectory: "",
-  iconColor: "#0EA5E9",
+  iconColor: FALLBACK_PROJECT_ICON_COLOR,
   initialIdea: "",
 });
 
-export const nextIconColor = (count: number): string => DEFAULT_ICON_COLORS[count % DEFAULT_ICON_COLORS.length];
+export const nextIconColor = (projects: Project[], excludeProjectId: string | null = null): string =>
+  pickAvailableProjectIconColor(collectUsedProjectIconColors(projects, excludeProjectId));
 
 export const parseProjectSortTime = (value: string | null): number => {
   if (!value) {
@@ -51,25 +57,60 @@ export const parseProjectSortTime = (value: string | null): number => {
   return Number.isNaN(parsed) ? 0 : parsed;
 };
 
-export const sortProjectsForDisplay = (projects: Project[], lastViewed: Record<string, string> = {}): Project[] =>
-  [...projects].sort((left, right) => {
-    const lastViewedDelta = parseProjectSortTime(lastViewed[right.id] ?? null) - parseProjectSortTime(lastViewed[left.id] ?? null);
-    if (lastViewedDelta !== 0) {
-      return lastViewedDelta;
-    }
+export const getProjectLastOpenedTime = (project: Project, lastViewed: Record<string, string> = {}): number =>
+  parseProjectSortTime(lastViewed[project.id] ?? null);
 
-    const lastUpdatedDelta = parseProjectSortTime(right.lastUpdatedAt) - parseProjectSortTime(left.lastUpdatedAt);
-    if (lastUpdatedDelta !== 0) {
-      return lastUpdatedDelta;
-    }
+export const getProjectLastSavedTime = (project: Project): number =>
+  parseProjectSortTime(project.githubConnection?.lastPushedAt ?? null);
 
-    const createdDelta = parseProjectSortTime(right.createdAt) - parseProjectSortTime(left.createdAt);
-    if (createdDelta !== 0) {
-      return createdDelta;
-    }
+export const getProjectLastUpdatedTime = (project: Project): number =>
+  Math.max(
+    parseProjectSortTime(project.relationship.contentUpdatedAt),
+    getProjectLastSavedTime(project),
+  );
 
-    return left.name.localeCompare(right.name);
-  });
+export const sortProjectsForDisplay = (
+  projects: Project[],
+  {
+    lastViewed = {},
+    sortMode = "lastOpened",
+    rootOnly = false,
+  }: {
+    lastViewed?: Record<string, string>;
+    sortMode?: ProjectSortMode;
+    rootOnly?: boolean;
+  } = {},
+): Project[] =>
+  [...projects]
+    .filter((project) => !rootOnly || project.relationship.exactParentProjectId == null)
+    .sort((left, right) => {
+      const primaryDelta =
+        sortMode === "lastSaved"
+          ? getProjectLastSavedTime(right) - getProjectLastSavedTime(left)
+          : sortMode === "lastUpdated"
+          ? getProjectLastUpdatedTime(right) - getProjectLastUpdatedTime(left)
+          : getProjectLastOpenedTime(right, lastViewed) - getProjectLastOpenedTime(left, lastViewed);
+      if (primaryDelta !== 0) {
+        return primaryDelta;
+      }
+
+      const lastOpenedDelta = getProjectLastOpenedTime(right, lastViewed) - getProjectLastOpenedTime(left, lastViewed);
+      if (lastOpenedDelta !== 0) {
+        return lastOpenedDelta;
+      }
+
+      const lastUpdatedDelta = getProjectLastUpdatedTime(right) - getProjectLastUpdatedTime(left);
+      if (lastUpdatedDelta !== 0) {
+        return lastUpdatedDelta;
+      }
+
+      const createdDelta = parseProjectSortTime(right.createdAt) - parseProjectSortTime(left.createdAt);
+      if (createdDelta !== 0) {
+        return createdDelta;
+      }
+
+      return left.name.localeCompare(right.name);
+    });
 
 export const readInitialTheme = (): Theme =>
   document.documentElement.dataset.theme === "light" ? "light" : "dark";
@@ -80,23 +121,29 @@ export const applyTheme = (theme: Theme) => {
   localStorage.setItem(THEME_STORAGE_KEY, theme);
 };
 
-export const createProjectTileStyle = (iconColor: string): CSSProperties => {
-  const normalized = normalizeHexColor(iconColor) ?? "#0EA5E9";
+const createProjectGradientStyle = (iconColor: string, muted = false): CSSProperties => {
+  const normalized = normalizeHexColor(iconColor) ?? FALLBACK_PROJECT_ICON_COLOR;
+  const start = muted
+    ? `color-mix(in srgb, ${normalized} 48%, #334155 52%)`
+    : `color-mix(in srgb, ${normalized} 78%, #FFFFFF 22%)`;
+  const end = muted
+    ? `color-mix(in srgb, ${normalized} 30%, #08111B 70%)`
+    : `color-mix(in srgb, ${normalized} 72%, #08111B 28%)`;
 
   return {
-    background: normalized,
+    backgroundColor: normalized,
+    backgroundImage: `linear-gradient(145deg, ${start} 0%, ${normalized} 48%, ${end} 100%)`,
   };
 };
 
-export const createAgentLandingTileStyle = (iconColor: string, muted = false): CSSProperties => {
-  const normalized = normalizeHexColor(iconColor) ?? "#0EA5E9";
+export const createProjectTileStyle = (iconColor: string): CSSProperties =>
+  createProjectGradientStyle(iconColor);
 
-  return {
-    background: muted
-      ? `color-mix(in srgb, ${normalized} 68%, #202833 32%)`
-      : normalized,
-  };
-};
+export const createProjectColorSwatchStyle = (iconColor: string): CSSProperties =>
+  createProjectGradientStyle(iconColor);
+
+export const createAgentLandingTileStyle = (iconColor: string, muted = false): CSSProperties =>
+  createProjectGradientStyle(iconColor, muted);
 
 export const isProjectUpdating = (status: Project["status"]): boolean => status === "executing";
 

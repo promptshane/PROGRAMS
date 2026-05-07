@@ -33,6 +33,7 @@ import type {
   Settings,
   StartPlanInput,
 } from "../../shared/types.ts";
+import { createEmptyProjectRelationshipSummary } from "../../shared/types.ts";
 
 type Emit = (
   event:
@@ -714,6 +715,8 @@ export class ClaudeService {
         initialIdea: null,
       },
       lastError: null,
+      githubConnection: null,
+      relationship: createEmptyProjectRelationshipSummary(),
     };
 
     try {

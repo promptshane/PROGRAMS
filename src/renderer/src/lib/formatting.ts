@@ -15,6 +15,7 @@ import type {
   ToddUpdateKind,
   UsageWindow,
 } from "@shared/types";
+import { normalizeProjectIconColor } from "@shared/project-colors";
 
 import type { ComposerOptions } from "./constants.ts";
 export type { ComposerOptions } from "./constants.ts";
@@ -38,23 +39,7 @@ export const initialsFromName = (name: string): string => {
     .join("");
 };
 
-export const normalizeHexColor = (value: string): string | null => {
-  const match = value.trim().match(/^#?([\da-f]{3}|[\da-f]{6})$/i);
-  if (!match) {
-    return null;
-  }
-
-  const [, hex] = match;
-  if (hex.length === 3) {
-    return `#${hex
-      .split("")
-      .map((part) => `${part}${part}`)
-      .join("")
-      .toUpperCase()}`;
-  }
-
-  return `#${hex.toUpperCase()}`;
-};
+export const normalizeHexColor = (value: string): string | null => normalizeProjectIconColor(value);
 
 export const providerLabel = (provider: AiProvider): string =>
   provider === "claude" ? "Claude" : "Codex";

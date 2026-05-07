@@ -91,7 +91,7 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
       directorLink("project-manager"),
       contextLink("Core details"),
     ],
-    sendsTo: [directorLink("rd-director")],
+    sendsTo: [directorLink("rd-director"), directorLink("project-manager")],
     accessOverview: [
       "Confirmed concept memory plus Dan's working draft for the current conversation.",
       "Current conversation notes, side-notes, and the full experience description for the idea.",
@@ -116,7 +116,7 @@ export const DIRECTOR_METADATA: Record<DirectorId, DirectorMetadata> = {
       contextLink("Internet research (web search/fetch)"),
       contextLink("Research and roadmap context"),
     ],
-    sendsTo: [directorLink("programming-director")],
+    sendsTo: [directorLink("programming-director"), directorLink("validation-director"), directorLink("project-manager")],
     accessOverview: [
       "Only Dan's confirmed concept memory, not Dan's unconfirmed draft or side-notes.",
       "Todd's codebase index from the latest repo scan or refresh.",

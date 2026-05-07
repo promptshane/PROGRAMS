@@ -15,6 +15,7 @@ import {
   type SpeedMode,
   type UsageSnapshot,
 } from "@shared/types";
+import { DEFAULT_PROJECT_ICON_COLORS } from "@shared/project-colors";
 
 export interface ComposerOptions {
   provider: AiProvider;
@@ -27,16 +28,7 @@ export interface ComposerOptions {
 }
 
 export const THEME_STORAGE_KEY = "programs.theme";
-export const DEFAULT_ICON_COLORS = [
-  "#FB7185",
-  "#F97316",
-  "#F59E0B",
-  "#10B981",
-  "#14B8A6",
-  "#0EA5E9",
-  "#3B82F6",
-  "#64748B",
-];
+export const DEFAULT_ICON_COLORS = [...DEFAULT_PROJECT_ICON_COLORS];
 
 export const emptySettings: Settings = {
   theme: "dark",
@@ -89,6 +81,15 @@ export const emptyAuth: AuthSnapshot = {
     errorMessage: null,
     runtimeErrorMessage: null,
     connectErrorMessage: null,
+  },
+  github: {
+    available: false,
+    loggedIn: false,
+    username: null,
+    tokenSource: null,
+    scopes: null,
+    version: null,
+    errorMessage: null,
   },
 };
 

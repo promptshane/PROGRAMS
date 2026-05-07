@@ -2,7 +2,13 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { app } from "electron";
 import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
-import { CLAUDE_MODEL_OPTIONS, CODEX_MODEL_OPTIONS, AGENT_STAGES } from "../../shared/types.ts";
+import {
+  CLAUDE_MODEL_OPTIONS,
+  CODEX_MODEL_OPTIONS,
+  AGENT_STAGES,
+  createEmptyProjectRelationshipSummary,
+  normalizeProjectRelationshipSummary,
+} from "../../shared/types.ts";
 import type {
   AgentCoreDetails,
   AgentPlannedUpdate,
@@ -16,6 +22,7 @@ import type {
   DirectorConversation,
   DirectorId,
   DirectorFocusMode,
+  GithubConnection,
   JeffExecutionReport,
   JeffMemory,
   PendingApproval,
@@ -382,6 +389,8 @@ interface ProjectRow {
   updated_at: string;
   metadata_json: string;
   last_error: string | null;
+  github_connection: string | null;
+  relationship_json: string | null;
 }
 
 interface UpdateRow {
@@ -437,6 +446,10 @@ const mapProjectRow = (row: ProjectRow): Project => ({
   updatedAt: row.updated_at,
   runtimeConfig: JSON.parse(row.metadata_json),
   lastError: row.last_error,
+  githubConnection: row.github_connection ? (JSON.parse(row.github_connection) as GithubConnection) : null,
+  relationship: row.relationship_json
+    ? normalizeProjectRelationshipSummary(JSON.parse(row.relationship_json))
+    : createEmptyProjectRelationshipSummary(),
 });
 
 const mapUpdateRow = (row: UpdateRow): UpdateRecord => ({
@@ -498,7 +511,8 @@ export class ProjectStore {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         metadata_json TEXT NOT NULL,
-        last_error TEXT
+        last_error TEXT,
+        relationship_json TEXT NOT NULL DEFAULT '{}'
       );
 
       CREATE TABLE IF NOT EXISTS updates (
@@ -612,6 +626,8 @@ export class ProjectStore {
     this.ensureColumn("agent_sessions", "jeff_memory_json", "TEXT");
     this.ensureColumn("agent_sessions", "pong_memory_json", "TEXT");
     this.ensureColumn("agent_sessions", "automation_json", "TEXT");
+    this.ensureColumn("projects", "github_connection", "TEXT");
+    this.ensureColumn("projects", "relationship_json", "TEXT NOT NULL DEFAULT '{}'");
 
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS home_scratchpad (
@@ -890,8 +906,8 @@ export class ProjectStore {
       `INSERT INTO projects (
          id, name, icon_color, description, local_path, remote_url, default_branch,
          thread_id, flowchart_path, last_updated_at, status, created_at, updated_at,
-         metadata_json, last_error
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         metadata_json, last_error, relationship_json
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         project.id,
         project.name,
@@ -908,6 +924,7 @@ export class ProjectStore {
         project.updatedAt,
         JSON.stringify(project.runtimeConfig),
         project.lastError,
+        JSON.stringify(project.relationship),
       ],
     );
 
@@ -919,7 +936,7 @@ export class ProjectStore {
       `UPDATE projects
        SET name = ?, icon_color = ?, description = ?, local_path = ?, remote_url = ?, default_branch = ?,
            thread_id = ?, flowchart_path = ?, last_updated_at = ?, status = ?, updated_at = ?,
-           metadata_json = ?, last_error = ?
+           metadata_json = ?, last_error = ?, relationship_json = ?
        WHERE id = ?`,
       [
         project.name,
@@ -935,10 +952,24 @@ export class ProjectStore {
         project.updatedAt,
         JSON.stringify(project.runtimeConfig),
         project.lastError,
+        JSON.stringify(project.relationship),
         project.id,
       ],
     );
 
+    return project;
+  }
+
+  async updateGithubConnection(projectId: string, connection: GithubConnection | null): Promise<Project> {
+    this.run(
+      "UPDATE projects SET github_connection = ? WHERE id = ?",
+      [connection ? JSON.stringify(connection) : null, projectId],
+    );
+    const project = await this.readProject(projectId);
+    if (!project) {
+      throw new Error("Project not found.");
+    }
+    this.persist();
     return project;
   }
 
@@ -1039,6 +1070,27 @@ export class ProjectStore {
   }
 
   // --- Agent Sessions ---
+
+  /**
+   * Finalize any assistant messages still marked `working` at session-load
+   * time. Because the backend has no in-flight AI requests when a session is
+   * loaded from the database, any `working` placeholder must be orphaned —
+   * left over from a crashed/killed/aborted run. Mutating them in place here
+   * retroactively clears stuck typing-dot bubbles and stops them from ever
+   * persisting past an app restart.
+   */
+  private finalizeOrphanWorkingMessages(messages: Array<{ role?: string; status?: string; content?: string }>): void {
+    if (!Array.isArray(messages)) return;
+    for (const message of messages) {
+      if (!message || typeof message !== "object") continue;
+      if (message.role === "assistant" && message.status === "working") {
+        message.status = "complete";
+        if (typeof message.content !== "string" || !message.content.trim()) {
+          message.content = "(Response interrupted — please try again.)";
+        }
+      }
+    }
+  }
 
   private mapAgentSessionRow(row: {
     id: string;
@@ -1158,6 +1210,14 @@ export class ProjectStore {
     // Backward-compat: add pillarType to pillars that lack it
     const rawPillars: CorePillar[] = JSON.parse(row.core_pillars_json || "[]");
     const { messages: slackMessages } = sanitizeSlackMessages(JSON.parse((r.slack_messages_json as string) || "[]"));
+    this.finalizeOrphanWorkingMessages(slackMessages);
+    for (const conv of Object.values(directorConvos)) {
+      if (conv && Array.isArray(conv.messages)) {
+        this.finalizeOrphanWorkingMessages(conv.messages);
+      }
+    }
+    const unifiedMessages = JSON.parse((r.unified_messages_json as string) || "[]") as Array<{ role?: string; status?: string; content?: string }>;
+    this.finalizeOrphanWorkingMessages(unifiedMessages);
     const { directorStateMap } = sanitizeDirectorStateMap(JSON.parse((r.director_state_map_json as string) || "{}"));
     const { pendingApprovals } = sanitizePendingApprovals(JSON.parse((r.pending_approvals_json as string) || "[]"));
     const migratePillars = (pillars: CorePillar[]): CorePillar[] =>
@@ -1180,7 +1240,7 @@ export class ProjectStore {
       currentStage,
       conversationMode,
       stages,
-      unifiedMessages: JSON.parse((r.unified_messages_json as string) || "[]"),
+      unifiedMessages,
       scratchpad,
       plannedUpdates,
       corePillars,

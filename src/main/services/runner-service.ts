@@ -224,6 +224,16 @@ export class RunnerService {
 
   constructor(private readonly emit: Emit) {}
 
+  private getProjectWorkingPath(project: Project): string {
+    return project.runtimeConfig.launch?.workspacePath?.trim() || project.localPath;
+  }
+
+  private getProjectWorkingPaths(project: Project): string[] {
+    return Array.from(
+      new Set([project.localPath, project.runtimeConfig.launch?.workspacePath?.trim() ?? null].filter((value): value is string => Boolean(value))),
+    );
+  }
+
   setOnRuntimeExit(handler: RuntimeExitHandler): void {
     this.onRuntimeExit = handler;
   }
@@ -391,12 +401,13 @@ export class RunnerService {
 
     const candidateUrls = this.collectKnownRuntimeUrls(project);
     const candidatePorts = Array.from(new Set(candidateUrls.map((entry) => entry.port)));
+    const expectedCwds = new Set(this.getProjectWorkingPaths(project).map((path) => resolve(path)));
 
     for (const port of candidatePorts) {
       const pids = await this.findListeningPids(port);
       for (const pid of pids) {
         const processDetails = await this.readProcessDetails(pid);
-        if (!processDetails || resolve(processDetails.cwd) !== resolve(project.localPath)) {
+        if (!processDetails || !expectedCwds.has(resolve(processDetails.cwd))) {
           continue;
         }
 
@@ -437,6 +448,7 @@ export class RunnerService {
     if (!installCommand) {
       return;
     }
+    const workingPath = this.getProjectWorkingPath(project);
 
     this.emit({
       type: "toast",
@@ -444,7 +456,7 @@ export class RunnerService {
       message: `Installing the latest ${project.name} dependencies.`,
     });
 
-    const result = await execCommand(installCommand, project.localPath);
+    const result = await execCommand(installCommand, workingPath);
     if (result.code !== 0) {
       throw new Error(result.stderr || "The project dependencies could not be installed.");
     }
@@ -460,10 +472,17 @@ export class RunnerService {
     if (!runCommand) {
       throw new Error("PROGRAMS could not find a run command for this project yet.");
     }
+    const workingPath = this.getProjectWorkingPath(project);
+
+    // Wait for the project's known port to be free before spawning
+    const knownUrls = this.collectKnownRuntimeUrls(project);
+    if (knownUrls.length > 0) {
+      await this.waitForPortFree(knownUrls[0].port);
+    }
 
     const commandEnv = await getCommandEnv();
     const child = spawn(runCommand, {
-      cwd: project.localPath,
+      cwd: workingPath,
       shell: true,
       detached: true,
       env: commandEnv,
@@ -482,7 +501,7 @@ export class RunnerService {
     const runningProcess: RunningProcess = {
       child,
       runtime,
-      cwd: project.localPath,
+      cwd: workingPath,
       runCommand,
     };
     this.processes.set(project.id, runningProcess);
@@ -539,7 +558,7 @@ export class RunnerService {
       return EMPTY_RUNTIME(projectId);
     }
 
-    this.terminateProcess(running);
+    await this.terminateProcess(running);
 
     this.processes.delete(projectId);
     await this.persistRegistry();
@@ -562,7 +581,11 @@ export class RunnerService {
     });
   }
 
-  private terminateProcess(running: RunningProcess): void {
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private async terminateProcess(running: RunningProcess): Promise<void> {
     const candidatePids = Array.from(
       new Set([running.runtime.pid, running.child?.pid].filter((value): value is number => Boolean(value))),
     );
@@ -570,12 +593,12 @@ export class RunnerService {
     for (const pid of candidatePids) {
       const killedGroup = this.tryKillSignal(-pid, "SIGTERM");
       if (killedGroup) {
-        return;
+        break;
       }
 
       const killedProcess = this.tryKillSignal(pid, "SIGTERM");
       if (killedProcess) {
-        return;
+        break;
       }
     }
 
@@ -585,6 +608,28 @@ export class RunnerService {
       const code = error instanceof Error && "code" in error ? String(error.code) : null;
       if (code !== "ESRCH") {
         throw error;
+      }
+    }
+
+    // Poll for up to 3 seconds; escalate to SIGKILL if the process is still alive
+    const primaryPid = running.runtime.pid ?? running.child?.pid ?? null;
+    if (primaryPid !== null) {
+      for (let i = 0; i < 3; i++) {
+        await this.sleep(1000);
+        if (!this.isProcessAlive(primaryPid)) return;
+      }
+
+      for (const pid of candidatePids) {
+        this.tryKillSignal(-pid, "SIGKILL");
+        this.tryKillSignal(pid, "SIGKILL");
+      }
+      try {
+        running.child?.kill("SIGKILL");
+      } catch (error) {
+        const code = error instanceof Error && "code" in error ? String(error.code) : null;
+        if (code !== "ESRCH") {
+          throw error;
+        }
       }
     }
   }
@@ -700,6 +745,17 @@ export class RunnerService {
           .filter((value) => Number.isInteger(value) && value > 0),
       ),
     );
+  }
+
+  private async waitForPortFree(port: number, timeoutMs = 3500): Promise<void> {
+    const interval = 500;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const pids = await this.findListeningPids(port);
+      if (pids.length === 0) return;
+      await this.sleep(interval);
+    }
+    // Port is still occupied after timeout — proceed anyway so the error surfaces visibly
   }
 
   private async readListeningSockets(pid: number): Promise<LocalSocketAddress[]> {

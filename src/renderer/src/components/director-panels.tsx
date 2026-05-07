@@ -2184,6 +2184,10 @@ export function DirectorMemoryPanel({
   const memorySectionTitle = (kind: "Imported" | "Exported") => `${DIRECTOR_NAMES[directorId]} ${kind} Memory`;
   const activeImportedMemorySource = importedMemorySources.find((source) => source.kind === importedMemoryView) ?? importedMemorySources[0] ?? null;
   const activeExportedMemoryTarget = exportedMemoryTargets.find((target) => target.directorId === exportedMemoryView) ?? exportedMemoryTargets[0] ?? null;
+  const exportedMemorySourcesToTarget = activeExportedMemoryTarget
+    ? buildDirectorSharedMemorySources(activeExportedMemoryTarget.directorId, session)
+        .filter((source) => source.directorId === directorId)
+    : [];
   const importedMemoryAccent = activeImportedMemorySource ? DIRECTOR_COLORS[activeImportedMemorySource.directorId] : null;
   const exportedMemoryAccent = activeExportedMemoryTarget ? DIRECTOR_COLORS[activeExportedMemoryTarget.directorId] : DIRECTOR_COLORS[directorId];
   const importedMemoryCard = activeImportedMemorySource ? (
@@ -2242,14 +2246,14 @@ export function DirectorMemoryPanel({
         </div>
       </div>
       <div className="agentSummarySharedBody">
-        {activeExportedMemoryTarget ? (
-          <div className="toddMemorySectionSubblock">
-            <span className="pmStatusLabel">Placeholder</span>
-            <p className="coreDetailEmpty">
-              Exported memory placeholder for {DIRECTOR_NAMES[directorId]} to {activeExportedMemoryTarget.label}.
-            </p>
-            <p className="helperText">Outbound memory data is not wired up yet.</p>
-          </div>
+        {exportedMemorySourcesToTarget.length > 0 ? (
+          exportedMemorySourcesToTarget.map((source) => (
+            <div key={source.kind}>
+              {renderSharedMemorySourceContent({ source, session, onViewExecutionReport })}
+            </div>
+          ))
+        ) : activeExportedMemoryTarget ? (
+          <p className="coreDetailEmpty">No memory exported to {activeExportedMemoryTarget.label} yet.</p>
         ) : (
           <p className="coreDetailEmpty">No exported memory targets available yet.</p>
         )}

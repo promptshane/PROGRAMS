@@ -16,6 +16,7 @@ export function HomeProjectTile({
   isAutomationPriority,
   onOpen,
   onQuickAction,
+  onRestart,
   onOpenOptions,
   onToggleAutomationPriority,
 }: {
@@ -26,6 +27,7 @@ export function HomeProjectTile({
   isAutomationPriority: boolean;
   onOpen: () => void;
   onQuickAction: () => void;
+  onRestart?: () => void;
   onOpenOptions: () => void;
   onToggleAutomationPriority: (projectId: string) => void;
 }) {
@@ -80,6 +82,17 @@ export function HomeProjectTile({
             {project.name}
             {hasAssumedDetails && <span className="tileAssumedBadge" title="Core details need review" />}
           </div>
+          {isRunning && !isLaunching && runtime?.source !== "self" && onRestart && (
+            <button
+              type="button"
+              className="projectRestartButton"
+              aria-label={`Restart ${project.name}`}
+              title={`Restart ${project.name}`}
+              onClick={onRestart}
+            >
+              ↺
+            </button>
+          )}
           <button
             type="button"
             className={`projectStatusDot projectStatusDot-${dotState}${canStopFromDot ? " projectStatusDot-stopAction" : ""}`}

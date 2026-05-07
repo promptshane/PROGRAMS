@@ -1,34 +1,56 @@
-import { useEffect, useState } from "react";
-import type { AgentSession, Project } from "@shared/types";
+import { useEffect, useMemo, useState } from "react";
+import { DEFAULT_PROJECT_ICON_COLORS, collectUsedProjectIconColors, normalizeProjectIconColor } from "@shared/project-colors";
+import type { Project } from "@shared/types";
 import { Modal } from "./ui-primitives";
-import { DEFAULT_ICON_COLORS } from "../lib/constants";
+import { createProjectColorSwatchStyle } from "../lib/project-helpers";
 
 export function ProjectOptionsSheet({
   project,
+  projects,
   onClose,
   onSave,
   onUnlink,
 }: {
   project: Project;
+  projects: Project[];
   onClose: () => void;
   onSave: (name: string, iconColor: string) => Promise<void>;
   onUnlink: () => void;
 }) {
   const [name, setName] = useState(project.name);
   const [iconColor, setIconColor] = useState(project.iconColor);
-  const [agentSession, setAgentSession] = useState<AgentSession | null>(null);
-  const [activeTab, setActiveTab] = useState<"function" | "thesis">("function");
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
-    void window.programs.getAgentSession(project.id).then(setAgentSession);
-  }, [project.id]);
+    setName(project.name);
+    setIconColor(project.iconColor);
+    setIsSaving(false);
+  }, [project.iconColor, project.id, project.name]);
+
+  const trimmedName = name.trim();
+  const normalizedIconColor = normalizeProjectIconColor(iconColor);
+  const unavailableColors = useMemo(
+    () => collectUsedProjectIconColors(projects, project.id),
+    [project.id, projects],
+  );
+  const colorError =
+    !normalizedIconColor
+      ? "Choose a valid project color."
+      : unavailableColors.has(normalizedIconColor)
+      ? "That color is already assigned to another project."
+      : null;
 
   const handleSave = async () => {
+    if (!trimmedName || !normalizedIconColor || colorError) {
+      return;
+    }
+
     setIsSaving(true);
     try {
-      await onSave(name, iconColor);
+      await onSave(trimmedName, normalizedIconColor);
       onClose();
+    } catch {
+      // Errors are surfaced by the caller so the sheet can stay open for correction.
     } finally {
       setIsSaving(false);
     }
@@ -37,34 +59,6 @@ export function ProjectOptionsSheet({
   return (
     <Modal title={project.name} onClose={onClose} fullscreen>
       <div className="projectOptionsContent">
-        <div className="projectOptionsSection">
-          <div className="agentInfoTabs">
-            <button
-              className={`agentInfoTabBtn${activeTab === "function" ? " active" : ""}`}
-              onClick={() => setActiveTab("function")}
-            >
-              Function
-            </button>
-            <button
-              className={`agentInfoTabBtn${activeTab === "thesis" ? " active" : ""}`}
-              onClick={() => setActiveTab("thesis")}
-            >
-              Thesis
-            </button>
-          </div>
-          <div className="agentInfoTabContent">
-            {activeTab === "function" ? (
-              <p className="coreDetailValue">
-                {agentSession?.stages.function.confirmed?.summary ?? <em className="coreDetailEmpty">Not yet defined</em>}
-              </p>
-            ) : (
-              <p className="coreDetailValue">
-                {agentSession?.stages.thesis.confirmed?.summary ?? <em className="coreDetailEmpty">Not yet defined</em>}
-              </p>
-            )}
-          </div>
-        </div>
-
         <div className="projectOptionsSection">
           <label className="projectOptionsLabel">
             Name
@@ -78,30 +72,43 @@ export function ProjectOptionsSheet({
 
         <div className="projectOptionsSection">
           <span className="projectOptionsLabel">Color</span>
+          <p className="projectOptionsHint">Each project color stays unique across the dashboard.</p>
           <div className="colorSwatchGrid">
-            {DEFAULT_ICON_COLORS.map((color) => (
-              <button
-                key={color}
-                type="button"
-                className={iconColor === color ? "colorSwatch active" : "colorSwatch"}
-                style={{ background: color }}
-                aria-label={`Set project color ${color}`}
-                onClick={() => setIconColor(color)}
-              />
-            ))}
+            {DEFAULT_PROJECT_ICON_COLORS.map((color) => {
+              const isActive = normalizedIconColor === color;
+              const isUnavailable = unavailableColors.has(color) && !isActive;
+
+              return (
+                <button
+                  key={color}
+                  type="button"
+                  className={`colorSwatch${isActive ? " active" : ""}${isUnavailable ? " disabled" : ""}`}
+                  style={createProjectColorSwatchStyle(color)}
+                  aria-label={isUnavailable ? `Project color ${color} already in use` : `Set project color ${color}`}
+                  title={isUnavailable ? "Already in use" : color}
+                  onClick={() => setIconColor(color)}
+                  disabled={isUnavailable}
+                />
+              );
+            })}
           </div>
           <label className="colorField">
             Custom color
             <input
               type="color"
-              value={iconColor}
+              value={normalizedIconColor ?? DEFAULT_PROJECT_ICON_COLORS[0]}
               onChange={(e) => setIconColor(e.target.value)}
             />
           </label>
+          {colorError ? <p className="projectOptionsHint projectOptionsHint-error">{colorError}</p> : null}
         </div>
 
         <div className="projectOptionsActions">
-          <button className="primaryButton" onClick={() => void handleSave()} disabled={isSaving}>
+          <button
+            className="primaryButton"
+            onClick={() => void handleSave()}
+            disabled={isSaving || !trimmedName || Boolean(colorError)}
+          >
             Save
           </button>
           <button className="projectOptionButton projectOptionButton-danger" onClick={onUnlink}>

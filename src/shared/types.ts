@@ -144,6 +144,33 @@ export interface SetupSnapshot {
   isPackagedBuild: boolean;
 }
 
+export interface RunCommandSuggestions {
+  packageScripts: string[];
+  readmeSuggestions: string[];
+  projectContext: string;
+}
+
+export type LaunchConfidence = "low" | "medium" | "high";
+export type LaunchOrigin = "manual" | "detected" | "wrapped" | "repaired" | "restored";
+export type LaunchMode = "direct" | "wrapper" | "repair";
+
+export interface LaunchCandidate {
+  kind: LaunchMode;
+  source: string;
+  confidence: LaunchConfidence;
+  summary: string;
+  notes: string[];
+}
+
+export interface LaunchMetadata {
+  origin: LaunchOrigin;
+  confidence: LaunchConfidence;
+  locked: boolean;
+  candidate: LaunchCandidate | null;
+  wrapperPath: string | null;
+  workspacePath: string | null;
+}
+
 export interface ProjectRuntimeConfig {
   packageManager: "npm" | "pnpm" | "yarn" | "bun" | "unknown";
   installCommand: string | null;
@@ -151,7 +178,98 @@ export interface ProjectRuntimeConfig {
   openUrl: string | null;
   lastRunUrl: string | null;
   initialIdea: string | null;
+  launch?: LaunchMetadata | null;
 }
+
+export interface GithubAuthStatus {
+  available: boolean;
+  loggedIn: boolean;
+  username: string | null;
+  tokenSource: string | null;
+  scopes: string | null;
+  version: string | null;
+  errorMessage: string | null;
+}
+
+export interface GithubConnection {
+  repoUrl: string | null;
+  lastPushedAt: string | null;
+  lastPushedCommitSha: string | null;
+}
+
+export interface GithubPublishInput {
+  projectId: string;
+  repoName: string;
+  isPrivate: boolean;
+}
+
+export interface ProjectRelationshipCandidate {
+  projectId: string;
+  overlapRatio: number;
+  sharedFileCount: number;
+}
+
+export interface ProjectRelationshipSummary {
+  scannedAt: string | null;
+  contentUpdatedAt: string | null;
+  exactParentProjectId: string | null;
+  exactChildProjectIds: string[];
+  maybeRelated: ProjectRelationshipCandidate[];
+}
+
+export const createEmptyProjectRelationshipSummary = (): ProjectRelationshipSummary => ({
+  scannedAt: null,
+  contentUpdatedAt: null,
+  exactParentProjectId: null,
+  exactChildProjectIds: [],
+  maybeRelated: [],
+});
+
+export const normalizeProjectRelationshipSummary = (value: unknown): ProjectRelationshipSummary => {
+  if (!value || typeof value !== "object") {
+    return createEmptyProjectRelationshipSummary();
+  }
+
+  const record = value as Record<string, unknown>;
+  return {
+    scannedAt: typeof record.scannedAt === "string" && record.scannedAt.trim() ? record.scannedAt : null,
+    contentUpdatedAt: typeof record.contentUpdatedAt === "string" && record.contentUpdatedAt.trim()
+      ? record.contentUpdatedAt
+      : null,
+    exactParentProjectId:
+      typeof record.exactParentProjectId === "string" && record.exactParentProjectId.trim()
+        ? record.exactParentProjectId
+        : null,
+    exactChildProjectIds: Array.isArray(record.exactChildProjectIds)
+      ? record.exactChildProjectIds.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+      : [],
+    maybeRelated: Array.isArray(record.maybeRelated)
+      ? record.maybeRelated.flatMap((item) => {
+          if (!item || typeof item !== "object") {
+            return [];
+          }
+
+          const candidate = item as Record<string, unknown>;
+          if (typeof candidate.projectId !== "string" || !candidate.projectId.trim()) {
+            return [];
+          }
+
+          const overlapRatio = typeof candidate.overlapRatio === "number" && Number.isFinite(candidate.overlapRatio)
+            ? Math.max(0, Math.min(1, candidate.overlapRatio))
+            : 0;
+          const sharedFileCount = typeof candidate.sharedFileCount === "number" && Number.isFinite(candidate.sharedFileCount)
+            ? Math.max(0, Math.floor(candidate.sharedFileCount))
+            : 0;
+
+          return [{
+            projectId: candidate.projectId,
+            overlapRatio,
+            sharedFileCount,
+          }];
+        })
+      : [],
+  };
+};
 
 export interface Project {
   id: string;
@@ -166,6 +284,8 @@ export interface Project {
   updatedAt: string;
   runtimeConfig: ProjectRuntimeConfig;
   lastError: string | null;
+  githubConnection: GithubConnection | null;
+  relationship: ProjectRelationshipSummary;
 }
 
 export interface UpdateRecord {
@@ -365,6 +485,7 @@ export interface DirectoryPickResult {
 export interface AuthSnapshot {
   codex: CodexAuthStatus;
   claude: ClaudeAuthStatus;
+  github: GithubAuthStatus;
 }
 
 export type ProviderUsageStatus = "ready" | "requiresInstall" | "requiresLogin" | "unsupported";
@@ -443,7 +564,9 @@ export type AppEvent =
   | { type: "project.history"; projectId: string; updates: UpdateRecord[] }
   | { type: "project.outlineReport"; projectId: string; report: ProjectOutlineReport | null }
   | { type: "agent.session"; projectId: string; session: AgentSession | null }
-  | { type: "auth.claude.codePrompt"; prompt: string };
+  | { type: "auth.claude.codePrompt"; prompt: string }
+  | { type: "auth.github"; status: GithubAuthStatus }
+  | { type: "project.githubConnection"; projectId: string; connection: GithubConnection | null };
 
 export interface StartPlanInput {
   projectId: string;

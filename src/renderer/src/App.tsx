@@ -10,6 +10,11 @@ import {
 } from "react";
 import { getVisibleAppPageOptions, resolveVisibleAppPage, type AppPage } from "@shared/app-shell";
 import {
+  collectUsedProjectIconColors,
+  normalizeProjectIconColor,
+  pickAvailableProjectIconColor,
+} from "@shared/project-colors";
+import {
   type AgentSession,
   type AgentStage,
   type AppEvent,
@@ -17,6 +22,7 @@ import {
   type AttachPathInspection,
   type DirectorId,
   type AuthSnapshot,
+  type DiffStats,
   type EnvFileSnapshot,
   type EnvVariableEntry,
   type GenerateProjectOutlineReportInput,
@@ -42,6 +48,7 @@ import {
   XIcon,
   SidebarToggleIcon,
   ChevronDownIcon,
+  GithubIcon,
 } from "./components/icons";
 import { HomeProjectTile, HomepageComposer } from "./components/home-tiles";
 import { ProjectOptionsSheet } from "./components/project-options-sheet";
@@ -50,6 +57,7 @@ import { UsageOverviewSheet } from "./components/usage-panel";
 import { ProgramDetailsModal, StoredDataModal, ConnectionsModal, RuntimeModal } from "./components/program-details-modal";
 import { AgentsPage } from "./components/agents-page";
 import { AgentProjectDetailsModal } from "./components/agent-project-details-modal";
+import { RunCommandModal } from "./components/run-command-modal";
 import {
   emptySettings,
   emptySetup,
@@ -65,7 +73,9 @@ import {
   type AddProjectFormState,
   type ComposerOptions,
   type HomeAppUpdateButtonState,
+  type ProjectSortMode,
   createEmptyForm,
+  createProjectColorSwatchStyle,
   nextIconColor,
   readInitialTheme,
   applyTheme,
@@ -106,6 +116,13 @@ function App() {
       return {};
     }
   });
+  const [projectSortMode, setProjectSortMode] = useState<ProjectSortMode>(() => {
+    const storedValue = localStorage.getItem("projectSortMode");
+    return storedValue === "lastUpdated" || storedValue === "lastSaved" || storedValue === "lastOpened"
+      ? storedValue
+      : "lastOpened";
+  });
+  const [rootProjectsOnly, setRootProjectsOnly] = useState<boolean>(() => localStorage.getItem("rootProjectsOnly") === "true");
   const [showUpdatePanel, setShowUpdatePanel] = useState(true);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [composerValue, setComposerValue] = useState("");
@@ -127,6 +144,10 @@ function App() {
   const [projectFormError, setProjectFormError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [runCommandPromptProject, setRunCommandPromptProject] = useState<Project | null>(null);
+  const [githubSaveState, setGithubSaveState] = useState<null | "saving" | "saved" | "error">(null);
+  const [githubSaveError, setGithubSaveError] = useState<string | null>(null);
+  const [selectedProjectDiffStats, setSelectedProjectDiffStats] = useState<DiffStats | null>(null);
   const [claudeAuthCodePrompt, setClaudeAuthCodePrompt] = useState<string | null>(null);
   const [claudeAuthCodeInput, setClaudeAuthCodeInput] = useState("");
   const [agentSession, setAgentSession] = useState<AgentSession | null>(null);
@@ -149,6 +170,7 @@ function App() {
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const updateDropDepthRef = useRef(0);
   const shownErrorProjectIds = useRef<Set<string>>(new Set());
+  const lastProjectRelationshipRefreshAtRef = useRef(0);
   const [planError, setPlanError] = useState<string | null>(null);
 
   const selectedProject = useMemo(
@@ -179,6 +201,30 @@ function App() {
     () => projects.find((project) => project.id === runtimeProjectId) ?? null,
     [projects, runtimeProjectId],
   );
+  const projectsById = useMemo(
+    () => new Map(projects.map((project) => [project.id, project])),
+    [projects],
+  );
+  const selectedProjectExactChildren = useMemo(() => {
+    if (!selectedProject) {
+      return [];
+    }
+
+    return selectedProject.relationship.exactChildProjectIds.flatMap((projectId) => {
+      const project = projectsById.get(projectId);
+      return project ? [project] : [];
+    });
+  }, [projectsById, selectedProject]);
+  const selectedProjectMaybeRelated = useMemo(() => {
+    if (!selectedProject) {
+      return [];
+    }
+
+    return selectedProject.relationship.maybeRelated.flatMap((candidate) => {
+      const project = projectsById.get(candidate.projectId);
+      return project ? [{ ...candidate, project }] : [];
+    });
+  }, [projectsById, selectedProject]);
 
   const selectedDetail = selectedProjectId ? projectDetails[selectedProjectId] ?? null : null;
   const selectedRuntime = selectedProjectId ? projectRuntimes[selectedProjectId] ?? selectedDetail?.runtime ?? null : null;
@@ -189,9 +235,20 @@ function App() {
     ? agentSession?.slackPresenceGuestId ?? agentSession?.slackActiveDirectorId ?? "project-manager"
     : null;
 
-  const sortedProjects = useMemo(
-    () => sortProjectsForDisplay(projects, projectLastViewed),
-    [projects, projectLastViewed],
+  const orderedProjects = useMemo(
+    () => sortProjectsForDisplay(projects, {
+      lastViewed: projectLastViewed,
+      sortMode: projectSortMode,
+    }),
+    [projectLastViewed, projectSortMode, projects],
+  );
+  const displayedProjects = useMemo(
+    () => sortProjectsForDisplay(projects, {
+      lastViewed: projectLastViewed,
+      sortMode: projectSortMode,
+      rootOnly: rootProjectsOnly,
+    }),
+    [projectLastViewed, projectSortMode, projects, rootProjectsOnly],
   );
 
 
@@ -246,6 +303,27 @@ function App() {
     })();
   }, []);
 
+  const requestProjectRelationshipRefresh = useCallback(
+    async (force = false) => {
+      if (!programsApi) {
+        return;
+      }
+
+      const now = Date.now();
+      if (!force && now - lastProjectRelationshipRefreshAtRef.current < 30_000) {
+        return;
+      }
+
+      lastProjectRelationshipRefreshAtRef.current = now;
+      try {
+        await programsApi.refreshProjectRelationships();
+      } catch {
+        // Keep background relationship refresh silent.
+      }
+    },
+    [programsApi],
+  );
+
   const selectProject = useCallback(
     (projectId: string) => {
       syncProjectSelection(projectId);
@@ -285,7 +363,7 @@ function App() {
       const bootstrap = await programsApi.bootstrap();
       setSettings(bootstrap.settings);
       setTheme(bootstrap.settings.theme);
-      setProjects(sortProjectsForDisplay(bootstrap.projects));
+      setProjects(bootstrap.projects);
       setProjectRuntimes(bootstrap.runtimes);
       setAuth(bootstrap.auth);
       setSetup(bootstrap.setup);
@@ -364,6 +442,32 @@ function App() {
   }, [programsApi, selectedProjectId]);
 
   useEffect(() => {
+    if (activePage !== "projects" || projects.length === 0) {
+      return;
+    }
+
+    void requestProjectRelationshipRefresh();
+  }, [activePage, projects.length, requestProjectRelationshipRefresh]);
+
+  useEffect(() => {
+    if (!programsApi) {
+      return;
+    }
+
+    const refreshRelationshipsOnFocus = () => {
+      if (resolveVisibleAppPage(currentPage) !== "projects") {
+        return;
+      }
+      void requestProjectRelationshipRefresh();
+    };
+
+    window.addEventListener("focus", refreshRelationshipsOnFocus);
+    return () => {
+      window.removeEventListener("focus", refreshRelationshipsOnFocus);
+    };
+  }, [currentPage, programsApi, requestProjectRelationshipRefresh]);
+
+  useEffect(() => {
     setComposerOptions(getComposerDefaults(settings));
   }, [
     selectedProjectId,
@@ -387,6 +491,20 @@ function App() {
   useEffect(() => {
     setShowUpdatePanel(Boolean(selectedProjectId));
   }, [selectedProjectId]);
+
+  useEffect(() => {
+    if (!selectedProject) {
+      setSelectedProjectDiffStats(null);
+      return;
+    }
+    // Auto-detect an existing git remote so repo status is always up to date
+    if (!selectedProject.githubConnection) {
+      void window.programs.detectAndSyncGithubRemote(selectedProject.id).catch(() => undefined);
+    }
+    void window.programs.readProjectGithubDiffStats(selectedProject.id)
+      .then((stats) => setSelectedProjectDiffStats(stats ?? null))
+      .catch(() => setSelectedProjectDiffStats(null));
+  }, [selectedProject?.id, selectedProject?.githubConnection?.lastPushedCommitSha]);
 
   useEffect(() => {
     setShowProjectDetails(false);
@@ -480,6 +598,9 @@ function App() {
           setAuth((current) => ({ ...current, claude: event.status }));
           void refreshSetup().catch(() => undefined);
           return;
+        case "auth.github":
+          setAuth((current) => ({ ...current, github: event.status }));
+          return;
         case "auth.claude.codePrompt":
           setClaudeAuthCodePrompt(event.prompt);
           return;
@@ -495,10 +616,9 @@ function App() {
         case "project.updated":
           setProjects((current) => {
             const exists = current.some((project) => project.id === event.project.id);
-            const next = exists
+            return exists
               ? current.map((project) => (project.id === event.project.id ? event.project : project))
               : [event.project, ...current];
-            return sortProjectsForDisplay(next);
           });
           setProjectRuntimes((current) =>
             current[event.project.id]
@@ -754,25 +874,30 @@ function App() {
     setAddProjectState({
       ...createEmptyForm(),
       mode,
-      iconColor: nextIconColor(projects.length),
+      iconColor: nextIconColor(projects),
     });
     setAttachInspection(null);
     setProjectFormError(null);
   };
 
   const submitProjectForm = async (formState: AddProjectFormState) => {
+    const iconColor = pickAvailableProjectIconColor(
+      collectUsedProjectIconColors(projects),
+      formState.iconColor,
+    );
+
     if (formState.mode === "create") {
       const project = await window.programs.createProject({
         name: formState.createName.trim(),
         parentDirectory: formState.parentDirectory.trim(),
-        iconColor: formState.iconColor,
+        iconColor,
         initialIdea: formState.initialIdea.trim(),
       });
       selectProject(project.id);
     } else {
       const project = await window.programs.attachProject({
         localPath: formState.attachDirectory.trim(),
-        iconColor: formState.iconColor,
+        iconColor,
       });
       selectProject(project.id);
     }
@@ -843,9 +968,26 @@ function App() {
   };
 
   const handleSaveProjectDirect = async (projectId: string, name: string, iconColor: string) => {
-    await withBusy("project.update", async () => {
-      await window.programs.updateProject({ projectId, name, iconColor });
-    });
+    setBusyKey("project.update");
+    try {
+      const normalizedColor = normalizeProjectIconColor(iconColor);
+      if (!normalizedColor) {
+        throw new Error("Choose a valid project color.");
+      }
+
+      const usedColors = collectUsedProjectIconColors(projects, projectId);
+      if (usedColors.has(normalizedColor)) {
+        throw new Error("That project color is already in use. Choose another color.");
+      }
+
+      await window.programs.updateProject({ projectId, name, iconColor: normalizedColor });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "That action could not finish.";
+      pushToast(message, "error");
+      throw error;
+    } finally {
+      setBusyKey(null);
+    }
   };
 
   const openProjectOptions = (projectId: string) => {
@@ -955,6 +1097,51 @@ function App() {
     });
   };
 
+  const handleConnectGithub = async () => {
+    await withBusy("auth.github", async () => {
+      const status = await window.programs.loginGithub();
+      setAuth((current) => ({ ...current, github: status }));
+    });
+  };
+
+  const handleDisconnectGithub = async () => {
+    await withBusy("auth.github", async () => {
+      const status = await window.programs.logoutGithub();
+      setAuth((current) => ({ ...current, github: status }));
+    });
+  };
+
+  const handlePublishToGithub = async (input: { projectId: string; repoName: string; isPrivate: boolean }) => {
+    await withBusy(`github.publish.${input.projectId}`, async () => {
+      await window.programs.publishProjectToGithub(input);
+    });
+  };
+
+  const handlePushToGithub = async (input: { projectId: string }) => {
+    await withBusy(`github.push.${input.projectId}`, async () => {
+      await window.programs.pushProjectToGithub(input);
+    });
+  };
+
+  const handleSaveToGithub = async () => {
+    if (!selectedProject) {
+      return;
+    }
+    setGithubSaveState("saving");
+    setGithubSaveError(null);
+    try {
+      await window.programs.saveToGithub(selectedProject.id);
+      setGithubSaveState("saved");
+      setSelectedProjectDiffStats(null);
+      setTimeout(() => setGithubSaveState(null), 3000);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not save to GitHub.";
+      setGithubSaveError(message);
+      setGithubSaveState("error");
+      setTimeout(() => setGithubSaveState(null), 5000);
+    }
+  };
+
   const handleReconnectCodex = async () => {
     await withBusy("auth.codex", async () => {
       const status = await window.programs.getCodexStatus();
@@ -1056,10 +1243,42 @@ function App() {
       return;
     }
 
-    await withBusy("project.run", async () => {
+    setBusyKey("project.run");
+    try {
       await window.programs.runProject(selectedProject.id);
       await refreshProject(selectedProject.id);
-    });
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("could not find a run command")) {
+        setRunCommandPromptProject(selectedProject);
+      } else {
+        pushToast(error instanceof Error ? error.message : "That action could not finish.", "error");
+      }
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const handlePrepareLaunchRepair = async (): Promise<boolean> => {
+    if (!runCommandPromptProject) {
+      return false;
+    }
+
+    setBusyKey("project.repair");
+    try {
+      await window.programs.prepareLaunchRepair(runCommandPromptProject.id);
+      const detail = await refreshProject(runCommandPromptProject.id);
+      setRunCommandPromptProject(detail.project);
+
+      if (detail.project.runtimeConfig.runCommand) {
+        await window.programs.runProject(detail.project.id);
+        await refreshProject(detail.project.id);
+        return true;
+      }
+
+      return false;
+    } finally {
+      setBusyKey(null);
+    }
   };
 
   const handleKill = async () => {
@@ -1141,6 +1360,48 @@ function App() {
 
         if (!opened) {
           pushToast("PROGRAMS started the project. The dot will turn solid green once its local URL is ready.", "info");
+        }
+      } catch (error) {
+        setLaunchingProjects((current) => {
+          if (!current[project.id]) {
+            return current;
+          }
+
+          const next = { ...current };
+          delete next[project.id];
+          return next;
+        });
+        if (error instanceof Error && error.message.includes("could not find a run command")) {
+          setRunCommandPromptProject(project);
+          return;
+        }
+        throw error;
+      }
+    });
+  };
+
+  const handleHomeTileRestart = async (project: Project) => {
+    await withBusy(`project.quick.${project.id}`, async () => {
+      setLaunchingProjects((current) => ({ ...current, [project.id]: true }));
+      try {
+        await window.programs.restartProject(project.id);
+        const opened = await openProjectWhenReady(project.id);
+        const detail = await refreshProject(project.id);
+
+        if (opened || detail.runtime.url || !detail.runtime.running) {
+          setLaunchingProjects((current) => {
+            if (!current[project.id]) {
+              return current;
+            }
+
+            const next = { ...current };
+            delete next[project.id];
+            return next;
+          });
+        }
+
+        if (!opened) {
+          pushToast("PROGRAMS restarted the project. The dot will turn solid green once its local URL is ready.", "info");
         }
       } catch (error) {
         setLaunchingProjects((current) => {
@@ -1418,6 +1679,7 @@ function App() {
         isAutomationPriority={Boolean(automationPriorityProjectIds[project.id])}
         onOpen={() => selectProject(project.id)}
         onQuickAction={() => void handleHomeTileQuickAction(project)}
+        onRestart={() => void handleHomeTileRestart(project)}
         onOpenOptions={() => openProjectOptions(project.id)}
         onToggleAutomationPriority={handleToggleAutomationPriority}
       />
@@ -1425,9 +1687,73 @@ function App() {
 
   const programsPage = !selectedProject ? (
     <section className="minimalHome">
-      <div className="chatViewportDivider" aria-hidden="true" />
+      <div className="projectBrowseTopBar agentTopBar windowNoDrag">
+        <div className="projectBrowseTopBarPrimary">
+          <span className="projectBrowseBadge">{rootProjectsOnly ? "Root Projects" : "All Projects"}</span>
+          <span className="projectBrowseCount">
+            {displayedProjects.length} / {projects.length}
+          </span>
+        </div>
+        <div className="projectBrowseTopBarControls">
+          <div className="speedToggle projectBrowseToggle" role="group" aria-label="Sort projects">
+            <button
+              type="button"
+              className={projectSortMode === "lastOpened" ? "toggleOption projectBrowseOption active" : "toggleOption projectBrowseOption"}
+              onClick={() => {
+                localStorage.setItem("projectSortMode", "lastOpened");
+                setProjectSortMode("lastOpened");
+              }}
+            >
+              Last opened
+            </button>
+            <button
+              type="button"
+              className={projectSortMode === "lastUpdated" ? "toggleOption projectBrowseOption active" : "toggleOption projectBrowseOption"}
+              onClick={() => {
+                localStorage.setItem("projectSortMode", "lastUpdated");
+                setProjectSortMode("lastUpdated");
+              }}
+            >
+              Last updated
+            </button>
+            <button
+              type="button"
+              className={projectSortMode === "lastSaved" ? "toggleOption projectBrowseOption active" : "toggleOption projectBrowseOption"}
+              onClick={() => {
+                localStorage.setItem("projectSortMode", "lastSaved");
+                setProjectSortMode("lastSaved");
+              }}
+            >
+              Last saved
+            </button>
+          </div>
+          <div className="speedToggle projectBrowseToggle" role="group" aria-label="Project visibility">
+            <button
+              type="button"
+              className={rootProjectsOnly ? "toggleOption projectBrowseOption" : "toggleOption projectBrowseOption active"}
+              onClick={() => {
+                localStorage.setItem("rootProjectsOnly", "false");
+                setRootProjectsOnly(false);
+              }}
+            >
+              All Projects
+            </button>
+            <button
+              type="button"
+              className={rootProjectsOnly ? "toggleOption projectBrowseOption active" : "toggleOption projectBrowseOption"}
+              onClick={() => {
+                localStorage.setItem("rootProjectsOnly", "true");
+                setRootProjectsOnly(true);
+              }}
+            >
+              Root Projects
+            </button>
+          </div>
+        </div>
+      </div>
+      <div className="chatViewportDivider pageChromeDivider" aria-hidden="true" />
       <div className="tileGrid">
-        {renderProjectTiles(sortedProjects)}
+        {renderProjectTiles(displayedProjects)}
         <button className="projectTile addProjectTile" onClick={openAddProjectChooser}>
           <PlusIcon />
         </button>
@@ -1514,7 +1840,112 @@ function App() {
               </div>
             </div>
           </div>
+          <div className="summaryGithubRow">
+            <button
+              type="button"
+              className={
+                githubSaveState === "saved"
+                  ? "githubSaveButton githubSaveButton-success"
+                  : githubSaveState === "error"
+                    ? "githubSaveButton githubSaveButton-error"
+                    : "githubSaveButton"
+              }
+              onClick={() => void handleSaveToGithub()}
+              disabled={githubSaveState === "saving"}
+              aria-label="Save to GitHub"
+            >
+              <GithubIcon />
+              {githubSaveState === "saving"
+                ? "Saving..."
+                : githubSaveState === "saved"
+                  ? "Saved to GitHub"
+                  : githubSaveState === "error"
+                    ? "Save failed"
+                    : "Save to GitHub"}
+            </button>
+            {githubSaveState === "error" && githubSaveError ? (
+              <span className="githubSaveErrorLabel">{githubSaveError}</span>
+            ) : selectedProjectDiffStats ? (
+              <span className="githubDiffStats">
+                <span className="githubDiffAdded">+{selectedProjectDiffStats.added}</span>
+                <span className="githubDiffRemoved">-{selectedProjectDiffStats.removed}</span>
+              </span>
+            ) : null}
+            <span className="githubRepoStatus">
+              {selectedProject?.githubConnection?.repoUrl
+                ? selectedProject.githubConnection.lastPushedAt
+                  ? `Saved ${formatDate(selectedProject.githubConnection.lastPushedAt)}`
+                  : selectedProject.githubConnection.repoUrl.replace("https://github.com/", "")
+                : "No repo yet"}
+            </span>
+          </div>
         </div>
+        {selectedProjectExactChildren.length > 0 || selectedProjectMaybeRelated.length > 0 ? (
+          <div className="projectRelationshipGrid">
+            {selectedProjectExactChildren.length > 0 ? (
+              <section className="projectRelationshipCard">
+                <div className="projectRelationshipHead">
+                  <div>
+                    <div className="sectionTag">Sub-components</div>
+                    <h3>Nested projects inside this root</h3>
+                  </div>
+                  <span className="projectRelationshipCount">{selectedProjectExactChildren.length}</span>
+                </div>
+                <div className="projectRelationshipList">
+                  {selectedProjectExactChildren.map((project) => (
+                    <button
+                      key={project.id}
+                      type="button"
+                      className="projectRelationshipItem"
+                      onClick={() => selectProject(project.id)}
+                    >
+                      <span
+                        className="projectRelationshipSwatch"
+                        style={createProjectColorSwatchStyle(project.iconColor)}
+                        aria-hidden="true"
+                      />
+                      <span className="projectRelationshipCopy">
+                        <strong>{project.name}</strong>
+                        <span>Sub-component</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+            {selectedProjectMaybeRelated.length > 0 ? (
+              <section className="projectRelationshipCard">
+                <div className="projectRelationshipHead">
+                  <div>
+                    <div className="sectionTag">Maybe Related</div>
+                    <h3>Projects with overlapping code</h3>
+                  </div>
+                  <span className="projectRelationshipCount">{selectedProjectMaybeRelated.length}</span>
+                </div>
+                <div className="projectRelationshipList">
+                  {selectedProjectMaybeRelated.map(({ overlapRatio, project }) => (
+                    <button
+                      key={project.id}
+                      type="button"
+                      className="projectRelationshipItem"
+                      onClick={() => selectProject(project.id)}
+                    >
+                      <span
+                        className="projectRelationshipSwatch"
+                        style={createProjectColorSwatchStyle(project.iconColor)}
+                        aria-hidden="true"
+                      />
+                      <span className="projectRelationshipCopy">
+                        <strong>{project.name}</strong>
+                        <span>{Math.round(overlapRatio * 100)}% overlap</span>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </section>
   );
@@ -1580,7 +2011,7 @@ function App() {
                     </button>
                     {sidebarProjectsOpen && (
                       <div className="sidebarProjectList sidebarProjectList--full">
-                        {sortedProjects.slice(0, 5).map((project) => (
+                        {orderedProjects.slice(0, 5).map((project) => (
                           <div key={project.id} className="sidebarProjectItemRow">
                             <button
                               type="button"
@@ -1841,6 +2272,7 @@ function App() {
       {projectOptionsProject ? (
         <ProjectOptionsSheet
           project={projectOptionsProject}
+          projects={projects}
           onClose={() => setProjectOptionsProjectId(null)}
           onSave={(name, iconColor) => handleSaveProjectDirect(projectOptionsProject.id, name, iconColor)}
           onUnlink={() => {
@@ -1909,6 +2341,8 @@ function App() {
           onSetupCodex={() => void handleSetupCodex()}
           onSetupClaude={() => void handleSetupClaude()}
           onSetupAction={(check) => void withBusy(`setup-${check.id}`, async () => handleSetupAction(check))}
+          onConnectGithub={() => void handleConnectGithub()}
+          onDisconnectGithub={() => void handleDisconnectGithub()}
           claudeAuthCodePrompt={claudeAuthCodePrompt}
           claudeAuthCodeInput={claudeAuthCodeInput}
           onClaudeAuthCodeChange={setClaudeAuthCodeInput}
@@ -1938,8 +2372,14 @@ function App() {
           project={programDetailsProject}
           updates={projectDetails[programDetailsProjectId]?.updates ?? []}
           agentSession={programAgentSession}
+          auth={auth}
+          busyKey={busyKey}
           onClose={() => setProgramDetailsProjectId(null)}
           onUndo={(update) => void handleUndoUpdate(update)}
+          onConnectGithub={() => void handleConnectGithub()}
+          onDisconnectGithub={() => void handleDisconnectGithub()}
+          onPublishToGithub={(input) => void handlePublishToGithub(input)}
+          onPushToGithub={(input) => void handlePushToGithub(input)}
         />
       ) : null}
 
@@ -1983,7 +2423,7 @@ function App() {
               If macOS cannot start the installer automatically, PROGRAMS will open the official Git download page instead.
             </p>
           </details>
-          <div className="modalActions">
+      <div className="modalActions">
             <button className="secondaryButton" onClick={() => setSetupConfirmCheck(null)}>
               Cancel
             </button>
@@ -2002,6 +2442,21 @@ function App() {
             </button>
           </div>
         </Modal>
+      ) : null}
+
+      {runCommandPromptProject ? (
+        <RunCommandModal
+          project={runCommandPromptProject}
+          onDismiss={() => setRunCommandPromptProject(null)}
+          onPrepareRepair={handlePrepareLaunchRepair}
+          onConfirm={async (cmd) => {
+            await window.programs.setRunCommand(runCommandPromptProject.id, cmd);
+            setRunCommandPromptProject(null);
+            if (selectedProject?.id === runCommandPromptProject.id) {
+              await handleRun();
+            }
+          }}
+        />
       ) : null}
 
       <ToastHost toasts={toasts} />

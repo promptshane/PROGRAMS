@@ -121,12 +121,19 @@ test("attachProject persists only local project fields and initializes git when 
   let initializedRepo = false;
 
   try {
+    let storedProject: Record<string, unknown> | null = null;
     const backend = new ProgramsBackend(
       {
-        listProjects: async () => [],
+        listProjects: async () => (storedProject ? [storedProject] : []),
         readSettings: async () => ({}),
         createProject: async (project: Record<string, unknown>) => {
           createdProjects.push(project);
+          storedProject = project;
+          return project;
+        },
+        readProject: async () => storedProject,
+        updateProject: async (project: Record<string, unknown>) => {
+          storedProject = project;
           return project;
         },
       } as never,

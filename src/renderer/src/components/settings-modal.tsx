@@ -40,6 +40,8 @@ export function SettingsModal({
   onSetupCodex,
   onSetupClaude,
   onSetupAction,
+  onConnectGithub,
+  onDisconnectGithub,
   claudeAuthCodePrompt,
   claudeAuthCodeInput,
   onClaudeAuthCodeChange,
@@ -68,6 +70,8 @@ export function SettingsModal({
   onSetupCodex: () => void;
   onSetupClaude: () => void;
   onSetupAction: (check: SetupCheck) => void;
+  onConnectGithub: () => void;
+  onDisconnectGithub: () => void;
   claudeAuthCodePrompt: string | null;
   claudeAuthCodeInput: string;
   onClaudeAuthCodeChange: (value: string) => void;
@@ -337,6 +341,29 @@ export function SettingsModal({
                 </div>
               </div>
             ) : null}
+
+            <ConnectionRow
+              title="GitHub"
+              tone={auth.github.loggedIn ? "confirmed" : auth.github.available ? "info" : "neutral"}
+              detail={
+                auth.github.loggedIn
+                  ? `Connected as ${auth.github.username ?? "unknown"}. Projects can be saved to GitHub.`
+                  : auth.github.available
+                    ? "Log in to save projects to GitHub."
+                    : "Install the GitHub CLI to save projects to GitHub."
+              }
+              actionLabel={auth.github.loggedIn ? null : auth.github.available ? "Log In" : "Download"}
+              onAction={
+                auth.github.loggedIn
+                  ? undefined
+                  : auth.github.available
+                    ? onConnectGithub
+                    : () => void window.programs.openExternal("https://cli.github.com/")
+              }
+              disconnectLabel={auth.github.loggedIn ? "Disconnect" : null}
+              onDisconnect={auth.github.loggedIn ? onDisconnectGithub : undefined}
+              disabled={busyKey === "auth.github"}
+            />
 
             <ConnectionRow
               title="Git"

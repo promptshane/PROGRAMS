@@ -37,17 +37,6 @@ export const CODEX_SIGNIN_HELP_URL =
   "https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan";
 export const GIT_DOWNLOAD_URL = "https://git-scm.com/install/mac.html";
 
-export const DEFAULT_ICON_COLORS = [
-  "#FB7185",
-  "#F97316",
-  "#F59E0B",
-  "#10B981",
-  "#14B8A6",
-  "#0EA5E9",
-  "#3B82F6",
-  "#64748B",
-];
-
 export const EMPTY_RUNTIME = (projectId: string): RuntimeState => ({
   projectId,
   running: false,

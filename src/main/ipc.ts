@@ -18,6 +18,7 @@ import type {
   ListAutomationTargetsInput,
   ListPendingApprovalsInput,
   PauseAutomationRunInput,
+  GithubPublishInput,
   ProjectAttachInput,
   ProjectCreateInput,
   RequestAutomationFailureRecoveryInput,
@@ -59,10 +60,21 @@ export const registerIpc = (backend: ProgramsBackend): void => {
   ipcMain.handle("auth.claude.logout", () => backend.logoutClaude());
   ipcMain.handle("auth.claude.test", () => backend.testClaudeConnection());
   ipcMain.handle("auth.claude.submitLoginCode", (_event, code: string) => backend.submitClaudeLoginCode(code));
+
+  ipcMain.handle("auth.github.status", () => backend.getGithubStatus());
+  ipcMain.handle("auth.github.login", () => backend.loginGithub());
+  ipcMain.handle("auth.github.logout", () => backend.logoutGithub());
+
+  ipcMain.handle("projects.github.publish", (_event, input: GithubPublishInput) => backend.publishProjectToGithub(input));
+  ipcMain.handle("projects.github.push", (_event, input: { projectId: string }) => backend.pushProjectToGithub(input));
+  ipcMain.handle("projects.github.diffStats", (_event, projectId: string) => backend.readProjectGithubDiffStats(projectId));
+  ipcMain.handle("projects.github.detectRemote", (_event, projectId: string) => backend.detectAndSyncGithubRemote(projectId));
+  ipcMain.handle("projects.github.save", (_event, projectId: string) => backend.saveToGithub(projectId));
   ipcMain.handle("usage.read", () => backend.readUsage());
 
   ipcMain.handle("projects.list", () => backend.listProjects());
   ipcMain.handle("projects.read", (_event, projectId: string) => backend.readProject(projectId));
+  ipcMain.handle("projects.refreshRelationships", () => backend.refreshProjectRelationships());
   ipcMain.handle("projects.create", (_event, input: ProjectCreateInput) => backend.createProject(input));
   ipcMain.handle("projects.attach", (_event, input: ProjectAttachInput) => backend.attachProject(input));
   ipcMain.handle("projects.inspectAttachPath", (_event, localPath: string) => backend.inspectAttachPath(localPath));
@@ -76,7 +88,16 @@ export const registerIpc = (backend: ProgramsBackend): void => {
   ipcMain.handle("projects.readEnvFile", (_event, projectId: string) => backend.readEnvFile(projectId));
   ipcMain.handle("projects.writeEnvFile", (_event, input: WriteProjectEnvFileInput) => backend.writeEnvFile(input));
   ipcMain.handle("projects.run", (_event, projectId: string) => backend.runProject(projectId));
+  ipcMain.handle("projects.prepareLaunchRepair", (_event, projectId: string) =>
+    backend.prepareLaunchRepair(projectId));
+  ipcMain.handle("projects.setRunCommand", (_event, projectId: string, runCommand: string) =>
+    backend.setRunCommand(projectId, runCommand));
+  ipcMain.handle("projects.getRunCommandSuggestions", (_event, projectId: string) =>
+    backend.getRunCommandSuggestions(projectId));
+  ipcMain.handle("projects.suggestRunCommand", (_event, projectId: string) =>
+    backend.suggestRunCommand(projectId));
   ipcMain.handle("projects.kill", (_event, projectId: string) => backend.killProject(projectId));
+  ipcMain.handle("projects.restart", (_event, projectId: string) => backend.restartProject(projectId));
   ipcMain.handle("projects.open", (_event, projectId: string) => backend.openProject(projectId));
 
   ipcMain.handle("updates.startPlan", (_event, input: StartPlanInput) => backend.startPlan(input));
@@ -97,6 +118,8 @@ export const registerIpc = (backend: ProgramsBackend): void => {
     backend.startPingDirectUpdate(input));
   ipcMain.handle("agents.chat", (_event, input: AgentChatInput) =>
     backend.agentChat(input));
+  ipcMain.handle("agents.stopWorkingMessages", (_event, projectId: string) =>
+    backend.finalizeWorkingAgentMessages(projectId));
   ipcMain.handle("approvals.list", (_event, input: ListPendingApprovalsInput) =>
     backend.listPendingApprovals(input));
   ipcMain.handle("approvals.approve", (_event, input: ApprovePendingApprovalInput) =>

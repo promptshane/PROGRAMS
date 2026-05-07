@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { access, mkdtemp, readdir, readFile, stat } from "node:fs/promises";
+import { access, cp, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, extname, join, relative, sep } from "node:path";
+import { basename, dirname, extname, join, relative, sep } from "node:path";
 import { app, shell } from "electron";
 import {
   CLAUDE_DOWNLOAD_URL,
@@ -27,7 +27,16 @@ import {
 } from "@main/utils/approval-queue";
 import { getProviderPreflightError } from "@main/utils/provider-auth";
 import { parseEnvEntries, parseProjectOutlineReportResponse, serializeEnvEntries } from "@main/utils/project-outline";
-import { detectRuntimeConfig, deriveAttachedProjectName, deriveProjectDescription } from "@main/utils/project";
+import { parseAgentJsonResponse, AgentJsonParseError } from "@main/utils/agent-json";
+import {
+  detectRuntimeConfig,
+  deriveAttachedProjectName,
+  deriveProjectDescription,
+  getRunCommandSuggestions,
+  reconcileRuntimeConfig,
+  resolveLaunchPlan,
+  type LaunchResolution,
+} from "@main/utils/project";
 import {
   buildAgentChatApprovalDescriptor,
   buildAgentChatProviderAttemptPlan,
@@ -68,6 +77,11 @@ import {
   sanitizeSlackResponseContent,
 } from "@shared/agent-session";
 import {
+  collectUsedProjectIconColors,
+  normalizeProjectIconColor,
+  pickAvailableProjectIconColor,
+} from "@shared/project-colors";
+import {
   BIG_CLAUDE_MODEL,
   BIG_CODEX_MODEL,
   getDirectorRuntimeDefaults,
@@ -90,6 +104,7 @@ import {
   DIRECTOR_LABELS,
   DIRECTOR_NAMES,
   DIRECTOR_COLORS,
+  createEmptyProjectRelationshipSummary,
   normalizeDirectorId,
   type HardMemoryReportDataType,
   type HardMemoryReportMetadata,
@@ -191,6 +206,8 @@ import type {
   ProjectAttachInput,
   ProjectCreateInput,
   ProjectDetail,
+  ProjectRelationshipCandidate,
+  ProjectRelationshipSummary,
   ProjectOutlineReport,
   RenameProjectInput,
   RouteUpdateToProgrammingInput,
@@ -253,9 +270,26 @@ import type {
   ToddPriorityUpdate,
   ToddValidationRequest,
   UpdatePendingApprovalStatusInput,
+  RunCommandSuggestions,
+  GithubAuthStatus,
+  GithubConnection,
+  GithubPublishInput,
 } from "@shared/types";
 
 type Emit = (event: AppEvent) => void;
+
+const IGNORED_LAUNCH_DIRECTORIES = new Set([
+  ".git",
+  ".next",
+  ".nuxt",
+  ".programs",
+  "build",
+  "coverage",
+  "dist",
+  "node_modules",
+  "out",
+  "vendor",
+]);
 
 function resolveDirectorRuntime(
   session: AgentSession | null,
@@ -760,6 +794,256 @@ const shouldMonitorProjectKnowledgeFile = (relativePath: string): boolean => {
 
   return PROJECT_KNOWLEDGE_MONITORED_EXTENSIONS.has(extname(filename));
 };
+
+const PROJECT_RELATIONSHIP_EXCLUDED_FILENAMES = new Set([
+  ".gitignore",
+  ".npmrc",
+  ".nvmrc",
+  ".prettierignore",
+  ".prettierrc",
+  ".prettierrc.json",
+  ".prettierrc.js",
+  ".prettierrc.cjs",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "bun.lock",
+  "bun.lockb",
+]);
+const PROJECT_RELATIONSHIP_RUNTIME_DIRS = new Set([
+  "__pycache__",
+  ".venv",
+  "venv",
+  ".pytest_cache",
+  ".mypy_cache",
+  "downloads",
+  "download",
+  "collections",
+  "collection",
+  "profile_images",
+  "thumbcache",
+  "uploads",
+  "upload",
+  "archives",
+  "archive",
+  "artifacts",
+  "storage",
+  "media-cache",
+]);
+const PROJECT_RELATIONSHIP_NEAR_EXACT_THRESHOLD = 0.95;
+const PROJECT_RELATIONSHIP_INTEGRATION_MIN_SHARED_FILES = 3;
+const PROJECT_RELATIONSHIP_SEARCH_TEXT_LIMIT = 250_000;
+const PROJECT_RELATIONSHIP_SEARCH_FILE_MAX_CHARS = 32_000;
+
+interface ProjectRelationshipSnapshot {
+  project: Project;
+  fileHashCounts: Map<string, number>;
+  meaningfulFileCount: number;
+  contentUpdatedAt: string | null;
+  searchText: string;
+  referenceNeedles: string[];
+  scanFailed: boolean;
+  previousRelationship: ProjectRelationshipSummary;
+}
+
+const normalizeProjectRelationshipReferenceValue = (value: string): string =>
+  value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+
+const buildProjectRelationshipReferenceNeedles = (project: Project): string[] => {
+  const candidates = new Set<string>();
+  const rawValues = [project.name, basename(project.localPath)];
+
+  for (const rawValue of rawValues) {
+    const exact = rawValue.trim().toLowerCase();
+    if (exact.length >= 5) {
+      candidates.add(exact);
+    }
+
+    const normalized = normalizeProjectRelationshipReferenceValue(rawValue);
+    if (normalized.length >= 5) {
+      candidates.add(normalized);
+      candidates.add(normalized.replace(/_/g, "-"));
+      candidates.add(normalized.replace(/_/g, ""));
+    }
+  }
+
+  return [...candidates].filter((value) => value.length >= 5).sort();
+};
+
+const shouldSkipProjectRelationshipDirectory = (relativePath: string): boolean => {
+  const parts = relativePath.split("/").map((segment) => segment.toLowerCase());
+  return parts.some((segment) =>
+    PROJECT_KNOWLEDGE_IGNORED_DIRS.has(segment) || PROJECT_RELATIONSHIP_RUNTIME_DIRS.has(segment)
+  );
+};
+
+const shouldAnalyzeProjectRelationshipFile = (relativePath: string): boolean => {
+  if (!shouldMonitorProjectKnowledgeFile(relativePath)) {
+    return false;
+  }
+
+  const normalized = relativePath.trim().toLowerCase();
+  const filename = normalized.split("/").at(-1) ?? normalized;
+  if (filename.startsWith(".env")) {
+    return false;
+  }
+
+  if (PROJECT_RELATIONSHIP_EXCLUDED_FILENAMES.has(filename)) {
+    return false;
+  }
+
+  if (filename.endsWith(".log") || filename.endsWith(".snap")) {
+    return false;
+  }
+
+  return true;
+};
+
+const normalizeProjectRelationshipFileContent = (content: string): string =>
+  content
+    .replace(/\r\n/g, "\n")
+    .replace(/[ \t]+$/gm, "")
+    .replace(/\n+$/g, "");
+
+const collectProjectRelationshipFiles = async (
+  rootPath: string,
+): Promise<Array<{ fullPath: string; mtimeMs: number }>> => {
+  const files: Array<{ fullPath: string; mtimeMs: number }> = [];
+  const queue = [rootPath];
+
+  while (queue.length > 0) {
+    const currentPath = queue.pop();
+    if (!currentPath) {
+      continue;
+    }
+
+    let entries;
+    try {
+      entries = await readdir(currentPath, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      const fullPath = join(currentPath, entry.name);
+      const relativePath = normalizeProjectKnowledgePath(rootPath, fullPath);
+      if (!relativePath || relativePath === ".") {
+        continue;
+      }
+
+      if (entry.isDirectory()) {
+        if (!shouldSkipProjectRelationshipDirectory(relativePath)) {
+          queue.push(fullPath);
+        }
+        continue;
+      }
+
+      if (!entry.isFile() || !shouldAnalyzeProjectRelationshipFile(relativePath)) {
+        continue;
+      }
+
+      try {
+        const metadata = await stat(fullPath);
+        files.push({
+          fullPath,
+          mtimeMs: Math.floor(metadata.mtimeMs),
+        });
+      } catch {
+        continue;
+      }
+    }
+  }
+
+  files.sort((left, right) => left.fullPath.localeCompare(right.fullPath));
+  return files;
+};
+
+const buildProjectRelationshipSnapshot = async (project: Project): Promise<ProjectRelationshipSnapshot> => {
+  try {
+    if (!(await pathExists(project.localPath))) {
+      throw new Error("Project path does not exist.");
+    }
+
+    const files = await collectProjectRelationshipFiles(project.localPath);
+    const fileHashCounts = new Map<string, number>();
+    let latestMtimeMs: number | null = null;
+    let searchText = "";
+
+    for (const file of files) {
+      const raw = await readFile(file.fullPath, "utf8");
+      const normalizedContent = normalizeProjectRelationshipFileContent(raw);
+      const digest = createHash("sha1").update(normalizedContent).digest("hex");
+      fileHashCounts.set(digest, (fileHashCounts.get(digest) ?? 0) + 1);
+      latestMtimeMs = latestMtimeMs == null ? file.mtimeMs : Math.max(latestMtimeMs, file.mtimeMs);
+      if (searchText.length < PROJECT_RELATIONSHIP_SEARCH_TEXT_LIMIT && normalizedContent.length > 0) {
+        const nextChunk = normalizedContent
+          .slice(0, PROJECT_RELATIONSHIP_SEARCH_FILE_MAX_CHARS)
+          .toLowerCase();
+        const remaining = PROJECT_RELATIONSHIP_SEARCH_TEXT_LIMIT - searchText.length;
+        searchText += `\n${nextChunk}`.slice(0, remaining);
+      }
+    }
+
+    return {
+      project,
+      fileHashCounts,
+      meaningfulFileCount: files.length,
+      contentUpdatedAt: latestMtimeMs == null ? null : new Date(latestMtimeMs).toISOString(),
+      searchText,
+      referenceNeedles: buildProjectRelationshipReferenceNeedles(project),
+      scanFailed: false,
+      previousRelationship: project.relationship,
+    };
+  } catch {
+    return {
+      project,
+      fileHashCounts: new Map<string, number>(),
+      meaningfulFileCount: 0,
+      contentUpdatedAt: project.relationship.contentUpdatedAt,
+      searchText: "",
+      referenceNeedles: buildProjectRelationshipReferenceNeedles(project),
+      scanFailed: true,
+      previousRelationship: project.relationship,
+    };
+  }
+};
+
+const projectRelationshipHasReference = (
+  source: ProjectRelationshipSnapshot,
+  target: ProjectRelationshipSnapshot,
+): boolean => target.referenceNeedles.some((needle) => needle.length >= 5 && source.searchText.includes(needle));
+
+const countSharedRelationshipFiles = (
+  left: Map<string, number>,
+  right: Map<string, number>,
+): number => {
+  const [smaller, larger] = left.size <= right.size ? [left, right] : [right, left];
+  let shared = 0;
+
+  for (const [hash, count] of smaller.entries()) {
+    shared += Math.min(count, larger.get(hash) ?? 0);
+  }
+
+  return shared;
+};
+
+const compareProjectRelationshipCandidates = (
+  left: ProjectRelationshipCandidate,
+  right: ProjectRelationshipCandidate,
+): number => {
+  if (right.overlapRatio !== left.overlapRatio) {
+    return right.overlapRatio - left.overlapRatio;
+  }
+  if (right.sharedFileCount !== left.sharedFileCount) {
+    return right.sharedFileCount - left.sharedFileCount;
+  }
+  return left.projectId.localeCompare(right.projectId);
+};
+
+const sameProjectRelationshipSummary = (
+  left: ProjectRelationshipSummary,
+  right: ProjectRelationshipSummary,
+): boolean => JSON.stringify(left) === JSON.stringify(right);
 
 const readProjectHeadSha = async (localPath: string): Promise<string | null> => {
   const result = await execCommand("git rev-parse --verify HEAD", localPath);
@@ -5388,6 +5672,7 @@ export class ProgramsBackend {
     const auth = {
       codex: await this.codex.getAuthStatus(settings),
       claude: await this.claude.getAuthStatus(settings),
+      github: await this.git.getGithubStatus(),
     };
     const setup = await this.buildSetupSnapshot(settings, auth.codex, auth.claude);
     const appUpdate = await this.readAppUpdateStatus();
@@ -5492,6 +5777,11 @@ export class ProgramsBackend {
       undefined,
       await this.refreshProjectsRuntimeConfig(await this.store.listProjects()),
     );
+  }
+
+  async refreshProjectRelationships(): Promise<Project[]> {
+    await this.ensureInitialized();
+    return this.recomputeProjectRelationships(await this.store.listProjects(), true);
   }
 
   async readProject(projectId: string): Promise<ProjectDetail> {
@@ -6594,13 +6884,12 @@ export class ProgramsBackend {
       await this.saveAgentSession(project.id, session);
     }
 
-    const cleanJson = (raw: string) => {
-      let cleaned = raw.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "");
-      const jsonStart = cleaned.indexOf("{");
-      const jsonEnd = cleaned.lastIndexOf("}");
-      if (jsonStart >= 0 && jsonEnd > jsonStart) cleaned = cleaned.slice(jsonStart, jsonEnd + 1);
-      return JSON.parse(cleaned) as Record<string, unknown>;
-    };
+    const directorLabel = DIRECTOR_NAMES[directorId] ?? "Agent";
+    const cleanJson = (raw: string): Record<string, unknown> =>
+      parseAgentJsonResponse<Record<string, unknown>>(raw, {
+        agentLabel: directorLabel,
+        context: "director turn",
+      });
 
     const providerLabels: Record<AiProvider, string> = {
       codex: "Codex",
@@ -6738,6 +7027,17 @@ export class ProgramsBackend {
                 projectSummary: typeof parsed.projectSummary === "string" ? parsed.projectSummary : "",
               }
             : null);
+        // Late-response guard: if the placeholder was already finalized by Stop (or a
+        // restart-time orphan cleanup), discard this response rather than reviving a
+        // typing bubble the user already dismissed.
+        const placeholderLive = session.slackMessages.find((m) => m.id === responsePlaceholder.id);
+        if (!placeholderLive || placeholderLive.status !== "working") {
+          await this.saveAgentSession(project.id, session);
+          return {
+            assistantMessage: placeholderLive ?? responsePlaceholder,
+            parsed,
+          };
+        }
         const assistantMessage = this.replaceSlackAssistantMessage(session, directorId, {
           ...responsePlaceholder,
           content: assistantContent,
@@ -6771,9 +7071,33 @@ export class ProgramsBackend {
           parsed,
         };
       } catch (error) {
-        const reason = error instanceof Error ? error.message : "Something went wrong.";
+        let reason: string;
+        if (error instanceof AgentJsonParseError) {
+          // Friendly message for the most common failure: agent replied with prose.
+          reason = `returned conversational text instead of the required structured output`;
+        } else if (error instanceof SyntaxError) {
+          reason = "returned malformed output — please retry";
+        } else {
+          const rawMessage = error instanceof Error ? error.message : "Something went wrong.";
+          // Strip raw SyntaxError noise if it leaked through a wrapped error.
+          reason = /unexpected token|is not valid json/i.test(rawMessage)
+            ? "returned malformed output — please retry"
+            : rawMessage;
+        }
         failures.push({ provider: attemptProvider, reason });
       }
+    }
+
+    // Guard: if Stop (or another path) already finalized the placeholder while we were
+    // running, don't overwrite it with a failure message.
+    const placeholderStillWorking = session.slackMessages.some(
+      (m) => m.id === responsePlaceholder.id && m.status === "working",
+    );
+    if (!placeholderStillWorking) {
+      session.slackPresenceGuestId = null;
+      session.slackActiveDirectorId = "project-manager";
+      await this.saveAgentSession(project.id, session);
+      throw new Error(`${DIRECTOR_NAMES[directorId]} run was interrupted before a response could be produced.`);
     }
 
     const details: string[] = [];
@@ -6781,7 +7105,7 @@ export class ProgramsBackend {
       details.push(`${providerLabels[provider]} unavailable: ${attemptPlan.requestedProviderError}`);
     }
     for (const failure of failures) {
-      details.push(`${providerLabels[failure.provider]} failed: ${failure.reason}`);
+      details.push(`${providerLabels[failure.provider]} ${failure.reason}`);
     }
     if (
       attemptPlan.fallbackProvider
@@ -6912,7 +7236,15 @@ Your final answer must be ONLY strict JSON (no markdown fences) matching:
       generateCoreDetailsSchema,
       resolveDirectorRuntime(existing, "creative-director").reasoningEffort,
     );
-    const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
+    const parsed = parseAgentJsonResponse<Record<string, unknown>>(rawResult, {
+      agentLabel: "Dan",
+      context: "generate core details",
+    }) as unknown as {
+      function: string;
+      thesis: string;
+      corePillars: Array<{ name: string; function: string; thesis: string }>;
+      fullFlow: string;
+    };
 
     const session = existing ?? this.createEmptyAgentSession(project.id, provider);
     session.danMemory.derivedConcept = buildGeneratedCoreDetailsConcept({
@@ -6991,7 +7323,14 @@ Your final answer must be ONLY strict JSON (no markdown fences) matching:
       model,
       agentChatSchema,
     );
-    const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
+    const parsed = parseAgentJsonResponse<{
+      response: string;
+      confirmationSuggested?: boolean;
+      suggestedSummary?: string | null;
+    }>(rawResult, {
+      agentLabel: "Agent",
+      context: `stage ${stage} chat`,
+    });
 
     const assistantMessage = {
       id: randomUUID(),
@@ -7119,7 +7458,10 @@ Your response must be ONLY strict JSON (no markdown fences):
             model,
             agentIterationsSchema,
           );
-          const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
+          const parsed = parseAgentJsonResponse<{ response: string; plannedUpdates?: Array<{ title: string; description: string }> }>(rawResult, {
+            agentLabel: "Agent",
+            context: "iterations planning",
+          });
 
           const autoMessage = {
             id: randomUUID(),
@@ -7170,7 +7512,10 @@ Your response must be ONLY strict JSON (no markdown fences):
             model,
             agentCorePillarsResultSchema,
           );
-          const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
+          const parsed = parseAgentJsonResponse<any>(rawResult, {
+            agentLabel: "Agent",
+            context: "core pillars generation",
+          });
 
           if (Array.isArray(parsed.corePillars)) {
             session.corePillars = parsed.corePillars.map((p: { name: string; function: string; thesis: string; children?: { name: string; function: string; thesis: string }[] }) => ({
@@ -7234,7 +7579,10 @@ Your response must be ONLY strict JSON (no markdown fences): {"response": string
               model,
               agentTransitionSchema,
             );
-            const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
+            const parsed = parseAgentJsonResponse<{ response: string }>(rawResult, {
+              agentLabel: "Agent",
+              context: `stage transition to ${nextStage}`,
+            });
 
             const autoMessage = {
               id: randomUUID(),
@@ -7334,7 +7682,14 @@ Instructions:
       agentIterationsSchema,
       resolveDirectorRuntime(session, "rd-director").reasoningEffort,
     );
-    const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
+    const parsed = parseAgentJsonResponse<{
+      response: string;
+      plannedUpdates?: Array<{ title: string; description: string }>;
+      todoMapping?: Array<{ updateIndex: number; todoIds: string[] }>;
+    }>(rawResult, {
+      agentLabel: "Todd",
+      context: "todo-to-update transform",
+    });
 
     // Build todoMapping lookup
     const todoMappingByIndex = new Map<number, string[]>();
@@ -7729,7 +8084,16 @@ Your response must be ONLY strict JSON (no markdown fences):
       agentCoreDetailsSchema,
       resolveDirectorRuntime(session, "creative-director").reasoningEffort,
     );
-    const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
+    const parsed = parseAgentJsonResponse<{
+      response: string;
+      updatedFunction?: string | null;
+      updatedThesis?: string | null;
+      updatedFullFlow?: string | null;
+      updatedCorePillars?: Array<{ name: string; function: string | null; thesis: string | null }>;
+    }>(rawResult, {
+      agentLabel: "Dan",
+      context: "core details update",
+    });
 
     const assistantMessage = {
       id: randomUUID(),
@@ -7852,7 +8216,17 @@ Response must be strict JSON only (no markdown fences).`;
       agentSuggestUpdateSchema,
       resolveDirectorRuntime(session, "creative-director").reasoningEffort,
     );
-    const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
+    const parsed = parseAgentJsonResponse<{
+      response: string;
+      hasProposal?: boolean;
+      updatedFunction?: string | null;
+      updatedThesis?: string | null;
+      updatedFullFlow?: string | null;
+      updatedCorePillars?: Array<{ name: string; functionSummary: string | null; thesisSummary: string | null }>;
+    }>(rawResult, {
+      agentLabel: "Dan",
+      context: "core details suggestion",
+    });
 
     // Store user message in audit trail — never used as AI context
     session.coreDetailsChatHistory.push({
@@ -8010,7 +8384,10 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       model,
       agentCascadeSchema,
     );
-    const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
+    const parsed = parseAgentJsonResponse<{ cascadeUpdates?: Array<{ stage: string; updatedSummary: string }> }>(rawResult, {
+      agentLabel: "Agent",
+      context: "cascade proposal",
+    });
 
     if (!Array.isArray(parsed.cascadeUpdates) || parsed.cascadeUpdates.length === 0) return null;
 
@@ -8209,7 +8586,10 @@ Your response must be ONLY strict JSON (no markdown fences).`;
       schema,
       resolveDirectorRuntime(session, input.directorId).reasoningEffort,
     );
-    const parsedJson = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
+    const parsedJson = parseAgentJsonResponse<any>(rawResult, {
+      agentLabel: DIRECTOR_NAMES[input.directorId] ?? "Director",
+      context: "director chat",
+    });
     const parsed = input.directorId === "creative-director" || input.directorId === "validation-director"
       ? validateAgentChatTurnParsedResponse(parsedJson, input.directorId, resolvedFocusMode as any)
       : parsedJson;
@@ -8717,6 +9097,55 @@ Your response must be ONLY strict JSON (no markdown fences).`;
     this.emit({ type: "agent.session", projectId, session });
   }
 
+  /**
+   * Finalize any assistant messages that are currently in the `working` state
+   * for a project. Invoked when the user clicks the Stop button in the agents
+   * chat so that the three-dot typing bubble disappears immediately, even if
+   * an underlying CLI run is still streaming. Any late-arriving agent response
+   * will be discarded by the late-response guard in runSlackDirectorTurn.
+   */
+  async finalizeWorkingAgentMessages(projectId: string): Promise<AgentSession | null> {
+    await this.ensureInitialized();
+    const session = await this.store.getAgentSession(projectId);
+    if (!session) return null;
+
+    const stoppedAt = new Date().toISOString();
+    let changed = false;
+
+    const finalize = (messages: Array<{ role?: string; status?: string; content?: string; createdAt?: string }> | undefined): void => {
+      if (!Array.isArray(messages)) return;
+      for (const message of messages) {
+        if (message && message.role === "assistant" && message.status === "working") {
+          message.status = "complete";
+          if (typeof message.content !== "string" || !message.content.trim()) {
+            message.content = "(Stopped)";
+          }
+          message.createdAt = stoppedAt;
+          changed = true;
+        }
+      }
+    };
+
+    finalize(session.slackMessages);
+    finalize(session.unifiedMessages);
+    if (session.directorConversations) {
+      for (const conv of Object.values(session.directorConversations)) {
+        if (conv && Array.isArray(conv.messages)) {
+          finalize(conv.messages);
+        }
+      }
+    }
+
+    if (changed) {
+      session.slackPresenceGuestId = null;
+      session.slackActiveDirectorId = "project-manager";
+      session.updatedAt = stoppedAt;
+      await this.store.saveAgentSession(session);
+      this.emit({ type: "agent.session", projectId, session });
+    }
+    return session;
+  }
+
   private patchAutomationState(
     session: AgentSession,
     patch: Partial<AutomationRunState>,
@@ -9114,13 +9543,11 @@ Your response must be ONLY strict JSON (no markdown fences).`;
 
     const service = this.aiService(input.provider);
     const model = input.provider === "claude" ? input.claudeModel : input.model;
-    const cleanJson = (raw: string) => {
-      let cleaned = raw.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "");
-      const jsonStart = cleaned.indexOf("{");
-      const jsonEnd = cleaned.lastIndexOf("}");
-      if (jsonStart >= 0 && jsonEnd > jsonStart) cleaned = cleaned.slice(jsonStart, jsonEnd + 1);
-      return JSON.parse(cleaned);
-    };
+    const cleanJson = (raw: string, context: string) =>
+      parseAgentJsonResponse<Record<string, unknown>>(raw, {
+        agentLabel: "Todd",
+        context,
+      });
     const persistSession = async () => {
       session.updatedAt = new Date().toISOString();
       await this.store.saveAgentSession(session);
@@ -9188,7 +9615,14 @@ Return your response as a conversational summary of what you found.`;
         refreshScanSchema,
         "high",
       );
-      const toddParsed = cleanJson(toddRaw);
+      const toddParsed = cleanJson(toddRaw, "Todd refresh scan") as {
+        scanSummary?: string;
+        detectedFeatures?: unknown;
+        same?: unknown;
+        updated?: unknown;
+        currentState?: string;
+        response?: string;
+      };
       scanSummary = toddParsed.scanSummary ?? "";
       detectedFeatures = Array.isArray(toddParsed.detectedFeatures) ? toddParsed.detectedFeatures : [];
       toddSame = Array.isArray(toddParsed.same) ? toddParsed.same : [];
@@ -9276,7 +9710,7 @@ Return ONLY strict JSON matching:
         generateCoreDetailsSchema,
         "high",
       );
-      const derivedParsed = cleanJson(derivedRaw) as {
+      const derivedParsed = cleanJson(derivedRaw, "Dan derived core details") as unknown as {
         function: string;
         thesis: string;
         corePillars: Array<{ name: string; function: string; thesis: string }>;
@@ -9437,9 +9871,10 @@ Return ONLY strict JSON matching:
         resolveDirectorRuntime(session, "rd-director").reasoningEffort,
       );
 
-      const parsed = JSON.parse(
-        rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""),
-      ) as Record<string, unknown>;
+      const parsed = parseAgentJsonResponse<Record<string, unknown>>(rawResult, {
+        agentLabel: "Todd",
+        context: "plan regeneration",
+      });
 
       const response = sanitizeSlackResponseContent(
         typeof parsed.response === "string" ? parsed.response : "Plan regenerated.",
@@ -10634,14 +11069,22 @@ Return ONLY strict JSON matching:
       directorPongTestSchema,
       resolveDirectorRuntime(session, "validation-director").reasoningEffort,
     );
-    const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, ""));
+    const parsed = parseAgentJsonResponse<{
+      validationPassed?: boolean;
+      validationSummary?: string;
+      validationDetails?: string;
+      response?: string;
+    }>(rawResult, {
+      agentLabel: "Pong",
+      context: `${input.validationType} validation`,
+    });
 
     const result: ValidationResult = {
       id: randomUUID(),
       updateId: input.updateId,
       validationType: input.validationType,
       passed: parsed.validationPassed ?? true,
-      summary: parsed.validationSummary ?? parsed.response,
+      summary: parsed.validationSummary ?? parsed.response ?? "",
       details: parsed.validationDetails ?? "",
       screenshotPaths,
       createdAt: new Date().toISOString(),
@@ -10686,7 +11129,7 @@ Return ONLY strict JSON matching:
     );
     const validationSummary = typeof parsed.validationSummary === "string" && parsed.validationSummary.trim()
       ? parsed.validationSummary
-      : parsed.response;
+      : parsed.response ?? "";
     if (workingMessage) {
       this.replaceSlackAssistantMessage(session, "validation-director", {
         ...workingMessage,
@@ -10761,6 +11204,7 @@ Return ONLY strict JSON matching:
     }
 
     const existingProjects = await this.store.listProjects();
+    const iconColor = this.resolveProjectIconColor(input.iconColor, existingProjects, null, true);
     const settings = await this.store.readSettings();
     const localPath = join(input.parentDirectory, input.name);
     if (existingProjects.some((project) => project.localPath === localPath)) {
@@ -10784,7 +11228,7 @@ Return ONLY strict JSON matching:
     const project: Project = {
       id: randomUUID(),
       name: input.name,
-      iconColor: input.iconColor,
+      iconColor,
       description,
       localPath,
       threadId: null,
@@ -10794,15 +11238,19 @@ Return ONLY strict JSON matching:
       updatedAt: new Date().toISOString(),
       runtimeConfig,
       lastError: null,
+      githubConnection: null,
+      relationship: createEmptyProjectRelationshipSummary(),
     };
 
     await this.git.commitAll(localPath, `Initialize ${input.name}`);
 
     await this.store.createProject(project);
     await this.store.saveAgentSession(this.createEmptyAgentSession(project.id, settings.advancedDefaults.provider));
-    this.emit({ type: "project.updated", project });
-    await this.syncSelfRuntime(settings, [...existingProjects, project], true);
-    return project;
+    await this.recomputeProjectRelationships(await this.store.listProjects(), true);
+    const latestProject = await this.requireProject(project.id);
+    this.emit({ type: "project.updated", project: latestProject });
+    await this.syncSelfRuntime(settings, await this.store.listProjects(), true);
+    return latestProject;
   }
 
   async attachProject(input: ProjectAttachInput): Promise<Project> {
@@ -10811,6 +11259,7 @@ Return ONLY strict JSON matching:
       throw new Error("Choose a project folder to attach first.");
     }
     const existingProjects = await this.store.listProjects();
+    const iconColor = this.resolveProjectIconColor(input.iconColor, existingProjects, null, true);
     if (existingProjects.some((project) => project.localPath === input.localPath)) {
       throw new Error("That project is already attached in PROGRAMS.");
     }
@@ -10831,7 +11280,7 @@ Return ONLY strict JSON matching:
     const project: Project = {
       id: randomUUID(),
       name,
-      iconColor: input.iconColor,
+      iconColor,
       description: deriveProjectDescription(name),
       localPath: input.localPath,
       threadId: null,
@@ -10841,12 +11290,16 @@ Return ONLY strict JSON matching:
       updatedAt: new Date().toISOString(),
       runtimeConfig,
       lastError: null,
+      githubConnection: null,
+      relationship: createEmptyProjectRelationshipSummary(),
     };
 
     await this.store.createProject(project);
-    this.emit({ type: "project.updated", project });
-    await this.syncSelfRuntime(settings, [...existingProjects, project], true);
-    return project;
+    await this.recomputeProjectRelationships(await this.store.listProjects(), true);
+    const latestProject = await this.requireProject(project.id);
+    this.emit({ type: "project.updated", project: latestProject });
+    await this.syncSelfRuntime(settings, await this.store.listProjects(), true);
+    return latestProject;
   }
 
   async renameProject(input: RenameProjectInput): Promise<Project> {
@@ -10859,14 +11312,12 @@ Return ONLY strict JSON matching:
   async updateProject(input: UpdateProjectInput): Promise<Project> {
     await this.ensureInitialized();
     const project = await this.requireProject(input.projectId);
+    const projects = await this.store.listProjects();
     const name = input.name.trim();
-    const iconColor = input.iconColor.trim();
+    const iconColor = this.resolveProjectIconColor(input.iconColor, projects, project.id);
 
     if (!name) {
       throw new Error("Enter a project name first.");
-    }
-    if (!iconColor) {
-      throw new Error("Choose a project color first.");
     }
 
     project.name = name;
@@ -10891,6 +11342,7 @@ Return ONLY strict JSON matching:
       await this.runner.stop(projectId);
     }
     await this.store.deleteProject(projectId);
+    await this.recomputeProjectRelationships(await this.store.listProjects(), true);
     await this.syncSelfRuntime(undefined, await this.store.listProjects(), false);
     this.emit({ type: "project.removed", projectId });
     this.emit({
@@ -11068,6 +11520,161 @@ Return ONLY strict JSON matching:
     return status;
   }
 
+  async getGithubStatus(): Promise<GithubAuthStatus> {
+    return this.git.getGithubStatus();
+  }
+
+  async loginGithub(): Promise<GithubAuthStatus> {
+    const status = await this.git.loginGithub((url) => shell.openExternal(url));
+    this.emit({ type: "auth.github", status });
+    return status;
+  }
+
+  async logoutGithub(): Promise<GithubAuthStatus> {
+    const status = await this.git.logoutGithub();
+    this.emit({ type: "auth.github", status });
+    return status;
+  }
+
+  async publishProjectToGithub(input: GithubPublishInput): Promise<GithubConnection> {
+    const project = await this.store.readProject(input.projectId);
+    if (!project) {
+      throw new Error("Project not found.");
+    }
+    const repoUrl = await this.git.createAndPushToGithub(project.localPath, input.repoName, input.isPrivate);
+    const commitSha = await this.git.getHeadCommitSha(project.localPath);
+    const connection: GithubConnection = {
+      repoUrl,
+      lastPushedAt: new Date().toISOString(),
+      lastPushedCommitSha: commitSha,
+    };
+    await this.store.updateGithubConnection(input.projectId, connection);
+    await this.recomputeProjectRelationships(await this.store.listProjects(), true);
+    const updated = await this.requireProject(input.projectId);
+    this.emit({ type: "project.updated", project: updated });
+    this.emit({ type: "project.githubConnection", projectId: input.projectId, connection });
+    return connection;
+  }
+
+  async pushProjectToGithub(input: { projectId: string }): Promise<GithubConnection> {
+    const project = await this.store.readProject(input.projectId);
+    if (!project) {
+      throw new Error("Project not found.");
+    }
+    if (!project.githubConnection?.repoUrl) {
+      throw new Error("No GitHub remote configured for this project.");
+    }
+    await this.git.pushToExistingGithub(project.localPath);
+    const commitSha = await this.git.getHeadCommitSha(project.localPath);
+    const connection: GithubConnection = {
+      ...project.githubConnection,
+      lastPushedAt: new Date().toISOString(),
+      lastPushedCommitSha: commitSha,
+    };
+    await this.store.updateGithubConnection(input.projectId, connection);
+    await this.recomputeProjectRelationships(await this.store.listProjects(), true);
+    const updated = await this.requireProject(input.projectId);
+    this.emit({ type: "project.updated", project: updated });
+    this.emit({ type: "project.githubConnection", projectId: input.projectId, connection });
+    return connection;
+  }
+
+  async readProjectGithubDiffStats(projectId: string): Promise<DiffStats | null> {
+    const project = await this.store.readProject(projectId);
+    if (!project?.localPath) {
+      return null;
+    }
+
+    // Tier 1: pushed through dashboard — diff since that exact commit
+    if (project.githubConnection?.lastPushedCommitSha) {
+      return this.git.getDiffStatsSinceCommit(project.localPath, project.githubConnection.lastPushedCommitSha);
+    }
+
+    // Tier 2: remote exists but no dashboard push — count unpushed commits via tracking branch
+    if (project.githubConnection?.repoUrl) {
+      const unpushed = await this.git.getUnpushedCommitStats(project.localPath);
+      if (unpushed) return unpushed;
+    }
+
+    // Tier 3: no remote or no tracking info — show uncommitted working-tree changes
+    return this.git.readWorkingTreeDiffStats(project.localPath);
+  }
+
+  async saveToGithub(projectId: string): Promise<GithubConnection> {
+    const project = await this.store.readProject(projectId);
+    if (!project) {
+      throw new Error("Project not found.");
+    }
+
+    const githubStatus = await this.git.getGithubStatus();
+    if (!githubStatus.available) {
+      throw new Error("GitHub CLI is not installed. Go to https://cli.github.com to install it.");
+    }
+    if (!githubStatus.loggedIn) {
+      throw new Error("Log in to GitHub in Settings to save your project.");
+    }
+
+    await this.git.ensureRepository(project.localPath);
+    await this.git.commitAll(project.localPath, "Save");
+
+    if (!project.githubConnection?.repoUrl) {
+      const repoName =
+        project.name
+          .toLowerCase()
+          .replace(/\s+/g, "-")
+          .replace(/[^a-z0-9-]/g, "")
+          .replace(/-+/g, "-")
+          .replace(/^-|-$/g, "") || "my-project";
+      const repoUrl = await this.git.createAndPushToGithub(project.localPath, repoName, true);
+      const commitSha = await this.git.getHeadCommitSha(project.localPath);
+      const connection: GithubConnection = {
+        repoUrl,
+        lastPushedAt: new Date().toISOString(),
+        lastPushedCommitSha: commitSha,
+      };
+      await this.store.updateGithubConnection(projectId, connection);
+      await this.recomputeProjectRelationships(await this.store.listProjects(), true);
+      const updated = await this.requireProject(projectId);
+      this.emit({ type: "project.updated", project: updated });
+      this.emit({ type: "project.githubConnection", projectId, connection });
+      return connection;
+    } else {
+      await this.git.pushToExistingGithub(project.localPath);
+      const commitSha = await this.git.getHeadCommitSha(project.localPath);
+      const connection: GithubConnection = {
+        ...project.githubConnection,
+        lastPushedAt: new Date().toISOString(),
+        lastPushedCommitSha: commitSha,
+      };
+      await this.store.updateGithubConnection(projectId, connection);
+      await this.recomputeProjectRelationships(await this.store.listProjects(), true);
+      const updated = await this.requireProject(projectId);
+      this.emit({ type: "project.updated", project: updated });
+      this.emit({ type: "project.githubConnection", projectId, connection });
+      return connection;
+    }
+  }
+
+  async detectAndSyncGithubRemote(projectId: string): Promise<GithubConnection | null> {
+    const project = await this.store.readProject(projectId);
+    if (!project) {
+      return null;
+    }
+    const remoteUrl = await this.git.getRemoteOriginUrl(project.localPath);
+    if (!remoteUrl || !remoteUrl.includes("github.com")) {
+      return null;
+    }
+    const connection: GithubConnection = {
+      repoUrl: remoteUrl,
+      lastPushedAt: null,
+      lastPushedCommitSha: null,
+    };
+    const updated = await this.store.updateGithubConnection(projectId, connection);
+    this.emit({ type: "project.updated", project: updated });
+    this.emit({ type: "project.githubConnection", projectId, connection });
+    return connection;
+  }
+
   async testClaudeConnection(): Promise<ClaudeConnectionTestResult> {
     const settings = await this.store.readSettings();
     return this.claude.testConnection(settings, settings.advancedDefaults.claudeModel);
@@ -11227,9 +11834,79 @@ Return ONLY strict JSON matching:
     return next;
   }
 
+  async setRunCommand(projectId: string, runCommand: string) {
+    await this.ensureInitialized();
+    const project = await this.requireProject(projectId);
+    const trimmed = runCommand.trim();
+    if (!trimmed) {
+      throw new Error("Enter a run command first.");
+    }
+    const nextProject: Project = {
+      ...project,
+      updatedAt: new Date().toISOString(),
+      runtimeConfig: {
+        ...project.runtimeConfig,
+        runCommand: trimmed,
+        launch: {
+          origin: "manual",
+          confidence: "high",
+          locked: true,
+          candidate: {
+            kind: "direct",
+            source: "manual",
+            confidence: "high",
+            summary: "User-provided run command.",
+            notes: ["Entered manually in PROGRAMS."],
+          },
+          wrapperPath: null,
+          workspacePath: project.runtimeConfig.launch?.workspacePath?.trim() || null,
+        },
+      },
+    };
+    await this.store.updateProject(nextProject);
+    this.emit({ type: "project.updated", project: nextProject });
+    return nextProject;
+  }
+
+  async getRunCommandSuggestions(projectId: string): Promise<RunCommandSuggestions> {
+    await this.ensureInitialized();
+    const project = await this.requireProject(projectId);
+    return getRunCommandSuggestions(this.getProjectWorkingPath(project));
+  }
+
+  async suggestRunCommand(projectId: string): Promise<string | null> {
+    await this.ensureInitialized();
+    const project = await this.requireProject(projectId);
+    const settings = await this.store.readSettings();
+    const provider = settings.advancedDefaults.provider;
+    const model = settings.advancedDefaults.model;
+    const service = this.aiService(provider);
+
+    const { projectContext } = await getRunCommandSuggestions(this.getProjectWorkingPath(project));
+
+    const prompt = `You are analyzing a software project to determine its run command.
+
+Here is information about the project:
+
+${projectContext}
+
+Based on this information, what is the single shell command that starts this project in development/server mode?
+
+Respond with ONLY the command string — no explanation, no markdown, no quotes. If you truly cannot determine it, respond with exactly: unknown`;
+
+    try {
+      const result = await service.runOneShot(project, settings, prompt, model, undefined, "low");
+      const trimmed = result.trim().replace(/^["'`]|["'`]$/g, "");
+      return trimmed === "unknown" || !trimmed ? null : trimmed;
+    } catch {
+      return null;
+    }
+  }
+
   async runProject(projectId: string) {
     await this.ensureInitialized();
     let project = await this.refreshProjectRuntimeConfig(await this.requireProject(projectId));
+    project = await this.ensureLaunchWorkspaceIfNeeded(project);
     const existing = await this.syncProjectRuntimeState(project);
     project = existing.project;
     if (existing.runtime.running) {
@@ -11239,7 +11916,8 @@ Return ONLY strict JSON matching:
     project = await this.updateProjectStatus(project, "running", null);
 
     try {
-      await this.git.ensureRepository(project.localPath);
+      const workingPath = this.getProjectWorkingPath(project);
+      await this.git.ensureRepository(workingPath);
       await this.runner.install(project);
       return await this.runner.start(project);
     } catch (error) {
@@ -11271,6 +11949,33 @@ Return ONLY strict JSON matching:
     const runtime = await this.runner.stop(projectId);
     await this.updateProjectStatus(project, "idle", null);
     return runtime;
+  }
+
+  async restartProject(projectId: string) {
+    await this.ensureInitialized();
+    let project = await this.refreshProjectRuntimeConfig(await this.requireProject(projectId));
+    project = await this.ensureLaunchWorkspaceIfNeeded(project);
+
+    const validatedRuntime = await this.runner.validateRuntime(projectId);
+    if (validatedRuntime.running && validatedRuntime.source !== "self") {
+      await this.runner.stop(projectId);
+      await this.updateProjectStatus(project, "idle", null);
+    }
+
+    project = await this.updateProjectStatus(project, "running", null);
+    try {
+      const workingPath = this.getProjectWorkingPath(project);
+      await this.git.ensureRepository(workingPath);
+      await this.runner.install(project);
+      return await this.runner.start(project);
+    } catch (error) {
+      await this.updateProjectStatus(
+        project,
+        "error",
+        error instanceof Error ? error.message : "PROGRAMS could not restart this project.",
+      );
+      throw error;
+    }
   }
 
   async openProject(projectId: string): Promise<boolean> {
@@ -11939,7 +12644,9 @@ Return ONLY strict JSON matching:
     project.lastError = null;
     project.updatedAt = new Date().toISOString();
     await this.store.updateProject(project);
-    this.emit({ type: "project.updated", project });
+    await this.recomputeProjectRelationships(await this.store.listProjects(), true);
+    const latestProject = await this.requireProject(project.id);
+    this.emit({ type: "project.updated", project: latestProject });
     await this.emitHistory(project.id);
     return { started: true };
   }
@@ -12190,7 +12897,10 @@ Return strict JSON with:
         directorToddReviewSchema,
         resolveDirectorRuntime(session, "rd-director").reasoningEffort,
       );
-      const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "")) as Record<string, unknown>;
+      const parsed = parseAgentJsonResponse<Record<string, unknown>>(rawResult, {
+        agentLabel: "Todd",
+        context: "Todd review of Ping report",
+      });
       const response = sanitizeSlackResponseContent(typeof parsed.response === "string" ? parsed.response : "I’ve reviewed Ping’s report.", "rd-director");
       const nextAction = normalizeToddReviewNextAction(parsed.nextAction);
       const replanNeeded = parsed.replanNeeded === true;
@@ -12425,7 +13135,10 @@ Return strict JSON with:
         directorToddReviewSchema,
         resolveDirectorRuntime(session, "rd-director").reasoningEffort,
       );
-      const parsed = JSON.parse(rawResult.trim().replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/, "")) as Record<string, unknown>;
+      const parsed = parseAgentJsonResponse<Record<string, unknown>>(rawResult, {
+        agentLabel: "Todd",
+        context: "Todd review of Pong validation",
+      });
       const response = sanitizeSlackResponseContent(typeof parsed.response === "string" ? parsed.response : "I’ve reviewed Pong’s validation.", "rd-director");
       const nextAction = normalizeToddReviewNextAction(parsed.nextAction);
       this.replaceSlackAssistantMessage(session, "rd-director", {
@@ -12697,6 +13410,8 @@ Return strict JSON with:
         latest.updatedAt = new Date().toISOString();
         latest.lastError = null;
         await this.store.updateProject(latest);
+        await this.recomputeProjectRelationships(await this.store.listProjects(), true);
+        latest = await this.requireProject(latest.id);
         this.emit({ type: "project.updated", project: latest });
         await this.emitHistory(latest.id);
         result.draft.status = "completed";
@@ -12785,10 +13500,250 @@ Return strict JSON with:
 
   private async initializeRuntimeState(): Promise<void> {
     const settings = await this.store.readSettings();
-    const projects = await this.store.listProjects();
+    const colorNormalizedProjects = await this.ensureUniqueProjectIconColors(await this.store.listProjects());
+    const projects = await this.recomputeProjectRelationships(colorNormalizedProjects, false);
     await this.runner.restorePersistedRuntimes(projects, settings.appSourcePath, process.env.ELECTRON_RENDERER_URL ?? null);
     await this.normalizeAutomationSessionsOnStartup(projects);
     await this.reconcileProjectStatuses(projects, false);
+  }
+
+  private resolveProjectIconColor(
+    inputColor: string,
+    projects: Project[],
+    excludeProjectId: string | null = null,
+    fallbackToAvailable = false,
+  ): string {
+    const normalized = normalizeProjectIconColor(inputColor);
+    const usedColors = collectUsedProjectIconColors(projects, excludeProjectId);
+
+    if (normalized && !usedColors.has(normalized)) {
+      return normalized;
+    }
+
+    if (fallbackToAvailable) {
+      return pickAvailableProjectIconColor(usedColors, normalized);
+    }
+
+    if (!normalized) {
+      throw new Error("Choose a valid project color.");
+    }
+
+    throw new Error("That project color is already in use. Choose another color.");
+  }
+
+  private async ensureUniqueProjectIconColors(projectsArg?: Project[]): Promise<Project[]> {
+    const projects = projectsArg ?? (await this.store.listProjects());
+    const ordered = [...projects].sort((left, right) => {
+      const createdDelta = left.createdAt.localeCompare(right.createdAt);
+      if (createdDelta !== 0) {
+        return createdDelta;
+      }
+      return left.id.localeCompare(right.id);
+    });
+    const usedColors = new Set<string>();
+    const nextColors = new Map<string, string>();
+
+    for (const project of ordered) {
+      const normalized = normalizeProjectIconColor(project.iconColor);
+      const nextColor =
+        normalized && !usedColors.has(normalized)
+          ? normalized
+          : pickAvailableProjectIconColor(usedColors, normalized);
+
+      usedColors.add(nextColor);
+      if (nextColor !== project.iconColor) {
+        const nextProject: Project = { ...project, iconColor: nextColor };
+        await this.store.updateProject(nextProject);
+        nextColors.set(project.id, nextColor);
+      }
+    }
+
+    if (nextColors.size === 0) {
+      return projects;
+    }
+
+    return projects.map((project) =>
+      nextColors.has(project.id)
+        ? { ...project, iconColor: nextColors.get(project.id)! }
+        : project,
+    );
+  }
+
+  private async recomputeProjectRelationships(projectsArg?: Project[], emitEvents = false): Promise<Project[]> {
+    const projects = projectsArg ?? (await this.store.listProjects());
+    if (projects.length === 0) {
+      return projects;
+    }
+
+    const scannedAt = new Date().toISOString();
+    const snapshots = await Promise.all(projects.map((project) => buildProjectRelationshipSnapshot(project)));
+    const projectById = new Map(projects.map((project) => [project.id, project]));
+    const snapshotById = new Map(snapshots.map((snapshot) => [snapshot.project.id, snapshot]));
+    const exactParentCandidates = new Map<string, Array<{ parentId: string; parentFileCount: number; parentCreatedAt: string }>>();
+    const maybeRelatedByProjectId = new Map<string, ProjectRelationshipCandidate[]>();
+
+    for (let index = 0; index < snapshots.length; index += 1) {
+      const left = snapshots[index];
+      if (left.scanFailed || left.meaningfulFileCount < 3) {
+        continue;
+      }
+
+      for (let innerIndex = index + 1; innerIndex < snapshots.length; innerIndex += 1) {
+        const right = snapshots[innerIndex];
+        if (right.scanFailed || right.meaningfulFileCount < 3) {
+          continue;
+        }
+
+        const sharedFileCount = countSharedRelationshipFiles(left.fileHashCounts, right.fileHashCounts);
+        if (sharedFileCount === 0) {
+          continue;
+        }
+
+        const smallerFileCount = Math.min(left.meaningfulFileCount, right.meaningfulFileCount);
+        const overlapRatio = sharedFileCount / smallerFileCount;
+        const leftReferencesRight = projectRelationshipHasReference(left, right);
+        const rightReferencesLeft = projectRelationshipHasReference(right, left);
+        const leftIsExactChild =
+          (left.meaningfulFileCount < right.meaningfulFileCount && sharedFileCount === left.meaningfulFileCount)
+          || (
+            left.meaningfulFileCount < right.meaningfulFileCount
+            && overlapRatio >= PROJECT_RELATIONSHIP_NEAR_EXACT_THRESHOLD
+          )
+          || (
+            rightReferencesLeft
+            && !leftReferencesRight
+            && sharedFileCount >= PROJECT_RELATIONSHIP_INTEGRATION_MIN_SHARED_FILES
+          );
+        const rightIsExactChild =
+          (right.meaningfulFileCount < left.meaningfulFileCount && sharedFileCount === right.meaningfulFileCount)
+          || (
+            right.meaningfulFileCount < left.meaningfulFileCount
+            && overlapRatio >= PROJECT_RELATIONSHIP_NEAR_EXACT_THRESHOLD
+          )
+          || (
+            leftReferencesRight
+            && !rightReferencesLeft
+            && sharedFileCount >= PROJECT_RELATIONSHIP_INTEGRATION_MIN_SHARED_FILES
+          );
+
+        if (leftIsExactChild) {
+          const candidates = exactParentCandidates.get(left.project.id) ?? [];
+          candidates.push({
+            parentId: right.project.id,
+            parentFileCount: right.meaningfulFileCount,
+            parentCreatedAt: right.project.createdAt,
+          });
+          exactParentCandidates.set(left.project.id, candidates);
+          continue;
+        }
+
+        if (rightIsExactChild) {
+          const candidates = exactParentCandidates.get(right.project.id) ?? [];
+          candidates.push({
+            parentId: left.project.id,
+            parentFileCount: left.meaningfulFileCount,
+            parentCreatedAt: left.project.createdAt,
+          });
+          exactParentCandidates.set(right.project.id, candidates);
+          continue;
+        }
+
+        if (sharedFileCount < 3 || overlapRatio < 0.35) {
+          continue;
+        }
+
+        const leftCandidates = maybeRelatedByProjectId.get(left.project.id) ?? [];
+        leftCandidates.push({
+          projectId: right.project.id,
+          overlapRatio,
+          sharedFileCount,
+        });
+        maybeRelatedByProjectId.set(left.project.id, leftCandidates);
+
+        const rightCandidates = maybeRelatedByProjectId.get(right.project.id) ?? [];
+        rightCandidates.push({
+          projectId: left.project.id,
+          overlapRatio,
+          sharedFileCount,
+        });
+        maybeRelatedByProjectId.set(right.project.id, rightCandidates);
+      }
+    }
+
+    const exactParentByChildId = new Map<string, string>();
+    for (const [childId, candidates] of exactParentCandidates.entries()) {
+      candidates.sort((left, right) => {
+        if (left.parentFileCount !== right.parentFileCount) {
+          return left.parentFileCount - right.parentFileCount;
+        }
+        if (left.parentCreatedAt !== right.parentCreatedAt) {
+          return left.parentCreatedAt.localeCompare(right.parentCreatedAt);
+        }
+        return left.parentId.localeCompare(right.parentId);
+      });
+      exactParentByChildId.set(childId, candidates[0].parentId);
+    }
+
+    const exactChildrenByParentId = new Map<string, string[]>();
+    for (const [childId, parentId] of exactParentByChildId.entries()) {
+      const children = exactChildrenByParentId.get(parentId) ?? [];
+      children.push(childId);
+      exactChildrenByParentId.set(parentId, children);
+    }
+
+    const nextProjects: Project[] = [];
+    for (const project of projects) {
+      const snapshot = snapshotById.get(project.id);
+      if (!snapshot) {
+        nextProjects.push(project);
+        continue;
+      }
+
+      if (snapshot.scanFailed) {
+        nextProjects.push(project);
+        continue;
+      }
+
+      const exactChildProjectIds = [...(exactChildrenByParentId.get(project.id) ?? [])].sort((leftId, rightId) => {
+        const leftProject = projectById.get(leftId);
+        const rightProject = projectById.get(rightId);
+        if (leftProject && rightProject) {
+          return leftProject.name.localeCompare(rightProject.name);
+        }
+        return leftId.localeCompare(rightId);
+      });
+      const maybeRelated = (maybeRelatedByProjectId.get(project.id) ?? [])
+        .filter((candidate) =>
+          candidate.projectId !== exactParentByChildId.get(project.id)
+          && exactParentByChildId.get(candidate.projectId) !== project.id,
+        )
+        .sort(compareProjectRelationshipCandidates);
+
+      const nextRelationship: ProjectRelationshipSummary = {
+        scannedAt,
+        contentUpdatedAt: snapshot.contentUpdatedAt,
+        exactParentProjectId: exactParentByChildId.get(project.id) ?? null,
+        exactChildProjectIds,
+        maybeRelated,
+      };
+
+      if (sameProjectRelationshipSummary(project.relationship, nextRelationship)) {
+        nextProjects.push(project);
+        continue;
+      }
+
+      const nextProject: Project = {
+        ...project,
+        relationship: nextRelationship,
+      };
+      await this.store.updateProject(nextProject);
+      if (emitEvents) {
+        this.emit({ type: "project.updated", project: nextProject });
+      }
+      nextProjects.push(nextProject);
+    }
+
+    return nextProjects;
   }
 
   private async syncSelfRuntime(
@@ -12895,17 +13850,12 @@ Return strict JSON with:
   private async refreshProjectRuntimeConfig(project: Project): Promise<Project> {
     let detected: Project["runtimeConfig"];
     try {
-      detected = await detectRuntimeConfig(project.localPath);
+      detected = await detectRuntimeConfig(this.getProjectWorkingPath(project));
     } catch {
       return project;
     }
 
-    const nextRuntimeConfig = {
-      ...detected,
-      openUrl: detected.openUrl ?? project.runtimeConfig.openUrl,
-      lastRunUrl: project.runtimeConfig.lastRunUrl,
-      initialIdea: project.runtimeConfig.initialIdea,
-    };
+    const nextRuntimeConfig = reconcileRuntimeConfig(project.runtimeConfig, detected);
 
     if (JSON.stringify(nextRuntimeConfig) === JSON.stringify(project.runtimeConfig)) {
       return project;
@@ -12917,6 +13867,167 @@ Return strict JSON with:
     };
     await this.store.updateProject(nextProject);
     return nextProject;
+  }
+
+  private getProjectWorkingPath(project: Project): string {
+    return project.runtimeConfig.launch?.workspacePath?.trim() || project.localPath;
+  }
+
+  private getLaunchWorkspaceRoot(project: Project): string {
+    return join(app.getPath("userData"), "launch-workspaces", project.id);
+  }
+
+  private getLaunchWorkspacePath(project: Project): string {
+    return join(this.getLaunchWorkspaceRoot(project), "workspace");
+  }
+
+  private getLaunchWrapperPath(workspacePath: string): string {
+    return join(workspacePath, ".programs", "launch.sh");
+  }
+
+  private async copyProjectToLaunchWorkspace(project: Project): Promise<string> {
+    const workspacePath = this.getLaunchWorkspacePath(project);
+    await rm(workspacePath, { force: true, recursive: true });
+    await ensureDirectory(this.getLaunchWorkspaceRoot(project));
+
+    const copyFilter = (source: string): boolean => {
+      const relativeSource = relative(project.localPath, source);
+      if (!relativeSource || relativeSource === "") {
+        return true;
+      }
+      const segments = relativeSource.split(sep).filter(Boolean);
+      return !segments.some((segment) => IGNORED_LAUNCH_DIRECTORIES.has(segment));
+    };
+
+    await cp(project.localPath, workspacePath, {
+      recursive: true,
+      force: true,
+      filter: (source) => copyFilter(source),
+    });
+
+    return workspacePath;
+  }
+
+  private async ensureLaunchWorkspaceIfNeeded(project: Project): Promise<Project> {
+    if (project.runtimeConfig.runCommand) {
+      return project;
+    }
+
+    const resolution = await resolveLaunchPlan(project.localPath);
+    if (!resolution.wrapperSteps?.length || resolution.runCommand) {
+      return project;
+    }
+
+    return this.materializeLaunchWorkspace(project, resolution, "wrapped");
+  }
+
+  private async materializeLaunchWorkspace(
+    project: Project,
+    resolution: LaunchResolution,
+    origin: "wrapped" | "repaired",
+  ): Promise<Project> {
+    const workspacePath = await this.copyProjectToLaunchWorkspace(project);
+    const wrapperPath = this.getLaunchWrapperPath(workspacePath);
+    await ensureDirectory(dirname(wrapperPath));
+    const wrapperScript = this.buildLaunchWrapperScript(resolution);
+    await writeTextFile(wrapperPath, wrapperScript);
+
+    const nextRuntimeConfig: Project["runtimeConfig"] = {
+      ...project.runtimeConfig,
+      packageManager: resolution.packageManager,
+      installCommand: resolution.installCommand ?? project.runtimeConfig.installCommand,
+      runCommand: "bash .programs/launch.sh",
+      openUrl: resolution.openUrl ?? project.runtimeConfig.openUrl,
+      launch: {
+        origin,
+        confidence: resolution.launch?.confidence ?? "medium",
+        locked: false,
+        candidate: {
+          kind: origin === "repaired" ? "repair" : "wrapper",
+          source: resolution.launch?.candidate?.source ?? "composite launch",
+          confidence: resolution.launch?.confidence ?? "medium",
+          summary: resolution.launch?.candidate?.summary ?? `Launches ${resolution.wrapperSteps?.length ?? 0} nested app roots.`,
+          notes: resolution.launch?.candidate?.notes ?? [],
+        },
+        wrapperPath,
+        workspacePath,
+      },
+    };
+
+    const nextProject: Project = {
+      ...project,
+      updatedAt: new Date().toISOString(),
+      runtimeConfig: nextRuntimeConfig,
+    };
+    await this.store.updateProject(nextProject);
+    this.emit({ type: "project.updated", project: nextProject });
+    return nextProject;
+  }
+
+  async prepareLaunchRepair(projectId: string): Promise<Project> {
+    await this.ensureInitialized();
+    const project = await this.refreshProjectRuntimeConfig(await this.requireProject(projectId));
+    const resolution = await resolveLaunchPlan(project.localPath);
+
+    if (resolution.wrapperSteps?.length) {
+      return this.materializeLaunchWorkspace(project, resolution, "repaired");
+    }
+
+    const workspacePath = await this.copyProjectToLaunchWorkspace(project);
+
+    const nextProject: Project = {
+      ...project,
+      updatedAt: new Date().toISOString(),
+      runtimeConfig: {
+        ...project.runtimeConfig,
+        launch: {
+          origin: "repaired",
+          confidence: resolution.launch?.confidence ?? "medium",
+          locked: false,
+          candidate: {
+            kind: "repair",
+            source: resolution.launch?.candidate?.source ?? "repair workspace",
+            confidence: resolution.launch?.confidence ?? "medium",
+            summary: "PROGRAMS prepared a repair workspace clone.",
+            notes: [
+              ...(resolution.launch?.candidate?.notes ?? []),
+              "PROGRAMS created a safe working copy for manual repair.",
+            ],
+          },
+          wrapperPath: null,
+          workspacePath,
+        },
+      },
+    };
+    await this.store.updateProject(nextProject);
+    this.emit({ type: "project.updated", project: nextProject });
+    this.emit({
+      type: "toast",
+      level: "info",
+      message: "PROGRAMS prepared a repair workspace copy for this project.",
+    });
+    return nextProject;
+  }
+
+  private buildLaunchWrapperScript(resolution: LaunchResolution): string {
+    const steps = resolution.wrapperSteps ?? [];
+    const lines = [
+      "#!/bin/bash",
+      "set -e",
+      "trap 'kill 0' EXIT INT TERM",
+    ];
+
+    for (const step of steps) {
+      const command = step.command.trim();
+      if (!command) {
+        continue;
+      }
+
+      lines.push(`(${command}) &`);
+    }
+
+    lines.push("wait");
+    return `${lines.join("\n")}\n`;
   }
 
   private async emitHistory(projectId: string): Promise<void> {

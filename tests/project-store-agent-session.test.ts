@@ -5,7 +5,6 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const execFileAsync = promisify(execFile);
 
@@ -50,6 +49,9 @@ source = source.replace(
   \`const app = { getPath: () => \${JSON.stringify(process.env.PROGRAMS_TEST_USER_DATA)}, getAppPath: () => \${JSON.stringify(process.cwd())} };\`,
 );
 const projectRoot = process.cwd();
+const { createEmptyProjectRelationshipSummary } = await import(
+  pathToFileURL(path.join(projectRoot, "src/shared/types.ts")).href,
+);
 const absoluteImports = new Map([
   ["../../shared/types.ts", pathToFileURL(path.join(projectRoot, "src/shared/types.ts")).href],
   ["../../shared/agent-session.ts", pathToFileURL(path.join(projectRoot, "src/shared/agent-session.ts")).href],
@@ -92,6 +94,7 @@ try {
         initialIdea: null,
       },
     lastError: null,
+    relationship: createEmptyProjectRelationshipSummary(),
   };
 
   await store.createProject(project);

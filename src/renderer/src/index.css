@@ -1183,6 +1183,76 @@ code {
   flex-wrap: nowrap;
 }
 
+.summaryGithubRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 0 2px;
+}
+
+.githubSaveButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 13px;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  border: 1px solid var(--border-strong);
+  background: var(--panel-strong);
+  color: var(--text);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+.githubSaveButton svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+.githubSaveButton:hover:not(:disabled) {
+  background: var(--panel);
+}
+.githubSaveButton:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.githubSaveButton-success {
+  border-color: var(--success);
+  color: var(--success);
+}
+.githubSaveButton-error {
+  border-color: var(--error);
+  color: var(--error);
+}
+
+.githubDiffStats {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.githubDiffAdded {
+  color: var(--success);
+}
+
+.githubDiffRemoved {
+  color: var(--error);
+}
+
+.githubRepoStatus {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.githubSaveErrorLabel {
+  font-size: 12px;
+  color: var(--error);
+}
+
 .summaryActionButton {
   width: 48px;
   min-width: 48px;
@@ -2658,16 +2728,36 @@ select {
   border-radius: 16px;
   border: 1px solid rgba(255, 255, 255, 0.18);
   box-shadow: inset 0 -18px 28px rgba(0, 0, 0, 0.16);
-  transition: border-color 140ms ease, box-shadow 140ms ease;
+  transition: border-color 140ms ease, box-shadow 140ms ease, opacity 140ms ease, filter 140ms ease;
 }
 
 .colorSwatch:hover {
   transform: none;
 }
 
+.colorSwatch:disabled,
+.colorSwatch.disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+  filter: saturate(0.7);
+}
+
 .colorSwatch.active {
   border-color: var(--accent-strong);
   box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.16), inset 0 -18px 28px rgba(0, 0, 0, 0.16);
+}
+
+.projectOptionsHint {
+  margin: 0 0 12px;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.projectOptionsHint-error {
+  margin-top: 12px;
+  margin-bottom: 0;
+  color: var(--error);
 }
 
 .colorField input {
@@ -2992,6 +3082,74 @@ select {
   padding-top: var(--page-chrome-divider-offset);
 }
 
+.projectBrowseTopBar {
+  position: fixed;
+  top: 8px;
+  left: max(140px, calc(var(--sidebar-width) + 24px));
+  right: 24px;
+  z-index: 39;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.projectBrowseTopBarPrimary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.projectBrowseBadge,
+.projectBrowseCount {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+.projectBrowseCount {
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.projectBrowseTopBarControls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.projectBrowseToggle {
+  padding: 4px;
+  gap: 4px;
+}
+
+.projectBrowseOption {
+  border-radius: 999px;
+  padding: 7px 11px;
+  font-size: 0.76rem;
+  line-height: 1;
+}
+
+.projectRelationshipCopy span,
+.projectRelationshipHead p {
+  margin: 0;
+  color: var(--muted);
+}
+
 .projectTopBar {
   display: flex;
   position: fixed;
@@ -3085,7 +3243,97 @@ select {
 }
 
 .projectTileGradient::after {
-  background: rgba(255, 255, 255, 0.05);
+  background:
+    radial-gradient(circle at 18% 16%, rgba(255, 255, 255, 0.28) 0, rgba(255, 255, 255, 0.1) 24%, transparent 54%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
+}
+
+.projectRelationshipGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 18px;
+}
+
+.projectRelationshipCard {
+  display: grid;
+  gap: 16px;
+  padding: 20px 22px;
+  border-radius: 24px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+}
+
+.projectRelationshipHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.projectRelationshipHead h3 {
+  margin: 6px 0 0;
+  font-size: 1.05rem;
+}
+
+.projectRelationshipCount {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  height: 34px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel-strong);
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.projectRelationshipList {
+  display: grid;
+  gap: 10px;
+}
+
+.projectRelationshipItem {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--panel-strong);
+  color: var(--text);
+  text-align: left;
+  transition: transform 140ms ease, border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+
+.projectRelationshipItem:hover,
+.projectRelationshipItem:focus-visible {
+  border-color: color-mix(in srgb, var(--text) 14%, var(--border));
+  background: color-mix(in srgb, var(--panel-strong) 76%, var(--panel));
+  box-shadow: var(--shadow-sm);
+  transform: translateY(-1px);
+}
+
+.projectRelationshipSwatch {
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  flex-shrink: 0;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+}
+
+.projectRelationshipCopy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.projectRelationshipCopy strong {
+  font-size: 0.97rem;
 }
 
 .projectTile:hover,
@@ -3102,7 +3350,9 @@ select {
 
 .projectTile:hover::after,
 .projectTile:focus-within::after {
-  background: rgba(255, 255, 255, 0.08);
+  background:
+    radial-gradient(circle at 18% 16%, rgba(255, 255, 255, 0.34) 0, rgba(255, 255, 255, 0.14) 26%, transparent 58%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03));
 }
 
 .projectTileOpenArea {
@@ -4127,6 +4377,20 @@ select {
     padding-top: var(--page-chrome-divider-offset);
   }
 
+  .projectBrowseTopBar,
+  .projectBrowseTopBarControls {
+    align-items: stretch;
+  }
+
+  .projectBrowseTopBar {
+    right: 16px;
+  }
+
+  .projectBrowseTopBarControls {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
   .projectTopBar {
     right: 16px;
   }
@@ -4200,6 +4464,10 @@ select {
 
   .speedToggle {
     width: fit-content;
+  }
+
+  .projectBrowseToggle {
+    width: 100%;
   }
 
   .composerControlRow,

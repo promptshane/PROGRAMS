@@ -923,7 +923,25 @@ export function AgentsPage({
                       onPlanningModeChange={() => {}}
                       onAddFiles={() => {}}
                       onSubmit={() => void handleSend()}
-                      onStop={() => {}}
+                      onStop={() => {
+                        if (!agentSelectedProjectId) return;
+                        // Clear the jeff live-presence window so the typing bubble can go away immediately.
+                        setJeffLivePresenceByProject((prev) => {
+                          if (!(agentSelectedProjectId in prev)) return prev;
+                          const next = { ...prev };
+                          delete next[agentSelectedProjectId];
+                          return next;
+                        });
+                        setIsLoading(false);
+                        void (async () => {
+                          try {
+                            const updated = await window.programs.stopWorkingAgentMessages(agentSelectedProjectId);
+                            if (updated) onSessionUpdate(updated);
+                          } catch (error) {
+                            pushToast(error instanceof Error ? error.message : "Failed to stop the current response.", "error");
+                          }
+                        })();
+                      }}
                       submitLabel="Send"
                     />
                   </div>

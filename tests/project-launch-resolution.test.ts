@@ -101,3 +101,51 @@ test("detectRuntimeConfig preserves a manual launch command over a weaker detect
   assert.equal(merged.launch?.origin, "manual");
   assert.equal(merged.launch?.locked, true);
 });
+
+test("resolveLaunchPlan prefers pages:dev over dev for Cloudflare Pages projects", async (t) => {
+  const projectPath = await createTempProject();
+  t.after(async () => {
+    await rm(projectPath, { recursive: true, force: true });
+  });
+
+  await writeFile(join(projectPath, "wrangler.toml"), 'name = "demo"\ncompatibility_date = "2025-01-01"\n');
+  await writeFile(
+    join(projectPath, "package.json"),
+    JSON.stringify({
+      name: "demo",
+      private: true,
+      scripts: {
+        dev: "vite",
+        "pages:dev": "wrangler pages dev --proxy 5173 -- npm run dev",
+      },
+    }, null, 2),
+  );
+
+  const plan = await resolveLaunchPlan(projectPath);
+
+  assert.equal(plan.runCommand, "npm run pages:dev");
+  assert.equal(plan.openUrl, "http://localhost:8788/");
+});
+
+test("resolveLaunchPlan still picks dev when no wrangler config is present", async (t) => {
+  const projectPath = await createTempProject();
+  t.after(async () => {
+    await rm(projectPath, { recursive: true, force: true });
+  });
+
+  await writeFile(
+    join(projectPath, "package.json"),
+    JSON.stringify({
+      name: "plain-vite",
+      private: true,
+      scripts: {
+        dev: "vite",
+        "pages:dev": "wrangler pages dev --proxy 5173 -- npm run dev",
+      },
+    }, null, 2),
+  );
+
+  const plan = await resolveLaunchPlan(projectPath);
+
+  assert.equal(plan.runCommand, "npm run dev");
+});

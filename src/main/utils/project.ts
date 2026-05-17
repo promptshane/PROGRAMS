@@ -70,9 +70,13 @@ const IGNORED_LAUNCH_DIRECTORIES = new Set([
 ]);
 
 interface SelectedScript {
-  name: "dev" | "start" | "preview";
+  name: string;
   command: string;
 }
+
+const WRANGLER_PAGES_DEV_REGEX = /\bwrangler\s+(?:pages\s+)?dev\b/i;
+const WRANGLER_CONFIG_FILES = ["wrangler.toml", "wrangler.jsonc", "wrangler.json"] as const;
+const CLOUDFLARE_PAGES_PREFERRED_SCRIPT_NAMES = ["pages:dev", "dev:pages", "dev:cf"] as const;
 
 interface FallbackScript {
   name: string;
@@ -109,6 +113,39 @@ const pickScript = (pkg: Record<string, unknown>, scriptName: SelectedScript["na
   const scripts = typeof pkg.scripts === "object" && pkg.scripts ? (pkg.scripts as Record<string, unknown>) : {};
   const value = scripts[scriptName];
   return typeof value === "string" ? { name: scriptName, command: value } : null;
+};
+
+// Cloudflare Pages projects need both Vite (frontend) and Wrangler (Functions
+// emulator + API). Picking plain `dev` runs Vite only and leaves /api/* broken
+// locally. If the project root has a wrangler config, prefer a script that
+// actually invokes `wrangler [pages] dev`.
+const pickCloudflarePagesScript = async (
+  directoryPath: string,
+  pkg: Record<string, unknown>,
+): Promise<SelectedScript | null> => {
+  let hasWranglerConfig = false;
+  for (const name of WRANGLER_CONFIG_FILES) {
+    if (await pathExists(join(directoryPath, name))) {
+      hasWranglerConfig = true;
+      break;
+    }
+  }
+  if (!hasWranglerConfig) return null;
+
+  const scripts = typeof pkg.scripts === "object" && pkg.scripts ? (pkg.scripts as Record<string, unknown>) : {};
+
+  for (const preferred of CLOUDFLARE_PAGES_PREFERRED_SCRIPT_NAMES) {
+    const value = scripts[preferred];
+    if (typeof value === "string" && WRANGLER_PAGES_DEV_REGEX.test(value)) {
+      return { name: preferred, command: value };
+    }
+  }
+  for (const [name, value] of Object.entries(scripts)) {
+    if (typeof value === "string" && WRANGLER_PAGES_DEV_REGEX.test(value)) {
+      return { name, command: value };
+    }
+  }
+  return null;
 };
 
 const FALLBACK_SCRIPT_NAMES = ["serve", "watch", "develop", "run", "launch", "server"];
@@ -397,6 +434,7 @@ const detectDirectoryLaunchAtDirectory = async (
       const packageManager = await detectPackageManagerAt(directoryPath);
       const installCommand = buildPackageManagerInstallCommand(packageManager);
       const selectedScript =
+        (await pickCloudflarePagesScript(directoryPath, packageJson)) ??
         pickScript(packageJson, "dev") ??
         pickScript(packageJson, "start") ??
         pickScript(packageJson, "preview") ??
@@ -748,6 +786,13 @@ const normalizeHost = (host: string | null | undefined): string => {
 const buildLocalUrl = (host: string | null | undefined, port: number): string => `http://${normalizeHost(host)}:${port}/`;
 
 const detectFrameworkPort = (packageNames: Set<string>, command: string): number | null => {
+  // wrangler pages dev / wrangler dev — Cloudflare's emulator listens on 8788
+  // by default and proxies the frontend. Check this BEFORE vite so a fullstack
+  // command like `wrangler pages dev --proxy 5173 -- npm run dev` opens at the
+  // API-serving port rather than the bare Vite port.
+  if (WRANGLER_PAGES_DEV_REGEX.test(command)) {
+    return 8788;
+  }
   if (packageNames.has("next") || /\bnext\b/i.test(command)) {
     return 3000;
   }

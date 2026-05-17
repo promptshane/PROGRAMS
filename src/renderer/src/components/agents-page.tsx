@@ -998,8 +998,8 @@ export function AgentsPage({
                       <section>
                         <h4>Same (Matched Prior Understanding)</h4>
                         <ul className="agentChatUpdateList">
-                          {activePanel.message.metadata.same.map((item, i) => (
-                            <li key={i}>{item}</li>
+                          {activePanel.message.metadata.same.map((item) => (
+                            <li key={item}>{item}</li>
                           ))}
                         </ul>
                       </section>
@@ -1008,8 +1008,8 @@ export function AgentsPage({
                       <section>
                         <h4>Updated (New / Changed / Removed)</h4>
                         <ul className="agentChatUpdateList">
-                          {activePanel.message.metadata.updated.map((item, i) => (
-                            <li key={i}>{item}</li>
+                          {activePanel.message.metadata.updated.map((item) => (
+                            <li key={item}>{item}</li>
                           ))}
                         </ul>
                       </section>

@@ -495,7 +495,7 @@ export function StoredDataModal({
   );
 }
 
-export function StoredDataTreeNode({ node, depth }: { node: StoredDataNode; depth: number }) {
+function StoredDataTreeNode({ node, depth }: { node: StoredDataNode; depth: number }) {
   const hasChildren = node.children.length > 0;
 
   return (

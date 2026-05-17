@@ -47,7 +47,6 @@ export const registerIpc = (backend: ProgramsBackend): void => {
   ipcMain.handle("setup.installGit", () => backend.installGit());
   ipcMain.handle("setup.codex", () => backend.setupCodex());
   ipcMain.handle("setup.claude", () => backend.setupClaude());
-  ipcMain.handle("setup.dismiss", () => backend.dismissSetup());
   ipcMain.handle("settings.read", () => backend.readSettings());
   ipcMain.handle("settings.update", (_event, input: SettingsUpdateInput) => backend.updateSettings(input));
 
@@ -160,8 +159,6 @@ export const registerIpc = (backend: ProgramsBackend): void => {
     backend.updateDirectorSettings(projectId, directorId, overrides));
   ipcMain.handle("directors.updateState", (_event, projectId: string, directorId: DirectorId, state: Partial<import("@shared/types").DirectorStateSnapshot>) =>
     backend.updateDirectorState(projectId, directorId, state));
-  ipcMain.handle("directors.getProgress", (_event, projectId: string) =>
-    backend.deriveProjectCategory(projectId));
   ipcMain.handle("projects.deriveCategory", (_event, projectId: string) =>
     backend.deriveProjectCategory(projectId));
   ipcMain.handle("agents.confirmData", (_event, input: ConfirmAgentDataInput) =>
@@ -179,21 +176,6 @@ export const registerIpc = (backend: ProgramsBackend): void => {
 
   ipcMain.handle("projects.diffStats", (_event, projectId: string) => backend.readProjectDiffStats(projectId));
 
-
-  ipcMain.handle("system.pickMaterialFiles", async () => {
-    const result = await dialog.showOpenDialog({
-      buttonLabel: "Attach files",
-      properties: ["openFile", "multiSelections"],
-      filters: [
-        { name: "Documents", extensions: ["txt", "md", "pptx", "ppt", "pdf", "docx", "csv", "json"] },
-        { name: "All Files", extensions: ["*"] },
-      ],
-    });
-    return {
-      canceled: result.canceled,
-      paths: result.canceled ? [] : result.filePaths,
-    };
-  });
 
   ipcMain.handle("system.pickDirectory", async (_event, mode: DirectoryPickMode = "attach") => {
     const result = await dialog.showOpenDialog({

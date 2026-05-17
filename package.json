@@ -12,7 +12,8 @@
     "package:mac": "npm run icons:mac && npm run build && electron-builder --mac dir",
     "package:dmg": "npm run icons:mac && npm run build && electron-builder --mac dmg",
     "preview": "electron-vite preview",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --no-warnings --loader ./tests/node-ts-path-loader.mjs --experimental-strip-types --test 'tests/*.test.ts'"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

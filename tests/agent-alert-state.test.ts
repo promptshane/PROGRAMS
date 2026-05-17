@@ -55,7 +55,6 @@ const loadAgentAlertStateModule = async () => {
 const {
   agentAlertState: {
     getNextPendingProgrammingUpdate,
-    getToddMemoryProcessingFocusMode,
     resolveAgentAlertState,
   },
   sessionHelpers: {
@@ -438,13 +437,3 @@ test("superseding Todd structural replan blocks the next pending programming upd
   assert.equal(resolveAgentAlertState("programming-director", session), null);
 });
 
-test("Todd memory-processing focus always returns update-planning", () => {
-  const session = createSession();
-  assert.equal(getToddMemoryProcessingFocusMode(session), "update-planning");
-
-  session.toddMemory.successChain = [
-    { id: "step-1", title: "First step", description: "Do the first thing.", order: 0, satisfied: false, satisfiedAt: null },
-  ];
-
-  assert.equal(getToddMemoryProcessingFocusMode(session), "update-planning");
-});

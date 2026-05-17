@@ -117,35 +117,21 @@ import {
   sortPillarsByOrder,
 } from "@shared/pillar-flow";
 import type {
-  AgentAttachMaterialsInput,
-  AgentAttachMaterialsResult,
   AgentChatInput,
   AgentChatMessage,
   AgentChatResponse,
   AgentChatDirectorApprovalPayload,
   AgentChatDirectorMode,
-  AgentConfirmStageInput,
   AgentCoreDetails,
   DirectorChatRuntimeStage,
   AgentExecuteUpdateInput,
   AgentPlannedUpdate,
-  AgentProcessTodosInput,
-  AgentReorderUpdatesInput,
   AgentSession,
   AgentStage,
   AgentStageData,
-  AgentSubmitTodosInput,
-  AgentSubmitTodosResponse,
-  AgentUpdateScratchpadInput,
   ConfirmAgentDataInput,
-  CoreDetailsChatInput,
-  CoreDetailsChatResponse,
   CascadeProposal,
   CoreDetailsProposal,
-  AgentSuggestUpdateInput,
-  AgentSuggestUpdateResponse,
-  AgentAcceptCascadeInput,
-  AgentApplyCoreDetailsInput,
   AiProvider,
   AutomationConstraints,
   AutomationRunState,
@@ -1238,134 +1224,6 @@ const agentChatSchema = {
   },
 } as const;
 
-const agentIterationsSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["response", "plannedUpdates", "todoMapping"],
-  properties: {
-    response: { type: "string" },
-    plannedUpdates: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["title", "description"],
-        properties: {
-          title: { type: "string" },
-          description: { type: "string" },
-        },
-      },
-    },
-    todoMapping: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["updateIndex", "todoIds"],
-        properties: {
-          updateIndex: { type: "number" },
-          todoIds: { type: "array", items: { type: "string" } },
-        },
-      },
-    },
-  },
-} as const;
-
-const agentTransitionSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["response"],
-  properties: {
-    response: { type: "string" },
-  },
-} as const;
-
-const agentCoreDetailsSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["response", "updatedFunction", "updatedThesis", "updatedFullFlow", "updatedCorePillars"],
-  properties: {
-    response: { type: "string" },
-    updatedFunction: { type: ["string", "null"] },
-    updatedThesis: { type: ["string", "null"] },
-    updatedFullFlow: { type: ["string", "null"] },
-    updatedCorePillars: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["name", "function", "thesis"],
-        properties: {
-          name: { type: "string" },
-          function: { type: ["string", "null"] },
-          thesis: { type: ["string", "null"] },
-        },
-      },
-    },
-  },
-} as const;
-
-const agentCorePillarsResultSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["response", "corePillars"],
-  properties: {
-    response: { type: "string" },
-    corePillars: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["name", "function", "thesis", "children"],
-        properties: {
-          name: { type: "string" },
-          function: { type: "string" },
-          thesis: { type: "string" },
-          children: {
-            type: "array",
-            items: {
-              type: "object",
-              additionalProperties: false,
-              required: ["name", "function", "thesis"],
-              properties: {
-                name: { type: "string" },
-                function: { type: "string" },
-                thesis: { type: "string" },
-              },
-            },
-          },
-        },
-      },
-    },
-  },
-} as const;
-
-const agentSuggestUpdateSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["response", "hasProposal", "updatedFunction", "updatedThesis", "updatedFullFlow", "updatedCorePillars"],
-  properties: {
-    response: { type: "string" },
-    hasProposal: { type: "boolean" },
-    updatedFunction: { type: ["string", "null"] },
-    updatedThesis: { type: ["string", "null"] },
-    updatedFullFlow: { type: ["string", "null"] },
-    updatedCorePillars: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["name", "functionSummary", "thesisSummary"],
-        properties: {
-          name: { type: "string" },
-          functionSummary: { type: ["string", "null"] },
-          thesisSummary: { type: ["string", "null"] },
-        },
-      },
-    },
-  },
-} as const;
-
 const generateCoreDetailsSchema = {
   type: "object",
   additionalProperties: false,
@@ -1399,27 +1257,6 @@ const agentGeneralChatSchema = {
     targetStages: { type: "array", items: { type: "string" } },
     hasProposal: { type: "boolean" },
     proposedUpdates: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["stage", "updatedSummary"],
-        properties: {
-          stage: { type: "string" },
-          updatedSummary: { type: "string" },
-        },
-      },
-    },
-  },
-} as const;
-
-const agentCascadeSchema = {
-  type: "object",
-  additionalProperties: false,
-  required: ["response", "cascadeUpdates"],
-  properties: {
-    response: { type: "string" },
-    cascadeUpdates: {
       type: "array",
       items: {
         type: "object",
@@ -6397,7 +6234,13 @@ export class ProgramsBackend {
       return null;
     }
 
-    const parsed = JSON.parse(trimmed);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Approval payload is not valid JSON: ${message}`);
+    }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error("Approval payload must be a JSON object.");
     }
@@ -7354,425 +7197,6 @@ Your final answer must be ONLY strict JSON (no markdown fences) matching:
     };
   }
 
-  async agentConfirmStage(input: AgentConfirmStageInput): Promise<AgentSession> {
-    await this.ensureInitialized();
-    const session = await this.store.getAgentSession(input.projectId);
-    if (!session) throw new Error("No agent session found for this program.");
-
-    session.stages[input.stage].confirmed = input.confirmation;
-
-    // Archive Dan's notes on core-detail confirmation (notes → deletedNotes lifecycle)
-    if (session.danInternalNotes.length > 0 && ["function", "thesis", "core_pillars", "full_flow"].includes(input.stage)) {
-      session.danArchivedNotes = session.danArchivedNotes ?? [];
-      const timestamp = new Date().toISOString();
-      session.danArchivedNotes.push(...session.danInternalNotes.map((n) => `[${timestamp} | ${input.stage} confirmed] ${n}`));
-      session.danInternalNotes = [];
-    }
-
-    // Add confirmation marker to unified conversation
-    session.unifiedMessages.push({
-      id: randomUUID(),
-      role: "assistant" as const,
-      content: `[${AGENT_STAGE_LABELS[input.stage]} confirmed: "${input.confirmation.summary}"]`,
-      createdAt: new Date().toISOString(),
-    });
-
-    const currentIdx = AGENT_STAGES.indexOf(session.currentStage);
-    const confirmedIdx = AGENT_STAGES.indexOf(input.stage);
-    if (confirmedIdx >= currentIdx && confirmedIdx < AGENT_STAGES.length - 1) {
-      session.currentStage = AGENT_STAGES[confirmedIdx + 1];
-    }
-
-    // Check if all core stages are confirmed -> switch to general mode
-    const hasFunction = session.stages.function.confirmed != null;
-    const hasThesis = session.stages.thesis.confirmed != null;
-    const hasPillars = session.stages.core_pillars.confirmed != null;
-    const hasFlow = session.stages.full_flow.confirmed != null;
-    if (hasFunction && hasThesis && hasPillars && hasFlow) {
-      session.conversationMode = "general";
-    }
-
-    session.updatedAt = new Date().toISOString();
-    await this.store.saveAgentSession(session);
-    this.emit({ type: "agent.session", projectId: input.projectId, session });
-
-    // Auto-generate transition message for the next stage
-    const nextStage = session.currentStage;
-    if (nextStage !== input.stage) {
-      try {
-        const settings = await this.store.readSettings();
-        const project = await this.requireProject(input.projectId);
-        const service = this.aiService(session.provider);
-        const model = session.provider === "claude"
-          ? settings.advancedDefaults.claudeModel
-          : settings.advancedDefaults.model;
-
-        if (nextStage === "iterations") {
-          // Special transition: investigate codebase and produce initial planned updates
-          const repoHints = await collectProjectRepoHints(project.localPath);
-          const formattedHints = formatProjectRepoHints(repoHints);
-
-          const confirmedContext: string[] = [];
-          const fc = session.stages.function.confirmed;
-          if (fc) confirmedContext.push(`Function: ${fc.summary}`);
-          const tc = session.stages.thesis.confirmed;
-          if (tc) confirmedContext.push(`Thesis: ${tc.summary}`);
-          const cpc = session.stages.core_pillars.confirmed;
-          if (cpc) confirmedContext.push(`Core Pillars: ${cpc.summary}`);
-          if (session.corePillars.length > 0) {
-            confirmedContext.push(`Pillar Details: ${session.corePillars.map((p) => `${p.name} (${p.function?.summary ?? "TBD"})`).join(", ")}`);
-          }
-          const ff = session.stages.full_flow.confirmed;
-          if (ff) {
-            confirmedContext.push(`Full-Flow: ${ff.summary}`);
-            if (ff.currentState) confirmedContext.push(`Current State: ${ff.currentState}`);
-            if (ff.finalGoal) confirmedContext.push(`Final Goal: ${ff.finalGoal}`);
-          }
-
-          const iterationsPrompt = `You are the iteration agent for "${project.name}".
-The user has confirmed the Function, Thesis, Core Pillars, and Full-Flow for their project.
-
-Confirmed context:
-${confirmedContext.join("\n")}
-
-Current codebase analysis:
-${formattedHints}
-
-Your task: Compare the confirmed conceptual flow against the current codebase structure. Identify what needs to be added, changed, or restructured to achieve the desired flow. Then produce an ordered sequence of planned updates.
-
-Each planned update should be:
-- Scoped to be achievable in a single AI coding pass
-- Conceptual enough that an execution agent can plan the specific code changes
-- Ordered by dependency and priority (foundational changes first)
-- Grouped so related work stays together (front-end together, back-end together, etc. when practical)
-
-Introduce yourself, explain what you found in the codebase, how it compares to the desired flow, and present your initial update plan.
-
-Your response must be ONLY strict JSON (no markdown fences):
-{"response": string, "plannedUpdates": [{"title": string, "description": string}, ...], "todoMapping": []}`.trim();
-
-          const rawResult = await service.runOneShot(
-            project,
-            settings,
-            iterationsPrompt,
-            model,
-            agentIterationsSchema,
-          );
-          const parsed = parseAgentJsonResponse<{ response: string; plannedUpdates?: Array<{ title: string; description: string }> }>(rawResult, {
-            agentLabel: "Agent",
-            context: "iterations planning",
-          });
-
-          const autoMessage = {
-            id: randomUUID(),
-            role: "assistant" as const,
-            content: parsed.response,
-            createdAt: new Date().toISOString(),
-          };
-          session.stages.iterations.messages.push(autoMessage);
-          session.unifiedMessages.push(autoMessage);
-
-          if (Array.isArray(parsed.plannedUpdates) && parsed.plannedUpdates.length > 0) {
-            session.plannedUpdates = parsed.plannedUpdates.map(
-              (u: { title: string; description: string }, i: number) => ({
-                id: randomUUID(),
-                title: u.title,
-                description: u.description,
-                order: i,
-                status: "pending" as const,
-                sourceTodoIds: [],
-              }),
-            );
-          }
-        } else if (nextStage === "full_flow" && input.stage === "core_pillars") {
-          // Special transition: generate structured CorePillar[] from the conversation
-          const pillarPrompt = `Based on the core pillars conversation for "${project.name}", generate structured pillar data.
-
-Function: ${session.stages.function.confirmed?.summary ?? "(not defined)"}
-Thesis: ${session.stages.thesis.confirmed?.summary ?? "(not defined)"}
-Core Pillars confirmed summary: ${session.stages.core_pillars.confirmed?.summary ?? "(not defined)"}
-
-${formatCrossStageMessages(session, "core_pillars")}
-
-Generate a JSON array of core pillars. For each pillar, provide:
-- name: short label
-- function: what this pillar does (1-2 sentences)
-- thesis: why this pillar matters (1 sentence)
-- children: array of sub-pillars if any were explicitly discussed (each with name, function, thesis), otherwise empty array
-
-Also provide a conversational opening message for the Full-Flow stage, asking the user to describe how these pillars fit together into the beginning-to-end user experience.
-
-Your response must be ONLY strict JSON (no markdown fences):
-{"response": string, "corePillars": [{"name": string, "function": string, "thesis": string, "children": [{"name": string, "function": string, "thesis": string}, ...]}, ...]}`.trim();
-
-          const rawResult = await service.runOneShot(
-            project,
-            settings,
-            pillarPrompt,
-            model,
-            agentCorePillarsResultSchema,
-          );
-          const parsed = parseAgentJsonResponse<any>(rawResult, {
-            agentLabel: "Agent",
-            context: "core pillars generation",
-          });
-
-          if (Array.isArray(parsed.corePillars)) {
-            session.corePillars = parsed.corePillars.map((p: { name: string; function: string; thesis: string; children?: { name: string; function: string; thesis: string }[] }) => ({
-              id: randomUUID(),
-              name: p.name,
-              function: { summary: p.function, status: "assumed" as const },
-              thesis: { summary: p.thesis, status: "assumed" as const },
-              corePillars: (p.children ?? []).map((c: { name: string; function: string; thesis: string }) => ({
-                id: randomUUID(),
-                name: c.name,
-                function: { summary: c.function, status: "assumed" as const },
-                thesis: { summary: c.thesis, status: "assumed" as const },
-                corePillars: [],
-                fullFlow: null,
-                description: null,
-                connectedPillarIds: [],
-                assumptionText: null,
-                assumptionSource: null,
-              })),
-              fullFlow: null,
-              description: null,
-              connectedPillarIds: [],
-              assumptionText: null,
-              assumptionSource: null,
-            }));
-          }
-
-          const autoMessage = {
-            id: randomUUID(),
-            role: "assistant" as const,
-            content: parsed.response,
-            createdAt: new Date().toISOString(),
-          };
-          session.stages.full_flow.messages.push(autoMessage);
-          session.unifiedMessages.push(autoMessage);
-        } else {
-          // Normal transition: generate opening message for next stage
-          const transitionPrompts: Record<string, string> = {
-            thesis: `The user just confirmed the function of their program "${project.name}": "${session.stages.function.confirmed?.summary}".
-Now you need to guide them through articulating WHY this program matters. Based on what they described about the function, ask a thoughtful opening question about their thesis/motivation.
-Your response must be ONLY strict JSON (no markdown fences): {"response": string}`,
-            core_pillars: `The user has confirmed the function and thesis of "${project.name}".
-Function: ${session.stages.function.confirmed?.summary}
-Thesis: ${session.stages.thesis.confirmed?.summary}
-Now guide them through identifying the Core Pillars — the 3-7 major enduring features, capabilities, or domains that define this product. Ask a thoughtful opening question to help them start identifying these pillars.
-Your response must be ONLY strict JSON (no markdown fences): {"response": string}`,
-            full_flow: `The user has confirmed the function, thesis, and core pillars of "${project.name}".
-Function: ${session.stages.function.confirmed?.summary}
-Thesis: ${session.stages.thesis.confirmed?.summary}
-Core Pillars: ${session.corePillars.map((p) => p.name).join(", ")}
-Now guide them through mapping the complete conceptual flow from beginning to end, structured around these pillars. Ask about the ideal product flow from start to finish.
-Your response must be ONLY strict JSON (no markdown fences): {"response": string}`,
-          };
-
-          const transitionPrompt = transitionPrompts[nextStage];
-          if (transitionPrompt) {
-            const rawResult = await service.runOneShot(
-              project,
-              settings,
-              transitionPrompt,
-              model,
-              agentTransitionSchema,
-            );
-            const parsed = parseAgentJsonResponse<{ response: string }>(rawResult, {
-              agentLabel: "Agent",
-              context: `stage transition to ${nextStage}`,
-            });
-
-            const autoMessage = {
-              id: randomUUID(),
-              role: "assistant" as const,
-              content: parsed.response,
-              createdAt: new Date().toISOString(),
-            };
-            session.stages[nextStage].messages.push(autoMessage);
-            session.unifiedMessages.push(autoMessage);
-          }
-        }
-
-        session.updatedAt = new Date().toISOString();
-        await this.store.saveAgentSession(session);
-        this.emit({ type: "agent.session", projectId: input.projectId, session });
-      } catch {
-        // Auto-transition is best-effort; don't fail the confirmation
-      }
-    }
-
-    return session;
-  }
-
-  async agentUpdateScratchpad(input: AgentUpdateScratchpadInput): Promise<AgentSession> {
-    await this.ensureInitialized();
-    let session = await this.store.getAgentSession(input.projectId);
-    if (!session) {
-      const settings = await this.store.readSettings();
-      session = this.createEmptyAgentSession(input.projectId, settings.advancedDefaults.provider);
-    }
-
-    session.scratchpad = input.scratchpad;
-    session.updatedAt = new Date().toISOString();
-    await this.store.saveAgentSession(session);
-    this.emit({ type: "agent.session", projectId: input.projectId, session });
-    return session;
-  }
-
-  async agentSubmitTodos(input: AgentSubmitTodosInput): Promise<AgentSubmitTodosResponse> {
-    await this.ensureInitialized();
-    const settings = await this.store.readSettings();
-    await this.requireProviderReady(input.provider, settings);
-    const project = await this.requireProject(input.projectId);
-
-    const session = await this.store.getAgentSession(input.projectId);
-    if (!session) throw new Error("No agent session found for this program.");
-
-    const unprocessedItems = session.scratchpad.filter((s) => !s.completed);
-    if (unprocessedItems.length === 0) throw new Error("No unprocessed to-do items to submit.");
-
-    const confirmedContext: string[] = [];
-    const fc = session.stages.function.confirmed;
-    if (fc) confirmedContext.push(`Function: ${fc.summary}`);
-    const tc = session.stages.thesis.confirmed;
-    if (tc) confirmedContext.push(`Thesis: ${tc.summary}`);
-    const cpc = session.stages.core_pillars.confirmed;
-    if (cpc) confirmedContext.push(`Core Pillars: ${cpc.summary}`);
-    if (session.corePillars.length > 0) {
-      confirmedContext.push(`Pillar Details: ${session.corePillars.map((p) => `${p.name} (${p.function?.summary ?? "TBD"})`).join(", ")}`);
-    }
-    const ff = session.stages.full_flow.confirmed;
-    if (ff) {
-      confirmedContext.push(`Full-Flow: ${ff.summary}`);
-      if (ff.currentState) confirmedContext.push(`Current State: ${ff.currentState}`);
-      if (ff.finalGoal) confirmedContext.push(`Final Goal: ${ff.finalGoal}`);
-    }
-
-    const existingUpdates = session.plannedUpdates.length > 0
-      ? `\nExisting planned updates:\n${session.plannedUpdates.map((u, i) => `${i + 1}. ${u.title}: ${u.description}`).join("\n")}\n`
-      : "";
-
-    const prompt = `You are transforming loose to-do items into an ordered sequence of planned software updates for "${project.name}".
-
-${confirmedContext.length > 0 ? `Confirmed context:\n${confirmedContext.join("\n")}\n` : ""}
-${existingUpdates}
-New to-do items to process (with IDs for mapping):
-${unprocessedItems.map((s) => `- [id:${s.id}] [source:${s.source}] ${s.text}`).join("\n")}
-
-Instructions:
-- Transform each to-do item (and any existing planned updates) into a well-ordered sequence of planned updates.
-- Each update should have a clear, actionable title and a 1-2 sentence description.
-- Order them by dependency and priority (foundational changes first).
-- Merge related items if they naturally belong together.
-- In todoMapping, indicate which to-do item IDs contributed to each update (by update index).
-- Your response must be ONLY strict JSON (no markdown fences):
-  {"response": string, "plannedUpdates": [{"title": string, "description": string}, ...], "todoMapping": [{"updateIndex": number, "todoIds": [string, ...]}, ...]}
-- "response" is your conversational reply explaining the plan.`.trim();
-
-    const service = this.aiService(input.provider);
-    const model = input.provider === "claude" ? input.claudeModel : input.model;
-
-    const rawResult = await service.runOneShot(
-      project,
-      settings,
-      prompt,
-      model,
-      agentIterationsSchema,
-      resolveDirectorRuntime(session, "rd-director").reasoningEffort,
-    );
-    const parsed = parseAgentJsonResponse<{
-      response: string;
-      plannedUpdates?: Array<{ title: string; description: string }>;
-      todoMapping?: Array<{ updateIndex: number; todoIds: string[] }>;
-    }>(rawResult, {
-      agentLabel: "Todd",
-      context: "todo-to-update transform",
-    });
-
-    // Build todoMapping lookup
-    const todoMappingByIndex = new Map<number, string[]>();
-    for (const mapping of (parsed.todoMapping ?? []) as { updateIndex: number; todoIds: string[] }[]) {
-      todoMappingByIndex.set(mapping.updateIndex, mapping.todoIds ?? []);
-    }
-
-    // Restore orphaned user to-dos before replacing planned updates
-    const oldUpdates = session.plannedUpdates;
-    const allOldSourceTodoIds = new Set(oldUpdates.flatMap((u) => u.sourceTodoIds));
-
-    const plannedUpdates: AgentPlannedUpdate[] = (parsed.plannedUpdates ?? []).map(
-      (u: { title: string; description: string }, i: number) => ({
-        id: randomUUID(),
-        title: u.title,
-        description: u.description,
-        order: i,
-        status: "pending" as const,
-        sourceTodoIds: todoMappingByIndex.get(i) ?? [],
-      }),
-    );
-
-    const allNewSourceTodoIds = new Set(plannedUpdates.flatMap((u) => u.sourceTodoIds));
-
-    // Restore user-source to-dos whose parent update was removed
-    for (const todoId of allOldSourceTodoIds) {
-      if (!allNewSourceTodoIds.has(todoId)) {
-        const todo = session.scratchpad.find((s) => s.id === todoId && s.source === "user");
-        if (todo && todo.completed) {
-          todo.completed = false;
-        }
-      }
-    }
-
-    session.plannedUpdates = plannedUpdates;
-
-    for (const item of unprocessedItems) {
-      const found = session.scratchpad.find((s) => s.id === item.id);
-      if (found) found.completed = true;
-    }
-
-    const assistantMessage = {
-      id: randomUUID(),
-      role: "assistant" as const,
-      content: parsed.response,
-      createdAt: new Date().toISOString(),
-    };
-    session.stages.iterations.messages.push(assistantMessage);
-
-    if (!session.stages.iterations.confirmed) {
-      session.currentStage = "iterations";
-    }
-
-    session.updatedAt = new Date().toISOString();
-    await this.store.saveAgentSession(session);
-    this.emit({ type: "agent.session", projectId: input.projectId, session });
-
-    return {
-      sessionId: session.id,
-      plannedUpdates,
-      message: assistantMessage,
-    };
-  }
-
-  async agentReorderUpdates(input: AgentReorderUpdatesInput): Promise<AgentSession> {
-    await this.ensureInitialized();
-    const session = await this.store.getAgentSession(input.projectId);
-    if (!session) throw new Error("No agent session found for this program.");
-
-    const reordered: AgentPlannedUpdate[] = [];
-    for (let i = 0; i < input.updateIds.length; i++) {
-      const update = session.plannedUpdates.find((u) => u.id === input.updateIds[i]);
-      if (update) {
-        reordered.push({ ...update, order: i });
-      }
-    }
-    session.plannedUpdates = reordered;
-    session.updatedAt = new Date().toISOString();
-    await this.store.saveAgentSession(session);
-    this.emit({ type: "agent.session", projectId: input.projectId, session });
-    return session;
-  }
-
   private async agentExecuteUpdateNow(
     input: AgentExecuteUpdateInput,
     options: { planningMode?: PlanningMode; usageBefore?: UsageCapture | null } = {},
@@ -7838,10 +7262,6 @@ Instructions:
     };
 
     return this.startPlanNow(planInput);
-  }
-
-  async agentExecuteUpdate(input: AgentExecuteUpdateInput): Promise<{ started: true }> {
-    return this.agentExecuteUpdateNow(input, { planningMode: "auto" });
   }
 
   async startPingDirectUpdate(input: StartPingDirectUpdateInput): Promise<{ started: true }> {
@@ -7960,27 +7380,6 @@ Instructions:
     return { started: true };
   }
 
-  async agentResetStage(projectId: string, stage: AgentStage): Promise<AgentSession> {
-    await this.ensureInitialized();
-    const session = await this.store.getAgentSession(projectId);
-    if (!session) throw new Error("No agent session found for this program.");
-
-    const stageIdx = AGENT_STAGES.indexOf(stage);
-    const corePillarsIdx = AGENT_STAGES.indexOf("core_pillars");
-    for (let i = stageIdx; i < AGENT_STAGES.length; i++) {
-      session.stages[AGENT_STAGES[i]] = { messages: [], confirmed: null };
-    }
-    // Clear corePillars data if resetting core_pillars or any earlier stage
-    if (stageIdx <= corePillarsIdx) {
-      session.corePillars = [];
-    }
-    session.currentStage = stage;
-
-    session.updatedAt = new Date().toISOString();
-    await this.store.saveAgentSession(session);
-    this.emit({ type: "agent.session", projectId, session });
-    return session;
-  }
 
   async deleteAgentSession(projectId: string): Promise<void> {
     await this.ensureInitialized();
@@ -7988,488 +7387,6 @@ Instructions:
     this.emit({ type: "agent.session", projectId, session: null });
   }
 
-  async agentAttachMaterials(input: AgentAttachMaterialsInput): Promise<AgentAttachMaterialsResult> {
-    await this.ensureInitialized();
-    let session = await this.store.getAgentSession(input.projectId);
-    if (!session) {
-      const settings = await this.store.readSettings();
-      session = this.createEmptyAgentSession(input.projectId, settings.advancedDefaults.provider);
-    }
-
-    const attachedPaths: string[] = [];
-    const failedPaths: string[] = [];
-
-    if (input.replace) {
-      session.attachedMaterials = [];
-    }
-
-    for (const filePath of input.filePaths) {
-      try {
-        await access(filePath, fsConstants.R_OK);
-        if (!session.attachedMaterials.includes(filePath)) {
-          session.attachedMaterials.push(filePath);
-        }
-        attachedPaths.push(filePath);
-      } catch {
-        failedPaths.push(filePath);
-      }
-    }
-
-    session.updatedAt = new Date().toISOString();
-    await this.store.saveAgentSession(session);
-    this.emit({ type: "agent.session", projectId: input.projectId, session });
-    return { session, attachedPaths, failedPaths };
-  }
-
-  async agentGetCoreDetails(projectId: string): Promise<AgentCoreDetails> {
-    await this.ensureInitialized();
-    const session = await this.store.getAgentSession(projectId);
-    return {
-      function: session?.stages.function.confirmed ?? null,
-      thesis: session?.stages.thesis.confirmed ?? null,
-      corePillars: session?.corePillars ?? [],
-      fullFlow: session?.stages.full_flow.confirmed ?? null,
-      threads: [],
-    };
-  }
-
-  async agentCoreDetailsChat(input: CoreDetailsChatInput): Promise<CoreDetailsChatResponse> {
-    await this.ensureInitialized();
-    const settings = await this.store.readSettings();
-    await this.requireProviderReady(input.provider, settings);
-    const project = await this.requireProject(input.projectId);
-
-    let session = await this.store.getAgentSession(input.projectId);
-    if (!session) {
-      session = this.createEmptyAgentSession(input.projectId, input.provider);
-      await this.store.saveAgentSession(session);
-      this.emit({ type: "agent.session", projectId: input.projectId, session });
-    }
-
-    const currentFunction = session.stages.function.confirmed?.summary ?? "(not defined)";
-    const currentThesis = session.stages.thesis.confirmed?.summary ?? "(not defined)";
-    const currentPillars = session.corePillars.length > 0
-      ? session.corePillars.map((p) => p.name).join(", ")
-      : "(not defined)";
-    const currentFlow = session.stages.full_flow.confirmed?.summary ?? "(not defined)";
-
-    const prompt = `You are helping the user update the core details of "${project.name}".
-
-Current confirmed details:
-- Function: ${currentFunction}
-- Thesis: ${currentThesis}
-- Core Pillars: ${currentPillars}
-- Full-Flow: ${currentFlow}
-
-The user wants to update these. Do NOT start from scratch — update the existing values based on what they say.
-User message: "${input.message}"
-
-If the user's message warrants updating any field, provide the updated text. Set to null if no change is needed for that field.
-For updatedCorePillars: provide an array of {name, function, thesis} for ALL pillars (including unchanged ones) if any pillar needs updating, or an empty array [] if no pillar changes are needed.
-
-Your response must be ONLY strict JSON (no markdown fences):
-{"response": string, "updatedFunction": string | null, "updatedThesis": string | null, "updatedFullFlow": string | null, "updatedCorePillars": [{name: string, function: string | null, thesis: string | null}, ...]}
-- "response" is your conversational reply.
-- Each updated field is the new full text, or null if unchanged.
-- updatedCorePillars is an empty array if no pillar changes are needed.`.trim();
-
-    const service = this.aiService(input.provider);
-    const model = input.provider === "claude" ? input.claudeModel : input.model;
-
-    const rawResult = await service.runOneShot(
-      project,
-      settings,
-      prompt,
-      model,
-      agentCoreDetailsSchema,
-      resolveDirectorRuntime(session, "creative-director").reasoningEffort,
-    );
-    const parsed = parseAgentJsonResponse<{
-      response: string;
-      updatedFunction?: string | null;
-      updatedThesis?: string | null;
-      updatedFullFlow?: string | null;
-      updatedCorePillars?: Array<{ name: string; function: string | null; thesis: string | null }>;
-    }>(rawResult, {
-      agentLabel: "Dan",
-      context: "core details update",
-    });
-
-    const assistantMessage = {
-      id: randomUUID(),
-      role: "assistant" as const,
-      content: parsed.response,
-      createdAt: new Date().toISOString(),
-    };
-
-    let updatedCoreDetails: AgentCoreDetails | null = null;
-    const hasUpdate = parsed.updatedFunction || parsed.updatedThesis || parsed.updatedFullFlow || (Array.isArray(parsed.updatedCorePillars) && parsed.updatedCorePillars.length > 0);
-    if (hasUpdate) {
-      if (parsed.updatedFunction && session.stages.function.confirmed) {
-        session.stages.function.confirmed.summary = parsed.updatedFunction;
-      }
-      if (parsed.updatedThesis && session.stages.thesis.confirmed) {
-        session.stages.thesis.confirmed.summary = parsed.updatedThesis;
-      }
-      if (parsed.updatedFullFlow && session.stages.full_flow.confirmed) {
-        session.stages.full_flow.confirmed.summary = parsed.updatedFullFlow;
-      }
-      if (Array.isArray(parsed.updatedCorePillars)) {
-        for (const updatedPillar of parsed.updatedCorePillars as { name: string; function: string | null; thesis: string | null }[]) {
-          const existing = session.corePillars.find((p) => p.name.toLowerCase() === updatedPillar.name.toLowerCase());
-          if (existing) {
-            if (updatedPillar.function && existing.function) {
-              existing.function.summary = updatedPillar.function;
-              existing.function.status = "edited";
-            }
-            if (updatedPillar.thesis && existing.thesis) {
-              existing.thesis.summary = updatedPillar.thesis;
-              existing.thesis.status = "edited";
-            }
-          } else {
-            // New pillar added via core details chat
-            session.corePillars.push({
-              id: randomUUID(),
-              name: updatedPillar.name,
-              pillarType: "core",
-              function: updatedPillar.function ? { summary: updatedPillar.function, status: "edited" } : null,
-              thesis: updatedPillar.thesis ? { summary: updatedPillar.thesis, status: "edited" } : null,
-              corePillars: [],
-              fullFlow: null,
-              description: null,
-              connectedPillarIds: [],
-              assumptionText: null,
-              assumptionSource: null,
-              order: session.corePillars.length,
-              threadMemberships: [],
-              endState: null,
-            });
-          }
-        }
-      }
-
-      session.updatedAt = new Date().toISOString();
-      await this.store.saveAgentSession(session);
-      this.emit({ type: "agent.session", projectId: input.projectId, session });
-
-      updatedCoreDetails = {
-        function: session.stages.function.confirmed ?? null,
-        thesis: session.stages.thesis.confirmed ?? null,
-        corePillars: session.corePillars,
-        fullFlow: session.stages.full_flow.confirmed ?? null,
-        threads: [],
-      };
-    }
-
-    return { message: assistantMessage, updatedCoreDetails };
-  }
-
-  async agentSuggestUpdate(input: AgentSuggestUpdateInput): Promise<AgentSuggestUpdateResponse> {
-    await this.ensureInitialized();
-    const settings = await this.store.readSettings();
-    await this.requireProviderReady(input.provider, settings);
-    const project = await this.requireProject(input.projectId);
-
-    let session = await this.store.getAgentSession(input.projectId);
-    if (!session) {
-      session = this.createEmptyAgentSession(input.projectId, input.provider);
-      await this.store.saveAgentSession(session);
-      this.emit({ type: "agent.session", projectId: input.projectId, session });
-    }
-
-    // Build context from ONLY confirmed summaries — never raw messages
-    const currentFunction = session.stages.function.confirmed?.summary ?? "(not defined)";
-    const currentThesis = session.stages.thesis.confirmed?.summary ?? "(not defined)";
-    const currentPillars = session.corePillars.length > 0
-      ? session.corePillars.map((p) => p.name).join(", ")
-      : "(not defined)";
-    const currentFlow = session.stages.full_flow.confirmed?.summary ?? "(not defined)";
-
-    const focusHint = input.focusArea
-      ? `Focus your suggestions primarily on updating the ${input.focusArea.replace("_", " ")} field.`
-      : "Determine which field(s) need updating based on the user's message.";
-
-    const prompt = `You are helping update the core details of "${project.name}".
-
-Current confirmed details:
-- Function: ${currentFunction}
-- Thesis: ${currentThesis}
-- Core Pillars: ${currentPillars}
-- Full-Flow: ${currentFlow}
-
-${focusHint}
-
-User message: "${input.message}"
-
-Propose updates based on what the user said. Set each field to null if no change is needed for that field.
-For updatedCorePillars: if any pillar changes are needed, provide ALL pillars (including unchanged ones) with their updated values; otherwise an empty array [].
-Set hasProposal to false if the user is asking a question or no changes are needed.
-Response must be strict JSON only (no markdown fences).`;
-
-    const service = this.aiService(input.provider);
-    const model = input.provider === "claude" ? input.claudeModel : input.model;
-    const rawResult = await service.runOneShot(
-      project,
-      settings,
-      prompt,
-      model,
-      agentSuggestUpdateSchema,
-      resolveDirectorRuntime(session, "creative-director").reasoningEffort,
-    );
-    const parsed = parseAgentJsonResponse<{
-      response: string;
-      hasProposal?: boolean;
-      updatedFunction?: string | null;
-      updatedThesis?: string | null;
-      updatedFullFlow?: string | null;
-      updatedCorePillars?: Array<{ name: string; functionSummary: string | null; thesisSummary: string | null }>;
-    }>(rawResult, {
-      agentLabel: "Dan",
-      context: "core details suggestion",
-    });
-
-    // Store user message in audit trail — never used as AI context
-    session.coreDetailsChatHistory.push({
-      id: randomUUID(),
-      role: "user",
-      content: input.message,
-      createdAt: new Date().toISOString(),
-    });
-    session.updatedAt = new Date().toISOString();
-    await this.store.saveAgentSession(session);
-    this.emit({ type: "agent.session", projectId: input.projectId, session });
-
-    const hasProposal = parsed.hasProposal &&
-      (parsed.updatedFunction || parsed.updatedThesis || parsed.updatedFullFlow || (Array.isArray(parsed.updatedCorePillars) && parsed.updatedCorePillars.length > 0));
-
-    return {
-      aiMessage: parsed.response,
-      proposal: hasProposal ? {
-        id: randomUUID(),
-        aiMessage: parsed.response,
-        updatedFunction: parsed.updatedFunction ?? null,
-        updatedThesis: parsed.updatedThesis ?? null,
-        updatedCorePillars: (Array.isArray(parsed.updatedCorePillars) && parsed.updatedCorePillars.length > 0) ? parsed.updatedCorePillars : null,
-        updatedFullFlow: parsed.updatedFullFlow ?? null,
-      } : null,
-    };
-  }
-
-  async agentApplyCoreDetails(input: AgentApplyCoreDetailsInput): Promise<AgentSession> {
-    await this.ensureInitialized();
-    const session = await this.store.getAgentSession(input.projectId);
-    if (!session) throw new Error("No agent session found.");
-
-    const { proposal } = input;
-
-    if (proposal.updatedFunction) {
-      if (session.stages.function.confirmed) {
-        session.stages.function.confirmed.summary = proposal.updatedFunction;
-        session.stages.function.confirmed.status = "edited";
-      } else {
-        session.stages.function.confirmed = { summary: proposal.updatedFunction, status: "edited" };
-      }
-    }
-    if (proposal.updatedThesis) {
-      if (session.stages.thesis.confirmed) {
-        session.stages.thesis.confirmed.summary = proposal.updatedThesis;
-        session.stages.thesis.confirmed.status = "edited";
-      } else {
-        session.stages.thesis.confirmed = { summary: proposal.updatedThesis, status: "edited" };
-      }
-    }
-    if (proposal.updatedFullFlow) {
-      if (session.stages.full_flow.confirmed) {
-        session.stages.full_flow.confirmed.summary = proposal.updatedFullFlow;
-        session.stages.full_flow.confirmed.status = "edited";
-      } else {
-        session.stages.full_flow.confirmed = { summary: proposal.updatedFullFlow, status: "edited" };
-      }
-    }
-    if (Array.isArray(proposal.updatedCorePillars)) {
-      for (const up of proposal.updatedCorePillars) {
-        const existing = session.corePillars.find((p) => p.name.toLowerCase() === up.name.toLowerCase());
-        if (existing) {
-          if (up.functionSummary) {
-            if (existing.function) {
-              existing.function.summary = up.functionSummary;
-              existing.function.status = "edited";
-            } else {
-              existing.function = { summary: up.functionSummary, status: "edited" };
-            }
-          }
-          if (up.thesisSummary) {
-            if (existing.thesis) {
-              existing.thesis.summary = up.thesisSummary;
-              existing.thesis.status = "edited";
-            } else {
-              existing.thesis = { summary: up.thesisSummary, status: "edited" };
-            }
-          }
-        } else {
-          session.corePillars.push({
-            id: randomUUID(),
-            name: up.name,
-            pillarType: "core",
-            function: up.functionSummary ? { summary: up.functionSummary, status: "edited" } : null,
-            thesis: up.thesisSummary ? { summary: up.thesisSummary, status: "edited" } : null,
-            corePillars: [],
-            fullFlow: null,
-            description: null,
-            connectedPillarIds: [],
-            assumptionText: null,
-            assumptionSource: null,
-            order: session.corePillars.length,
-            threadMemberships: [],
-            endState: null,
-          });
-        }
-      }
-    }
-
-    session.updatedAt = new Date().toISOString();
-    await this.store.saveAgentSession(session);
-    this.emit({ type: "agent.session", projectId: input.projectId, session });
-    return session;
-  }
-
-  async agentGenerateCascade(
-    projectId: string,
-    triggeredByStage: AgentStage,
-    provider: AiProvider,
-    model: string,
-  ): Promise<CascadeProposal | null> {
-    await this.ensureInitialized();
-    const settings = await this.store.readSettings();
-    const project = await this.requireProject(projectId);
-    const session = await this.store.getAgentSession(projectId);
-    if (!session) return null;
-
-    // Determine downstream stages that have existing confirmations
-    const stageOrder: AgentStage[] = ["function", "thesis", "core_pillars", "full_flow", "iterations"];
-    const triggeredIdx = stageOrder.indexOf(triggeredByStage);
-    if (triggeredIdx < 0) return null;
-
-    const downstreamStages = stageOrder.slice(triggeredIdx + 1).filter(
-      (s) => session.stages[s]?.confirmed != null,
-    );
-    if (downstreamStages.length === 0) return null;
-
-    // Build context
-    const confirmedContext: string[] = [];
-    for (const s of stageOrder) {
-      const c = session.stages[s]?.confirmed;
-      if (c) confirmedContext.push(`${AGENT_STAGE_LABELS[s]}: ${c.summary}`);
-    }
-    if (session.corePillars.length > 0) {
-      confirmedContext.push(`Pillar Details: ${session.corePillars.map((p) => `${p.name} (${p.function?.summary ?? "TBD"})`).join(", ")}`);
-    }
-
-    const prompt = `You are updating the downstream summaries for "${project.name}" after a change to ${AGENT_STAGE_LABELS[triggeredByStage]}.
-
-Current confirmed details:
-${confirmedContext.join("\n")}
-
-The ${AGENT_STAGE_LABELS[triggeredByStage]} was just updated. Provide updated summaries for these downstream sections that should reflect the change: ${downstreamStages.map((s) => AGENT_STAGE_LABELS[s]).join(", ")}.
-
-For each downstream section, provide the full updated summary text that incorporates the upstream change. Only include sections that actually need updating.
-
-Your response must be ONLY strict JSON (no markdown fences).`;
-
-    const service = this.aiService(provider as AiProvider);
-    const rawResult = await service.runOneShot(
-      project,
-      settings,
-      prompt,
-      model,
-      agentCascadeSchema,
-    );
-    const parsed = parseAgentJsonResponse<{ cascadeUpdates?: Array<{ stage: string; updatedSummary: string }> }>(rawResult, {
-      agentLabel: "Agent",
-      context: "cascade proposal",
-    });
-
-    if (!Array.isArray(parsed.cascadeUpdates) || parsed.cascadeUpdates.length === 0) return null;
-
-    const cascade: CascadeProposal = {
-      id: randomUUID(),
-      triggeredByStage,
-      proposedUpdates: parsed.cascadeUpdates
-        .filter((u: { stage: string }) => stageOrder.includes(u.stage as AgentStage))
-        .map((u: { stage: string; updatedSummary: string }) => ({
-          stage: u.stage as AgentStage,
-          updatedSummary: u.updatedSummary,
-        })),
-      createdAt: new Date().toISOString(),
-    };
-
-    session.cascadePending = cascade;
-    session.updatedAt = new Date().toISOString();
-    await this.store.saveAgentSession(session);
-    this.emit({ type: "agent.session", projectId, session });
-
-    return cascade;
-  }
-
-  async agentAcceptCascade(input: AgentAcceptCascadeInput): Promise<AgentSession> {
-    await this.ensureInitialized();
-    const session = await this.store.getAgentSession(input.projectId);
-    if (!session) throw new Error("No agent session found.");
-    if (!session.cascadePending || session.cascadePending.id !== input.cascadeId) {
-      throw new Error("No matching cascade pending.");
-    }
-
-    for (const update of session.cascadePending.proposedUpdates) {
-      if (!input.acceptedStages.includes(update.stage)) continue;
-      const summary = input.editedSummaries?.[update.stage] ?? update.updatedSummary;
-      if (session.stages[update.stage].confirmed) {
-        session.stages[update.stage].confirmed!.summary = summary;
-      } else {
-        session.stages[update.stage].confirmed = { summary };
-      }
-    }
-
-    session.cascadePending = null;
-    session.updatedAt = new Date().toISOString();
-    await this.store.saveAgentSession(session);
-    this.emit({ type: "agent.session", projectId: input.projectId, session });
-    return session;
-  }
-
-  async agentProcessTodosFromProgram(input: AgentProcessTodosInput): Promise<AgentSubmitTodosResponse> {
-    await this.ensureInitialized();
-    const settings = await this.store.readSettings();
-    await this.requireProviderReady(input.provider, settings);
-
-    let session = await this.store.getAgentSession(input.projectId);
-    if (!session) {
-      session = this.createEmptyAgentSession(input.projectId, settings.advancedDefaults.provider);
-    }
-
-    // Add new to-dos to scratchpad with source: "user"
-    for (const text of input.newTodos) {
-      if (text.trim()) {
-        session.scratchpad.push({
-          id: randomUUID(),
-          text: text.trim(),
-          completed: false,
-          source: "user",
-          createdAt: new Date().toISOString(),
-        });
-      }
-    }
-
-    session.updatedAt = new Date().toISOString();
-    await this.store.saveAgentSession(session);
-
-    // Now submit the to-dos through the regular flow
-    return this.agentSubmitTodos({
-      projectId: input.projectId,
-      provider: input.provider,
-      model: input.model,
-      claudeModel: input.claudeModel,
-    });
-  }
 
   // --- Director System Methods ---
 
@@ -11149,7 +10066,9 @@ Return ONLY strict JSON matching:
     session.updatedAt = new Date().toISOString();
     await this.store.saveAgentSession(session);
     this.emit({ type: "agent.session", projectId: input.projectId, session });
-    void this.reviewValidationWithTodd(input.projectId, validationReport).catch(() => undefined);
+    void this.reviewValidationWithTodd(input.projectId, validationReport).catch((error) => {
+      console.warn("[reviewValidationWithTodd] background failure", error);
+    });
     return result;
   }
 
@@ -11819,21 +10738,6 @@ Return ONLY strict JSON matching:
     }
   }
 
-  async dismissSetup(): Promise<SetupSnapshot> {
-    const snapshot = await this.buildSetupSnapshot();
-    if (!snapshot.isSetupComplete) {
-      throw new Error("Finish the required setup steps before entering PROGRAMS.");
-    }
-
-    await this.store.updateSetupState({
-      completedAt: snapshot.completedAt ?? new Date().toISOString(),
-    });
-
-    const next = await this.buildSetupSnapshot();
-    this.emit({ type: "setup.updated", setup: next });
-    return next;
-  }
-
   async setRunCommand(projectId: string, runCommand: string) {
     await this.ensureInitialized();
     const project = await this.requireProject(projectId);
@@ -12473,7 +11377,9 @@ Respond with ONLY the command string — no explanation, no markdown, no quotes.
         await this.store.saveAgentSession(latestSession);
         this.emit({ type: "agent.session", projectId: input.projectId, session: latestSession });
       }
-      void this.executePlan(executingProject, settings, draft).catch(() => undefined);
+      void this.executePlan(executingProject, settings, draft).catch((error) => {
+        console.warn("[executePlan] background failure", error);
+      });
       return { started: true };
     }
 
@@ -12745,7 +11651,9 @@ Respond with ONLY the command string — no explanation, no markdown, no quotes.
     session.pingMemory.context = null;
     await this.saveAgentSession(projectId, session);
     if (reportSnapshot) {
-      void this.reviewPingExecutionWithTodd(projectId, reportSnapshot).catch(() => undefined);
+      void this.reviewPingExecutionWithTodd(projectId, reportSnapshot).catch((error) => {
+        console.warn("[reviewPingExecutionWithTodd] background failure", error);
+      });
     }
   }
 
@@ -14384,7 +13292,9 @@ Return strict JSON with:
     this.appUpdatePackagingJob = job;
     void this.evaluateAppUpdate(settings)
       .then((result) => this.emitAppUpdateStatus(result.status))
-      .catch(() => undefined);
+      .catch((error) => {
+        console.warn("[evaluateAppUpdate] background failure", error);
+      });
     void job.finally(() => {
       if (this.appUpdatePackagingJob === job) {
         this.appUpdatePackagingJob = null;

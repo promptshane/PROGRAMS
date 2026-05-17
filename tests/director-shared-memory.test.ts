@@ -50,7 +50,6 @@ const {
   buildDirectorReportStream,
   collectToddRoadmapReportHistory,
   collectToddResearchReportHistory,
-  findLatestToddResearchMessage,
 } = await loadSessionHelpersModule();
 
 const createSession = (): AgentSession => ({
@@ -630,50 +629,3 @@ test("Todd research collector returns newest reports first and dedupes duplicate
   assert.equal(history[1]?.message.metadata.researchPrompt, "Check the shell flow.");
 });
 
-test("Todd research selector returns the latest Todd research result", () => {
-  const session = createSession();
-  session.slackMessages = [
-    {
-      id: "older-research",
-      role: "assistant",
-      directorId: "rd-director",
-      content: "Older Todd research",
-      createdAt: "2026-04-09T12:00:00.000Z",
-      metadata: {
-        type: "research-result",
-        researchPrompt: "Check the shell flow.",
-        generalSummary: "Older general findings.",
-        projectSummary: "Older project findings.",
-      },
-    } as AgentSession["slackMessages"][number],
-    {
-      id: "non-research",
-      role: "assistant",
-      directorId: "rd-director",
-      content: "Plain Todd chat",
-      createdAt: "2026-04-09T12:20:00.000Z",
-      metadata: null,
-    } as AgentSession["slackMessages"][number],
-  ];
-  session.unifiedMessages = [
-    {
-      id: "newer-research",
-      role: "assistant",
-      directorId: "rd-director",
-      content: "Newer Todd research",
-      createdAt: "2026-04-09T12:10:00.000Z",
-      metadata: {
-        type: "research-result",
-        researchPrompt: "Check the version plan.",
-        generalSummary: "Newer general findings.",
-        projectSummary: "Newer project findings.",
-      },
-    } as AgentSession["unifiedMessages"][number],
-  ];
-
-  const latest = findLatestToddResearchMessage(session);
-
-  assert.equal(latest?.id, "newer-research");
-  assert.equal(latest?.metadata.researchPrompt, "Check the version plan.");
-  assert.equal(latest?.metadata.projectSummary, "Newer project findings.");
-});

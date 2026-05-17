@@ -68,7 +68,6 @@ const api = {
   installGit: () => ipcRenderer.invoke("setup.installGit"),
   setupCodex: () => ipcRenderer.invoke("setup.codex"),
   setupClaude: () => ipcRenderer.invoke("setup.claude"),
-  dismissSetup: (): Promise<SetupSnapshot> => ipcRenderer.invoke("setup.dismiss"),
   readSettings: (): Promise<Settings> => ipcRenderer.invoke("settings.read"),
   updateSettings: (input: SettingsUpdateInput): Promise<Settings> =>
     ipcRenderer.invoke("settings.update", input),
@@ -212,9 +211,6 @@ const api = {
   readProjectDiffStats: (projectId: string): Promise<DiffStats | null> =>
     ipcRenderer.invoke("projects.diffStats", projectId),
 
-
-  pickMaterialFiles: (): Promise<{ canceled: boolean; paths: string[] }> =>
-    ipcRenderer.invoke("system.pickMaterialFiles"),
 
   pickDirectory: (mode: DirectoryPickMode): Promise<DirectoryPickResult> =>
     ipcRenderer.invoke("system.pickDirectory", mode),

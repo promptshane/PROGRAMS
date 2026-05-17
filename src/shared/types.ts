@@ -1590,53 +1590,12 @@ export interface StageAgentChatResponse {
   suggestedConfirmation: AgentStageConfirmation | null;
 }
 
-export interface AgentConfirmStageInput {
-  projectId: string;
-  stage: AgentStage;
-  confirmation: AgentStageConfirmation;
-}
-
-export interface AgentUpdateScratchpadInput {
-  projectId: string;
-  scratchpad: ScratchpadItem[];
-}
-
-export interface AgentSubmitTodosInput {
-  projectId: string;
-  provider: AiProvider;
-  model: CodexModel;
-  claudeModel: ClaudeModel;
-}
-
-export interface AgentSubmitTodosResponse {
-  sessionId: string;
-  plannedUpdates: AgentPlannedUpdate[];
-  message: StageAgentMessage;
-}
-
-export interface AgentReorderUpdatesInput {
-  projectId: string;
-  updateIds: string[];
-}
-
 export interface AgentExecuteUpdateInput {
   projectId: string;
   updateId: string;
   provider: AiProvider;
   model: CodexModel;
   claudeModel: ClaudeModel;
-}
-
-export interface AgentAttachMaterialsInput {
-  projectId: string;
-  filePaths: string[];
-  replace?: boolean;
-}
-
-export interface AgentAttachMaterialsResult {
-  session: AgentSession;
-  attachedPaths: string[];
-  failedPaths: string[];
 }
 
 export interface AgentCoreDetails {
@@ -1654,53 +1613,6 @@ export interface CoreDetailsProposal {
   updatedThesis: string | null;
   updatedCorePillars: { name: string; functionSummary: string | null; thesisSummary: string | null }[] | null;
   updatedFullFlow: string | null;
-}
-
-export interface AgentSuggestUpdateInput {
-  projectId: string;
-  provider: AiProvider;
-  model: CodexModel;
-  claudeModel: ClaudeModel;
-  message: string;
-  focusArea?: "function" | "thesis" | "core_pillars" | "full_flow" | null;
-}
-
-export interface AgentSuggestUpdateResponse {
-  aiMessage: string;
-  proposal: CoreDetailsProposal | null;
-}
-
-export interface AgentApplyCoreDetailsInput {
-  projectId: string;
-  proposal: CoreDetailsProposal;
-}
-
-export interface AgentAcceptCascadeInput {
-  projectId: string;
-  cascadeId: string;
-  acceptedStages: AgentStage[];
-  editedSummaries?: Record<string, string>;
-}
-
-export interface CoreDetailsChatInput {
-  projectId: string;
-  provider: AiProvider;
-  model: CodexModel;
-  claudeModel: ClaudeModel;
-  message: string;
-}
-
-export interface CoreDetailsChatResponse {
-  message: StageAgentMessage;
-  updatedCoreDetails: AgentCoreDetails | null;
-}
-
-export interface AgentProcessTodosInput {
-  projectId: string;
-  provider: AiProvider;
-  model: CodexModel;
-  claudeModel: ClaudeModel;
-  newTodos: string[];
 }
 
 export type PlaywrightAction =

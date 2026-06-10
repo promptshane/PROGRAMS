@@ -438,6 +438,10 @@ ${result.stderr}`.toLowerCase();
     };
   }
 
+  async setupGitCredentialHelper(): Promise<void> {
+    await execCommand("gh auth setup-git", process.cwd());
+  }
+
   async getGithubStatus(): Promise<GithubAuthStatus> {
     const versionResult = await execCommand("gh --version", process.cwd());
     if (versionResult.code !== 0) {
@@ -504,6 +508,7 @@ ${result.stderr}`.toLowerCase();
       });
     });
 
+    await this.setupGitCredentialHelper();
     return this.getGithubStatus();
   }
 

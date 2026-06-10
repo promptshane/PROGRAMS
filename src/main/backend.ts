@@ -10556,6 +10556,7 @@ Return ONLY strict JSON matching:
       throw new Error(githubStatus.errorMessage ?? "Log in to GitHub in Settings to save your project.");
     }
 
+    await this.git.setupGitCredentialHelper();
     await this.git.ensureRepository(project.localPath);
     await ensureProjectGitignoreSecretRules(project.localPath);
     const changedFilesBeforeSave = await this.git.readWorkingTreeChangedFiles(project.localPath);
@@ -10633,6 +10634,7 @@ Return ONLY strict JSON matching:
       throw new Error(githubStatus.errorMessage ?? "Log in to GitHub in Settings to download your project.");
     }
 
+    await this.git.setupGitCredentialHelper();
     const runtime = await this.runner.validateRuntime(projectId);
     if (runtime.running) {
       throw new Error("Stop this project before downloading from GitHub.");

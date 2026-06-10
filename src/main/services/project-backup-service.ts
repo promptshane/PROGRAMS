@@ -60,7 +60,12 @@ const shouldCopyBackupPath = async (projectPath: string, sourcePath: string): Pr
     return true;
   }
 
-  const stats = await lstat(sourcePath);
+  let stats;
+  try {
+    stats = await lstat(sourcePath);
+  } catch {
+    return false;
+  }
   if (stats.isSocket() || stats.isFIFO()) {
     return false;
   }

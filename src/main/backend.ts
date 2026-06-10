@@ -10658,6 +10658,9 @@ Return ONLY strict JSON matching:
 
     const plannedDownload = await this.git.previewGithubDownload(project.localPath);
     if (plannedDownload.status === "up-to-date") {
+      // Defensive: clear any stale workspace copy left over from a prior run, even
+      // when git reports nothing to download.
+      await this.invalidateLaunchWorkspace(project);
       const nextConnection: GithubConnection = {
         ...connection,
         repoUrl: remoteUrl,
@@ -10691,6 +10694,10 @@ Return ONLY strict JSON matching:
     }
 
     const result = await this.git.downloadFromGithub(project.localPath, plannedDownload);
+    // Discard the cached workspace (and persist the cleared launch config) before
+    // re-detecting runtime config, so detection reads the freshly updated localPath
+    // rather than the stale workspace copy.
+    await this.invalidateLaunchWorkspace(await this.requireProject(projectId));
     const nextConnection: GithubConnection = {
       ...connection,
       repoUrl: remoteUrl,
@@ -13081,6 +13088,32 @@ Return strict JSON with:
     }
 
     return this.materializeLaunchWorkspace(project, resolution, "wrapped");
+  }
+
+  // Discard the cached launch-workspace copy so the next run rebuilds it from the
+  // current localPath. Without this, downloads update localPath but runs keep using
+  // the stale workspace copy created on a previous run.
+  private async invalidateLaunchWorkspace(project: Project): Promise<Project> {
+    // Always remove the on-disk copy so a fresh one is materialized next run.
+    await rm(this.getLaunchWorkspaceRoot(project), { force: true, recursive: true });
+
+    // If a synthetic launch wrapper was in effect, clear it so detection + re-wrapping
+    // run again against the updated localPath.
+    if (!project.runtimeConfig.launch) {
+      return project;
+    }
+    const { launch, ...restConfig } = project.runtimeConfig;
+    const nextRuntimeConfig: Project["runtimeConfig"] = {
+      ...restConfig,
+      // Drop the synthetic wrapper command; keep any genuinely-detected command.
+      runCommand:
+        project.runtimeConfig.runCommand === "bash .programs/launch.sh"
+          ? null
+          : project.runtimeConfig.runCommand,
+    };
+    const nextProject: Project = { ...project, runtimeConfig: nextRuntimeConfig };
+    await this.store.updateProject(nextProject);
+    return nextProject;
   }
 
   private async materializeLaunchWorkspace(

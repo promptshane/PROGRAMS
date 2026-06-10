@@ -61,6 +61,9 @@ const shouldCopyBackupPath = async (projectPath: string, sourcePath: string): Pr
   }
 
   const stats = await lstat(sourcePath);
+  if (stats.isSocket() || stats.isFIFO()) {
+    return false;
+  }
   if (!stats.isDirectory()) {
     return true;
   }

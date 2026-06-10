@@ -213,6 +213,21 @@ export function ArrowUpIcon() {
   );
 }
 
+export function ArrowDownIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M12 5v13m0 0 5-5m-5 5-5-5"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 export function StopIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">

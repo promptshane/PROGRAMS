@@ -59,6 +59,11 @@ import type {
   GithubAuthStatus,
   GithubConnection,
   GithubPublishInput,
+  DownloadFromGithubResult,
+  SaveToGithubResult,
+  ProjectBackupInfo,
+  ProjectSafetyState,
+  RestoreProjectBackupResult,
 } from "@shared/types";
 
 const api = {
@@ -96,8 +101,10 @@ const api = {
     ipcRenderer.invoke("projects.github.diffStats", projectId),
   detectAndSyncGithubRemote: (projectId: string): Promise<GithubConnection | null> =>
     ipcRenderer.invoke("projects.github.detectRemote", projectId),
-  saveToGithub: (projectId: string): Promise<GithubConnection> =>
+  saveToGithub: (projectId: string): Promise<SaveToGithubResult> =>
     ipcRenderer.invoke("projects.github.save", projectId),
+  downloadFromGithub: (projectId: string): Promise<DownloadFromGithubResult> =>
+    ipcRenderer.invoke("projects.github.download", projectId),
 
   inspectAttachPath: (localPath: string): Promise<AttachPathInspection> =>
     ipcRenderer.invoke("projects.inspectAttachPath", localPath),
@@ -119,6 +126,12 @@ const api = {
     ipcRenderer.invoke("projects.readOutlineReport", projectId),
   generateOutlineReport: (input: GenerateProjectOutlineReportInput): Promise<ProjectOutlineReport | null> =>
     ipcRenderer.invoke("projects.generateOutlineReport", input),
+  readProjectSafetyState: (projectId: string): Promise<ProjectSafetyState> =>
+    ipcRenderer.invoke("projects.safetyState", projectId),
+  readLastProjectBackup: (projectId: string): Promise<ProjectBackupInfo | null> =>
+    ipcRenderer.invoke("projects.backups.latest", projectId),
+  restoreLastProjectBackup: (projectId: string): Promise<RestoreProjectBackupResult> =>
+    ipcRenderer.invoke("projects.backups.restoreLast", projectId),
   readEnvFile: (projectId: string): Promise<EnvFileSnapshot> => ipcRenderer.invoke("projects.readEnvFile", projectId),
   writeEnvFile: (input: WriteProjectEnvFileInput): Promise<EnvFileSnapshot> =>
     ipcRenderer.invoke("projects.writeEnvFile", input),

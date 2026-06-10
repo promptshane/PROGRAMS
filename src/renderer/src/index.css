@@ -1188,6 +1188,22 @@ code {
   align-items: center;
   gap: 10px;
   padding: 0 0 2px;
+  flex-wrap: wrap;
+}
+
+.summaryGithubActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.summarySafetyRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 2px 0 0;
+  flex-wrap: wrap;
 }
 
 .githubSaveButton {
@@ -1224,6 +1240,10 @@ code {
 .githubSaveButton-error {
   border-color: var(--error);
   color: var(--error);
+}
+.githubSaveButton-neutral {
+  border-color: var(--border-strong);
+  color: var(--muted);
 }
 
 .githubDiffStats {
@@ -1353,8 +1373,19 @@ code {
 
 .primaryButton,
 .secondaryButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   padding: 12px 18px;
   border: 1px solid transparent;
+}
+
+.primaryButton svg,
+.secondaryButton svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
 }
 
 .primaryButton {

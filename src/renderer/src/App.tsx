@@ -28,6 +28,7 @@ import {
   type GenerateProjectOutlineReportInput,
   type ModelCatalog,
   type Project,
+  type ProjectSafetyState,
   type ProjectCategory,
   type ProjectDetail,
   type ProjectOutlineReport,
@@ -49,6 +50,7 @@ import {
   SidebarToggleIcon,
   ChevronDownIcon,
   GithubIcon,
+  ArrowDownIcon,
 } from "./components/icons";
 import { HomeProjectTile, HomepageComposer } from "./components/home-tiles";
 import { ProjectOptionsSheet } from "./components/project-options-sheet";
@@ -87,6 +89,30 @@ import {
   getComposerDefaults,
   getHomeAppUpdateButtonState,
 } from "./lib/project-helpers";
+
+type SafetyConfirmRequest = {
+  title: string;
+  message: string;
+  detail?: string | null;
+  confirmLabel: string;
+  danger?: boolean;
+};
+
+const formatGithubRepoStatus = (connection: Project["githubConnection"]): string => {
+  if (!connection?.repoUrl) {
+    return "No repo yet";
+  }
+
+  const pushedAt = connection.lastPushedAt ? Date.parse(connection.lastPushedAt) : 0;
+  const downloadedAt = connection.lastDownloadedAt ? Date.parse(connection.lastDownloadedAt) : 0;
+  if (connection.lastDownloadedAt && downloadedAt > pushedAt) {
+    return `Downloaded ${formatDate(connection.lastDownloadedAt)}`;
+  }
+  if (connection.lastPushedAt) {
+    return `Saved ${formatDate(connection.lastPushedAt)}`;
+  }
+  return connection.repoUrl.replace("https://github.com/", "");
+};
 
 function App() {
   const programsApi = "programs" in window ? window.programs : undefined;
@@ -140,13 +166,17 @@ function App() {
   const [connectionsProjectId, setConnectionsProjectId] = useState<string | null>(null);
   const [runtimeProjectId, setRuntimeProjectId] = useState<string | null>(null);
   const [setupConfirmCheck, setSetupConfirmCheck] = useState<SetupCheck | null>(null);
+  const [restoreBackupProject, setRestoreBackupProject] = useState<Project | null>(null);
+  const [safetyConfirmRequest, setSafetyConfirmRequest] = useState<SafetyConfirmRequest | null>(null);
   const [attachInspection, setAttachInspection] = useState<AttachPathInspection | null>(null);
   const [projectFormError, setProjectFormError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [runCommandPromptProject, setRunCommandPromptProject] = useState<Project | null>(null);
-  const [githubSaveState, setGithubSaveState] = useState<null | "saving" | "saved" | "error">(null);
+  const [githubSaveState, setGithubSaveState] = useState<null | "saving" | "saved" | "up-to-date" | "error">(null);
   const [githubSaveError, setGithubSaveError] = useState<string | null>(null);
+  const [githubDownloadState, setGithubDownloadState] = useState<null | "downloading" | "downloaded" | "up-to-date" | "error">(null);
+  const [githubDownloadError, setGithubDownloadError] = useState<string | null>(null);
   const [selectedProjectDiffStats, setSelectedProjectDiffStats] = useState<DiffStats | null>(null);
   const [claudeAuthCodePrompt, setClaudeAuthCodePrompt] = useState<string | null>(null);
   const [claudeAuthCodeInput, setClaudeAuthCodeInput] = useState("");
@@ -168,6 +198,7 @@ function App() {
   const [isUpdateDropTarget, setIsUpdateDropTarget] = useState(false);
   const updateSectionRef = useRef<HTMLDivElement | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const safetyConfirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const updateDropDepthRef = useRef(0);
   const shownErrorProjectIds = useRef<Set<string>>(new Set());
   const lastProjectRelationshipRefreshAtRef = useRef(0);
@@ -504,7 +535,11 @@ function App() {
     void window.programs.readProjectGithubDiffStats(selectedProject.id)
       .then((stats) => setSelectedProjectDiffStats(stats ?? null))
       .catch(() => setSelectedProjectDiffStats(null));
-  }, [selectedProject?.id, selectedProject?.githubConnection?.lastPushedCommitSha]);
+  }, [
+    selectedProject?.id,
+    selectedProject?.githubConnection?.lastPushedCommitSha,
+    selectedProject?.githubConnection?.lastDownloadedCommitSha,
+  ]);
 
   useEffect(() => {
     setShowProjectDetails(false);
@@ -670,6 +705,7 @@ function App() {
           setStoredDataProjectId((current) => (current === event.projectId ? null : current));
           setConnectionsProjectId((current) => (current === event.projectId ? null : current));
           setRuntimeProjectId((current) => (current === event.projectId ? null : current));
+          setRestoreBackupProject((current) => (current?.id === event.projectId ? null : current));
           setOutlineReports((current) => {
             const next = { ...current };
             delete next[event.projectId];
@@ -793,6 +829,43 @@ function App() {
     window.setTimeout(() => {
       setToasts((current) => current.filter((toast) => toast.id !== id));
     }, 5000);
+  };
+
+  const resolveSafetyConfirm = (confirmed: boolean) => {
+    safetyConfirmResolverRef.current?.(confirmed);
+    safetyConfirmResolverRef.current = null;
+    setSafetyConfirmRequest(null);
+  };
+
+  const requestSafetyConfirm = (request: SafetyConfirmRequest): Promise<boolean> =>
+    new Promise((resolve) => {
+      safetyConfirmResolverRef.current = resolve;
+      setSafetyConfirmRequest(request);
+    });
+
+  const formatChangedFilesDetail = (state: ProjectSafetyState): string | null => {
+    if (!state.hasUnsavedChanges) {
+      return null;
+    }
+    const visible = state.changedFiles.slice(0, 8);
+    const suffix = state.changedFiles.length > visible.length ? ` and ${state.changedFiles.length - visible.length} more` : "";
+    return visible.length ? `Changed files: ${visible.join(", ")}${suffix}` : null;
+  };
+
+  const confirmDirtyWorkIfNeeded = async (projectId: string, title: string, confirmLabel: string): Promise<ProjectSafetyState | null> => {
+    const state = await window.programs.readProjectSafetyState(projectId);
+    if (!state.hasUnsavedChanges) {
+      return state;
+    }
+
+    const confirmed = await requestSafetyConfirm({
+      title,
+      message: "This project has unsaved changes. Continuing may mix new work with existing work.",
+      detail: formatChangedFilesDetail(state),
+      confirmLabel,
+      danger: false,
+    });
+    return confirmed ? state : null;
   };
 
   const refreshProject = async (projectId: string) => {
@@ -1117,28 +1190,91 @@ function App() {
     });
   };
 
-  const handlePushToGithub = async (input: { projectId: string }) => {
-    await withBusy(`github.push.${input.projectId}`, async () => {
-      await window.programs.pushProjectToGithub(input);
-    });
-  };
-
-  const handleSaveToGithub = async () => {
-    if (!selectedProject) {
+  const handleSaveToGithub = async (projectId?: string) => {
+    const project = projectId ? projectsById.get(projectId) ?? null : selectedProject;
+    if (!project) {
       return;
     }
-    setGithubSaveState("saving");
-    setGithubSaveError(null);
+    const isSelectedProject = project.id === selectedProjectIdRef.current;
     try {
-      await window.programs.saveToGithub(selectedProject.id);
-      setGithubSaveState("saved");
-      setSelectedProjectDiffStats(null);
-      setTimeout(() => setGithubSaveState(null), 3000);
+      const safetyState = await confirmDirtyWorkIfNeeded(project.id, "Save to GitHub?", "Save to GitHub");
+      if (!safetyState) {
+        return;
+      }
+
+      if (isSelectedProject) {
+        setGithubSaveState("saving");
+        setGithubSaveError(null);
+      }
+      const result = await window.programs.saveToGithub(project.id);
+      if (isSelectedProject) {
+        if (result.status === "up-to-date") {
+          setGithubSaveState("up-to-date");
+        } else {
+          setGithubSaveState("saved");
+          setSelectedProjectDiffStats(null);
+        }
+        setTimeout(() => setGithubSaveState(null), 3000);
+      } else {
+        pushToast(result.status === "up-to-date" ? "Already up to date on GitHub." : "Saved to GitHub.", "success");
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Could not save to GitHub.";
-      setGithubSaveError(message);
-      setGithubSaveState("error");
-      setTimeout(() => setGithubSaveState(null), 5000);
+      if (isSelectedProject) {
+        setGithubSaveError(message);
+        setGithubSaveState("error");
+        setTimeout(() => setGithubSaveState(null), 5000);
+      } else {
+        pushToast(message, "error");
+      }
+    }
+  };
+
+  const handleDownloadFromGithub = async (projectId?: string) => {
+    const project = projectId ? projectsById.get(projectId) ?? null : selectedProject;
+    if (!project) {
+      return;
+    }
+
+    const isSelectedProject = project.id === selectedProjectIdRef.current;
+    try {
+      const safetyState = await window.programs.readProjectSafetyState(project.id);
+      const changedFilesDetail = formatChangedFilesDetail(safetyState);
+      const confirmed = await requestSafetyConfirm({
+        title: "Download from GitHub?",
+        message: `This will replace the local files in ${project.name} with the current GitHub version.`,
+        detail: changedFilesDetail
+          ? `${changedFilesDetail}. PROGRAMS will create a backup before replacing files.`
+          : "PROGRAMS will create a backup before replacing files.",
+        confirmLabel: "Download from GitHub",
+        danger: true,
+      });
+      if (!confirmed) {
+        return;
+      }
+
+      if (isSelectedProject) {
+        setGithubDownloadState("downloading");
+        setGithubDownloadError(null);
+      }
+      const result = await window.programs.downloadFromGithub(project.id);
+      await refreshProject(project.id);
+      if (isSelectedProject) {
+        setGithubDownloadState(result.status === "up-to-date" ? "up-to-date" : "downloaded");
+        setSelectedProjectDiffStats(null);
+        setTimeout(() => setGithubDownloadState(null), 3000);
+      } else {
+        pushToast(result.status === "up-to-date" ? "Already up to date with GitHub." : "Downloaded from GitHub.", "success");
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not download from GitHub.";
+      if (isSelectedProject) {
+        setGithubDownloadError(message);
+        setGithubDownloadState("error");
+        setTimeout(() => setGithubDownloadState(null), 5000);
+      } else {
+        pushToast(message, "error");
+      }
     }
   };
 
@@ -1243,6 +1379,11 @@ function App() {
       return;
     }
 
+    const confirmed = await confirmDirtyWorkIfNeeded(selectedProject.id, "Run project?", "Run project");
+    if (!confirmed) {
+      return;
+    }
+
     setBusyKey("project.run");
     try {
       await window.programs.runProject(selectedProject.id);
@@ -1320,6 +1461,9 @@ function App() {
     return false;
   };
 
+  const hasProjectBrowserTarget = (project: Project): boolean =>
+    Boolean(project.runtimeConfig.lastRunUrl ?? project.runtimeConfig.openUrl);
+
   const handleHomeTileQuickAction = async (project: Project) => {
     await withBusy(`project.quick.${project.id}`, async () => {
       const runtime = projectRuntimes[project.id] ?? null;
@@ -1340,13 +1484,22 @@ function App() {
         return;
       }
 
+      const confirmed = await confirmDirtyWorkIfNeeded(project.id, `Run ${project.name}?`, "Run project");
+      if (!confirmed) {
+        return;
+      }
+
       setLaunchingProjects((current) => ({ ...current, [project.id]: true }));
       try {
         await window.programs.runProject(project.id);
-        const opened = await openProjectWhenReady(project.id);
-        const detail = await refreshProject(project.id);
+        let detail = await refreshProject(project.id);
+        const expectsBrowserTarget = hasProjectBrowserTarget(detail.project);
+        const opened = expectsBrowserTarget ? await openProjectWhenReady(project.id) : false;
+        if (opened) {
+          detail = await refreshProject(project.id);
+        }
 
-        if (opened || detail.runtime.url || !detail.runtime.running) {
+        if (opened || detail.runtime.url || !detail.runtime.running || !expectsBrowserTarget) {
           setLaunchingProjects((current) => {
             if (!current[project.id]) {
               return current;
@@ -1358,7 +1511,7 @@ function App() {
           });
         }
 
-        if (!opened) {
+        if (!opened && expectsBrowserTarget) {
           pushToast("PROGRAMS started the project. The dot will turn solid green once its local URL is ready.", "info");
         }
       } catch (error) {
@@ -1382,13 +1535,22 @@ function App() {
 
   const handleHomeTileRestart = async (project: Project) => {
     await withBusy(`project.quick.${project.id}`, async () => {
+      const confirmed = await confirmDirtyWorkIfNeeded(project.id, `Restart ${project.name}?`, "Restart project");
+      if (!confirmed) {
+        return;
+      }
+
       setLaunchingProjects((current) => ({ ...current, [project.id]: true }));
       try {
         await window.programs.restartProject(project.id);
-        const opened = await openProjectWhenReady(project.id);
-        const detail = await refreshProject(project.id);
+        let detail = await refreshProject(project.id);
+        const expectsBrowserTarget = hasProjectBrowserTarget(detail.project);
+        const opened = expectsBrowserTarget ? await openProjectWhenReady(project.id) : false;
+        if (opened) {
+          detail = await refreshProject(project.id);
+        }
 
-        if (opened || detail.runtime.url || !detail.runtime.running) {
+        if (opened || detail.runtime.url || !detail.runtime.running || !expectsBrowserTarget) {
           setLaunchingProjects((current) => {
             if (!current[project.id]) {
               return current;
@@ -1400,7 +1562,7 @@ function App() {
           });
         }
 
-        if (!opened) {
+        if (!opened && expectsBrowserTarget) {
           pushToast("PROGRAMS restarted the project. The dot will turn solid green once its local URL is ready.", "info");
         }
       } catch (error) {
@@ -1530,6 +1692,13 @@ function App() {
       return;
     }
 
+    if (composerOptions.planningMode === "auto" || composerOptions.planningMode === "none") {
+      const confirmed = await confirmDirtyWorkIfNeeded(selectedProject.id, "Start AI edit?", "Start AI edit");
+      if (!confirmed) {
+        return;
+      }
+    }
+
     const input = {
       projectId: selectedProject.id,
       provider: composerOptions.provider,
@@ -1562,6 +1731,11 @@ function App() {
       return;
     }
 
+    const confirmed = await confirmDirtyWorkIfNeeded(selectedProject.id, "Approve plan and start work?", "Approve plan");
+    if (!confirmed) {
+      return;
+    }
+
     await withBusy("plan.approve", async () => {
       await window.programs.approvePlan({ projectId: selectedProject.id });
     });
@@ -1585,6 +1759,30 @@ function App() {
     await withBusy(`undo-${update.id}`, async () => {
       await window.programs.undoUpdate(selectedProject.id, update.id);
       await refreshProject(selectedProject.id);
+    });
+  };
+
+  const handleRequestRestoreLastBackup = async (project: Project) => {
+    await withBusy(`backup.check.${project.id}`, async () => {
+      const backup = await window.programs.readLastProjectBackup(project.id);
+      if (!backup) {
+        pushToast("No backup found for this project yet.", "error");
+        return;
+      }
+      setRestoreBackupProject(project);
+    });
+  };
+
+  const handleRestoreLastBackup = async () => {
+    if (!restoreBackupProject) {
+      return;
+    }
+
+    await withBusy(`backup.restore.${restoreBackupProject.id}`, async () => {
+      await window.programs.restoreLastProjectBackup(restoreBackupProject.id);
+      await refreshProject(restoreBackupProject.id);
+      pushToast("Backup restored.", "success");
+      setRestoreBackupProject(null);
     });
   };
 
@@ -1841,30 +2039,64 @@ function App() {
             </div>
           </div>
           <div className="summaryGithubRow">
-            <button
-              type="button"
-              className={
-                githubSaveState === "saved"
-                  ? "githubSaveButton githubSaveButton-success"
-                  : githubSaveState === "error"
-                    ? "githubSaveButton githubSaveButton-error"
-                    : "githubSaveButton"
-              }
-              onClick={() => void handleSaveToGithub()}
-              disabled={githubSaveState === "saving"}
-              aria-label="Save to GitHub"
-            >
-              <GithubIcon />
-              {githubSaveState === "saving"
-                ? "Saving..."
-                : githubSaveState === "saved"
-                  ? "Saved to GitHub"
-                  : githubSaveState === "error"
-                    ? "Save failed"
-                    : "Save to GitHub"}
-            </button>
+            <div className="summaryGithubActions">
+              <button
+                type="button"
+                className={
+                  githubSaveState === "saved"
+                    ? "githubSaveButton githubSaveButton-success"
+                    : githubSaveState === "up-to-date"
+                      ? "githubSaveButton githubSaveButton-neutral"
+                      : githubSaveState === "error"
+                        ? "githubSaveButton githubSaveButton-error"
+                        : "githubSaveButton"
+                }
+                onClick={() => void handleSaveToGithub()}
+                disabled={githubSaveState === "saving" || githubDownloadState === "downloading"}
+                aria-label="Save to GitHub"
+              >
+                <GithubIcon />
+                {githubSaveState === "saving"
+                  ? "Saving..."
+                  : githubSaveState === "saved"
+                    ? "Saved to GitHub"
+                    : githubSaveState === "up-to-date"
+                      ? "Already up to date"
+                      : githubSaveState === "error"
+                        ? "Save failed"
+                        : "Save to GitHub"}
+              </button>
+              <button
+                type="button"
+                className={
+                  githubDownloadState === "downloaded"
+                    ? "githubSaveButton githubSaveButton-success"
+                    : githubDownloadState === "up-to-date"
+                      ? "githubSaveButton githubSaveButton-neutral"
+                      : githubDownloadState === "error"
+                        ? "githubSaveButton githubSaveButton-error"
+                        : "githubSaveButton"
+                }
+                onClick={() => void handleDownloadFromGithub()}
+                disabled={githubSaveState === "saving" || githubDownloadState === "downloading"}
+                aria-label="Download from GitHub"
+              >
+                <ArrowDownIcon />
+                {githubDownloadState === "downloading"
+                  ? "Downloading..."
+                  : githubDownloadState === "downloaded"
+                    ? "Downloaded"
+                    : githubDownloadState === "up-to-date"
+                      ? "Already up to date"
+                      : githubDownloadState === "error"
+                        ? "Download failed"
+                        : "Download from GitHub"}
+              </button>
+            </div>
             {githubSaveState === "error" && githubSaveError ? (
               <span className="githubSaveErrorLabel">{githubSaveError}</span>
+            ) : githubDownloadState === "error" && githubDownloadError ? (
+              <span className="githubSaveErrorLabel">{githubDownloadError}</span>
             ) : selectedProjectDiffStats ? (
               <span className="githubDiffStats">
                 <span className="githubDiffAdded">+{selectedProjectDiffStats.added}</span>
@@ -1872,12 +2104,20 @@ function App() {
               </span>
             ) : null}
             <span className="githubRepoStatus">
-              {selectedProject?.githubConnection?.repoUrl
-                ? selectedProject.githubConnection.lastPushedAt
-                  ? `Saved ${formatDate(selectedProject.githubConnection.lastPushedAt)}`
-                  : selectedProject.githubConnection.repoUrl.replace("https://github.com/", "")
-                : "No repo yet"}
+              {formatGithubRepoStatus(selectedProject?.githubConnection ?? null)}
             </span>
+          </div>
+          <div className="summarySafetyRow">
+            <button
+              type="button"
+              className="secondaryButton smallButton"
+              onClick={() => void handleRequestRestoreLastBackup(selectedProject)}
+              disabled={isProjectRunning || busyKey === `backup.restore.${selectedProject.id}` || busyKey === `backup.check.${selectedProject.id}`}
+              title={isProjectRunning ? "Stop the project before restoring a backup." : "Restore this project from its latest PROGRAMS backup."}
+            >
+              {busyKey === `backup.check.${selectedProject.id}` ? "Checking Backup..." : "Restore Last Backup"}
+            </button>
+            {isProjectRunning ? <span className="helperText">Stop the project before restoring.</span> : null}
           </div>
         </div>
         {selectedProjectExactChildren.length > 0 || selectedProjectMaybeRelated.length > 0 ? (
@@ -2379,7 +2619,8 @@ function App() {
           onConnectGithub={() => void handleConnectGithub()}
           onDisconnectGithub={() => void handleDisconnectGithub()}
           onPublishToGithub={(input) => void handlePublishToGithub(input)}
-          onPushToGithub={(input) => void handlePushToGithub(input)}
+          onSaveToGithub={(projectId) => void handleSaveToGithub(projectId)}
+          onDownloadFromGithub={(projectId) => void handleDownloadFromGithub(projectId)}
         />
       ) : null}
 
@@ -2457,6 +2698,57 @@ function App() {
             }
           }}
         />
+      ) : null}
+
+      {restoreBackupProject ? (
+        <Modal title="Restore Last Backup" onClose={() => setRestoreBackupProject(null)} compact>
+          <div className="projectEditorStack">
+            <p className="modalLead">
+              This will overwrite the current files in <strong>{restoreBackupProject.name}</strong> with the latest PROGRAMS backup.
+            </p>
+            <div className="dangerCard">
+              <strong>Current files will be replaced.</strong>
+              <p>PROGRAMS will create one safety backup of the current folder before restoring, then copy the latest backup back into the project folder.</p>
+            </div>
+            <div className="modalActions">
+              <button className="secondaryButton" onClick={() => setRestoreBackupProject(null)}>
+                Cancel
+              </button>
+              <button
+                className="secondaryButton dangerButton"
+                onClick={() => void handleRestoreLastBackup()}
+                disabled={busyKey === `backup.restore.${restoreBackupProject.id}`}
+              >
+                {busyKey === `backup.restore.${restoreBackupProject.id}` ? "Restoring..." : "Restore backup"}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
+
+      {safetyConfirmRequest ? (
+        <Modal
+          title={safetyConfirmRequest.title}
+          onClose={() => resolveSafetyConfirm(false)}
+          compact
+          dismissOnOverlayClick={false}
+        >
+          <div className="projectEditorStack">
+            <p className="modalLead">{safetyConfirmRequest.message}</p>
+            {safetyConfirmRequest.detail ? <p className="helperText">{safetyConfirmRequest.detail}</p> : null}
+            <div className="modalActions">
+              <button className="secondaryButton" onClick={() => resolveSafetyConfirm(false)}>
+                Cancel
+              </button>
+              <button
+                className={safetyConfirmRequest.danger ? "secondaryButton dangerButton" : "primaryButton"}
+                onClick={() => resolveSafetyConfirm(true)}
+              >
+                {safetyConfirmRequest.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </Modal>
       ) : null}
 
       <ToastHost toasts={toasts} />

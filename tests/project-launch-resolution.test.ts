@@ -3,7 +3,12 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import test from "node:test";
-import { detectRuntimeConfig, reconcileRuntimeConfig, resolveLaunchPlan } from "../src/main/utils/project.ts";
+import {
+  detectRuntimeConfig,
+  reconcileRuntimeConfig,
+  repairMissingCdSeparator,
+  resolveLaunchPlan,
+} from "../src/main/utils/project.ts";
 import type { ProjectRuntimeConfig } from "../src/shared/types.ts";
 
 const createTempProject = async (): Promise<string> => mkdtemp(join(tmpdir(), "programs-launch-"));
@@ -148,4 +153,50 @@ test("resolveLaunchPlan still picks dev when no wrangler config is present", asy
   const plan = await resolveLaunchPlan(projectPath);
 
   assert.equal(plan.runCommand, "npm run dev");
+});
+
+test("resolveLaunchPlan detects Swift packages", async (t) => {
+  const projectPath = await createTempProject();
+  t.after(async () => {
+    await rm(projectPath, { recursive: true, force: true });
+  });
+
+  await writeFile(
+    join(projectPath, "Package.swift"),
+    [
+      "// swift-tools-version: 6.0",
+      "import PackageDescription",
+      "",
+      "let package = Package(",
+      '    name: "DMGReader",',
+      "    targets: [.executableTarget(name: \"DMGReader\")]",
+      ")",
+      "",
+    ].join("\n"),
+  );
+
+  const plan = await resolveLaunchPlan(projectPath);
+
+  assert.equal(plan.runCommand, "swift run");
+  assert.equal(plan.installCommand, "swift package resolve");
+  assert.equal(plan.openUrl, null);
+  assert.equal(plan.launch?.candidate?.source, "Swift Package");
+});
+
+test("repairMissingCdSeparator removes redundant cd prefix for the project cwd", async (t) => {
+  const homePath = await mkdtemp(join(tmpdir(), "programs-home-"));
+  const projectPath = join(homePath, "Desktop", "dmg_reader");
+  await mkdir(projectPath, { recursive: true });
+  t.after(async () => {
+    await rm(homePath, { recursive: true, force: true });
+  });
+
+  assert.equal(
+    repairMissingCdSeparator(projectPath, "cd ~/Desktop/dmg_reader swift run", homePath),
+    "swift run",
+  );
+  assert.equal(
+    repairMissingCdSeparator(projectPath, "cd ~/Desktop/other swift run", homePath),
+    "cd ~/Desktop/other swift run",
+  );
 });

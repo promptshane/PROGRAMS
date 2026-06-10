@@ -1,5 +1,5 @@
 import { readdir, readFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import type {
   LaunchCandidate,
   LaunchConfidence,
@@ -246,7 +246,43 @@ const buildProcfileCommand = (cwd: string): string => wrapCommandForCwd(cwd, "fo
 
 const buildGoCommand = (cwd: string): string => wrapCommandForCwd(cwd, "go run .");
 
+const buildSwiftCommand = (cwd: string): string => wrapCommandForCwd(cwd, "swift run");
+
 const buildRubyCommand = (cwd: string, command: string): string => wrapCommandForCwd(cwd, command);
+
+const CD_MISSING_SEPARATOR_REGEX =
+  /^cd\s+(?:"([^"]+)"|'([^']+)'|(\S+))\s+((?:swift\s+run|npm\s+|pnpm\s+|yarn\s+|bun\s+|python3?\s+|go\s+run|cargo\s+run|ruby\s+|bundle\s+|bash\s+|sh\s+|make(?:\s|$)|docker\s+|uvicorn\s+|flask\s+|deno\s+|tsx\s+|ts-node\s+).*)$/i;
+
+const normalizeShellPathForCompare = (value: string, workingPath: string, homePath: string | null | undefined): string => {
+  const trimmed = value.trim();
+  if (trimmed === "~") {
+    return resolve(homePath || workingPath);
+  }
+  if (trimmed.startsWith("~/")) {
+    return resolve(homePath || workingPath, trimmed.slice(2));
+  }
+  return isAbsolute(trimmed) ? resolve(trimmed) : resolve(workingPath, trimmed);
+};
+
+export const repairMissingCdSeparator = (
+  workingPath: string,
+  command: string,
+  homePath: string | null | undefined = process.env.HOME,
+): string => {
+  const trimmed = command.trim();
+  const match = trimmed.match(CD_MISSING_SEPARATOR_REGEX);
+  if (!match) {
+    return command;
+  }
+
+  const targetPath = match[1] ?? match[2] ?? match[3] ?? "";
+  const targetCwd = normalizeShellPathForCompare(targetPath, workingPath, homePath);
+  if (targetCwd !== resolve(workingPath)) {
+    return command;
+  }
+
+  return match[4].trim();
+};
 
 const buildLaunchMetadata = (
   origin: LaunchOrigin,
@@ -602,6 +638,19 @@ const detectDirectoryLaunchAtDirectory = async (
     };
   }
 
+  if (await pathExists(join(directoryPath, "Package.swift"))) {
+    return {
+      cwd,
+      command: buildSwiftCommand(cwd),
+      installCommand: wrapCommandForCwd(cwd, "swift package resolve"),
+      openUrl: null,
+      packageManager: "unknown",
+      confidence: "high",
+      source: "Swift Package",
+      notes: ["Found Package.swift."],
+    };
+  }
+
   if (await pathExists(join(directoryPath, "config", "environment.rb"))) {
     return {
       cwd,
@@ -719,6 +768,8 @@ const mergeRuntimeConfig = (
     openUrl: nextRunCommandChanged ? detected.openUrl ?? current.openUrl : current.openUrl ?? detected.openUrl,
     lastRunUrl: current.lastRunUrl,
     initialIdea: current.initialIdea,
+    // A port is a stable identity for the project — never drop it on re-detection.
+    assignedPort: current.assignedPort ?? detected.assignedPort ?? null,
     launch: nextLaunch,
   };
 };
@@ -923,6 +974,7 @@ export const detectRuntimeConfig = async (projectPath: string): Promise<ProjectR
     openUrl: resolution.openUrl,
     lastRunUrl: null,
     initialIdea: null,
+    assignedPort: null,
     launch: resolution.launch,
   };
 };
@@ -931,6 +983,122 @@ export const reconcileRuntimeConfig = (
   current: ProjectRuntimeConfig,
   detected: ProjectRuntimeConfig,
 ): ProjectRuntimeConfig => mergeRuntimeConfig(current, detected);
+
+export interface PortInjection {
+  command: string;
+  env: Record<string, string>;
+}
+
+const PACKAGE_MANAGER_TOKEN_REGEX = /^(npm|pnpm|yarn|bun)$/i;
+// Dev servers that ignore the PORT env var and only honor a CLI flag. Everything
+// else (Next, CRA, Nuxt, Remix, Gatsby, plain Node servers, …) reads PORT, so we
+// leave their command alone and just set the env var.
+const PORT_FLAG_FRAMEWORK_REGEX = /\bvite\b|\bastro\b|\bng\s+serve\b|\bsvelte-kit\b/i;
+const PORT_ENV_FRAMEWORK_REGEX = /\b(next|react-scripts|nuxt|remix|gatsby)\b/i;
+const PORT_FLAG_PACKAGES = ["vite", "astro", "@angular/cli", "@sveltejs/kit"];
+
+const extractFinalCommandSegment = (command: string): string => {
+  const segments = command.split("&&");
+  return (segments.at(-1) ?? command).trim();
+};
+
+// Launch commands for nested apps are wrapped as `cd '<dir>' && <command>`, so
+// the package.json that reveals the framework lives in that directory, not the
+// project root.
+const CD_PREFIX_REGEX = /^cd\s+(?:'([^']*)'|"([^"]*)"|(\S+))\s*&&/;
+
+const resolveCommandCwd = (workingPath: string, command: string): string => {
+  const match = command.trim().match(CD_PREFIX_REGEX);
+  const dir = match ? match[1] ?? match[2] ?? match[3] : null;
+  if (!dir) {
+    return workingPath;
+  }
+  return isAbsolute(dir) ? dir : join(workingPath, dir);
+};
+
+const extractScriptName = (segment: string): string | null => {
+  const tokens = segment.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0 || !PACKAGE_MANAGER_TOKEN_REGEX.test(tokens[0])) {
+    return null;
+  }
+
+  let index = 1;
+  if (tokens[index] === "run" || tokens[index] === "exec") {
+    index += 1;
+  }
+
+  const name = tokens[index];
+  return name && !name.startsWith("-") ? name : null;
+};
+
+const readPackageScript = (pkg: Record<string, unknown>, scriptName: string): string | null => {
+  const scripts = typeof pkg.scripts === "object" && pkg.scripts ? (pkg.scripts as Record<string, unknown>) : {};
+  const value = scripts[scriptName];
+  return typeof value === "string" ? value : null;
+};
+
+// Decide whether the launch command needs `--port` appended. Bare binaries are
+// inspected directly; package-manager scripts (`npm run dev`) hide the framework
+// behind a script name, so we resolve it from package.json.
+const commandNeedsPortFlag = async (workingPath: string, finalSegment: string): Promise<boolean> => {
+  const scriptName = extractScriptName(finalSegment);
+  if (!scriptName) {
+    return PORT_FLAG_FRAMEWORK_REGEX.test(finalSegment);
+  }
+
+  try {
+    const pkg = JSON.parse(await readFile(join(workingPath, "package.json"), "utf8")) as Record<string, unknown>;
+    const scriptCommand = readPackageScript(pkg, scriptName);
+    if (scriptCommand) {
+      // The script already pins a port — respect it instead of double-specifying.
+      if (readCommandMatch(scriptCommand, COMMAND_PORT_REGEX)) {
+        return false;
+      }
+      if (PORT_FLAG_FRAMEWORK_REGEX.test(scriptCommand)) {
+        return true;
+      }
+      if (PORT_ENV_FRAMEWORK_REGEX.test(scriptCommand)) {
+        return false;
+      }
+    }
+
+    const packageNames = collectPackageNames(pkg);
+    return PORT_FLAG_PACKAGES.some((name) => packageNames.has(name)) && !packageNames.has("next");
+  } catch {
+    return false;
+  }
+};
+
+const appendPortFlag = (command: string, finalSegment: string, port: number): string => {
+  const packageManager = finalSegment.split(/\s+/)[0]?.toLowerCase();
+  // npm and pnpm need `--` to forward args to the underlying script; yarn and bun
+  // forward trailing args directly, and bare binaries take the flag as-is.
+  const needsDelimiter = packageManager === "npm" || packageManager === "pnpm";
+  return `${command}${needsDelimiter ? " --" : ""} --port ${port}`;
+};
+
+// Force a project's launch onto its assigned port so concurrent projects never
+// collide on a shared framework default. Returns the (possibly augmented) command
+// plus environment overrides to merge into the spawn env.
+export const resolvePortInjection = async (
+  workingPath: string,
+  command: string,
+  port: number,
+): Promise<PortInjection> => {
+  // Respect a port the command already pins itself.
+  if (readCommandMatch(command, COMMAND_PORT_REGEX)) {
+    return { command, env: {} };
+  }
+
+  const env: Record<string, string> = { PORT: String(port) };
+  const finalSegment = extractFinalCommandSegment(command);
+  const commandCwd = resolveCommandCwd(workingPath, command);
+  if (await commandNeedsPortFlag(commandCwd, finalSegment)) {
+    return { command: appendPortFlag(command, finalSegment, port), env };
+  }
+
+  return { command, env };
+};
 
 const README_COMMAND_REGEX = /(?:^|\n)[^\n]*(?:run|start|launch|usage|getting started)[^\n]*\n+(?:```[^\n]*\n([\s\S]*?)```|`([^`\n]+)`|\$\s+([^\n]+))/gi;
 const INLINE_COMMAND_REGEX = /`([^`\n]{3,60})`/g;

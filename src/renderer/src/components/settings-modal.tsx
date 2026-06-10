@@ -81,6 +81,18 @@ export function SettingsModal({
   const [draft, setDraft] = useState(settings);
   const gitInstallCheck = setup.checks.find((check) => check.id === "gitInstall") ?? null;
   const codexTone = auth.codex.loggedIn ? "confirmed" : auth.codex.available ? "info" : "action_required";
+  const githubTone: StatusTone = auth.github.loggedIn
+    ? "confirmed"
+    : auth.github.available && !auth.github.errorMessage
+      ? "info"
+      : "action_required";
+  const githubDetail = auth.github.loggedIn
+    ? `Connected as ${auth.github.username ?? "unknown"}. Projects can be saved to GitHub.`
+    : auth.github.errorMessage
+      ? `GitHub needs attention: ${auth.github.errorMessage}`
+      : auth.github.available
+        ? "Log in to save projects to GitHub."
+        : "Install the GitHub CLI to save projects to GitHub.";
   const claudeTone: StatusTone = !auth.claude.available
     ? "action_required"
     : auth.claude.loggedIn
@@ -344,14 +356,8 @@ export function SettingsModal({
 
             <ConnectionRow
               title="GitHub"
-              tone={auth.github.loggedIn ? "confirmed" : auth.github.available ? "info" : "neutral"}
-              detail={
-                auth.github.loggedIn
-                  ? `Connected as ${auth.github.username ?? "unknown"}. Projects can be saved to GitHub.`
-                  : auth.github.available
-                    ? "Log in to save projects to GitHub."
-                    : "Install the GitHub CLI to save projects to GitHub."
-              }
+              tone={githubTone}
+              detail={githubDetail}
               actionLabel={auth.github.loggedIn ? null : auth.github.available ? "Log In" : "Download"}
               onAction={
                 auth.github.loggedIn

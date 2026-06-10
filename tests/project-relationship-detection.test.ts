@@ -15,7 +15,7 @@ const loadBackendModule = async () => {
   const replacements: Array<[string, string]> = [
     [
       'import { app, shell } from "electron";',
-      `const app = { isPackaged: false, getAppPath: () => process.cwd(), getPath: () => process.cwd() };
+      `const app = { isPackaged: false, getAppPath: () => process.cwd(), getPath: (name: string) => name === "userData" ? join(tmpdir(), "programs-test-user-data") : process.cwd() };
 const shell = { openExternal: async () => {}, showItemInFolder: async () => {}, openPath: async () => "" };`,
     ],
     ['import { ClaudeService } from "@main/services/claude-service";', "class ClaudeService {}"],

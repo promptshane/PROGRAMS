@@ -69,6 +69,7 @@ export const registerIpc = (backend: ProgramsBackend): void => {
   ipcMain.handle("projects.github.diffStats", (_event, projectId: string) => backend.readProjectGithubDiffStats(projectId));
   ipcMain.handle("projects.github.detectRemote", (_event, projectId: string) => backend.detectAndSyncGithubRemote(projectId));
   ipcMain.handle("projects.github.save", (_event, projectId: string) => backend.saveToGithub(projectId));
+  ipcMain.handle("projects.github.download", (_event, projectId: string) => backend.downloadFromGithub(projectId));
   ipcMain.handle("usage.read", () => backend.readUsage());
 
   ipcMain.handle("projects.list", () => backend.listProjects());
@@ -84,6 +85,9 @@ export const registerIpc = (backend: ProgramsBackend): void => {
   ipcMain.handle("projects.readOutlineReport", (_event, projectId: string) => backend.readOutlineReport(projectId));
   ipcMain.handle("projects.generateOutlineReport", (_event, input: GenerateProjectOutlineReportInput) =>
     backend.generateOutlineReport(input));
+  ipcMain.handle("projects.safetyState", (_event, projectId: string) => backend.readProjectSafetyState(projectId));
+  ipcMain.handle("projects.backups.latest", (_event, projectId: string) => backend.readLastProjectBackup(projectId));
+  ipcMain.handle("projects.backups.restoreLast", (_event, projectId: string) => backend.restoreLastProjectBackup(projectId));
   ipcMain.handle("projects.readEnvFile", (_event, projectId: string) => backend.readEnvFile(projectId));
   ipcMain.handle("projects.writeEnvFile", (_event, input: WriteProjectEnvFileInput) => backend.writeEnvFile(input));
   ipcMain.handle("projects.run", (_event, projectId: string) => backend.runProject(projectId));

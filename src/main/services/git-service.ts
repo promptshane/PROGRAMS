@@ -2,14 +2,95 @@ import { spawn } from "node:child_process";
 import { join } from "node:path";
 import * as readline from "node:readline";
 import { ensureDirectory, pathExists } from "../utils/fs.ts";
-import { execCommand, getCommandEnv } from "../utils/process.ts";
+import { execCommand, execFileCommand, getCommandEnv } from "../utils/process.ts";
 import type { DiffStats, GithubAuthStatus } from "@shared/types";
 
 export interface GitRepositoryInfo {
   isRepo: boolean;
 }
 
+export interface GithubDownloadResult {
+  status: "downloaded" | "up-to-date";
+  remoteRef: string;
+  remoteBranch: string | null;
+  commitSha: string;
+}
+
 export type GitInstallRequestResult = "alreadyAvailable" | "requested" | "manualDownload";
+
+interface CommandResultLike {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+const readCommandErrorMessage = (stdout: string, stderr: string, fallback: string): string => {
+  const message = stderr.trim() || stdout.trim();
+  return message || fallback;
+};
+
+export const parseGithubAuthStatusResult = (
+  statusResult: CommandResultLike,
+  version: string | null,
+): GithubAuthStatus => {
+  if (statusResult.code !== 0) {
+    return {
+      available: true,
+      loggedIn: false,
+      username: null,
+      tokenSource: null,
+      scopes: null,
+      version,
+      errorMessage: readCommandErrorMessage(statusResult.stdout, statusResult.stderr, "GitHub auth status failed."),
+    };
+  }
+
+  try {
+    const parsed = JSON.parse(statusResult.stdout) as {
+      hosts?: Record<string, Array<{
+        state?: string;
+        active?: boolean;
+        login?: string;
+        tokenSource?: string;
+        scopes?: string;
+        error?: string;
+      }>>;
+    };
+    const accounts = parsed.hosts?.["github.com"] ?? [];
+    const active = accounts.find((a) => a.active) ?? accounts[0] ?? null;
+    if (!active || active.state !== "success") {
+      return {
+        available: true,
+        loggedIn: false,
+        username: active?.login ?? null,
+        tokenSource: active?.tokenSource ?? null,
+        scopes: active?.scopes ?? null,
+        version,
+        errorMessage: active?.error?.trim() || null,
+      };
+    }
+
+    return {
+      available: true,
+      loggedIn: true,
+      username: active.login ?? null,
+      tokenSource: active.tokenSource ?? null,
+      scopes: active.scopes ?? null,
+      version,
+      errorMessage: null,
+    };
+  } catch {
+    return {
+      available: true,
+      loggedIn: false,
+      username: null,
+      tokenSource: null,
+      scopes: null,
+      version,
+      errorMessage: "Could not parse gh auth status.",
+    };
+  }
+};
 
 export class GitService {
   async readWorkingTreeDiffStats(localPath: string): Promise<DiffStats | null> {
@@ -131,11 +212,53 @@ ${result.stderr}`.toLowerCase();
     return result.stdout.trim().length > 0;
   }
 
-  async commitAll(localPath: string, message: string): Promise<string | null> {
+  async stageAll(localPath: string): Promise<void> {
     const addResult = await execCommand("git add -A", localPath);
     if (addResult.code !== 0) {
       throw new Error(addResult.stderr || "Could not prepare the update.");
     }
+  }
+
+  async getStagedDiffSummary(
+    localPath: string,
+  ): Promise<{ files: number; added: number; removed: number } | null> {
+    const result = await execCommand("git diff --cached --numstat", localPath);
+    if (result.code !== 0) {
+      return null;
+    }
+
+    let files = 0;
+    let added = 0;
+    let removed = 0;
+
+    for (const line of result.stdout.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+      const parts = trimmed.split("\t");
+      if (parts.length < 2) {
+        continue;
+      }
+      const [addedRaw, removedRaw] = parts;
+      files += 1;
+      if (!addedRaw || !removedRaw || addedRaw === "-" || removedRaw === "-") {
+        continue;
+      }
+      const nextAdded = Number(addedRaw);
+      const nextRemoved = Number(removedRaw);
+      if (!Number.isFinite(nextAdded) || !Number.isFinite(nextRemoved)) {
+        continue;
+      }
+      added += nextAdded;
+      removed += nextRemoved;
+    }
+
+    return files > 0 ? { files, added, removed } : null;
+  }
+
+  async commitAll(localPath: string, message: string): Promise<string | null> {
+    await this.stageAll(localPath);
 
     const statusResult = await execCommand("git status --porcelain", localPath);
     if (!statusResult.stdout.trim()) {
@@ -188,31 +311,150 @@ ${result.stderr}`.toLowerCase();
     }
   }
 
+  async pullFromRemote(localPath: string): Promise<void> {
+    const remoteUrl = await this.getRemoteOriginUrl(localPath);
+    if (!remoteUrl) return;
+    await execCommand("git pull", localPath);
+  }
+
+  private async readRemoteCommitSha(localPath: string, remoteRef: string): Promise<string | null> {
+    const result = await execFileCommand("git", ["rev-parse", "--verify", `${remoteRef}^{commit}`], localPath);
+    return result.code === 0 && result.stdout.trim() ? result.stdout.trim() : null;
+  }
+
+  private async readUpstreamRemoteRef(localPath: string): Promise<string | null> {
+    const result = await execFileCommand(
+      "git",
+      ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"],
+      localPath,
+    );
+    const upstream = result.code === 0 ? result.stdout.trim() : "";
+    return upstream.startsWith("origin/") ? upstream : null;
+  }
+
+  private async readOriginHeadRemoteRef(localPath: string): Promise<string | null> {
+    const result = await execFileCommand("git", ["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"], localPath);
+    const ref = result.code === 0 ? result.stdout.trim() : "";
+    return ref.startsWith("refs/remotes/origin/")
+      ? `origin/${ref.slice("refs/remotes/origin/".length)}`
+      : null;
+  }
+
+  private async readOriginDefaultRemoteRef(localPath: string): Promise<string | null> {
+    const result = await execFileCommand("git", ["remote", "show", "origin"], localPath);
+    if (result.code !== 0) {
+      return null;
+    }
+    const match = result.stdout.match(/HEAD branch:\s*(\S+)/);
+    const branch = match?.[1];
+    return branch && branch !== "(unknown)" ? `origin/${branch}` : null;
+  }
+
+  private async resolveGithubDownloadTarget(
+    localPath: string,
+  ): Promise<{ remoteRef: string; remoteBranch: string | null; commitSha: string }> {
+    const candidates = [
+      await this.readUpstreamRemoteRef(localPath),
+      await this.readOriginHeadRemoteRef(localPath),
+      await this.readOriginDefaultRemoteRef(localPath),
+      "origin/main",
+      "origin/master",
+    ];
+    const seen = new Set<string>();
+
+    for (const candidate of candidates) {
+      if (!candidate || seen.has(candidate)) {
+        continue;
+      }
+      seen.add(candidate);
+
+      const commitSha = await this.readRemoteCommitSha(localPath, candidate);
+      if (commitSha) {
+        return {
+          remoteRef: candidate,
+          remoteBranch: candidate.startsWith("origin/") ? candidate.slice("origin/".length) : null,
+          commitSha,
+        };
+      }
+    }
+
+    throw new Error("Could not find a GitHub branch to download. Check that the repository has a main branch.");
+  }
+
+  async previewGithubDownload(localPath: string): Promise<GithubDownloadResult> {
+    const remoteUrl = await this.getRemoteOriginUrl(localPath);
+    if (!remoteUrl) {
+      throw new Error("No remote is configured for this project.");
+    }
+
+    const fetchResult = await execFileCommand("git", ["fetch", "--prune", "origin"], localPath);
+    if (fetchResult.code !== 0) {
+      throw new Error(fetchResult.stderr || "Could not download the latest GitHub code.");
+    }
+
+    const target = await this.resolveGithubDownloadTarget(localPath);
+    const headSha = await this.getHeadCommitSha(localPath);
+    const hasLocalChanges = await this.hasUncommittedChanges(localPath);
+    if (headSha === target.commitSha && !hasLocalChanges) {
+      return {
+        ...target,
+        status: "up-to-date",
+      };
+    }
+
+    return {
+      ...target,
+      status: "downloaded",
+    };
+  }
+
+  async downloadFromGithub(localPath: string, plannedDownload?: GithubDownloadResult): Promise<GithubDownloadResult> {
+    const target = plannedDownload ?? await this.previewGithubDownload(localPath);
+    if (target.status === "up-to-date") {
+      return target;
+    }
+
+    const resetResult = await execFileCommand("git", ["reset", "--hard", target.remoteRef], localPath);
+    if (resetResult.code !== 0) {
+      throw new Error(resetResult.stderr || "Could not replace local files with the GitHub version.");
+    }
+
+    const cleanResult = await execFileCommand("git", ["clean", "-fd"], localPath);
+    if (cleanResult.code !== 0) {
+      throw new Error(cleanResult.stderr || "Could not remove local-only files after downloading from GitHub.");
+    }
+
+    if (target.remoteBranch) {
+      const checkoutResult = await execFileCommand("git", ["checkout", "-B", target.remoteBranch, target.remoteRef], localPath);
+      if (checkoutResult.code !== 0) {
+        throw new Error(checkoutResult.stderr || "Downloaded from GitHub, but could not switch to the downloaded branch.");
+      }
+      await execFileCommand("git", ["branch", "--set-upstream-to", target.remoteRef, target.remoteBranch], localPath);
+    }
+
+    return {
+      ...target,
+      status: "downloaded",
+    };
+  }
+
   async getGithubStatus(): Promise<GithubAuthStatus> {
     const versionResult = await execCommand("gh --version", process.cwd());
     if (versionResult.code !== 0) {
-      return { available: false, loggedIn: false, username: null, tokenSource: null, scopes: null, version: null, errorMessage: null };
+      return {
+        available: false,
+        loggedIn: false,
+        username: null,
+        tokenSource: null,
+        scopes: null,
+        version: null,
+        errorMessage: readCommandErrorMessage(versionResult.stdout, versionResult.stderr, "GitHub CLI is not installed."),
+      };
     }
     const version = versionResult.stdout.split("\n")[0]?.trim() ?? null;
 
     const statusResult = await execCommand("gh auth status --json hosts", process.cwd());
-    if (statusResult.code !== 0) {
-      return { available: true, loggedIn: false, username: null, tokenSource: null, scopes: null, version, errorMessage: null };
-    }
-
-    try {
-      const parsed = JSON.parse(statusResult.stdout) as {
-        hosts?: Record<string, Array<{ state: string; active: boolean; login: string; tokenSource: string; scopes: string }>>;
-      };
-      const accounts = parsed.hosts?.["github.com"] ?? [];
-      const active = accounts.find((a) => a.active) ?? accounts[0] ?? null;
-      if (!active || active.state !== "success") {
-        return { available: true, loggedIn: false, username: null, tokenSource: null, scopes: null, version, errorMessage: null };
-      }
-      return { available: true, loggedIn: true, username: active.login, tokenSource: active.tokenSource, scopes: active.scopes, version, errorMessage: null };
-    } catch {
-      return { available: true, loggedIn: false, username: null, tokenSource: null, scopes: null, version, errorMessage: "Could not parse gh auth status." };
-    }
+    return parseGithubAuthStatusResult(statusResult, version);
   }
 
   async loginGithub(openExternal: (url: string) => Promise<void>): Promise<GithubAuthStatus> {
@@ -301,8 +543,28 @@ ${result.stderr}`.toLowerCase();
 
   async pushToExistingGithub(localPath: string): Promise<void> {
     const result = await execCommand("git push -u origin HEAD", localPath);
-    if (result.code !== 0) {
+    if (result.code === 0) {
+      return;
+    }
+
+    const looksBehind = /\b(rejected|non-fast-forward|fetch first|behind)\b/i.test(
+      result.stderr,
+    );
+    if (!looksBehind) {
       throw new Error(result.stderr || "Could not push to GitHub.");
+    }
+
+    const rebaseResult = await execCommand("git pull --rebase", localPath);
+    if (rebaseResult.code !== 0) {
+      await execCommand("git rebase --abort", localPath);
+      throw new Error(
+        "Could not save: the remote has changes that conflict with yours. Resolve them in your editor and try again.",
+      );
+    }
+
+    const retry = await execCommand("git push -u origin HEAD", localPath);
+    if (retry.code !== 0) {
+      throw new Error(retry.stderr || "Could not push to GitHub after rebase.");
     }
   }
 

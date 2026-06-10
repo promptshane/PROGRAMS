@@ -4,6 +4,8 @@ import { join, resolve } from "node:path";
 import type { Project, RuntimeState } from "../../shared/types.ts";
 import { EMPTY_RUNTIME } from "../defaults.ts";
 import { readTextFile, writeTextFile } from "../utils/fs.ts";
+import { repairMissingCdSeparator, resolvePortInjection } from "../utils/project.ts";
+import { isValidAssignedPort } from "../utils/port-allocator.ts";
 import { execCommand, execFileCommand, getCommandEnv } from "../utils/process.ts";
 
 type Emit = (
@@ -468,11 +470,24 @@ export class RunnerService {
       return existing;
     }
 
-    const runCommand = project.runtimeConfig.runCommand;
+    let runCommand = project.runtimeConfig.runCommand;
     if (!runCommand) {
       throw new Error("PROGRAMS could not find a run command for this project yet.");
     }
     const workingPath = this.getProjectWorkingPath(project);
+
+    const commandEnv = await getCommandEnv();
+    runCommand = repairMissingCdSeparator(workingPath, runCommand, app.getPath("home"));
+    let spawnEnv = commandEnv;
+
+    // Force this project onto its assigned port so it never collides with another
+    // running project on a shared framework default (Vite 5173, Next 3000, …).
+    const assignedPort = project.runtimeConfig.assignedPort;
+    if (isValidAssignedPort(assignedPort)) {
+      const injection = await resolvePortInjection(workingPath, runCommand, assignedPort);
+      runCommand = injection.command;
+      spawnEnv = { ...commandEnv, ...injection.env };
+    }
 
     // Wait for the project's known port to be free before spawning
     const knownUrls = this.collectKnownRuntimeUrls(project);
@@ -480,12 +495,11 @@ export class RunnerService {
       await this.waitForPortFree(knownUrls[0].port);
     }
 
-    const commandEnv = await getCommandEnv();
     const child = spawn(runCommand, {
       cwd: workingPath,
       shell: true,
       detached: true,
-      env: commandEnv,
+      env: spawnEnv,
       stdio: ["ignore", "pipe", "pipe"],
     });
 
@@ -667,7 +681,12 @@ export class RunnerService {
   }
 
   private collectKnownRuntimeUrls(project: Project): Array<{ url: string; host: string; port: number }> {
-    return [project.runtimeConfig.lastRunUrl, project.runtimeConfig.openUrl]
+    const assignedPort = project.runtimeConfig.assignedPort;
+    // The assigned port is where the project is forced to bind, so it leads the
+    // list: waitForPortFree() targets it, and external/restored detection probes
+    // it before any stale shared default left over in lastRunUrl/openUrl.
+    const assignedUrl = isValidAssignedPort(assignedPort) ? `http://127.0.0.1:${assignedPort}/` : null;
+    return [assignedUrl, project.runtimeConfig.lastRunUrl, project.runtimeConfig.openUrl]
       .map((value) => parseLocalUrl(value))
       .filter((value): value is { url: string; host: string; port: number } => Boolean(value));
   }

@@ -15,6 +15,12 @@ import { ClaudeService } from "@main/services/claude-service";
 import { CodexService } from "@main/services/codex-service";
 import { GitService } from "@main/services/git-service";
 import { PlaywrightService } from "@main/services/playwright-service";
+import {
+  ensureProjectGitignoreSecretRules,
+  formatSecretBlockMessage,
+  isSecretLikePath,
+  ProjectBackupService,
+} from "@main/services/project-backup-service";
 import { ProjectStore } from "@main/services/project-store";
 import { RunnerService } from "@main/services/runner-service";
 import { collectProjectRepoHints, formatProjectRepoHints, type ProjectRepoHints } from "@main/utils/project-hints";
@@ -37,6 +43,7 @@ import {
   resolveLaunchPlan,
   type LaunchResolution,
 } from "@main/utils/project";
+import { allocatePort, isValidAssignedPort } from "@main/utils/port-allocator";
 import {
   buildAgentChatApprovalDescriptor,
   buildAgentChatProviderAttemptPlan,
@@ -190,11 +197,13 @@ import type {
   PlanDraft,
   Project,
   ProjectAttachInput,
+  ProjectBackupInfo,
   ProjectCreateInput,
   ProjectDetail,
   ProjectRelationshipCandidate,
   ProjectRelationshipSummary,
   ProjectOutlineReport,
+  ProjectSafetyState,
   RenameProjectInput,
   RouteUpdateToProgrammingInput,
   RunValidationInput,
@@ -260,6 +269,9 @@ import type {
   GithubAuthStatus,
   GithubConnection,
   GithubPublishInput,
+  DownloadFromGithubResult,
+  SaveToGithubResult,
+  RestoreProjectBackupResult,
 } from "@shared/types";
 
 type Emit = (event: AppEvent) => void;
@@ -5474,6 +5486,7 @@ function findToddOverlapForDirectPingRun(
 }
 
 export class ProgramsBackend {
+  private readonly projectBackups = new ProjectBackupService(join(app.getPath("userData"), "project-backups"));
   private readonly launchedAppPath = this.currentAppBundlePath();
   private readonly launchedAppUpdatedAtPromise = this.launchedAppPath
     ? this.readModifiedAt(this.launchedAppPath)
@@ -10466,6 +10479,8 @@ Return ONLY strict JSON matching:
       repoUrl,
       lastPushedAt: new Date().toISOString(),
       lastPushedCommitSha: commitSha,
+      lastDownloadedAt: null,
+      lastDownloadedCommitSha: null,
     };
     await this.store.updateGithubConnection(input.projectId, connection);
     await this.recomputeProjectRelationships(await this.store.listProjects(), true);
@@ -10504,9 +10519,17 @@ Return ONLY strict JSON matching:
       return null;
     }
 
-    // Tier 1: pushed through dashboard — diff since that exact commit
-    if (project.githubConnection?.lastPushedCommitSha) {
-      return this.git.getDiffStatsSinceCommit(project.localPath, project.githubConnection.lastPushedCommitSha);
+    // Tier 1: dashboard GitHub action — diff since the latest save/download baseline
+    if (project.githubConnection?.lastPushedCommitSha || project.githubConnection?.lastDownloadedCommitSha) {
+      const pushedAt = project.githubConnection.lastPushedAt ? Date.parse(project.githubConnection.lastPushedAt) : 0;
+      const downloadedAt = project.githubConnection.lastDownloadedAt ? Date.parse(project.githubConnection.lastDownloadedAt) : 0;
+      const baselineSha =
+        downloadedAt > pushedAt
+          ? project.githubConnection.lastDownloadedCommitSha
+          : project.githubConnection.lastPushedCommitSha ?? project.githubConnection.lastDownloadedCommitSha;
+      if (baselineSha) {
+        return this.git.getDiffStatsSinceCommit(project.localPath, baselineSha);
+      }
     }
 
     // Tier 2: remote exists but no dashboard push — count unpushed commits via tracking branch
@@ -10519,7 +10542,7 @@ Return ONLY strict JSON matching:
     return this.git.readWorkingTreeDiffStats(project.localPath);
   }
 
-  async saveToGithub(projectId: string): Promise<GithubConnection> {
+  async saveToGithub(projectId: string): Promise<SaveToGithubResult> {
     const project = await this.store.readProject(projectId);
     if (!project) {
       throw new Error("Project not found.");
@@ -10527,14 +10550,27 @@ Return ONLY strict JSON matching:
 
     const githubStatus = await this.git.getGithubStatus();
     if (!githubStatus.available) {
-      throw new Error("GitHub CLI is not installed. Go to https://cli.github.com to install it.");
+      throw new Error(githubStatus.errorMessage ?? "GitHub CLI is not installed. Go to https://cli.github.com to install it.");
     }
     if (!githubStatus.loggedIn) {
-      throw new Error("Log in to GitHub in Settings to save your project.");
+      throw new Error(githubStatus.errorMessage ?? "Log in to GitHub in Settings to save your project.");
     }
 
     await this.git.ensureRepository(project.localPath);
-    await this.git.commitAll(project.localPath, "Save");
+    await ensureProjectGitignoreSecretRules(project.localPath);
+    const changedFilesBeforeSave = await this.git.readWorkingTreeChangedFiles(project.localPath);
+    const secretLikeFiles = changedFilesBeforeSave.filter(isSecretLikePath);
+    if (secretLikeFiles.length > 0) {
+      throw new Error(formatSecretBlockMessage(secretLikeFiles));
+    }
+    await this.git.stageAll(project.localPath);
+    const stagedSummary = await this.git.getStagedDiffSummary(project.localPath);
+
+    if (stagedSummary) {
+      const fileLabel = stagedSummary.files === 1 ? "1 file" : `${stagedSummary.files} files`;
+      const message = `Save · ${fileLabel} · +${stagedSummary.added} -${stagedSummary.removed}`;
+      await this.git.commitAll(project.localPath, message);
+    }
 
     if (!project.githubConnection?.repoUrl) {
       const repoName =
@@ -10550,28 +10586,121 @@ Return ONLY strict JSON matching:
         repoUrl,
         lastPushedAt: new Date().toISOString(),
         lastPushedCommitSha: commitSha,
+        lastDownloadedAt: null,
+        lastDownloadedCommitSha: null,
       };
       await this.store.updateGithubConnection(projectId, connection);
       await this.recomputeProjectRelationships(await this.store.listProjects(), true);
       const updated = await this.requireProject(projectId);
       this.emit({ type: "project.updated", project: updated });
       this.emit({ type: "project.githubConnection", projectId, connection });
-      return connection;
-    } else {
-      await this.git.pushToExistingGithub(project.localPath);
-      const commitSha = await this.git.getHeadCommitSha(project.localPath);
-      const connection: GithubConnection = {
-        ...project.githubConnection,
-        lastPushedAt: new Date().toISOString(),
-        lastPushedCommitSha: commitSha,
-      };
-      await this.store.updateGithubConnection(projectId, connection);
-      await this.recomputeProjectRelationships(await this.store.listProjects(), true);
-      const updated = await this.requireProject(projectId);
-      this.emit({ type: "project.updated", project: updated });
-      this.emit({ type: "project.githubConnection", projectId, connection });
-      return connection;
+      return { connection, status: "saved" };
     }
+
+    if (!stagedSummary) {
+      const unpushed = await this.git.getUnpushedCommitStats(project.localPath);
+      if (!unpushed) {
+        return { connection: project.githubConnection, status: "up-to-date" };
+      }
+    }
+
+    await this.git.pushToExistingGithub(project.localPath);
+    const commitSha = await this.git.getHeadCommitSha(project.localPath);
+    const connection: GithubConnection = {
+      ...project.githubConnection,
+      lastPushedAt: new Date().toISOString(),
+      lastPushedCommitSha: commitSha,
+    };
+    await this.store.updateGithubConnection(projectId, connection);
+    await this.recomputeProjectRelationships(await this.store.listProjects(), true);
+    const updated = await this.requireProject(projectId);
+    this.emit({ type: "project.updated", project: updated });
+    this.emit({ type: "project.githubConnection", projectId, connection });
+    return { connection, status: "saved" };
+  }
+
+  async downloadFromGithub(projectId: string): Promise<DownloadFromGithubResult> {
+    const project = await this.store.readProject(projectId);
+    if (!project) {
+      throw new Error("Project not found.");
+    }
+
+    const githubStatus = await this.git.getGithubStatus();
+    if (!githubStatus.available) {
+      throw new Error(githubStatus.errorMessage ?? "GitHub CLI is not installed. Go to https://cli.github.com to install it.");
+    }
+    if (!githubStatus.loggedIn) {
+      throw new Error(githubStatus.errorMessage ?? "Log in to GitHub in Settings to download your project.");
+    }
+
+    const runtime = await this.runner.validateRuntime(projectId);
+    if (runtime.running) {
+      throw new Error("Stop this project before downloading from GitHub.");
+    }
+
+    const remoteUrl = await this.git.getRemoteOriginUrl(project.localPath);
+    if (!remoteUrl || !remoteUrl.includes("github.com")) {
+      throw new Error("No GitHub repository is connected. Save to GitHub first, then download from GitHub when needed.");
+    }
+
+    let connection = project.githubConnection;
+    if (!connection?.repoUrl) {
+      connection = {
+        repoUrl: remoteUrl,
+        lastPushedAt: null,
+        lastPushedCommitSha: null,
+        lastDownloadedAt: null,
+        lastDownloadedCommitSha: null,
+      };
+    }
+
+    const plannedDownload = await this.git.previewGithubDownload(project.localPath);
+    if (plannedDownload.status === "up-to-date") {
+      const nextConnection: GithubConnection = {
+        ...connection,
+        repoUrl: remoteUrl,
+        lastDownloadedAt: new Date().toISOString(),
+        lastDownloadedCommitSha: plannedDownload.commitSha,
+      };
+      await this.store.updateGithubConnection(projectId, nextConnection);
+      await this.recomputeProjectRelationships(await this.store.listProjects(), true);
+      const updated = await this.requireProject(projectId);
+      this.emit({ type: "project.updated", project: updated });
+      this.emit({ type: "project.githubConnection", projectId, connection: nextConnection });
+      return { connection: nextConnection, status: "up-to-date" };
+    }
+
+    try {
+      await this.projectBackups.createProjectBackup(project, "Before downloading from GitHub");
+      this.emit({
+        type: "toast",
+        level: "success",
+        message: "Backup created before downloading from GitHub.",
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Backup failed — download cancelled.";
+      const displayMessage = `Backup failed — download cancelled. ${message}`;
+      this.emit({
+        type: "toast",
+        level: "error",
+        message: displayMessage,
+      });
+      throw new Error(displayMessage);
+    }
+
+    const result = await this.git.downloadFromGithub(project.localPath, plannedDownload);
+    const nextConnection: GithubConnection = {
+      ...connection,
+      repoUrl: remoteUrl,
+      lastDownloadedAt: new Date().toISOString(),
+      lastDownloadedCommitSha: result.commitSha,
+    };
+    await this.store.updateGithubConnection(projectId, nextConnection);
+    await this.recomputeProjectRelationships(await this.store.listProjects(), true);
+    const updated = await this.refreshProjectRuntimeConfig(await this.requireProject(projectId));
+    this.emit({ type: "project.updated", project: updated });
+    this.emit({ type: "project.githubConnection", projectId, connection: nextConnection });
+    return { connection: nextConnection, status: result.status };
   }
 
   async detectAndSyncGithubRemote(projectId: string): Promise<GithubConnection | null> {
@@ -10587,11 +10716,59 @@ Return ONLY strict JSON matching:
       repoUrl: remoteUrl,
       lastPushedAt: null,
       lastPushedCommitSha: null,
+      lastDownloadedAt: null,
+      lastDownloadedCommitSha: null,
     };
     const updated = await this.store.updateGithubConnection(projectId, connection);
     this.emit({ type: "project.updated", project: updated });
     this.emit({ type: "project.githubConnection", projectId, connection });
     return connection;
+  }
+
+  async readLastProjectBackup(projectId: string): Promise<ProjectBackupInfo | null> {
+    await this.ensureInitialized();
+    await this.requireProject(projectId);
+    return this.projectBackups.readLastProjectBackup(projectId);
+  }
+
+  async restoreLastProjectBackup(projectId: string): Promise<RestoreProjectBackupResult> {
+    await this.ensureInitialized();
+    const project = await this.requireProject(projectId);
+    const runtime = await this.runner.validateRuntime(projectId);
+    if (runtime.running) {
+      throw new Error("Stop this project before restoring a backup.");
+    }
+
+    try {
+      const result = await this.projectBackups.restoreLastProjectBackup(project);
+      this.emit({
+        type: "toast",
+        level: "success",
+        message: "Backup restored. Current files were replaced with the selected backup.",
+      });
+      const refreshedProject = await this.refreshProjectRuntimeConfig(await this.requireProject(projectId));
+      this.emit({ type: "project.updated", project: refreshedProject });
+      await this.recomputeProjectRelationships(await this.store.listProjects(), true);
+      await this.emitHistory(projectId);
+      return result;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Restore failed.";
+      this.emit({ type: "toast", level: "error", message });
+      throw error;
+    }
+  }
+
+  async readProjectSafetyState(projectId: string): Promise<ProjectSafetyState> {
+    await this.ensureInitialized();
+    const project = await this.requireProject(projectId);
+    const changedFiles = await this.git.readWorkingTreeChangedFiles(project.localPath);
+    return {
+      projectId,
+      hasUnsavedChanges: changedFiles.length > 0,
+      changedFiles,
+      secretLikeFiles: changedFiles.filter(isSecretLikePath),
+      latestBackup: await this.projectBackups.readLastProjectBackup(projectId),
+    };
   }
 
   async testClaudeConnection(): Promise<ClaudeConnectionTestResult> {
@@ -10818,6 +10995,7 @@ Respond with ONLY the command string — no explanation, no markdown, no quotes.
     }
 
     project = await this.updateProjectStatus(project, "running", null);
+    project = await this.ensureAssignedPort(project);
 
     try {
       const workingPath = this.getProjectWorkingPath(project);
@@ -10867,6 +11045,7 @@ Respond with ONLY the command string — no explanation, no markdown, no quotes.
     }
 
     project = await this.updateProjectStatus(project, "running", null);
+    project = await this.ensureAssignedPort(project);
     try {
       const workingPath = this.getProjectWorkingPath(project);
       await this.git.ensureRepository(workingPath);
@@ -10926,6 +11105,25 @@ Respond with ONLY the command string — no explanation, no markdown, no quotes.
 
   private aiService(provider: StartPlanInput["provider"]): CodexService | ClaudeService {
     return provider === "claude" ? this.claude : this.codex;
+  }
+
+  private async createBackupBeforeProjectEdit(project: Project, reason: string): Promise<ProjectBackupInfo> {
+    try {
+      const backup = await this.projectBackups.createProjectBackup(project, reason);
+      this.emit({
+        type: "toast",
+        level: "success",
+        message: "Backup created before AI edit.",
+      });
+      return backup;
+    } catch {
+      this.emit({
+        type: "toast",
+        level: "error",
+        message: "Backup failed — AI edit cancelled.",
+      });
+      throw new Error("Backup failed — AI edit cancelled.");
+    }
   }
 
   private async requireProviderReady(provider: StartPlanInput["provider"], settings: Settings): Promise<void> {
@@ -11524,6 +11722,7 @@ Respond with ONLY the command string — no explanation, no markdown, no quotes.
       throw new Error("That update cannot be undone.");
     }
 
+    await this.createBackupBeforeProjectEdit(project, "Before undoing saved update");
     project = await this.updateProjectStatus(project, "executing");
     await this.git.ensureRepository(project.localPath);
     const revertSha = await this.git.revertCommit(project.localPath, target.commitSha);
@@ -12255,6 +12454,22 @@ Return strict JSON with:
     const executingProject = await this.updateProjectStatus(project, "executing", null);
     const service = this.aiService(draft.provider);
     const providerLabel = draft.provider === "claude" ? "Claude" : "Codex";
+    try {
+      await this.createBackupBeforeProjectEdit(executingProject, "Before AI edit");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Backup failed — AI edit cancelled.";
+      await this.updateProjectStatus(executingProject, "error", message);
+      await this.finalizePingExecutionOutcome(executingProject.id, {
+        status: "blocked",
+        summary: message,
+        changedFiles: [],
+        blocker: message,
+        toddFollowUpReason: message,
+        historyUpdateId: null,
+        commitSha: null,
+      });
+      throw error;
+    }
 
     void service
       .executeApprovedPlan(executingProject, settings, draft)
@@ -12774,6 +12989,43 @@ Return strict JSON with:
       runtimeConfig: nextRuntimeConfig,
     };
     await this.store.updateProject(nextProject);
+    return nextProject;
+  }
+
+  // Guarantee the project owns a stable, unique port before launch so concurrent
+  // projects never collide on a shared framework default. Allocated lazily and
+  // persisted, so a project keeps the same port across restarts.
+  private async ensureAssignedPort(project: Project): Promise<Project> {
+    const current = project.runtimeConfig.assignedPort;
+
+    const otherProjects = await this.store.listProjects();
+    const takenPorts = new Set<number>();
+    for (const other of otherProjects) {
+      if (other.id === project.id) {
+        continue;
+      }
+      const port = other.runtimeConfig.assignedPort;
+      if (isValidAssignedPort(port)) {
+        takenPorts.add(port);
+      }
+    }
+
+    // Keep a valid existing assignment unless another project has the same port.
+    if (isValidAssignedPort(current) && !takenPorts.has(current)) {
+      return project;
+    }
+
+    const assignedPort = await allocatePort({ projectId: project.id, takenPorts });
+    const nextProject: Project = {
+      ...project,
+      updatedAt: new Date().toISOString(),
+      runtimeConfig: {
+        ...project.runtimeConfig,
+        assignedPort,
+      },
+    };
+    await this.store.updateProject(nextProject);
+    this.emit({ type: "project.updated", project: nextProject });
     return nextProject;
   }
 

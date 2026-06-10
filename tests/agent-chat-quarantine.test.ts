@@ -16,7 +16,7 @@ const loadBackendModule = async () => {
   const replacements: Array<[string, string]> = [
     [
       'import { app, shell } from "electron";',
-      `const app = { isPackaged: false, getAppPath: () => process.cwd(), getPath: () => process.cwd() };
+      `const app = { isPackaged: false, getAppPath: () => process.cwd(), getPath: (name: string) => name === "userData" ? join(tmpdir(), "programs-test-user-data") : process.cwd() };
 const shell = { openExternal: async () => {}, showItemInFolder: async () => {}, openPath: async () => "" };`,
     ],
     ['import { ClaudeService } from "@main/services/claude-service";', "class ClaudeService {}"],
@@ -943,6 +943,9 @@ test("Pong validation queues approval only when the active validation model is l
 });
 
 test("Ping execution switches the approved plan draft to the small execution runtime", async () => {
+  const testProjectRoot = await mkdtemp(path.join(os.tmpdir(), "programs-ping-execution-project-"));
+  await writeFile(path.join(testProjectRoot, "README.md"), "Test project.\n", "utf8");
+
   const backend = createBackend() as Record<string, unknown>;
   (backend.requireProviderReady as Function) = async () => {};
   (backend.updateProjectStatus as Function) = async (project: Record<string, unknown>) => project;
@@ -964,7 +967,7 @@ test("Ping execution switches the approved plan draft to the small execution run
   const project = {
     id: "project-1",
     name: "Ping Execution Project",
-    localPath: projectRoot,
+    localPath: testProjectRoot,
   };
   const draft = {
     projectId: "project-1",
@@ -1020,20 +1023,24 @@ test("Ping execution switches the approved plan draft to the small execution run
     lastUpdatedAt: new Date().toISOString(),
   };
 
-  await (backend.executePlan as Function)(project, {
-    advancedDefaults: {
-      provider: "codex",
-      model: "gpt-5.4",
-      claudeModel: "sonnet",
-    },
-    defaultSpeed: "normal",
-  }, draft);
+  try {
+    await (backend.executePlan as Function)(project, {
+      advancedDefaults: {
+        provider: "codex",
+        model: "gpt-5.4",
+        claudeModel: "sonnet",
+      },
+      defaultSpeed: "normal",
+    }, draft);
 
-  assert.deepEqual(capturedDraft, {
-    provider: "codex",
-    model: "gpt-5.4-mini",
-    claudeModel: "sonnet",
-    reasoningEffort: "high",
-    contextPaths: ["src/main/backend.ts"],
-  });
+    assert.deepEqual(capturedDraft, {
+      provider: "codex",
+      model: "gpt-5.4-mini",
+      claudeModel: "sonnet",
+      reasoningEffort: "high",
+      contextPaths: ["src/main/backend.ts"],
+    });
+  } finally {
+    await rm(testProjectRoot, { recursive: true, force: true });
+  }
 });

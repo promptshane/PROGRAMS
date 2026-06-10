@@ -178,6 +178,10 @@ export interface ProjectRuntimeConfig {
   openUrl: string | null;
   lastRunUrl: string | null;
   initialIdea: string | null;
+  // Stable, unique port assigned to this project so multiple projects can run
+  // at once without colliding on a shared framework default (Vite 5173, Next
+  // 3000, …). Allocated lazily on first launch and persisted thereafter.
+  assignedPort: number | null;
   launch?: LaunchMetadata | null;
 }
 
@@ -195,6 +199,45 @@ export interface GithubConnection {
   repoUrl: string | null;
   lastPushedAt: string | null;
   lastPushedCommitSha: string | null;
+  lastDownloadedAt: string | null;
+  lastDownloadedCommitSha: string | null;
+}
+
+export type SaveToGithubStatus = "saved" | "up-to-date";
+
+export interface SaveToGithubResult {
+  connection: GithubConnection;
+  status: SaveToGithubStatus;
+}
+
+export type DownloadFromGithubStatus = "downloaded" | "up-to-date";
+
+export interface DownloadFromGithubResult {
+  connection: GithubConnection;
+  status: DownloadFromGithubStatus;
+}
+
+export interface ProjectBackupInfo {
+  projectId: string;
+  projectName: string;
+  originalPath: string;
+  createdAt: string;
+  reason: string;
+  backupPath: string;
+  projectPath: string;
+}
+
+export interface RestoreProjectBackupResult {
+  restoredBackup: ProjectBackupInfo;
+  preRestoreBackup: ProjectBackupInfo;
+}
+
+export interface ProjectSafetyState {
+  projectId: string;
+  hasUnsavedChanges: boolean;
+  changedFiles: string[];
+  secretLikeFiles: string[];
+  latestBackup: ProjectBackupInfo | null;
 }
 
 export interface GithubPublishInput {

@@ -2,6 +2,13 @@ dist
 dist-electron
 out
 node_modules
+.env
+.env.*
+*.pem
+*.key
+*service-account*.json
+*credentials*.json
+*token*.json
 .DS_Store
 *.log
 *.sqlite
@@ -11,6 +18,9 @@ node_modules
 *.tmp
 .tmp-programs-*
 /.programs-cache
+.programs-backups/
+programs-backups/
+project-backups/
 build/icon.icns
 build/icon.iconset
 build/icon.png

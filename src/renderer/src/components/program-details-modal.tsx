@@ -10,7 +10,6 @@ import type {
   DiffStats,
   EnvFileSnapshot,
   EnvVariableEntry,
-  GithubConnection,
   Project,
   ProjectOutlineReport,
   RuntimeState,
@@ -19,7 +18,7 @@ import type {
 } from "@shared/types";
 import { Modal, StatusChip } from "./ui-primitives";
 import { CoreDetailsContent } from "./core-details";
-import { GithubIcon } from "./icons";
+import { ArrowDownIcon, GithubIcon } from "./icons";
 import { formatDate, labelForRuntimeSource } from "../lib/formatting";
 
 type ProgramDetailsTab = "ideal" | "current" | "planned" | "history" | "github";
@@ -35,7 +34,8 @@ export function ProgramDetailsModal({
   onConnectGithub,
   onDisconnectGithub,
   onPublishToGithub,
-  onPushToGithub,
+  onSaveToGithub,
+  onDownloadFromGithub,
 }: {
   project: Project;
   updates: UpdateRecord[];
@@ -47,7 +47,8 @@ export function ProgramDetailsModal({
   onConnectGithub: () => void;
   onDisconnectGithub: () => void;
   onPublishToGithub: (input: { projectId: string; repoName: string; isPrivate: boolean }) => void;
-  onPushToGithub: (input: { projectId: string }) => void;
+  onSaveToGithub: (projectId: string) => void;
+  onDownloadFromGithub: (projectId: string) => void;
 }) {
   const [activeTab, setActiveTab] = useState<ProgramDetailsTab>("ideal");
   const [githubDiffStats, setGithubDiffStats] = useState<DiffStats | null | "loading">(null);
@@ -92,8 +93,8 @@ export function ProgramDetailsModal({
       void window.programs.detectAndSyncGithubRemote(project.id).catch(() => undefined);
     }
 
-    // Load diff stats if we have a last-pushed commit
-    const sha = project.githubConnection?.lastPushedCommitSha;
+    // Load diff stats if we have a GitHub save/download baseline
+    const sha = project.githubConnection?.lastPushedCommitSha ?? project.githubConnection?.lastDownloadedCommitSha;
     if (!sha) {
       setGithubDiffStats(null);
       return;
@@ -105,7 +106,13 @@ export function ProgramDetailsModal({
     }).catch(() => {
       setGithubDiffStats(null);
     });
-  }, [activeTab, project.id, project.githubConnection?.lastPushedCommitSha, project.githubConnection]);
+  }, [
+    activeTab,
+    project.id,
+    project.githubConnection?.lastPushedCommitSha,
+    project.githubConnection?.lastDownloadedCommitSha,
+    project.githubConnection,
+  ]);
 
   return (
     <Modal title="" onClose={onClose} fullscreen>
@@ -230,7 +237,8 @@ export function ProgramDetailsModal({
             onConnect={onConnectGithub}
             onDisconnect={onDisconnectGithub}
             onPublish={onPublishToGithub}
-            onPush={onPushToGithub}
+            onSave={onSaveToGithub}
+            onDownload={onDownloadFromGithub}
           />
         </div>
       ) : null}
@@ -256,7 +264,8 @@ function GithubTabContent({
   onConnect,
   onDisconnect,
   onPublish,
-  onPush,
+  onSave,
+  onDownload,
 }: {
   project: Project;
   githubAuth: AuthSnapshot["github"];
@@ -265,15 +274,16 @@ function GithubTabContent({
   onConnect: () => void;
   onDisconnect: () => void;
   onPublish: (input: { projectId: string; repoName: string; isPrivate: boolean }) => void;
-  onPush: (input: { projectId: string }) => void;
+  onSave: (projectId: string) => void;
+  onDownload: (projectId: string) => void;
 }) {
   const [repoName, setRepoName] = useState(() => slugify(project.name) || "my-project");
   const [isPrivate, setIsPrivate] = useState(true);
 
   const connection = project.githubConnection;
   const isPublishing = busyKey === `github.publish.${project.id}`;
-  const isPushing = busyKey === `github.push.${project.id}`;
   const isConnecting = busyKey === "auth.github";
+  const githubAuthError = githubAuth.errorMessage?.trim() || null;
 
   const handleOpenRepo = useCallback(() => {
     if (connection?.repoUrl) {
@@ -289,7 +299,7 @@ function GithubTabContent({
           <GithubIcon />
         </div>
         <h4>GitHub CLI not found</h4>
-        <p>Install the GitHub CLI to push projects to GitHub.</p>
+        <p>{githubAuthError ?? "Install the GitHub CLI to save and download projects with GitHub."}</p>
         <button
           className="secondaryButton"
           onClick={() => void window.programs.openExternal("https://cli.github.com/")}
@@ -307,8 +317,8 @@ function GithubTabContent({
         <div className="githubIcon">
           <GithubIcon />
         </div>
-        <h4>Connect your GitHub account</h4>
-        <p>Sign in with GitHub to publish and push projects directly from PROGRAMS.</p>
+        <h4>{githubAuthError ? "GitHub needs attention" : "Connect your GitHub account"}</h4>
+        <p>{githubAuthError ?? "Sign in with GitHub to save and download projects directly from PROGRAMS."}</p>
         <button className="primaryButton" onClick={onConnect} disabled={isConnecting}>
           {isConnecting ? "Connecting..." : "Connect GitHub"}
         </button>
@@ -331,7 +341,7 @@ function GithubTabContent({
         </div>
 
         <p className="helperText">
-          Create a new GitHub repository and push this project to it.
+          Create a new GitHub repository and save this project to it.
         </p>
 
         <div className="detailsPlaceholderGrid">
@@ -379,7 +389,7 @@ function GithubTabContent({
     );
   }
 
-  // State 4: Connected with a remote — show status and push button
+  // State 4: Connected with a remote — show status and save/download buttons
   const diffLabel = (() => {
     if (diffStats === "loading") {
       return "Calculating...";
@@ -387,7 +397,18 @@ function GithubTabContent({
     if (!diffStats || (diffStats.added === 0 && diffStats.removed === 0)) {
       return "Up to date";
     }
-    return `+${diffStats.added} / -${diffStats.removed} lines since last push`;
+    return `+${diffStats.added} / -${diffStats.removed} lines since last GitHub action`;
+  })();
+  const lastGithubActionLabel = (() => {
+    const pushedAt = connection.lastPushedAt ? Date.parse(connection.lastPushedAt) : 0;
+    const downloadedAt = connection.lastDownloadedAt ? Date.parse(connection.lastDownloadedAt) : 0;
+    if (connection.lastDownloadedAt && downloadedAt > pushedAt) {
+      return `Downloaded ${formatDate(connection.lastDownloadedAt)}`;
+    }
+    if (connection.lastPushedAt) {
+      return `Saved ${formatDate(connection.lastPushedAt)}`;
+    }
+    return "No GitHub action yet";
   })();
 
   return (
@@ -411,14 +432,12 @@ function GithubTabContent({
         </div>
 
         <div className="detailsPlaceholderCard">
-          <span className="fieldLabel">Last pushed</span>
-          <p className="helperText">
-            {connection.lastPushedAt ? formatDate(connection.lastPushedAt) : "Never pushed"}
-          </p>
+          <span className="fieldLabel">Last GitHub action</span>
+          <p className="helperText">{lastGithubActionLabel}</p>
         </div>
 
         <div className="detailsPlaceholderCard">
-          <span className="fieldLabel">Changes since last push</span>
+          <span className="fieldLabel">Changes since last GitHub action</span>
           <p className="helperText">{diffLabel}</p>
         </div>
       </div>
@@ -426,10 +445,17 @@ function GithubTabContent({
       <div className="modalActions">
         <button
           className="primaryButton"
-          onClick={() => onPush({ projectId: project.id })}
-          disabled={isPushing}
+          onClick={() => onSave(project.id)}
         >
-          {isPushing ? "Pushing..." : "Push to GitHub"}
+          <GithubIcon />
+          Save to GitHub
+        </button>
+        <button
+          className="secondaryButton"
+          onClick={() => onDownload(project.id)}
+        >
+          <ArrowDownIcon />
+          Download from GitHub
         </button>
       </div>
     </div>

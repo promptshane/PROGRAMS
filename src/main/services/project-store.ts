@@ -433,6 +433,27 @@ const normalizeUpdateStatus = (status: string): UpdateRecord["status"] => {
   }
 };
 
+const normalizeNullableString = (value: unknown): string | null =>
+  typeof value === "string" && value.trim() ? value : null;
+
+const normalizeGithubConnection = (value: string | null): GithubConnection | null => {
+  if (!value) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(value) as Partial<GithubConnection>;
+    return {
+      repoUrl: normalizeNullableString(parsed.repoUrl),
+      lastPushedAt: normalizeNullableString(parsed.lastPushedAt),
+      lastPushedCommitSha: normalizeNullableString(parsed.lastPushedCommitSha),
+      lastDownloadedAt: normalizeNullableString(parsed.lastDownloadedAt),
+      lastDownloadedCommitSha: normalizeNullableString(parsed.lastDownloadedCommitSha),
+    };
+  } catch {
+    return null;
+  }
+};
+
 const mapProjectRow = (row: ProjectRow): Project => ({
   id: row.id,
   name: row.name,
@@ -446,7 +467,7 @@ const mapProjectRow = (row: ProjectRow): Project => ({
   updatedAt: row.updated_at,
   runtimeConfig: JSON.parse(row.metadata_json),
   lastError: row.last_error,
-  githubConnection: row.github_connection ? (JSON.parse(row.github_connection) as GithubConnection) : null,
+  githubConnection: normalizeGithubConnection(row.github_connection),
   relationship: row.relationship_json
     ? normalizeProjectRelationshipSummary(JSON.parse(row.relationship_json))
     : createEmptyProjectRelationshipSummary(),

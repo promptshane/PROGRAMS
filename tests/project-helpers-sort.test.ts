@@ -73,6 +73,8 @@ test("sortProjectsForDisplay uses last updated and last saved timestamps correct
       repoUrl: "https://github.com/example/saved-lead",
       lastPushedAt: "2026-04-13T09:00:00.000Z",
       lastPushedCommitSha: "abc123",
+      lastDownloadedAt: null,
+      lastDownloadedCommitSha: null,
     },
     relationship: {
       ...createEmptyProjectRelationshipSummary(),
@@ -84,6 +86,8 @@ test("sortProjectsForDisplay uses last updated and last saved timestamps correct
       repoUrl: "https://github.com/example/stale",
       lastPushedAt: "2026-04-10T09:00:00.000Z",
       lastPushedCommitSha: "def456",
+      lastDownloadedAt: null,
+      lastDownloadedCommitSha: null,
     },
     relationship: {
       ...createEmptyProjectRelationshipSummary(),

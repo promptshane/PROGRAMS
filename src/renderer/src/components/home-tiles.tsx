@@ -34,6 +34,7 @@ export function HomeProjectTile({
   const dotState = getHomeTileDotState(project, runtime, isLaunching);
   const isRunning = Boolean(runtime?.running);
   const canStopFromDot = isRunning && !isLaunching;
+  const hasBrowserTarget = Boolean(project.runtimeConfig.lastRunUrl ?? project.runtimeConfig.openUrl);
   const automationPriorityLabel = isAutomationPriority
     ? `Remove automation priority from ${project.name}`
     : `Prioritize ${project.name} for automation`;
@@ -44,7 +45,9 @@ export function HomeProjectTile({
       ? runtime?.source === "self"
         ? `Quit ${project.name}`
         : `Stop ${project.name}`
-      : `Run and open ${project.name}`;
+      : hasBrowserTarget
+      ? `Run and open ${project.name}`
+      : `Run ${project.name}`;
 
   return (
     <article className="projectTile projectTileGradient" style={createProjectTileStyle(project.iconColor)}>

@@ -713,6 +713,7 @@ export class ClaudeService {
         openUrl: null,
         lastRunUrl: null,
         initialIdea: null,
+        assignedPort: null,
       },
       lastError: null,
       githubConnection: null,

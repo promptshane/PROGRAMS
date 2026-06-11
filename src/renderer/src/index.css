@@ -909,14 +909,260 @@ code {
   background: #b91c1c;
 }
 
+/* ── Project-page embedded chat ──────────────────────────────────── */
+
+.projectChatPane {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-top: 1px solid var(--border);
+}
+
+.projectChatScroll {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+}
+
+.projectChatEmptyState {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted, #888);
+  font-size: 0.8125rem;
+}
+
+.projectChatMessageList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.projectChatBubble {
+  max-width: 78%;
+  padding: 10px 14px;
+  border-radius: 16px;
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.projectChatBubble--user {
+  align-self: flex-end;
+  background: #007AFF;
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+
+.projectChatBubble--assistant {
+  align-self: flex-start;
+  background: var(--panel-soft, rgba(255,255,255,0.06));
+  color: var(--text);
+  border-bottom-left-radius: 4px;
+}
+
+.projectChatBubbleContent {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.projectChatBubbleTime {
+  font-size: 0.65rem;
+  opacity: 0.5;
+  margin-top: 4px;
+  text-align: right;
+}
+
+.projectChatComposer {
+  flex-shrink: 0;
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.projectChatInputRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel-soft, rgba(255,255,255,0.05));
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px 8px 8px 14px;
+}
+
+.projectChatInput {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  resize: none;
+  color: var(--text);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  min-height: 22px;
+  max-height: 140px;
+  overflow-y: auto;
+  font-family: inherit;
+  padding: 0;
+}
+
+.projectChatInput::placeholder {
+  color: var(--text-muted, #666);
+}
+
+.projectChatSendButton {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: #007AFF;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.15s, background 0.15s;
+}
+
+.projectChatSendButton:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.projectChatSendButton:not(:disabled):hover {
+  background: #0066dd;
+}
+
+.projectChatControlBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.projectChatModePicker {
+  position: relative;
+}
+
+.projectChatModeDropdown {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  background: var(--panel, #1a1a1a);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  z-index: 20;
+  min-width: 90px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+}
+
+.projectChatModeOption {
+  display: block;
+  width: 100%;
+  padding: 7px 14px;
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 0.75rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.projectChatModeOption:hover {
+  background: var(--hover, rgba(255,255,255,0.06));
+}
+
+.projectChatModeOption--active {
+  color: var(--accent, #007AFF);
+  font-weight: 600;
+}
+
+.projectChatModeCurrent {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted, #888);
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s;
+  font-family: inherit;
+}
+
+.projectChatModeCurrent:hover {
+  color: var(--text);
+  border-color: var(--text-muted, #888);
+}
+
+.projectChatModeCurrent svg {
+  width: 10px;
+  height: 10px;
+  opacity: 0.6;
+}
+
+.projectChatRightControls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.projectChatSelect {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted, #888);
+  font-size: 0.7rem;
+  padding: 3px 6px;
+  cursor: pointer;
+  outline: none;
+  font-family: inherit;
+  max-width: none;
+  min-width: max-content;
+}
+
+.projectChatSelect:hover,
+.projectChatSelect:focus {
+  color: var(--text);
+  border-color: var(--text-muted, #888);
+}
+
+.projectChatContextRing {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: default;
+}
+
+.projectChatContextPct {
+  font-size: 0.65rem;
+  color: var(--text-muted, #888);
+  min-width: 22px;
+}
+
 .projectDetailWorkspace {
   position: relative;
   display: flex;
   flex-direction: column;
   gap: 18px;
-  min-height: 0;
-  flex: 1 1 auto;
-  overflow: hidden;
+  flex: 0 0 auto;
+  max-height: 220px;
+  overflow-y: auto;
 }
 
 .dashboardGrid {
@@ -1184,13 +1430,131 @@ code {
 
 .summaryActionRail {
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
   align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
-  align-self: center;
+  justify-content: flex-start;
+  gap: 8px;
+  align-self: flex-start;
   justify-self: end;
   flex-wrap: nowrap;
+  padding-top: 2px;
+}
+
+.summaryStatusDot {
+  width: 20px !important;
+  height: 20px !important;
+  margin-right: 0 !important;
+  margin-bottom: 0 !important;
+}
+
+.summaryInfoMenuWrap {
+  position: relative;
+  display: flex;
+  justify-content: center;
+}
+
+.summaryInfoButton {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: #05070a;
+  color: #f8fbfd;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.54), 0 10px 20px rgba(0, 0, 0, 0.28);
+  transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+
+.summaryInfoButton:hover,
+.summaryInfoButton:focus-visible,
+.summaryInfoButton-active {
+  transform: scale(1.06);
+  background: color-mix(in srgb, #05070a 84%, var(--text));
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.72), 0 12px 24px rgba(0, 0, 0, 0.32);
+}
+
+.summaryInfoMenu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 45;
+  display: grid;
+  gap: 4px;
+  min-width: 190px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel-strong);
+  box-shadow: var(--shadow-sm);
+}
+
+.summaryInfoMenuButton {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.summaryInfoMenuButton:hover:not(:disabled),
+.summaryInfoMenuButton:focus-visible:not(:disabled) {
+  background: var(--button-secondary);
+}
+
+.summaryInfoMenuButton:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.summaryInfoMenuButton svg,
+.summaryInfoMenuButtonIcon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+}
+
+.summaryInfoMenuButtonIcon {
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.summaryInfoMenuButton-success {
+  color: var(--success);
+}
+
+.summaryInfoMenuButton-error {
+  color: var(--error);
+}
+
+.summaryInfoMenuButton-neutral {
+  color: var(--muted);
+}
+
+.summaryInfoMenuStatus {
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .summaryGithubRow {
@@ -1199,6 +1563,7 @@ code {
   gap: 8px;
   padding: 0;
   flex-wrap: wrap;
+  justify-content: flex-start;
 }
 
 .summaryGithubActions {
@@ -1211,8 +1576,10 @@ code {
 .githubSaveButton {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
   padding: 6px 13px;
+  min-width: 120px;
   border-radius: 8px;
   font-size: 13px;
   font-weight: 500;
@@ -1265,11 +1632,6 @@ code {
   color: var(--error);
 }
 
-.githubRepoStatus {
-  font-size: 12px;
-  color: var(--muted);
-}
-
 .githubSaveErrorLabel {
   font-size: 12px;
   color: var(--error);
@@ -1319,6 +1681,20 @@ code {
 .summaryTimestamp {
   color: var(--muted);
   font-size: 0.78rem;
+}
+
+.summaryTimestampRow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.summaryTimestampDot {
+  width: 3px;
+  height: 3px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--muted) 70%, transparent);
 }
 
 .summaryLinkRow {
@@ -2803,6 +3179,15 @@ select {
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+.appUpdateAutoInstallField {
+  align-items: flex-start;
+}
+
+.appUpdateAutoInstallCopy {
+  display: grid;
+  gap: 4px;
 }
 
 .inlineDetails {
@@ -5537,6 +5922,50 @@ select {
 
 .agentDetailsButton {
   padding: 0 14px;
+}
+
+.detailProviderToggle {
+  display: grid;
+  grid-template-columns: repeat(2, 58px);
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.detailProviderOption {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 22px;
+  padding: 0 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted, #888);
+  font-size: 0.75rem;
+  font-weight: 500;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+  line-height: 1;
+  font-family: inherit;
+}
+
+.detailProviderOption-active {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  color: var(--text);
+}
+
+.detailProviderOption:hover:not(.detailProviderOption-active):not(:disabled) {
+  color: var(--text);
+}
+
+.detailProviderOption:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .chatViewportDivider {

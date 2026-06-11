@@ -241,8 +241,22 @@ export function SettingsModal({
           </label>
 
           <p className="helperText">
-            PROGRAMS watches this local checkout, packages a fresh macOS app when the source is newer, then offers one in-app update action.
+            PROGRAMS watches this local checkout, packages a fresh macOS app when the source is newer, then can auto-apply ready updates.
           </p>
+
+          <label className="checkboxField appUpdateAutoInstallField">
+            <input
+              type="checkbox"
+              checked={draft.autoInstallAppUpdates}
+              onChange={(event) => setDraft({ ...draft, autoInstallAppUpdates: event.target.checked })}
+            />
+            <span className="appUpdateAutoInstallCopy">
+              <span>Auto-apply updates</span>
+              <span className="helperText">
+                When a ready update does not need an admin prompt, PROGRAMS will install it, quit, and reopen itself.
+              </span>
+            </span>
+          </label>
 
           <div className="appUpdateMetaGrid">
             <div className="appUpdateMetaCard">

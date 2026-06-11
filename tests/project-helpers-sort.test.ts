@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { sortProjectsForDisplay } from "../src/renderer/src/lib/project-helpers.ts";
-import { createEmptyProjectRelationshipSummary, type Project } from "../src/shared/types.ts";
+import {
+  getAutoInstallAppUpdateKey,
+  sortProjectsForDisplay,
+} from "../src/renderer/src/lib/project-helpers.ts";
+import {
+  createEmptyProjectRelationshipSummary,
+  type AppUpdateStatus,
+  type Project,
+} from "../src/shared/types.ts";
 
 const createProject = (
   id: string,
@@ -131,4 +138,82 @@ test("sortProjectsForDisplay sends null timestamps last and falls back to create
     "same-created-alpha",
     "same-created-bravo",
   ]);
+});
+
+const createAppUpdateStatus = (overrides: Partial<AppUpdateStatus> = {}): AppUpdateStatus => ({
+  supported: true,
+  available: true,
+  currentAppPath: "/Applications/PROGRAMS.app",
+  candidateAppPath: "/Users/kc/Desktop/PROGRAMS/dist/mac-arm64/PROGRAMS.app",
+  workspacePath: "/Users/kc/Desktop/PROGRAMS",
+  workspaceExists: true,
+  sourceUpdatedAt: "2026-06-11T14:00:00.000Z",
+  launchedAppUpdatedAt: "2026-06-11T13:00:00.000Z",
+  currentUpdatedAt: "2026-06-11T13:00:00.000Z",
+  candidateUpdatedAt: "2026-06-11T14:05:00.000Z",
+  currentRendererAssetName: "index-old.js",
+  currentRendererAssetUpdatedAt: "2026-06-11T13:00:00.000Z",
+  candidateRendererAssetName: "index-new.js",
+  candidateRendererAssetUpdatedAt: "2026-06-11T14:05:00.000Z",
+  rendererAssetMatch: false,
+  buildState: "ready",
+  buildError: null,
+  requiresAdminPrompt: false,
+  action: "install",
+  reason: "A newer build is ready to install.",
+  ...overrides,
+});
+
+test("getAutoInstallAppUpdateKey returns an install candidate for ready writable updates", () => {
+  assert.equal(
+    getAutoInstallAppUpdateKey({
+      status: createAppUpdateStatus(),
+      enabled: true,
+      busyKey: null,
+    }),
+    "install::/Applications/PROGRAMS.app::/Users/kc/Desktop/PROGRAMS/dist/mac-arm64/PROGRAMS.app::2026-06-11T14:05:00.000Z",
+  );
+});
+
+test("getAutoInstallAppUpdateKey returns a restart candidate for ready restart updates", () => {
+  assert.equal(
+    getAutoInstallAppUpdateKey({
+      status: createAppUpdateStatus({
+        action: "restart",
+        candidateAppPath: "/Applications/PROGRAMS.app",
+        reason: "A newer build is ready. Restart PROGRAMS to load it.",
+      }),
+      enabled: true,
+      busyKey: null,
+    }),
+    "restart::/Applications/PROGRAMS.app::/Applications/PROGRAMS.app::2026-06-11T14:05:00.000Z",
+  );
+});
+
+test("getAutoInstallAppUpdateKey skips unsafe or unavailable auto-install states", () => {
+  const base = createAppUpdateStatus();
+  assert.equal(getAutoInstallAppUpdateKey({ status: base, enabled: false, busyKey: null }), null);
+  assert.equal(getAutoInstallAppUpdateKey({ status: base, enabled: true, busyKey: "app.update" }), null);
+  assert.equal(getAutoInstallAppUpdateKey({ status: createAppUpdateStatus({ buildState: "packaging" }), enabled: true, busyKey: null }), null);
+  assert.equal(getAutoInstallAppUpdateKey({ status: createAppUpdateStatus({ buildState: "failed" }), enabled: true, busyKey: null }), null);
+  assert.equal(getAutoInstallAppUpdateKey({ status: createAppUpdateStatus({ available: false, action: "none" }), enabled: true, busyKey: null }), null);
+  assert.equal(getAutoInstallAppUpdateKey({ status: createAppUpdateStatus({ requiresAdminPrompt: true }), enabled: true, busyKey: null }), null);
+});
+
+test("getAutoInstallAppUpdateKey skips already attempted candidates", () => {
+  const key = getAutoInstallAppUpdateKey({
+    status: createAppUpdateStatus(),
+    enabled: true,
+    busyKey: null,
+  });
+  assert.ok(key);
+  assert.equal(
+    getAutoInstallAppUpdateKey({
+      status: createAppUpdateStatus(),
+      enabled: true,
+      busyKey: null,
+      attemptedKeys: new Set([key]),
+    }),
+    null,
+  );
 });

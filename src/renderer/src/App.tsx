@@ -52,6 +52,7 @@ import {
   ChevronDownIcon,
   GithubIcon,
   ArrowDownIcon,
+  ArrowUpIcon,
 } from "./components/icons";
 import { HomeProjectTile, HomepageComposer } from "./components/home-tiles";
 import { ProjectOptionsSheet } from "./components/project-options-sheet";
@@ -91,6 +92,8 @@ import {
   wait,
   getComposerDefaults,
   getHomeAppUpdateButtonState,
+  getHomeTileDotState,
+  getAutoInstallAppUpdateKey,
 } from "./lib/project-helpers";
 
 type SafetyConfirmRequest = {
@@ -101,22 +104,6 @@ type SafetyConfirmRequest = {
   danger?: boolean;
 };
 
-const formatGithubRepoStatus = (connection: Project["githubConnection"]): string => {
-  if (!connection?.repoUrl) {
-    return "No repo yet";
-  }
-
-  const pushedAt = connection.lastPushedAt ? Date.parse(connection.lastPushedAt) : 0;
-  const downloadedAt = connection.lastDownloadedAt ? Date.parse(connection.lastDownloadedAt) : 0;
-  if (connection.lastDownloadedAt && downloadedAt > pushedAt) {
-    return `Downloaded ${formatDate(connection.lastDownloadedAt)}`;
-  }
-  if (connection.lastPushedAt) {
-    return `Saved ${formatDate(connection.lastPushedAt)}`;
-  }
-  return connection.repoUrl.replace("https://github.com/", "");
-};
-
 function App() {
   const programsApi = "programs" in window ? window.programs : undefined;
   const [settings, setSettings] = useState<Settings>(emptySettings);
@@ -125,7 +112,11 @@ function App() {
   const [setup, setSetup] = useState<SetupSnapshot>(emptySetup);
   const [auth, setAuth] = useState<AuthSnapshot>(emptyAuth);
   const [usage, setUsage] = useState<UsageSnapshot>(emptyUsage);
+  const usageRef = useRef(usage);
+  usageRef.current = usage;
   const [appUpdate, setAppUpdate] = useState<AppUpdateStatus>(emptyAppUpdateStatus);
+  const autoInstallAppUpdateAttemptedKeysRef = useRef<Set<string>>(new Set());
+  const autoInstallAppUpdateInFlightRef = useRef(false);
   const [isBootstrapped, setIsBootstrapped] = useState(false);
   const [startupIssue, setStartupIssue] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -191,6 +182,23 @@ function App() {
   const [githubDownloadState, setGithubDownloadState] = useState<null | "downloading" | "downloaded" | "up-to-date" | "error">(null);
   const [githubDownloadError, setGithubDownloadError] = useState<string | null>(null);
   const [selectedProjectDiffStats, setSelectedProjectDiffStats] = useState<DiffStats | null>(null);
+  const [summaryInfoMenuOpen, setSummaryInfoMenuOpen] = useState(false);
+  const [summaryBackupAvailable, setSummaryBackupAvailable] = useState<boolean | null>(null);
+  const summaryInfoMenuRef = useRef<HTMLDivElement | null>(null);
+
+  // Project-page embedded chat UI
+  const [projectChatMessages, setProjectChatMessages] = useState<
+    { id: string; role: 'user' | 'assistant'; content: string; createdAt: Date }[]
+  >([]);
+  const [projectChatInput, setProjectChatInput] = useState('');
+  const [projectChatLoading, setProjectChatLoading] = useState(false);
+  const [projectChatMode, setProjectChatMode] = useState<'plan' | 'ask' | 'auto'>('ask');
+  const [projectChatModeOpen, setProjectChatModeOpen] = useState(false);
+  const [projectChatModel, setProjectChatModel] = useState('claude-sonnet-4-6');
+  const [projectChatReasoning, setProjectChatReasoning] = useState('normal');
+  const projectChatScrollRef = useRef<HTMLDivElement>(null);
+  const projectChatModeRef = useRef<HTMLDivElement>(null);
+
   const [previewingCommitSha, setPreviewingCommitSha] = useState<string | null>(null);
   const [previewProjectId, setPreviewProjectId] = useState<string | null>(null);
   const [claudeAuthCodePrompt, setClaudeAuthCodePrompt] = useState<string | null>(null);
@@ -533,7 +541,58 @@ function App() {
       setComposerValue("");
       setPlanError(null);
     }
+    setSummaryInfoMenuOpen(false);
+    setSummaryBackupAvailable(null);
   }, [selectedProjectId]);
+
+  useEffect(() => {
+    if (!summaryInfoMenuOpen) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!summaryInfoMenuRef.current?.contains(event.target as Node)) {
+        setSummaryInfoMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSummaryInfoMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [summaryInfoMenuOpen]);
+
+  useEffect(() => {
+    if (!programsApi || !summaryInfoMenuOpen || !selectedProject) {
+      return;
+    }
+
+    let cancelled = false;
+    setSummaryBackupAvailable(null);
+    void programsApi.readLastProjectBackup(selectedProject.id)
+      .then((backup) => {
+        if (!cancelled) {
+          setSummaryBackupAvailable(Boolean(backup));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSummaryBackupAvailable(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [programsApi, selectedProject?.id, summaryInfoMenuOpen]);
 
   useEffect(() => {
     setShowUpdatePanel(Boolean(selectedProjectId));
@@ -644,6 +703,23 @@ function App() {
     auth.claude.available,
     auth.claude.loggedIn,
   ]);
+
+  useEffect(() => {
+    if (!programsApi || !showUsageSheet) return;
+    const id = setInterval(() => {
+      const updated = usageRef.current.updatedAt ? new Date(usageRef.current.updatedAt) : null;
+      if (!updated || Date.now() - updated.getTime() >= 55_000) {
+        void refreshUsage();
+      }
+    }, 15_000);
+    return () => clearInterval(id);
+  }, [programsApi, showUsageSheet]);
+
+  useEffect(() => {
+    setProjectChatModel(
+      settings.advancedDefaults.provider === 'codex' ? 'gpt-5.4' : 'claude-sonnet-4-6'
+    );
+  }, [settings.advancedDefaults.provider]);
 
   useEffect(() => {
     if (!programsApi) {
@@ -951,6 +1027,40 @@ function App() {
       setBusyKey(null);
     }
   };
+
+  useEffect(() => {
+    if (!programsApi || autoInstallAppUpdateInFlightRef.current) {
+      return;
+    }
+
+    const candidateKey = getAutoInstallAppUpdateKey({
+      status: appUpdate,
+      enabled: settings.autoInstallAppUpdates,
+      busyKey,
+      attemptedKeys: autoInstallAppUpdateAttemptedKeysRef.current,
+    });
+    if (!candidateKey) {
+      return;
+    }
+
+    autoInstallAppUpdateAttemptedKeysRef.current.add(candidateKey);
+    autoInstallAppUpdateInFlightRef.current = true;
+    setBusyKey("app.update");
+    void programsApi.installAppUpdate()
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "PROGRAMS could not auto-install the update.";
+        pushToast(`${message} Use Update to retry.`, "error");
+      })
+      .finally(() => {
+        autoInstallAppUpdateInFlightRef.current = false;
+        setBusyKey(null);
+      });
+  }, [
+    appUpdate,
+    busyKey,
+    programsApi,
+    settings.autoInstallAppUpdates,
+  ]);
 
   const resetAddProjectFlow = (mode: AddProjectFormState["mode"] = "create") => {
     setShowUsageSheet(false);
@@ -1474,6 +1584,50 @@ function App() {
     });
   };
 
+  const handleProjectChatSend = useCallback(() => {
+    const content = projectChatInput.trim();
+    if (!content || projectChatLoading) return;
+    setProjectChatMessages(prev => [
+      ...prev,
+      { id: String(Date.now()), role: 'user', content, createdAt: new Date() },
+    ]);
+    setProjectChatInput('');
+    setProjectChatLoading(true);
+    setTimeout(() => {
+      setProjectChatMessages(prev => [
+        ...prev,
+        {
+          id: String(Date.now() + 1),
+          role: 'assistant',
+          content: `Got it. Once connected, I'll be able to read and modify this project's files directly from your dashboard — similar to working in VS Code or Claude Code.\n\nYou asked: "${content}"`,
+          createdAt: new Date(),
+        },
+      ]);
+      setProjectChatLoading(false);
+    }, 700);
+  }, [projectChatInput, projectChatLoading]);
+
+  useEffect(() => {
+    if (projectChatScrollRef.current) {
+      projectChatScrollRef.current.scrollTop = projectChatScrollRef.current.scrollHeight;
+    }
+  }, [projectChatMessages, projectChatLoading]);
+
+  const cycleProjectChatMode = useCallback(() => {
+    setProjectChatMode(m => m === 'plan' ? 'ask' : m === 'ask' ? 'auto' : 'plan');
+  }, []);
+
+  useEffect(() => {
+    if (!projectChatModeOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (!projectChatModeRef.current?.contains(e.target as Node)) {
+        setProjectChatModeOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [projectChatModeOpen]);
+
   const openProjectWhenReady = async (projectId: string): Promise<boolean> => {
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const opened = await window.programs.openProject(projectId);
@@ -1877,6 +2031,14 @@ function App() {
   const summaryKillActionClassName = canStopProject
     ? "actionButton actionButton-stop summaryActionButton"
     : "actionButton actionButton-cancel summaryActionButton";
+  const detailIsLaunching = Boolean(selectedProject && launchingProjects[selectedProject.id]);
+  const detailDotState = selectedProject ? getHomeTileDotState(selectedProject, selectedRuntime, detailIsLaunching) : 'ready';
+  const detailCanStop = isProjectRunning && !detailIsLaunching;
+  const selectedProjectLastSavedAt = selectedProject?.githubConnection?.lastPushedAt ?? null;
+  const selectedProjectHasGithubRepo = Boolean(selectedProject?.githubConnection?.repoUrl);
+  const summaryInfoCheckingBackup = summaryInfoMenuOpen && summaryBackupAvailable === null;
+  const summaryShowDownloadAction = selectedProjectHasGithubRepo;
+  const summaryShowBackupAction = Boolean(selectedProject && summaryBackupAvailable && !isProjectRunning);
   const canConfirmPlan = activePlan?.status === "awaitingApproval";
   const showUpdateDock = Boolean(activePlan);
   const isSelectedProjectView = activePage === "projects" && Boolean(selectedProject);
@@ -1905,9 +2067,10 @@ function App() {
           <button
             type="button"
             className="sidebarFooterButton sidebarFooterButton-update windowNoDrag"
-            onClick={openSettingsModal}
+            onClick={() => void handleInstallAppUpdate()}
+            disabled={busyKey === "app.update"}
           >
-            Update issue
+            {busyKey === "app.update" ? "Updating..." : "Update"}
           </button>
         )
         : null;
@@ -1980,6 +2143,24 @@ function App() {
         <button type="button" className="agentTopBarButton windowNoDrag" onClick={() => syncProjectSelection(null)}>
           Back
         </button>
+        <div className="detailProviderToggle windowNoDrag" role="group" aria-label="AI provider">
+          <button
+            type="button"
+            className={settings.advancedDefaults.provider === "claude" ? "detailProviderOption detailProviderOption-active" : "detailProviderOption"}
+            onClick={() => void handleUpdateAgentDefaults({ provider: "claude" })}
+            disabled={busyKey === "settings.agentDefaults"}
+          >
+            Claude
+          </button>
+          <button
+            type="button"
+            className={settings.advancedDefaults.provider === "codex" ? "detailProviderOption detailProviderOption-active" : "detailProviderOption"}
+            onClick={() => void handleUpdateAgentDefaults({ provider: "codex" })}
+            disabled={busyKey === "settings.agentDefaults"}
+          >
+            GPT
+          </button>
+        </div>
         <button
           type="button"
           className="agentTopBarButton agentDetailsButton windowNoDrag"
@@ -1991,67 +2172,103 @@ function App() {
 
       <div className="chatViewportDivider pageChromeDivider" aria-hidden="true" />
 
-      <div className="chatFabWrap">
-        <button
-          type="button"
-          className="chatFab"
-          aria-label="Open agent chat"
-          onClick={() => {
-            setCurrentPage("agents");
-          }}
-        >
-          <svg width="28" height="28" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-            <path d="M2 4a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H6l-4 3V4z" fill="currentColor" />
-          </svg>
-        </button>
-      </div>
-
       <div className="projectDetailWorkspace">
         <div className="projectSummaryCard">
           <div className="summaryMain">
             <div className="summaryHeaderRow">
               <div className="summaryCopy">
                 <h2>{selectedProject.name}</h2>
-                <p className="summaryTimestamp">Last updated at {formatDate(selectedProject.lastUpdatedAt)}</p>
+                <p className="summaryTimestamp summaryTimestampRow">
+                  <span>Last updated at {formatDate(selectedProject.lastUpdatedAt)}</span>
+                  {selectedProjectLastSavedAt ? (
+                    <>
+                      <span className="summaryTimestampDot" aria-hidden="true" />
+                      <span>Last saved at {formatDate(selectedProjectLastSavedAt)}</span>
+                    </>
+                  ) : null}
+                </p>
                 {selectedProject.lastError ? <div className="errorBanner">{selectedProject.lastError}</div> : null}
               </div>
               <div className="summaryActionRail">
                 <button
                   type="button"
-                  className={summaryPrimaryActionClassName}
-                  onClick={() => {
-                    if (summaryPrimaryActionDisabled) {
-                      return;
-                    }
-
-                    if (showRunningState) {
-                      void handleOpen();
-                    } else {
-                      void handleRun();
-                    }
-                  }}
-                  aria-label={summaryPrimaryActionLabel}
-                  title={summaryPrimaryActionLabel}
-                  aria-disabled={summaryPrimaryActionDisabled}
-                >
-                  {showRunningState ? <PlusIcon /> : <PlayIcon />}
-                </button>
-                <button
-                  type="button"
-                  className={summaryKillActionClassName}
-                  onClick={() => {
-                    if (summaryKillActionDisabled) {
-                      return;
-                    }
-
-                    void handleKill();
-                  }}
-                  aria-label="Kill program"
-                  title="Kill program"
-                  aria-disabled={summaryKillActionDisabled}
-                >
-                  <XIcon />
-                </button>
+                  className={`projectStatusDot projectStatusDot-${detailDotState}${detailCanStop ? " projectStatusDot-stopAction" : ""} summaryStatusDot`}
+                  aria-label={detailCanStop ? "Stop project" : detailIsLaunching ? "Starting..." : "Run project"}
+                  title={detailCanStop ? "Stop project" : detailIsLaunching ? "Starting..." : "Run project"}
+                  onClick={() => { if (detailCanStop) void handleKill(); else if (!detailIsLaunching && !showRunningState) void handleRun(); }}
+                  disabled={detailIsLaunching}
+                />
+                <div className="summaryInfoMenuWrap" ref={summaryInfoMenuRef}>
+                  <button
+                    type="button"
+                    className={summaryInfoMenuOpen ? "summaryInfoButton summaryInfoButton-active" : "summaryInfoButton"}
+                    aria-label="Project info actions"
+                    aria-haspopup="menu"
+                    aria-expanded={summaryInfoMenuOpen}
+                    title="Project info actions"
+                    onClick={() => setSummaryInfoMenuOpen((open) => !open)}
+                  >
+                    i
+                  </button>
+                  {summaryInfoMenuOpen ? (
+                    <div className="summaryInfoMenu" role="menu">
+                      {summaryShowDownloadAction ? (
+                        <button
+                          type="button"
+                          className={
+                            githubDownloadState === "downloaded"
+                              ? "summaryInfoMenuButton summaryInfoMenuButton-success"
+                              : githubDownloadState === "up-to-date"
+                                ? "summaryInfoMenuButton summaryInfoMenuButton-neutral"
+                                : githubDownloadState === "error"
+                                  ? "summaryInfoMenuButton summaryInfoMenuButton-error"
+                                  : "summaryInfoMenuButton"
+                          }
+                          onClick={() => {
+                            setSummaryInfoMenuOpen(false);
+                            void handleDownloadFromGithub();
+                          }}
+                          disabled={githubSaveState === "saving" || githubDownloadState === "downloading"}
+                          role="menuitem"
+                        >
+                          <ArrowDownIcon />
+                          <span>
+                            {githubDownloadState === "downloading"
+                              ? "Downloading..."
+                              : githubDownloadState === "downloaded"
+                                ? "Downloaded"
+                                : githubDownloadState === "up-to-date"
+                                  ? "Up to date"
+                                  : githubDownloadState === "error"
+                                    ? "Download failed"
+                                    : "Download from GitHub"}
+                          </span>
+                        </button>
+                      ) : null}
+                      {summaryShowBackupAction ? (
+                        <button
+                          type="button"
+                          className="summaryInfoMenuButton"
+                          onClick={() => {
+                            setSummaryInfoMenuOpen(false);
+                            void handleRequestRestoreLastBackup(selectedProject);
+                          }}
+                          disabled={busyKey === `backup.restore.${selectedProject.id}` || busyKey === `backup.check.${selectedProject.id}`}
+                          role="menuitem"
+                        >
+                          <span className="summaryInfoMenuButtonIcon" aria-hidden="true">B</span>
+                          <span>{busyKey === `backup.check.${selectedProject.id}` ? "Checking..." : "Backups"}</span>
+                        </button>
+                      ) : null}
+                      {summaryInfoCheckingBackup && !summaryShowBackupAction ? (
+                        <span className="summaryInfoMenuStatus">Checking backups...</span>
+                      ) : null}
+                      {!summaryShowDownloadAction && !summaryShowBackupAction && !summaryInfoCheckingBackup ? (
+                        <span className="summaryInfoMenuStatus">No extra actions available</span>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
               </div>
             </div>
           </div>
@@ -2083,41 +2300,6 @@ function App() {
                         ? "Save failed"
                         : "Save to GitHub"}
               </button>
-              <button
-                type="button"
-                className={
-                  githubDownloadState === "downloaded"
-                    ? "githubSaveButton githubSaveButton-success"
-                    : githubDownloadState === "up-to-date"
-                      ? "githubSaveButton githubSaveButton-neutral"
-                      : githubDownloadState === "error"
-                        ? "githubSaveButton githubSaveButton-error"
-                        : "githubSaveButton"
-                }
-                onClick={() => void handleDownloadFromGithub()}
-                disabled={githubSaveState === "saving" || githubDownloadState === "downloading"}
-                aria-label="Download from GitHub"
-              >
-                <ArrowDownIcon />
-                {githubDownloadState === "downloading"
-                  ? "Downloading..."
-                  : githubDownloadState === "downloaded"
-                    ? "Downloaded"
-                    : githubDownloadState === "up-to-date"
-                      ? "Up to date"
-                      : githubDownloadState === "error"
-                        ? "Download failed"
-                        : "Download"}
-              </button>
-              <button
-                type="button"
-                className="githubSaveButton"
-                onClick={() => void handleRequestRestoreLastBackup(selectedProject)}
-                disabled={isProjectRunning || busyKey === `backup.restore.${selectedProject.id}` || busyKey === `backup.check.${selectedProject.id}`}
-                title={isProjectRunning ? "Stop the project before restoring a backup." : "View and restore PROGRAMS backups for this project."}
-              >
-                {busyKey === `backup.check.${selectedProject.id}` ? "Checking..." : "Backups"}
-              </button>
             </div>
             {githubSaveState === "error" && githubSaveError ? (
               <span className="githubSaveErrorLabel">{githubSaveError}</span>
@@ -2129,9 +2311,6 @@ function App() {
                 <span className="githubDiffRemoved">-{selectedProjectDiffStats.removed}</span>
               </span>
             ) : null}
-            <span className="githubRepoStatus">
-              {formatGithubRepoStatus(selectedProject?.githubConnection ?? null)}
-            </span>
           </div>
         </div>
         {selectedProjectExactChildren.length > 0 || selectedProjectMaybeRelated.length > 0 ? (
@@ -2206,6 +2385,152 @@ function App() {
             </div>
           </details>
         ) : null}
+      </div>
+
+      <div className="projectChatPane">
+        <div className="projectChatScroll" ref={projectChatScrollRef}>
+          {projectChatMessages.length === 0 && !projectChatLoading ? (
+            <div className="projectChatEmptyState">
+              <span>Ask me anything about this project</span>
+            </div>
+          ) : (
+            <div className="projectChatMessageList">
+              {projectChatMessages.map(msg => (
+                <div key={msg.id} className={`projectChatBubble projectChatBubble--${msg.role}`}>
+                  <div className="projectChatBubbleContent">{msg.content}</div>
+                  <div className="projectChatBubbleTime">
+                    {msg.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </div>
+                </div>
+              ))}
+              {projectChatLoading && (
+                <div className="projectChatBubble projectChatBubble--assistant">
+                  <span className="agentChatTypingDots">
+                    <span className="agentChatDot" />
+                    <span className="agentChatDot" />
+                    <span className="agentChatDot" />
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div className="projectChatComposer">
+          <div className="projectChatInputRow">
+            <textarea
+              className="projectChatInput"
+              placeholder="Message..."
+              value={projectChatInput}
+              onChange={e => setProjectChatInput(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                  e.preventDefault();
+                  handleProjectChatSend();
+                } else if (e.key === 'Tab' && e.shiftKey) {
+                  e.preventDefault();
+                  cycleProjectChatMode();
+                }
+              }}
+              rows={1}
+              disabled={projectChatLoading}
+            />
+            <button
+              type="button"
+              className="projectChatSendButton"
+              onClick={handleProjectChatSend}
+              disabled={!projectChatInput.trim() || projectChatLoading}
+              aria-label="Send"
+            >
+              <ArrowUpIcon />
+            </button>
+          </div>
+
+          <div className="projectChatControlBar">
+            <div className="projectChatModePicker" ref={projectChatModeRef}>
+              {projectChatModeOpen && (
+                <div className="projectChatModeDropdown">
+                  {(['plan', 'ask', 'auto'] as const).map(m => (
+                    <button
+                      key={m}
+                      type="button"
+                      className={`projectChatModeOption${projectChatMode === m ? ' projectChatModeOption--active' : ''}`}
+                      onClick={() => { setProjectChatMode(m); setProjectChatModeOpen(false); }}
+                    >
+                      {m === 'plan' ? 'Plan' : m === 'ask' ? 'Ask' : 'Auto'}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <button
+                type="button"
+                className="projectChatModeCurrent"
+                onClick={() => setProjectChatModeOpen(v => !v)}
+                title="Shift+Tab to cycle modes"
+              >
+                {projectChatMode === 'plan' ? 'Plan' : projectChatMode === 'ask' ? 'Ask' : 'Auto'}
+                <ChevronDownIcon />
+              </button>
+            </div>
+
+            <div className="projectChatRightControls">
+              <select
+                className="projectChatSelect"
+                value={projectChatModel}
+                onChange={e => setProjectChatModel(e.target.value)}
+                aria-label="Model"
+              >
+                {settings.advancedDefaults.provider === 'codex' ? (
+                  <>
+                    <option value="gpt-5.4">GPT-5.4</option>
+                    <option value="gpt-5.4-mini">GPT-5.4 Mini</option>
+                    <option value="gpt-5.3-codex">GPT-5.3 Codex</option>
+                  </>
+                ) : (
+                  <>
+                    <option value="claude-sonnet-4-6">Sonnet 4.6</option>
+                    <option value="claude-opus-4-8">Opus 4.8</option>
+                    <option value="claude-haiku-4-5">Haiku 4.5</option>
+                  </>
+                )}
+              </select>
+              <select
+                className="projectChatSelect"
+                value={projectChatReasoning}
+                onChange={e => setProjectChatReasoning(e.target.value)}
+                aria-label="Reasoning"
+              >
+                <option value="normal">Normal</option>
+                <option value="extended">Extended</option>
+              </select>
+              {(() => {
+                const totalChars = projectChatMessages.reduce((s, m) => s + m.content.length, 0);
+                const pct = Math.min(100, Math.round((totalChars / 200000) * 100));
+                const r = 9;
+                const circ = 2 * Math.PI * r;
+                const filled = (pct / 100) * circ;
+                return (
+                  <div className="projectChatContextRing" title={`Context used: ${pct}%`}>
+                    <svg width="26" height="26" viewBox="0 0 26 26" fill="none">
+                      <circle cx="13" cy="13" r={r} stroke="var(--border)" strokeWidth="2" />
+                      {pct > 0 && (
+                        <circle
+                          cx="13" cy="13" r={r}
+                          stroke="var(--accent, #007AFF)"
+                          strokeWidth="2"
+                          strokeDasharray={`${filled} ${circ}`}
+                          strokeLinecap="round"
+                          transform="rotate(-90 13 13)"
+                        />
+                      )}
+                    </svg>
+                    <span className="projectChatContextPct">{pct}%</span>
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        </div>
       </div>
     </section>
   );

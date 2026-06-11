@@ -109,6 +109,7 @@ export interface Settings {
   uiMode: UiMode;
   defaultSpeed: SpeedMode;
   autoApprovePlans: boolean;
+  autoInstallAppUpdates: boolean;
   advancedDefaults: AdvancedDefaults;
   appSourcePath: string | null;
   codexBinaryPath: string | null;
@@ -488,6 +489,7 @@ export interface SettingsUpdateInput {
   uiMode?: UiMode;
   defaultSpeed?: SpeedMode;
   autoApprovePlans?: boolean;
+  autoInstallAppUpdates?: boolean;
   advancedDefaults?: Partial<AdvancedDefaults>;
   appSourcePath?: string | null;
   codexBinaryPath?: string | null;

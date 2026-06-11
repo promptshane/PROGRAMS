@@ -847,6 +847,7 @@ export class ProjectStore {
       ...DEFAULT_SETTINGS,
       ...settings,
       autoApprovePlans: settings.autoApprovePlans ?? DEFAULT_SETTINGS.autoApprovePlans,
+      autoInstallAppUpdates: settings.autoInstallAppUpdates ?? DEFAULT_SETTINGS.autoInstallAppUpdates,
       appSourcePath,
       advancedDefaults,
     };

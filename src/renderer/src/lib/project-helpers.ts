@@ -37,6 +37,13 @@ export type ProjectFilterMode = "all" | "root" | "starred";
 export type HomeTileDotState = "ready" | "launching" | "running" | "updating" | "runningUpdating" | "error";
 export type HomeAppUpdateButtonState = "prepare" | "install" | "issue" | null;
 
+export interface AutoInstallAppUpdateDecisionInput {
+  status: AppUpdateStatus;
+  enabled: boolean;
+  busyKey: string | null;
+  attemptedKeys?: ReadonlySet<string>;
+}
+
 export const createEmptyForm = (): AddProjectFormState => ({
   mode: "create",
   createName: "",
@@ -196,6 +203,34 @@ export const getHomeAppUpdateButtonState = (status: AppUpdateStatus): HomeAppUpd
     return "issue";
   }
   return null;
+};
+
+export const getAutoInstallAppUpdateKey = ({
+  status,
+  enabled,
+  busyKey,
+  attemptedKeys,
+}: AutoInstallAppUpdateDecisionInput): string | null => {
+  if (
+    !enabled ||
+    busyKey === "app.update" ||
+    !status.supported ||
+    !status.available ||
+    status.buildState !== "ready" ||
+    status.requiresAdminPrompt ||
+    (status.action !== "install" && status.action !== "restart")
+  ) {
+    return null;
+  }
+
+  const key = [
+    status.action,
+    status.currentAppPath ?? "",
+    status.candidateAppPath ?? "",
+    status.candidateUpdatedAt ?? "",
+  ].join("::");
+
+  return attemptedKeys?.has(key) ? null : key;
 };
 
 export const syncComposerTextareaHeight = (

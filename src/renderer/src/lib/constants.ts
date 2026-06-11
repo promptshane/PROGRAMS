@@ -35,6 +35,7 @@ export const emptySettings: Settings = {
   uiMode: "simple",
   defaultSpeed: "normal",
   autoApprovePlans: false,
+  autoInstallAppUpdates: true,
   advancedDefaults: {
     provider: "codex",
     model: "gpt-5.4",

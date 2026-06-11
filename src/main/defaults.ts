@@ -21,6 +21,7 @@ export const DEFAULT_SETTINGS: Settings = {
   uiMode: "simple",
   defaultSpeed: "normal",
   autoApprovePlans: false,
+  autoInstallAppUpdates: true,
   advancedDefaults: DEFAULT_ADVANCED_DEFAULTS,
   appSourcePath: "/Users/kc/Desktop/PROGRAMS",
   codexBinaryPath: null,

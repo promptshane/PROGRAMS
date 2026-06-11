@@ -11,8 +11,11 @@ import { RunnerService } from "@main/services/runner-service";
 import type { AppEvent } from "@shared/types";
 
 let mainWindow: BrowserWindow | null = null;
+let appUpdatePollInterval: NodeJS.Timeout | null = null;
+let appUpdatePollInFlight = false;
 
 const isDevelopment = !app.isPackaged;
+const APP_UPDATE_POLL_INTERVAL_MS = 30_000;
 
 const emitToWindows = (event: AppEvent): void => {
   for (const window of BrowserWindow.getAllWindows()) {
@@ -71,6 +74,29 @@ const createWindow = (): void => {
   }
 };
 
+const startAppUpdatePolling = (backend: ProgramsBackend): void => {
+  if (process.platform !== "darwin" || !app.isPackaged || appUpdatePollInterval) {
+    return;
+  }
+
+  const poll = () => {
+    if (appUpdatePollInFlight) {
+      return;
+    }
+    appUpdatePollInFlight = true;
+    void backend.readAppUpdateStatus()
+      .catch((error: unknown) => {
+        console.warn("[PROGRAMS] app update poll failed", error);
+      })
+      .finally(() => {
+        appUpdatePollInFlight = false;
+      });
+  };
+
+  appUpdatePollInterval = setInterval(poll, APP_UPDATE_POLL_INTERVAL_MS);
+  appUpdatePollInterval.unref?.();
+};
+
 void app.whenReady().then(async () => {
   app.setName("PROGRAMS");
 
@@ -95,6 +121,7 @@ void app.whenReady().then(async () => {
   runnerService.setOnRuntimeUrlDetected((projectId, url) => backend.handleRuntimeUrlDetected(projectId, url));
 
   registerIpc(backend);
+  startAppUpdatePolling(backend);
   createWindow();
 
   app.on("activate", () => {
@@ -107,5 +134,12 @@ void app.whenReady().then(async () => {
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();
+  }
+});
+
+app.on("before-quit", () => {
+  if (appUpdatePollInterval) {
+    clearInterval(appUpdatePollInterval);
+    appUpdatePollInterval = null;
   }
 });

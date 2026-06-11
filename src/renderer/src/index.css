@@ -1448,7 +1448,10 @@ code {
 }
 
 .summaryInfoMenuWrap {
-  position: relative;
+  position: absolute;
+  right: 20px;
+  bottom: 18px;
+  z-index: 12;
   display: flex;
   justify-content: center;
 }
@@ -1473,88 +1476,10 @@ code {
 }
 
 .summaryInfoButton:hover,
-.summaryInfoButton:focus-visible,
-.summaryInfoButton-active {
+.summaryInfoButton:focus-visible {
   transform: scale(1.06);
   background: color-mix(in srgb, #05070a 84%, var(--text));
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.72), 0 12px 24px rgba(0, 0, 0, 0.32);
-}
-
-.summaryInfoMenu {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  z-index: 45;
-  display: grid;
-  gap: 4px;
-  min-width: 190px;
-  padding: 6px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: var(--panel-strong);
-  box-shadow: var(--shadow-sm);
-}
-
-.summaryInfoMenuButton {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--text);
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  text-align: left;
-  cursor: pointer;
-}
-
-.summaryInfoMenuButton:hover:not(:disabled),
-.summaryInfoMenuButton:focus-visible:not(:disabled) {
-  background: var(--button-secondary);
-}
-
-.summaryInfoMenuButton:disabled {
-  opacity: 0.6;
-  cursor: default;
-}
-
-.summaryInfoMenuButton svg,
-.summaryInfoMenuButtonIcon {
-  width: 14px;
-  height: 14px;
-  flex: 0 0 14px;
-}
-
-.summaryInfoMenuButtonIcon {
-  display: grid;
-  place-items: center;
-  border-radius: 999px;
-  border: 1px solid currentColor;
-  font-size: 9px;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.summaryInfoMenuButton-success {
-  color: var(--success);
-}
-
-.summaryInfoMenuButton-error {
-  color: var(--error);
-}
-
-.summaryInfoMenuButton-neutral {
-  color: var(--muted);
-}
-
-.summaryInfoMenuStatus {
-  padding: 8px 10px;
-  color: var(--muted);
-  font-size: 12px;
 }
 
 .summaryGithubRow {
@@ -8246,7 +8171,7 @@ select {
 }
 
 .agentDetailsModalContent-static {
-  overflow-y: hidden;
+  overflow-y: auto;
 }
 
 .agentDetailsSection {
@@ -8317,6 +8242,35 @@ select {
 .agentDetailsToggle {
   width: fit-content;
   padding: 0;
+}
+
+.agentDetailsRecoveryCard {
+  gap: 12px;
+}
+
+.agentDetailsRecoveryCopy {
+  display: grid;
+  gap: 5px;
+}
+
+.agentDetailsRecoveryCopy strong {
+  color: var(--text);
+  font-size: 0.95rem;
+  line-height: 1.35;
+}
+
+.agentDetailsRecoveryCopy span,
+.agentDetailsRecoveryHint {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.agentDetailsRecoveryActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .agentDetailsCoreGrid {

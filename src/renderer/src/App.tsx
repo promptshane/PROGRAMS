@@ -51,7 +51,6 @@ import {
   SidebarToggleIcon,
   ChevronDownIcon,
   GithubIcon,
-  ArrowDownIcon,
   ArrowUpIcon,
 } from "./components/icons";
 import { HomeProjectTile, HomepageComposer } from "./components/home-tiles";
@@ -117,6 +116,7 @@ function App() {
   const [appUpdate, setAppUpdate] = useState<AppUpdateStatus>(emptyAppUpdateStatus);
   const autoInstallAppUpdateAttemptedKeysRef = useRef<Set<string>>(new Set());
   const autoInstallAppUpdateInFlightRef = useRef(false);
+  const appUpdateStatusPollInFlightRef = useRef(false);
   const [isBootstrapped, setIsBootstrapped] = useState(false);
   const [startupIssue, setStartupIssue] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -182,9 +182,6 @@ function App() {
   const [githubDownloadState, setGithubDownloadState] = useState<null | "downloading" | "downloaded" | "up-to-date" | "error">(null);
   const [githubDownloadError, setGithubDownloadError] = useState<string | null>(null);
   const [selectedProjectDiffStats, setSelectedProjectDiffStats] = useState<DiffStats | null>(null);
-  const [summaryInfoMenuOpen, setSummaryInfoMenuOpen] = useState(false);
-  const [summaryBackupAvailable, setSummaryBackupAvailable] = useState<boolean | null>(null);
-  const summaryInfoMenuRef = useRef<HTMLDivElement | null>(null);
 
   // Project-page embedded chat UI
   const [projectChatMessages, setProjectChatMessages] = useState<
@@ -448,10 +445,17 @@ function App() {
     }
 
     const refreshAppUpdate = () => {
+      if (appUpdateStatusPollInFlightRef.current || autoInstallAppUpdateInFlightRef.current) {
+        return;
+      }
+      appUpdateStatusPollInFlightRef.current = true;
       void programsApi
         .readAppUpdateStatus()
         .then((status) => setAppUpdate(status))
-        .catch(() => undefined);
+        .catch(() => undefined)
+        .finally(() => {
+          appUpdateStatusPollInFlightRef.current = false;
+        });
     };
 
     window.addEventListener("focus", refreshAppUpdate);
@@ -541,58 +545,7 @@ function App() {
       setComposerValue("");
       setPlanError(null);
     }
-    setSummaryInfoMenuOpen(false);
-    setSummaryBackupAvailable(null);
   }, [selectedProjectId]);
-
-  useEffect(() => {
-    if (!summaryInfoMenuOpen) {
-      return;
-    }
-
-    const handlePointerDown = (event: MouseEvent) => {
-      if (!summaryInfoMenuRef.current?.contains(event.target as Node)) {
-        setSummaryInfoMenuOpen(false);
-      }
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setSummaryInfoMenuOpen(false);
-      }
-    };
-
-    document.addEventListener("mousedown", handlePointerDown);
-    document.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      document.removeEventListener("mousedown", handlePointerDown);
-      document.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [summaryInfoMenuOpen]);
-
-  useEffect(() => {
-    if (!programsApi || !summaryInfoMenuOpen || !selectedProject) {
-      return;
-    }
-
-    let cancelled = false;
-    setSummaryBackupAvailable(null);
-    void programsApi.readLastProjectBackup(selectedProject.id)
-      .then((backup) => {
-        if (!cancelled) {
-          setSummaryBackupAvailable(Boolean(backup));
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setSummaryBackupAvailable(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [programsApi, selectedProject?.id, summaryInfoMenuOpen]);
 
   useEffect(() => {
     setShowUpdatePanel(Boolean(selectedProjectId));
@@ -2036,9 +1989,6 @@ function App() {
   const detailCanStop = isProjectRunning && !detailIsLaunching;
   const selectedProjectLastSavedAt = selectedProject?.githubConnection?.lastPushedAt ?? null;
   const selectedProjectHasGithubRepo = Boolean(selectedProject?.githubConnection?.repoUrl);
-  const summaryInfoCheckingBackup = summaryInfoMenuOpen && summaryBackupAvailable === null;
-  const summaryShowDownloadAction = selectedProjectHasGithubRepo;
-  const summaryShowBackupAction = Boolean(selectedProject && summaryBackupAvailable && !isProjectRunning);
   const canConfirmPlan = activePlan?.status === "awaitingApproval";
   const showUpdateDock = Boolean(activePlan);
   const isSelectedProjectView = activePage === "projects" && Boolean(selectedProject);
@@ -2161,13 +2111,9 @@ function App() {
             GPT
           </button>
         </div>
-        <button
-          type="button"
-          className="agentTopBarButton agentDetailsButton windowNoDrag"
-          onClick={() => setShowProjectDetails(true)}
-        >
-          Project Details
-        </button>
+        {systemHealth ? (
+          <SystemHealthButton health={systemHealth} onClick={() => setShowHealthSheet(true)} />
+        ) : null}
       </div>
 
       <div className="chatViewportDivider pageChromeDivider" aria-hidden="true" />
@@ -2198,76 +2144,16 @@ function App() {
                   onClick={() => { if (detailCanStop) void handleKill(); else if (!detailIsLaunching && !showRunningState) void handleRun(); }}
                   disabled={detailIsLaunching}
                 />
-                <div className="summaryInfoMenuWrap" ref={summaryInfoMenuRef}>
+                <div className="summaryInfoMenuWrap">
                   <button
                     type="button"
-                    className={summaryInfoMenuOpen ? "summaryInfoButton summaryInfoButton-active" : "summaryInfoButton"}
-                    aria-label="Project info actions"
-                    aria-haspopup="menu"
-                    aria-expanded={summaryInfoMenuOpen}
-                    title="Project info actions"
-                    onClick={() => setSummaryInfoMenuOpen((open) => !open)}
+                    className="summaryInfoButton"
+                    aria-label="Open project details"
+                    title="Project details"
+                    onClick={() => setShowProjectDetails(true)}
                   >
                     i
                   </button>
-                  {summaryInfoMenuOpen ? (
-                    <div className="summaryInfoMenu" role="menu">
-                      {summaryShowDownloadAction ? (
-                        <button
-                          type="button"
-                          className={
-                            githubDownloadState === "downloaded"
-                              ? "summaryInfoMenuButton summaryInfoMenuButton-success"
-                              : githubDownloadState === "up-to-date"
-                                ? "summaryInfoMenuButton summaryInfoMenuButton-neutral"
-                                : githubDownloadState === "error"
-                                  ? "summaryInfoMenuButton summaryInfoMenuButton-error"
-                                  : "summaryInfoMenuButton"
-                          }
-                          onClick={() => {
-                            setSummaryInfoMenuOpen(false);
-                            void handleDownloadFromGithub();
-                          }}
-                          disabled={githubSaveState === "saving" || githubDownloadState === "downloading"}
-                          role="menuitem"
-                        >
-                          <ArrowDownIcon />
-                          <span>
-                            {githubDownloadState === "downloading"
-                              ? "Downloading..."
-                              : githubDownloadState === "downloaded"
-                                ? "Downloaded"
-                                : githubDownloadState === "up-to-date"
-                                  ? "Up to date"
-                                  : githubDownloadState === "error"
-                                    ? "Download failed"
-                                    : "Download from GitHub"}
-                          </span>
-                        </button>
-                      ) : null}
-                      {summaryShowBackupAction ? (
-                        <button
-                          type="button"
-                          className="summaryInfoMenuButton"
-                          onClick={() => {
-                            setSummaryInfoMenuOpen(false);
-                            void handleRequestRestoreLastBackup(selectedProject);
-                          }}
-                          disabled={busyKey === `backup.restore.${selectedProject.id}` || busyKey === `backup.check.${selectedProject.id}`}
-                          role="menuitem"
-                        >
-                          <span className="summaryInfoMenuButtonIcon" aria-hidden="true">B</span>
-                          <span>{busyKey === `backup.check.${selectedProject.id}` ? "Checking..." : "Backups"}</span>
-                        </button>
-                      ) : null}
-                      {summaryInfoCheckingBackup && !summaryShowBackupAction ? (
-                        <span className="summaryInfoMenuStatus">Checking backups...</span>
-                      ) : null}
-                      {!summaryShowDownloadAction && !summaryShowBackupAction && !summaryInfoCheckingBackup ? (
-                        <span className="summaryInfoMenuStatus">No extra actions available</span>
-                      ) : null}
-                    </div>
-                  ) : null}
                 </div>
               </div>
             </div>
@@ -2876,6 +2762,13 @@ function App() {
           onUpdateAgentDefaults={handleUpdateAgentDefaults}
           onSessionUpdate={(session) => setProgramAgentSession(session)}
           pushToast={pushToast}
+          hasGithubConnection={selectedProjectHasGithubRepo}
+          isProjectRunning={isProjectRunning}
+          githubDownloadBusy={githubSaveState === "saving" || githubDownloadState === "downloading"}
+          backupCheckBusy={busyKey === `backup.check.${selectedProject.id}`}
+          backupRestoreBusy={busyKey === `backup.restore.${selectedProject.id}`}
+          onDownloadFromGithub={() => void handleDownloadFromGithub()}
+          onRequestRestoreBackup={() => void handleRequestRestoreLastBackup(selectedProject)}
           onClose={() => setShowProjectDetails(false)}
         />
       ) : null}

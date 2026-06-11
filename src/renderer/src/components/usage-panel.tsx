@@ -50,17 +50,17 @@ export function UsageOverviewSheet({
       : null;
   const cards: UsageCard[] = [
     {
-      key: "codex",
-      name: "Codex",
-      windows: usage.codex.windows,
-      note: isUsageLoading ? null : usage.codex.note,
-      loading: isUsageLoading,
-    },
-    {
       key: "claude",
       name: "Claude",
       windows: usage.claude.windows,
       note: isUsageLoading ? null : usage.claude.note,
+      loading: isUsageLoading,
+    },
+    {
+      key: "codex",
+      name: "Codex",
+      windows: usage.codex.windows,
+      note: isUsageLoading ? null : usage.codex.note,
       loading: isUsageLoading,
     },
   ];
@@ -78,19 +78,19 @@ export function UsageOverviewSheet({
             <div className="usageProviderToggle" role="tablist" aria-label="Agent provider">
               <button
                 type="button"
-                className={provider === "codex" ? "usageProviderOption active" : "usageProviderOption"}
-                onClick={() => onProviderChange("codex")}
-                disabled={providerBusy}
-              >
-                Use GPT
-              </button>
-              <button
-                type="button"
                 className={provider === "claude" ? "usageProviderOption active" : "usageProviderOption"}
                 onClick={() => onProviderChange("claude")}
                 disabled={providerBusy}
               >
                 Use Claude
+              </button>
+              <button
+                type="button"
+                className={provider === "codex" ? "usageProviderOption active" : "usageProviderOption"}
+                onClick={() => onProviderChange("codex")}
+                disabled={providerBusy}
+              >
+                Use GPT
               </button>
             </div>
           </div>

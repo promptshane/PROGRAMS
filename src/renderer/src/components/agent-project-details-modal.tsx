@@ -47,6 +47,13 @@ export function AgentProjectDetailsModal({
   pushToast,
   onClose,
   initialView,
+  hasGithubConnection = false,
+  isProjectRunning = false,
+  githubDownloadBusy = false,
+  backupCheckBusy = false,
+  backupRestoreBusy = false,
+  onDownloadFromGithub,
+  onRequestRestoreBackup,
 }: {
   project: Project;
   session: AgentSession | null;
@@ -57,6 +64,13 @@ export function AgentProjectDetailsModal({
   pushToast: (message: string, level: "info" | "success" | "error") => void;
   onClose: () => void;
   initialView?: DetailsView;
+  hasGithubConnection?: boolean;
+  isProjectRunning?: boolean;
+  githubDownloadBusy?: boolean;
+  backupCheckBusy?: boolean;
+  backupRestoreBusy?: boolean;
+  onDownloadFromGithub?: () => void | Promise<void>;
+  onRequestRestoreBackup?: () => void | Promise<void>;
 }) {
   const [currentView, setCurrentView] = useState<DetailsView>(initialView ?? { type: "main" });
   const [summaryRange, setSummaryRange] = useState<AgentDetailsRange>("daily");
@@ -94,6 +108,10 @@ export function AgentProjectDetailsModal({
     () => automationTargets.candidates.find((candidate) => candidate.updateId === selectedAutomationTargetId) ?? null,
     [automationTargets.candidates, selectedAutomationTargetId],
   );
+  const shouldShowRecoverySection = Boolean(onDownloadFromGithub || onRequestRestoreBackup);
+  const backupActionBusy = backupCheckBusy || backupRestoreBusy;
+  const backupActionDisabled = !onRequestRestoreBackup || isProjectRunning || backupActionBusy;
+  const downloadActionDisabled = !onDownloadFromGithub || !hasGithubConnection || githubDownloadBusy;
 
   useEffect(() => {
     setAutomationConstraints(
@@ -260,6 +278,50 @@ export function AgentProjectDetailsModal({
               </button>
             </div>
           </section>
+
+          {shouldShowRecoverySection ? (
+            <section className="agentDetailsSection">
+              <div className="agentDetailsSectionHeader">
+                <h4>Backups</h4>
+              </div>
+              <div className="agentDetailsCard agentDetailsRecoveryCard">
+                <div className="agentDetailsRecoveryCopy">
+                  <strong>Restore a local backup or pull the latest GitHub version.</strong>
+                  <span>
+                    PROGRAMS creates a backup before replacing project files, so these actions stay grouped with project recovery.
+                  </span>
+                </div>
+                <div className="agentDetailsRecoveryActions">
+                  {onRequestRestoreBackup ? (
+                    <button
+                      type="button"
+                      className="secondaryButton smallButton"
+                      onClick={() => void onRequestRestoreBackup()}
+                      disabled={backupActionDisabled}
+                    >
+                      {backupCheckBusy ? "Checking..." : backupRestoreBusy ? "Restoring..." : "Backups"}
+                    </button>
+                  ) : null}
+                  {onDownloadFromGithub ? (
+                    <button
+                      type="button"
+                      className="secondaryButton smallButton"
+                      onClick={() => void onDownloadFromGithub()}
+                      disabled={downloadActionDisabled}
+                    >
+                      {githubDownloadBusy ? "Downloading..." : "Download from GitHub"}
+                    </button>
+                  ) : null}
+                </div>
+                {!hasGithubConnection && onDownloadFromGithub ? (
+                  <span className="agentDetailsRecoveryHint">Connect this project to GitHub to enable downloads.</span>
+                ) : null}
+                {isProjectRunning && onRequestRestoreBackup ? (
+                  <span className="agentDetailsRecoveryHint">Stop the running project before restoring a backup.</span>
+                ) : null}
+              </div>
+            </section>
+          ) : null}
 
           <section className="agentDetailsSection">
             <div className="agentDetailsSectionHeader">

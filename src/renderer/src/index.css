@@ -6,6 +6,10 @@
   --radius-sm: 12px;
   --shadow-lg: 0 28px 80px rgba(0, 0, 0, 0.28);
   --shadow-sm: 0 16px 38px rgba(0, 0, 0, 0.18);
+  --sysHealth-green: #22c55e;
+  --sysHealth-yellow: #eab308;
+  --sysHealth-orange: #f97316;
+  --sysHealth-red: #ef4444;
 }
 
 :root[data-theme="dark"] {
@@ -775,12 +779,18 @@ code {
 }
 
 .appHeader h1,
-.heroCard h2,
-.projectSummaryCard h2 {
+.heroCard h2 {
   margin: 0;
   font-size: clamp(2.2rem, 4vw, 3.4rem);
   line-height: 0.95;
   letter-spacing: -0.05em;
+}
+
+.projectSummaryCard h2 {
+  margin: 0;
+  font-size: clamp(1.35rem, 2.2vw, 1.8rem);
+  line-height: 1.05;
+  letter-spacing: -0.03em;
 }
 
 .headerActions {
@@ -1133,8 +1143,8 @@ code {
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: 20px;
-  padding: 24px 26px;
+  gap: 14px;
+  padding: 18px 20px;
   border-radius: var(--radius-xl);
 }
 
@@ -1142,7 +1152,7 @@ code {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 18px;
+  gap: 12px;
   padding-right: 0;
 }
 
@@ -1159,7 +1169,7 @@ code {
 .summaryCopy {
   display: grid;
   align-content: start;
-  gap: 12px;
+  gap: 6px;
   min-height: 0;
   flex: 1 1 auto;
   align-self: start;
@@ -1169,7 +1179,7 @@ code {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 18px;
+  gap: 12px;
 }
 
 .summaryActionRail {
@@ -1186,23 +1196,15 @@ code {
 .summaryGithubRow {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 0 0 2px;
+  gap: 8px;
+  padding: 0;
   flex-wrap: wrap;
 }
 
 .summaryGithubActions {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.summarySafetyRow {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 2px 0 0;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
@@ -1274,14 +1276,14 @@ code {
 }
 
 .summaryActionButton {
-  width: 48px;
-  min-width: 48px;
-  height: 48px;
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 0;
-  border-radius: 16px;
+  border-radius: 12px;
   border: 1px solid transparent;
   flex-shrink: 0;
   line-height: 0;
@@ -1291,8 +1293,8 @@ code {
 }
 
 .summaryActionButton svg {
-  width: 18px;
-  height: 18px;
+  width: 16px;
+  height: 16px;
 }
 
 .summaryActionButton.actionButton-run,
@@ -1316,7 +1318,7 @@ code {
 
 .summaryTimestamp {
   color: var(--muted);
-  font-size: 0.92rem;
+  font-size: 0.78rem;
 }
 
 .summaryLinkRow {
@@ -3175,6 +3177,308 @@ select {
   line-height: 1;
 }
 
+.projectBrowseBadgeClickable {
+  cursor: pointer;
+  transition: background 140ms ease;
+}
+.projectBrowseBadgeClickable:hover {
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
+
+.projectBrowseSortBadge {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+}
+
+/* ── System Health ───────────────────────────────────────────── */
+
+/* colored dots */
+.sysHealthDot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.sysHealthDot--green  { background: var(--sysHealth-green); }
+.sysHealthDot--yellow { background: var(--sysHealth-yellow); }
+.sysHealthDot--orange { background: var(--sysHealth-orange); }
+.sysHealthDot--red    { background: var(--sysHealth-red); }
+
+/* severity text colors */
+.sysHealthSeverity--normal   { color: var(--sysHealth-green); }
+.sysHealthSeverity--moderate { color: var(--sysHealth-yellow); }
+.sysHealthSeverity--heavy    { color: var(--sysHealth-orange); }
+.sysHealthSeverity--severe   { color: var(--sysHealth-red); }
+
+/* top-bar trigger button */
+.sysHealthTrigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.sysHealthTriggerDots {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.sysHealthTriggerLabel {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+/* modal body */
+.sysHealthModalBody {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  padding: 4px 0 8px;
+}
+
+.sysHealthModalSection {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sysHealthModalSectionTitle {
+  margin: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.sysHealthModalGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px;
+}
+
+/* metric cards — base */
+.sysHealthMetricCard {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  text-align: left;
+  width: 100%;
+}
+.sysHealthMetricCard .sysHealthDot {
+  margin-top: 3px;
+}
+
+/* clickable metric cards (CPU / Memory) */
+.sysHealthMetricCard--clickable {
+  cursor: pointer;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+.sysHealthMetricCard--clickable:hover {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+.sysHealthMetricCard--expanded {
+  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+}
+
+.sysHealthMetricCardBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.sysHealthMetricCardLabel {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.72rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.sysHealthMetricCardChevron {
+  font-size: 0.6rem;
+  opacity: 0.6;
+}
+.sysHealthMetricCardValue {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* sparkline */
+.sysHealthSparklineWrap {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: stretch;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+}
+
+/* svg + tooltip live together in a relatively-positioned area */
+.sysHealthSparklineSvgArea {
+  position: relative;
+  min-width: 0;
+}
+.sysHealthSparklineSvg {
+  display: block;
+  width: 100%;
+  height: 52px;
+  cursor: crosshair;
+}
+
+/* hover tooltip */
+.sysHealthTooltip {
+  position: absolute;
+  top: -2px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  pointer-events: none;
+  white-space: nowrap;
+}
+.sysHealthTooltip--right {
+  transform: translateX(-100%);
+}
+.sysHealthTooltipValue {
+  font-size: 0.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.sysHealthTooltipTime {
+  font-size: 0.65rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.sysHealthSparklineMeta {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 4px;
+  min-width: 52px;
+}
+.sysHealthSparklineRange {
+  font-size: 0.68rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.sysHealthSparklineCurrent {
+  font-size: 0.75rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.sysHealthSparklineEmpty {
+  margin: 0;
+  padding: 12px;
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-align: center;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+
+/* process table */
+.sysHealthProcessTable {
+  display: flex;
+  flex-direction: column;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.sysHealthProcessHeader,
+.sysHealthProcessRow {
+  display: grid;
+  grid-template-columns: 1fr 64px 56px 56px;
+  align-items: center;
+  padding: 7px 12px;
+  gap: 8px;
+  font-size: 0.75rem;
+}
+
+.sysHealthProcessHeader {
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  color: var(--muted);
+  font-size: 0.71rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.sysHealthProcessRow + .sysHealthProcessRow {
+  border-top: 1px solid var(--border);
+}
+
+/* name cell: icon + text side by side */
+.sysHealthProcessNameCell {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.sysHealthProcessIcon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  border-radius: 3px;
+  object-fit: contain;
+}
+
+.sysHealthProcessIconPlaceholder {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.sysHealthProcessName {
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sysHealthProcessMeta {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.sysHealthUpdatedAt {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--muted);
+  text-align: center;
+}
+
 .projectRelationshipCopy span,
 .projectRelationshipHead p {
   margin: 0;
@@ -3279,20 +3583,63 @@ select {
     linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.02));
 }
 
+.projectRelationshipDetails {
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.projectRelationshipSummary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--panel-soft);
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--muted);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  transition: background 0.12s, color 0.12s;
+}
+
+.projectRelationshipSummary::-webkit-details-marker {
+  display: none;
+}
+
+.projectRelationshipSummary:hover {
+  background: var(--panel);
+  color: var(--text);
+}
+
+.projectRelationshipDetails[open] .projectRelationshipSummary {
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  border-bottom-color: transparent;
+}
+
+.projectRelationshipDetails[open] .projectRelationshipGrid {
+  border: 1px solid var(--border);
+  border-top: none;
+  border-radius: 0 0 var(--radius-sm) var(--radius-sm);
+  padding: 14px;
+}
+
 .projectRelationshipGrid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-  gap: 18px;
+  gap: 14px;
 }
 
 .projectRelationshipCard {
   display: grid;
-  gap: 16px;
-  padding: 20px 22px;
-  border-radius: 24px;
+  gap: 10px;
+  padding: 14px 16px;
+  border-radius: 16px;
   border: 1px solid var(--border);
   background: var(--panel);
-  box-shadow: var(--shadow-sm);
 }
 
 .projectRelationshipHead {
@@ -4454,7 +4801,7 @@ select {
   }
 
   .projectSummaryCard {
-    padding: 22px 20px;
+    padding: 16px 18px;
   }
 
   .summaryHeaderRow,
@@ -4814,6 +5161,189 @@ select {
   color: var(--muted);
   line-height: 1.45;
 }
+
+/* ── Commit Timeline ────────────────────────────────────── */
+
+.timelineRoot {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 4px 0 16px;
+}
+
+.timelinePreviewBanner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--button-update);
+  border: 1px solid var(--button-update-border);
+  margin-bottom: 16px;
+  font-size: 0.875rem;
+}
+
+.timelinePreviewBannerText {
+  flex: 1;
+  color: var(--text);
+}
+
+.timelineNodes {
+  display: flex;
+  flex-direction: column;
+}
+
+.timelineNode {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 0 12px;
+}
+
+.timelineConnectorCol {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.timelineConnectorLine {
+  width: 2px;
+  min-height: 8px;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.timelineConnectorLine--grow {
+  flex: 1;
+}
+
+.timelineDot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--muted);
+  border: 2px solid var(--panel);
+  flex-shrink: 0;
+  transition: background 120ms ease;
+}
+
+.timelineNode--previewing .timelineDot {
+  background: var(--info);
+}
+
+.timelineDot--dirty {
+  background: var(--error);
+}
+
+.timelineNodeBody {
+  padding: 2px 0 16px;
+  cursor: pointer;
+}
+
+.timelineNodeBody:hover .timelineNodeSummary {
+  color: var(--text);
+}
+
+.timelineNodeHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+}
+
+.timelineNodeSummary {
+  flex: 1;
+  font-size: 0.875rem;
+  color: var(--muted);
+  transition: color 100ms ease;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.timelineRevertedChip {
+  font-size: 0.75rem;
+  flex-shrink: 0;
+}
+
+.timelineExpandChevron {
+  font-size: 0.625rem;
+  color: var(--muted);
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+.timelineNode--previewing .timelineNodeBody {
+  outline: 2px solid color-mix(in srgb, var(--info) 40%, transparent);
+  border-radius: var(--radius-sm);
+  padding: 4px 8px 16px;
+}
+
+.timelineNodeExpanded {
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-soft);
+  border: 1px solid var(--border);
+  margin-top: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.timelinePromptText {
+  margin: 2px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.timelineNodeActions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+/* Dirty terminal node */
+.timelineNode--dirty .timelineNodeBody {
+  cursor: default;
+  padding: 8px 14px 8px;
+  border-radius: var(--radius-sm);
+  border: 1.5px solid var(--error);
+  background: var(--error-bg);
+}
+
+.timelineDirtyLabel {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--error);
+}
+
+.timelineDirtyStats {
+  font-size: 0.8125rem;
+  color: var(--error);
+  opacity: 0.8;
+}
+
+.timelineDirtyHint {
+  margin: 4px 0 0;
+  font-size: 0.8125rem;
+  color: var(--muted);
+}
+
+.timelineShowAllToggle {
+  margin: 0 0 8px 40px;
+  font-size: 0.8125rem;
+  color: var(--muted);
+  text-align: left;
+}
+
+.timelineGithubRow {
+  display: flex;
+  gap: 10px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+/* ── End Commit Timeline ─────────────────────────────────── */
 
 .outlineEmptyState {
   display: grid;

@@ -32,6 +32,7 @@ export interface AddProjectFormState {
 
 export type ProgramDetailsTab = "ideal" | "current" | "planned" | "history";
 export type ProjectSortMode = "lastOpened" | "lastUpdated" | "lastSaved";
+export type ProjectFilterMode = "all" | "root" | "starred";
 
 export type HomeTileDotState = "ready" | "launching" | "running" | "updating" | "runningUpdating" | "error";
 export type HomeAppUpdateButtonState = "prepare" | "install" | "issue" | null;
@@ -75,14 +76,24 @@ export const sortProjectsForDisplay = (
     lastViewed = {},
     sortMode = "lastOpened",
     rootOnly = false,
+    filterMode = "all",
+    starredIds = {},
   }: {
     lastViewed?: Record<string, string>;
     sortMode?: ProjectSortMode;
+    /** @deprecated use filterMode instead */
     rootOnly?: boolean;
+    filterMode?: ProjectFilterMode;
+    starredIds?: Record<string, boolean>;
   } = {},
 ): Project[] =>
   [...projects]
-    .filter((project) => !rootOnly || project.relationship.exactParentProjectId == null)
+    .filter((project) => {
+      const mode = rootOnly ? "root" : filterMode;
+      if (mode === "root") return project.relationship.exactParentProjectId == null;
+      if (mode === "starred") return Boolean(starredIds[project.id]);
+      return true;
+    })
     .sort((left, right) => {
       const primaryDelta =
         sortMode === "lastSaved"

@@ -1,6 +1,7 @@
 import { relative } from "node:path";
 import { dialog, ipcMain, shell } from "electron";
 import { isSubPath } from "@main/utils/fs";
+import { collectSystemHealth } from "@main/services/system-health-service";
 import type { ProgramsBackend } from "@main/backend";
 import type {
   ConfirmAutomationFailureRecoveryInput,
@@ -82,6 +83,10 @@ export const registerIpc = (backend: ProgramsBackend): void => {
   ipcMain.handle("projects.update", (_event, input: UpdateProjectInput) => backend.updateProject(input));
   ipcMain.handle("projects.unlink", (_event, projectId: string) => backend.unlinkProject(projectId));
   ipcMain.handle("projects.readHistory", (_event, projectId: string) => backend.readHistory(projectId));
+  ipcMain.handle("projects.previewCommit", (_event, projectId: string, commitSha: string) =>
+    backend.previewCommit(projectId, commitSha));
+  ipcMain.handle("projects.restoreFromPreview", (_event, projectId: string) =>
+    backend.restoreFromPreview(projectId));
   ipcMain.handle("projects.readOutlineReport", (_event, projectId: string) => backend.readOutlineReport(projectId));
   ipcMain.handle("projects.generateOutlineReport", (_event, input: GenerateProjectOutlineReportInput) =>
     backend.generateOutlineReport(input));
@@ -247,4 +252,5 @@ export const registerIpc = (backend: ProgramsBackend): void => {
   });
 
   ipcMain.handle("system.openExternal", (_event, target: string) => shell.openExternal(target));
+  ipcMain.handle("system.health", () => collectSystemHealth());
 };

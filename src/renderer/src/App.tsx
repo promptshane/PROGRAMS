@@ -36,6 +36,7 @@ import {
   type Settings,
   type SetupCheck,
   type SetupSnapshot,
+  type SystemHealthSnapshot,
   type Theme,
   type UpdateRecord,
   type UsageSnapshot,
@@ -58,6 +59,7 @@ import { SettingsModal } from "./components/settings-modal";
 import { UsageOverviewSheet } from "./components/usage-panel";
 import { ProgramDetailsModal, StoredDataModal, ConnectionsModal, RuntimeModal } from "./components/program-details-modal";
 import { AgentsPage } from "./components/agents-page";
+import { SystemHealthButton, SystemHealthModal } from "./components/system-health-panel";
 import { AgentProjectDetailsModal } from "./components/agent-project-details-modal";
 import { RunCommandModal } from "./components/run-command-modal";
 import {
@@ -75,6 +77,7 @@ import {
   type AddProjectFormState,
   type ComposerOptions,
   type HomeAppUpdateButtonState,
+  type ProjectFilterMode,
   type ProjectSortMode,
   createEmptyForm,
   createProjectColorSwatchStyle,
@@ -131,7 +134,10 @@ function App() {
   const [launchingProjects, setLaunchingProjects] = useState<Record<string, boolean>>({});
   const [currentPage, setCurrentPage] = useState<AppPage>("projects");
   const [projectCategories, setProjectCategories] = useState<Record<string, ProjectCategory>>({});
-  const [automationPriorityProjectIds, setAutomationPriorityProjectIds] = useState<Record<string, boolean>>({});
+  const [automationPriorityProjectIds, setAutomationPriorityProjectIds] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem("starredProjectIds") ?? "{}") as Record<string, boolean>; }
+    catch { return {}; }
+  });
   const [showSidebar, setShowSidebar] = useState(false);
   const [sidebarProjectsOpen, setSidebarProjectsOpen] = useState(false);
   const [sidebarAgentsOpen, setSidebarAgentsOpen] = useState(false);
@@ -148,7 +154,14 @@ function App() {
       ? storedValue
       : "lastOpened";
   });
-  const [rootProjectsOnly, setRootProjectsOnly] = useState<boolean>(() => localStorage.getItem("rootProjectsOnly") === "true");
+  const [projectFilterMode, setProjectFilterMode] = useState<ProjectFilterMode>(() => {
+    const stored = localStorage.getItem("projectFilterMode");
+    return (stored === "root" || stored === "starred") ? stored : "all";
+  });
+  const [systemHealth, setSystemHealth] = useState<SystemHealthSnapshot | null>(null);
+  const [healthHistory, setHealthHistory] = useState<SystemHealthSnapshot[]>([]);
+  const [showHealthSheet, setShowHealthSheet] = useState(false);
+  const [fastHealthPoll, setFastHealthPoll] = useState(false);
   const [showUpdatePanel, setShowUpdatePanel] = useState(true);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [composerValue, setComposerValue] = useState("");
@@ -178,6 +191,8 @@ function App() {
   const [githubDownloadState, setGithubDownloadState] = useState<null | "downloading" | "downloaded" | "up-to-date" | "error">(null);
   const [githubDownloadError, setGithubDownloadError] = useState<string | null>(null);
   const [selectedProjectDiffStats, setSelectedProjectDiffStats] = useState<DiffStats | null>(null);
+  const [previewingCommitSha, setPreviewingCommitSha] = useState<string | null>(null);
+  const [previewProjectId, setPreviewProjectId] = useState<string | null>(null);
   const [claudeAuthCodePrompt, setClaudeAuthCodePrompt] = useState<string | null>(null);
   const [claudeAuthCodeInput, setClaudeAuthCodeInput] = useState("");
   const [agentSession, setAgentSession] = useState<AgentSession | null>(null);
@@ -277,9 +292,10 @@ function App() {
     () => sortProjectsForDisplay(projects, {
       lastViewed: projectLastViewed,
       sortMode: projectSortMode,
-      rootOnly: rootProjectsOnly,
+      filterMode: projectFilterMode,
+      starredIds: automationPriorityProjectIds,
     }),
-    [projectLastViewed, projectSortMode, projects, rootProjectsOnly],
+    [automationPriorityProjectIds, projectLastViewed, projectSortMode, projectFilterMode, projects],
   );
 
 
@@ -596,6 +612,20 @@ function App() {
       setProjectOptionsProjectId(null);
     }
   }, [projectOptionsProjectId, projects]);
+
+  useEffect(() => {
+    if (!programsApi) return;
+    const intervalMs = fastHealthPoll ? 1000 : 5000;
+    const poll = () => {
+      void programsApi.getSystemHealth().then((snap) => {
+        setSystemHealth(snap);
+        setHealthHistory((h) => [...h.slice(-299), snap]);
+      });
+    };
+    poll();
+    const id = setInterval(poll, intervalMs);
+    return () => clearInterval(id);
+  }, [programsApi, fastHealthPoll]);
 
   useEffect(() => {
     if (!programsApi || !showUsageSheet) {
@@ -1197,11 +1227,6 @@ function App() {
     }
     const isSelectedProject = project.id === selectedProjectIdRef.current;
     try {
-      const safetyState = await confirmDirtyWorkIfNeeded(project.id, "Save to GitHub?", "Save to GitHub");
-      if (!safetyState) {
-        return;
-      }
-
       if (isSelectedProject) {
         setGithubSaveState("saving");
         setGithubSaveError(null);
@@ -1762,6 +1787,25 @@ function App() {
     });
   };
 
+  const handlePreviewCommit = async (update: UpdateRecord) => {
+    if (!selectedProject || !update.commitSha) return;
+    await withBusy(`preview-${update.id}`, async () => {
+      await window.programs.previewCommit(selectedProject.id, update.commitSha!);
+      setPreviewingCommitSha(update.commitSha);
+      setPreviewProjectId(selectedProject.id);
+    });
+  };
+
+  const handleRestoreFromPreview = async () => {
+    const projectId = previewProjectId ?? selectedProject?.id;
+    if (!projectId) return;
+    await withBusy(`preview-restore-${projectId}`, async () => {
+      await window.programs.restoreFromPreview(projectId);
+      setPreviewingCommitSha(null);
+      setPreviewProjectId(null);
+    });
+  };
+
   const handleRequestRestoreLastBackup = async (project: Project) => {
     await withBusy(`backup.check.${project.id}`, async () => {
       const backup = await window.programs.readLastProjectBackup(project.id);
@@ -1802,6 +1846,7 @@ function App() {
       } else {
         next[projectId] = true;
       }
+      localStorage.setItem("starredProjectIds", JSON.stringify(next));
       return next;
     });
   };
@@ -1887,66 +1932,38 @@ function App() {
     <section className="minimalHome">
       <div className="projectBrowseTopBar agentTopBar windowNoDrag">
         <div className="projectBrowseTopBarPrimary">
-          <span className="projectBrowseBadge">{rootProjectsOnly ? "Root Projects" : "All Projects"}</span>
+          <button
+            type="button"
+            className="projectBrowseBadge projectBrowseBadgeClickable"
+            onClick={() => {
+              const cycle: ProjectFilterMode[] = ["all", "root", "starred"];
+              const next = cycle[(cycle.indexOf(projectFilterMode) + 1) % cycle.length];
+              localStorage.setItem("projectFilterMode", next);
+              setProjectFilterMode(next);
+            }}
+          >
+            {projectFilterMode === "starred" ? "Starred" : projectFilterMode === "root" ? "Root Projects" : "All Projects"}
+          </button>
+          <button
+            type="button"
+            className="projectBrowseSortBadge projectBrowseBadgeClickable"
+            onClick={() => {
+              const modes: ProjectSortMode[] = ["lastOpened", "lastUpdated", "lastSaved"];
+              const next = modes[(modes.indexOf(projectSortMode) + 1) % modes.length];
+              localStorage.setItem("projectSortMode", next);
+              setProjectSortMode(next);
+            }}
+          >
+            {projectSortMode === "lastOpened" ? "Last opened" : projectSortMode === "lastUpdated" ? "Last updated" : "Last saved"}
+          </button>
           <span className="projectBrowseCount">
             {displayedProjects.length} / {projects.length}
           </span>
         </div>
         <div className="projectBrowseTopBarControls">
-          <div className="speedToggle projectBrowseToggle" role="group" aria-label="Sort projects">
-            <button
-              type="button"
-              className={projectSortMode === "lastOpened" ? "toggleOption projectBrowseOption active" : "toggleOption projectBrowseOption"}
-              onClick={() => {
-                localStorage.setItem("projectSortMode", "lastOpened");
-                setProjectSortMode("lastOpened");
-              }}
-            >
-              Last opened
-            </button>
-            <button
-              type="button"
-              className={projectSortMode === "lastUpdated" ? "toggleOption projectBrowseOption active" : "toggleOption projectBrowseOption"}
-              onClick={() => {
-                localStorage.setItem("projectSortMode", "lastUpdated");
-                setProjectSortMode("lastUpdated");
-              }}
-            >
-              Last updated
-            </button>
-            <button
-              type="button"
-              className={projectSortMode === "lastSaved" ? "toggleOption projectBrowseOption active" : "toggleOption projectBrowseOption"}
-              onClick={() => {
-                localStorage.setItem("projectSortMode", "lastSaved");
-                setProjectSortMode("lastSaved");
-              }}
-            >
-              Last saved
-            </button>
-          </div>
-          <div className="speedToggle projectBrowseToggle" role="group" aria-label="Project visibility">
-            <button
-              type="button"
-              className={rootProjectsOnly ? "toggleOption projectBrowseOption" : "toggleOption projectBrowseOption active"}
-              onClick={() => {
-                localStorage.setItem("rootProjectsOnly", "false");
-                setRootProjectsOnly(false);
-              }}
-            >
-              All Projects
-            </button>
-            <button
-              type="button"
-              className={rootProjectsOnly ? "toggleOption projectBrowseOption active" : "toggleOption projectBrowseOption"}
-              onClick={() => {
-                localStorage.setItem("rootProjectsOnly", "true");
-                setRootProjectsOnly(true);
-              }}
-            >
-              Root Projects
-            </button>
-          </div>
+          {systemHealth && (
+            <SystemHealthButton health={systemHealth} onClick={() => setShowHealthSheet(true)} />
+          )}
         </div>
       </div>
       <div className="chatViewportDivider pageChromeDivider" aria-hidden="true" />
@@ -2059,9 +2076,9 @@ function App() {
                 {githubSaveState === "saving"
                   ? "Saving..."
                   : githubSaveState === "saved"
-                    ? "Saved to GitHub"
+                    ? "Saved"
                     : githubSaveState === "up-to-date"
-                      ? "Already up to date"
+                      ? "Up to date"
                       : githubSaveState === "error"
                         ? "Save failed"
                         : "Save to GitHub"}
@@ -2087,10 +2104,19 @@ function App() {
                   : githubDownloadState === "downloaded"
                     ? "Downloaded"
                     : githubDownloadState === "up-to-date"
-                      ? "Already up to date"
+                      ? "Up to date"
                       : githubDownloadState === "error"
                         ? "Download failed"
-                        : "Download from GitHub"}
+                        : "Download"}
+              </button>
+              <button
+                type="button"
+                className="githubSaveButton"
+                onClick={() => void handleRequestRestoreLastBackup(selectedProject)}
+                disabled={isProjectRunning || busyKey === `backup.restore.${selectedProject.id}` || busyKey === `backup.check.${selectedProject.id}`}
+                title={isProjectRunning ? "Stop the project before restoring a backup." : "View and restore PROGRAMS backups for this project."}
+              >
+                {busyKey === `backup.check.${selectedProject.id}` ? "Checking..." : "Backups"}
               </button>
             </div>
             {githubSaveState === "error" && githubSaveError ? (
@@ -2107,84 +2133,78 @@ function App() {
               {formatGithubRepoStatus(selectedProject?.githubConnection ?? null)}
             </span>
           </div>
-          <div className="summarySafetyRow">
-            <button
-              type="button"
-              className="secondaryButton smallButton"
-              onClick={() => void handleRequestRestoreLastBackup(selectedProject)}
-              disabled={isProjectRunning || busyKey === `backup.restore.${selectedProject.id}` || busyKey === `backup.check.${selectedProject.id}`}
-              title={isProjectRunning ? "Stop the project before restoring a backup." : "Restore this project from its latest PROGRAMS backup."}
-            >
-              {busyKey === `backup.check.${selectedProject.id}` ? "Checking Backup..." : "Restore Last Backup"}
-            </button>
-            {isProjectRunning ? <span className="helperText">Stop the project before restoring.</span> : null}
-          </div>
         </div>
         {selectedProjectExactChildren.length > 0 || selectedProjectMaybeRelated.length > 0 ? (
-          <div className="projectRelationshipGrid">
-            {selectedProjectExactChildren.length > 0 ? (
-              <section className="projectRelationshipCard">
-                <div className="projectRelationshipHead">
-                  <div>
-                    <div className="sectionTag">Sub-components</div>
-                    <h3>Nested projects inside this root</h3>
+          <details className="projectRelationshipDetails">
+            <summary className="projectRelationshipSummary">
+              <span>Sub-components & related</span>
+              <span className="projectRelationshipCount">
+                {selectedProjectExactChildren.length + selectedProjectMaybeRelated.length}
+              </span>
+            </summary>
+            <div className="projectRelationshipGrid">
+              {selectedProjectExactChildren.length > 0 ? (
+                <section className="projectRelationshipCard">
+                  <div className="projectRelationshipHead">
+                    <div>
+                      <div className="sectionTag">Sub-components</div>
+                    </div>
+                    <span className="projectRelationshipCount">{selectedProjectExactChildren.length}</span>
                   </div>
-                  <span className="projectRelationshipCount">{selectedProjectExactChildren.length}</span>
-                </div>
-                <div className="projectRelationshipList">
-                  {selectedProjectExactChildren.map((project) => (
-                    <button
-                      key={project.id}
-                      type="button"
-                      className="projectRelationshipItem"
-                      onClick={() => selectProject(project.id)}
-                    >
-                      <span
-                        className="projectRelationshipSwatch"
-                        style={createProjectColorSwatchStyle(project.iconColor)}
-                        aria-hidden="true"
-                      />
-                      <span className="projectRelationshipCopy">
-                        <strong>{project.name}</strong>
-                        <span>Sub-component</span>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </section>
-            ) : null}
-            {selectedProjectMaybeRelated.length > 0 ? (
-              <section className="projectRelationshipCard">
-                <div className="projectRelationshipHead">
-                  <div>
-                    <div className="sectionTag">Maybe Related</div>
-                    <h3>Projects with overlapping code</h3>
+                  <div className="projectRelationshipList">
+                    {selectedProjectExactChildren.map((project) => (
+                      <button
+                        key={project.id}
+                        type="button"
+                        className="projectRelationshipItem"
+                        onClick={() => selectProject(project.id)}
+                      >
+                        <span
+                          className="projectRelationshipSwatch"
+                          style={createProjectColorSwatchStyle(project.iconColor)}
+                          aria-hidden="true"
+                        />
+                        <span className="projectRelationshipCopy">
+                          <strong>{project.name}</strong>
+                          <span>Sub-component</span>
+                        </span>
+                      </button>
+                    ))}
                   </div>
-                  <span className="projectRelationshipCount">{selectedProjectMaybeRelated.length}</span>
-                </div>
-                <div className="projectRelationshipList">
-                  {selectedProjectMaybeRelated.map(({ overlapRatio, project }) => (
-                    <button
-                      key={project.id}
-                      type="button"
-                      className="projectRelationshipItem"
-                      onClick={() => selectProject(project.id)}
-                    >
-                      <span
-                        className="projectRelationshipSwatch"
-                        style={createProjectColorSwatchStyle(project.iconColor)}
-                        aria-hidden="true"
-                      />
-                      <span className="projectRelationshipCopy">
-                        <strong>{project.name}</strong>
-                        <span>{Math.round(overlapRatio * 100)}% overlap</span>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </section>
-            ) : null}
-          </div>
+                </section>
+              ) : null}
+              {selectedProjectMaybeRelated.length > 0 ? (
+                <section className="projectRelationshipCard">
+                  <div className="projectRelationshipHead">
+                    <div>
+                      <div className="sectionTag">Maybe Related</div>
+                    </div>
+                    <span className="projectRelationshipCount">{selectedProjectMaybeRelated.length}</span>
+                  </div>
+                  <div className="projectRelationshipList">
+                    {selectedProjectMaybeRelated.map(({ overlapRatio, project }) => (
+                      <button
+                        key={project.id}
+                        type="button"
+                        className="projectRelationshipItem"
+                        onClick={() => selectProject(project.id)}
+                      >
+                        <span
+                          className="projectRelationshipSwatch"
+                          style={createProjectColorSwatchStyle(project.iconColor)}
+                          aria-hidden="true"
+                        />
+                        <span className="projectRelationshipCopy">
+                          <strong>{project.name}</strong>
+                          <span>{Math.round(overlapRatio * 100)}% overlap</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+            </div>
+          </details>
         ) : null}
       </div>
     </section>
@@ -2607,6 +2627,18 @@ function App() {
         />
       ) : null}
 
+      {showHealthSheet && systemHealth ? (
+        <SystemHealthModal
+          health={systemHealth}
+          history={healthHistory}
+          onFastPollChange={setFastHealthPoll}
+          onClose={() => {
+            setShowHealthSheet(false);
+            setFastHealthPoll(false);
+          }}
+        />
+      ) : null}
+
       {programDetailsProjectId && programDetailsProject ? (
         <ProgramDetailsModal
           project={programDetailsProject}
@@ -2614,8 +2646,16 @@ function App() {
           agentSession={programAgentSession}
           auth={auth}
           busyKey={busyKey}
-          onClose={() => setProgramDetailsProjectId(null)}
+          previewingCommitSha={previewProjectId === programDetailsProjectId ? previewingCommitSha : null}
+          onClose={() => {
+            if (previewProjectId === programDetailsProjectId && previewingCommitSha) {
+              void handleRestoreFromPreview();
+            }
+            setProgramDetailsProjectId(null);
+          }}
           onUndo={(update) => void handleUndoUpdate(update)}
+          onPreviewCommit={(update) => void handlePreviewCommit(update)}
+          onRestoreFromPreview={() => void handleRestoreFromPreview()}
           onConnectGithub={() => void handleConnectGithub()}
           onDisconnectGithub={() => void handleDisconnectGithub()}
           onPublishToGithub={(input) => void handlePublishToGithub(input)}

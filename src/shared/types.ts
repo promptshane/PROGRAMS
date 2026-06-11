@@ -217,6 +217,11 @@ export interface DownloadFromGithubResult {
   status: DownloadFromGithubStatus;
 }
 
+export interface CommitPreviewResult {
+  previewedSha: string;
+  headShaBeforePreview: string;
+}
+
 export interface ProjectBackupInfo {
   projectId: string;
   projectName: string;
@@ -1921,4 +1926,27 @@ export interface RequestAutomationFailureRecoveryInput {
 
 export interface ConfirmAutomationFailureRecoveryInput {
   projectId: string;
+}
+
+export interface SystemHealthProcess {
+  pid: number;
+  name: string;
+  displayName: string;
+  iconDataUrl?: string;
+  cpu: number;
+  mem: number;
+}
+
+export type SystemHealthSeverity = "Normal" | "Moderate" | "Heavy" | "Severe";
+
+export interface SystemHealthSnapshot {
+  cpuPercent: number | null;
+  memoryUsedPercent: number | null;
+  memoryPressureLevel: "normal" | "warning" | "critical" | null;
+  swapUsedMb: number | null;
+  swapTotalMb: number | null;
+  thermalState: "nominal" | "fair" | "serious" | "critical";
+  topProcesses: SystemHealthProcess[];
+  severity: SystemHealthSeverity;
+  collectedAt: string;
 }

@@ -305,6 +305,49 @@ ${result.stderr}`.toLowerCase();
     return shaResult.stdout.trim();
   }
 
+  async previewCommit(localPath: string, commitSha: string): Promise<{ previewedSha: string; headShaBeforePreview: string }> {
+    const headResult = await execCommand("git rev-parse HEAD", localPath);
+    if (headResult.code !== 0) {
+      throw new Error("Could not read the current HEAD commit.");
+    }
+    const headSha = headResult.stdout.trim();
+
+    const stashResult = await execCommand(
+      `git stash push --include-untracked -m "programs-preview-stash"`,
+      localPath,
+    );
+    if (stashResult.code !== 0) {
+      throw new Error(stashResult.stderr || "Could not stash current changes before preview.");
+    }
+
+    const checkoutResult = await execCommand(`git checkout ${commitSha} -- .`, localPath);
+    if (checkoutResult.code !== 0) {
+      await execCommand("git stash pop", localPath).catch(() => undefined);
+      throw new Error(checkoutResult.stderr || "Could not apply the old version to the working tree.");
+    }
+
+    return { previewedSha: commitSha, headShaBeforePreview: headSha };
+  }
+
+  async restoreFromPreview(localPath: string): Promise<void> {
+    const checkoutResult = await execCommand("git checkout HEAD -- .", localPath);
+    if (checkoutResult.code !== 0) {
+      throw new Error(checkoutResult.stderr || "Could not restore files to current HEAD.");
+    }
+
+    const stashListResult = await execCommand("git stash list", localPath);
+    const hasStash =
+      stashListResult.code === 0 &&
+      stashListResult.stdout.includes("programs-preview-stash");
+
+    if (hasStash) {
+      const popResult = await execCommand("git stash pop", localPath);
+      if (popResult.code !== 0) {
+        throw new Error(popResult.stderr || "Could not restore stashed changes.");
+      }
+    }
+  }
+
   async ensureRepository(localPath: string, defaultBranch = "main"): Promise<void> {
     if (!(await pathExists(join(localPath, ".git")))) {
       await this.initializeRepository(localPath, defaultBranch);

@@ -272,6 +272,7 @@ import type {
   DownloadFromGithubResult,
   SaveToGithubResult,
   RestoreProjectBackupResult,
+  CommitPreviewResult,
 } from "@shared/types";
 
 type Emit = (event: AppEvent) => void;
@@ -5656,6 +5657,18 @@ export class ProgramsBackend {
   async readHistory(projectId: string): Promise<UpdateRecord[]> {
     await this.ensureInitialized();
     return this.store.readHistory(projectId);
+  }
+
+  async previewCommit(projectId: string, commitSha: string): Promise<CommitPreviewResult> {
+    await this.ensureInitialized();
+    const project = await this.requireProject(projectId);
+    return this.git.previewCommit(project.localPath, commitSha);
+  }
+
+  async restoreFromPreview(projectId: string): Promise<void> {
+    await this.ensureInitialized();
+    const project = await this.requireProject(projectId);
+    await this.git.restoreFromPreview(project.localPath);
   }
 
   async readOutlineReport(projectId: string): Promise<ProjectOutlineReport | null> {

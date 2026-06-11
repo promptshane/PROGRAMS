@@ -20,6 +20,7 @@ import { Modal, StatusChip } from "./ui-primitives";
 import { CoreDetailsContent } from "./core-details";
 import { ArrowDownIcon, GithubIcon } from "./icons";
 import { formatDate, labelForRuntimeSource } from "../lib/formatting";
+import { ProjectTimeline } from "./project-timeline";
 
 type ProgramDetailsTab = "ideal" | "current" | "planned" | "history" | "github";
 
@@ -29,8 +30,11 @@ export function ProgramDetailsModal({
   agentSession,
   auth,
   busyKey,
+  previewingCommitSha,
   onClose,
   onUndo,
+  onPreviewCommit,
+  onRestoreFromPreview,
   onConnectGithub,
   onDisconnectGithub,
   onPublishToGithub,
@@ -42,8 +46,11 @@ export function ProgramDetailsModal({
   agentSession: AgentSession | null;
   auth: AuthSnapshot;
   busyKey: string | null;
+  previewingCommitSha: string | null;
   onClose: () => void;
   onUndo: (update: UpdateRecord) => void;
+  onPreviewCommit: (update: UpdateRecord) => void;
+  onRestoreFromPreview: () => void;
   onConnectGithub: () => void;
   onDisconnectGithub: () => void;
   onPublishToGithub: (input: { projectId: string; repoName: string; isPrivate: boolean }) => void;
@@ -82,14 +89,14 @@ export function ProgramDetailsModal({
     }
   }, [activeTab, hasHistory, hasPlanned]);
 
-  // When the GitHub tab opens, auto-detect remote and load diff stats
+  // When the GitHub or History tab opens, auto-detect remote and load diff stats
   useEffect(() => {
-    if (activeTab !== "github") {
+    if (activeTab !== "github" && activeTab !== "history") {
       return;
     }
 
-    // Auto-detect an existing GitHub remote if no connection is stored
-    if (!project.githubConnection) {
+    // Auto-detect an existing GitHub remote if no connection is stored (GitHub tab only)
+    if (activeTab === "github" && !project.githubConnection) {
       void window.programs.detectAndSyncGithubRemote(project.id).catch(() => undefined);
     }
 
@@ -203,27 +210,19 @@ export function ProgramDetailsModal({
 
       {activeTab === "history" ? (
         <div className="detailsPanel">
-          <div className="historyStack">
-            {savedUpdates.length === 0 ? (
-              <div className="placeholderPanel">
-                <h4>No updates yet</h4>
-                <p>Saved updates will show up here once PROGRAMS has applied changes to this project.</p>
-              </div>
-            ) : (
-              <div className="historyListDetailed">
-                {savedUpdates.map((update, index) => (
-                  <div key={update.id} className="historyDetailItem">
-                    <div className="historyDetailTopRow">
-                      <span className="historyVersionTag">v{index + 1}</span>
-                      <strong className="historyDetailSummary">{update.summary}</strong>
-                      <span className="helperText">{formatDate(update.createdAt)}</span>
-                    </div>
-                    <p className="historyDetailDescription">{update.prompt}</p>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
+          <ProjectTimeline
+            project={project}
+            updates={savedUpdates}
+            diffStats={githubDiffStats}
+            previewingCommitSha={previewingCommitSha}
+            busyKey={busyKey}
+            githubAuth={auth.github}
+            onPreviewCommit={onPreviewCommit}
+            onRestoreFromPreview={onRestoreFromPreview}
+            onUndo={onUndo}
+            onSaveToGithub={onSaveToGithub}
+            onDownloadFromGithub={onDownloadFromGithub}
+          />
         </div>
       ) : null}
 

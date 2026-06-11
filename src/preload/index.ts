@@ -64,6 +64,8 @@ import type {
   ProjectBackupInfo,
   ProjectSafetyState,
   RestoreProjectBackupResult,
+  CommitPreviewResult,
+  SystemHealthSnapshot,
 } from "@shared/types";
 
 const api = {
@@ -122,6 +124,10 @@ const api = {
   updateProject: (input: UpdateProjectInput) => ipcRenderer.invoke("projects.update", input),
   unlinkProject: (projectId: string) => ipcRenderer.invoke("projects.unlink", projectId),
   readHistory: (projectId: string) => ipcRenderer.invoke("projects.readHistory", projectId),
+  previewCommit: (projectId: string, commitSha: string): Promise<CommitPreviewResult> =>
+    ipcRenderer.invoke("projects.previewCommit", projectId, commitSha),
+  restoreFromPreview: (projectId: string): Promise<void> =>
+    ipcRenderer.invoke("projects.restoreFromPreview", projectId),
   readOutlineReport: (projectId: string): Promise<ProjectOutlineReport | null> =>
     ipcRenderer.invoke("projects.readOutlineReport", projectId),
   generateOutlineReport: (input: GenerateProjectOutlineReportInput): Promise<ProjectOutlineReport | null> =>
@@ -236,6 +242,7 @@ const api = {
   resolveDroppedContextPaths: (input: ResolveDroppedContextPathsInput): Promise<DroppedContextPathResult> =>
     ipcRenderer.invoke("system.resolveDroppedContextPaths", input),
   openExternal: (target: string): Promise<void> => ipcRenderer.invoke("system.openExternal", target),
+  getSystemHealth: (): Promise<SystemHealthSnapshot> => ipcRenderer.invoke("system.health"),
 
   onEvent: (listener: (event: AppEvent) => void) => {
     const wrapped = (_event: Electron.IpcRendererEvent, payload: AppEvent) => listener(payload);

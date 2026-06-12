@@ -4226,6 +4226,10 @@ select {
   border-radius: 50%;
   flex-shrink: 0;
 }
+.sysHealthDot--diamond {
+  border-radius: 1px;
+  transform: rotate(45deg);
+}
 .sysHealthDot--green  { background: var(--sysHealth-green); }
 .sysHealthDot--yellow { background: var(--sysHealth-yellow); }
 .sysHealthDot--orange { background: var(--sysHealth-orange); }

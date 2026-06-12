@@ -145,6 +145,5 @@ export function UsageTriggerButton({
         ),
       ]),
     ),
-    createElement("span", { className: "sysHealthTriggerLabel" }, "Usage"),
   );
 }

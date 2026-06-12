@@ -204,10 +204,13 @@ export function SystemHealthButton({
       <span className="sysHealthTriggerDots">
         {dots.map((color, i) => (
           // eslint-disable-next-line react/no-array-index-key
-          <span key={i} className={`sysHealthDot ${DOT_COLOR_CLASS[color]}`} aria-hidden="true" />
+          <span
+            key={i}
+            className={`sysHealthDot sysHealthDot--diamond ${DOT_COLOR_CLASS[color]}`}
+            aria-hidden="true"
+          />
         ))}
       </span>
-      <span className="sysHealthTriggerLabel">System</span>
     </button>
   );
 }

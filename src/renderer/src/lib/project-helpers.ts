@@ -34,7 +34,7 @@ export type ProgramDetailsTab = "ideal" | "current" | "planned" | "history";
 export type ProjectSortMode = "lastOpened" | "lastUpdated" | "lastSaved";
 export type ProjectFilterMode = "all" | "root" | "starred";
 
-export type HomeTileDotState = "ready" | "launching" | "running" | "updating" | "runningUpdating" | "error";
+export type HomeTileDotState = "ready" | "launching" | "running" | "error";
 export type HomeAppUpdateButtonState = "prepare" | "install" | "issue" | null;
 
 export interface AutoInstallAppUpdateDecisionInput {
@@ -165,6 +165,9 @@ export const createAgentLandingTileStyle = (iconColor: string, muted = false): C
 
 export const isProjectUpdating = (status: Project["status"]): boolean => status === "executing";
 
+// The runtime status dot reflects *only* whether the program is running — green
+// when running, black when idle. Errors stay red and launching keeps its pulse;
+// being updated/coded no longer affects this dot.
 export const getHomeTileDotState = (
   project: Project,
   runtime: RuntimeState | null,
@@ -172,22 +175,15 @@ export const getHomeTileDotState = (
 ): HomeTileDotState => {
   const hasError = project.status === "error" || Boolean(project.lastError);
   const isRunning = Boolean(runtime?.running);
-  const isUpdating = isProjectUpdating(project.status);
 
   if (isLaunching) {
     return "launching";
-  }
-  if (isRunning && isUpdating) {
-    return "runningUpdating";
   }
   if (isRunning) {
     return "running";
   }
   if (hasError) {
     return "error";
-  }
-  if (isUpdating) {
-    return "updating";
   }
   return "ready";
 };

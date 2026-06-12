@@ -11,8 +11,8 @@ export interface CodexModelCatalogItem {
   hidden?: boolean;
 }
 
-const CURATED_CODEX_MODEL_IDS = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"] as const;
-const MAX_CURATED_MODELS = 3;
+const CURATED_CODEX_MODEL_IDS = ["gpt-5.5", "gpt-5.5-mini"] as const;
+const MAX_CURATED_MODELS = 2;
 
 const parseModelVersion = (value: string): number[] => {
   const match = value.match(/^gpt-(\d+)(?:\.(\d+))?/i);

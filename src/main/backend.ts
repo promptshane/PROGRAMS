@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { access, cp, mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, relative, sep } from "node:path";
 import { app, shell } from "electron";
@@ -211,6 +211,7 @@ import type {
   Settings,
   SettingsUpdateInput,
   SetupCheck,
+  ProjectChatInput,
   SetupSnapshot,
   StartPingDirectUpdateInput,
   StartPlanInput,
@@ -11720,6 +11721,87 @@ Respond with ONLY the command string — no explanation, no markdown, no quotes.
     if (claudePlan) await this.claude.interruptPlan(projectId);
     const project = await this.requireProject(projectId);
     await this.updateProjectStatus(project, "idle");
+    return { cancelled: true };
+  }
+
+  // Direct project-chat entry point (bypasses the director approval queue).
+  // "ask" → read-only text answer; "plan" → read-only planning that stops at a
+  // reviewable plan (no execution — that's a later increment). Streams the
+  // PlanDraft to the renderer via the existing "project.plan" event.
+  // Write base64 images to a per-project temp dir and return their paths. The
+  // dir is cleared first, so each send replaces the previous run's images
+  // (they persist across plan→execute but never accumulate).
+  private async persistChatImages(
+    projectId: string,
+    images?: ProjectChatInput["images"],
+  ): Promise<string[]> {
+    const dir = join(tmpdir(), "programs-images", projectId);
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    if (!images || images.length === 0) {
+      return [];
+    }
+    await mkdir(dir, { recursive: true });
+    const extFor = (mediaType: string): string =>
+      mediaType === "image/jpeg" ? "jpg"
+      : mediaType === "image/webp" ? "webp"
+      : mediaType === "image/gif" ? "gif"
+      : "png";
+    const paths: string[] = [];
+    for (let i = 0; i < images.length; i++) {
+      const path = join(dir, `image-${i}.${extFor(images[i].mediaType)}`);
+      await writeFile(path, Buffer.from(images[i].dataBase64, "base64"));
+      paths.push(path);
+    }
+    return paths;
+  }
+
+  async startProjectChat(input: ProjectChatInput): Promise<{ started: true }> {
+    await this.ensureInitialized();
+    const settings = await this.store.readSettings();
+    const project = await this.requireProject(input.projectId);
+    // Auth/preflight throws here so the renderer's await surfaces the error.
+    await this.requireProviderReady(input.provider, settings);
+    const service = this.aiService(input.provider);
+    // Persist any pasted/attached images to a per-project temp dir so the CLI
+    // can read them. Kept for the whole plan→execute lifecycle; replaced on the
+    // next send (see persistChatImages).
+    const imagePaths = await this.persistChatImages(input.projectId, input.images);
+    const planInput: StartPlanInput = {
+      projectId: input.projectId,
+      provider: input.provider,
+      prompt: input.prompt,
+      speed: settings.defaultSpeed,
+      model: input.model ?? settings.advancedDefaults.model,
+      claudeModel: input.claudeModel ?? settings.advancedDefaults.claudeModel,
+      reasoningEffort: input.reasoningEffort ?? settings.advancedDefaults.reasoningEffort,
+      planningMode: input.mode === "plan" ? "review" : "none",
+      autoApprove: false,
+      contextPaths: [],
+      webEnabled: input.webEnabled ?? false,
+      ultracode: input.ultracode ?? false,
+      imagePaths,
+    };
+
+    // Run in the background; progress streams via project.plan events. The
+    // service methods sync a failed draft on their own errors.
+    void (async () => {
+      try {
+        if (input.mode === "ask") {
+          await service.answerQuestion(project, settings, planInput);
+        } else {
+          await service.startPlanningTurn(project, settings, planInput);
+        }
+      } catch {
+        // Already surfaced via the draft's failed status.
+      }
+    })();
+
+    return { started: true };
+  }
+
+  async cancelProjectChat(projectId: string): Promise<{ cancelled: true }> {
+    if (this.codex.getActivePlan(projectId)) await this.codex.interruptPlan(projectId);
+    if (this.claude.getActivePlan(projectId)) await this.claude.interruptPlan(projectId);
     return { cancelled: true };
   }
 

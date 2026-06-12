@@ -5,20 +5,11 @@ export const resolveOneShotReasoningEffort = (
   override?: ReasoningEffort | null,
 ): ReasoningEffort => override ?? defaultEffort;
 
+// Claude Code honors the same effort vocabulary as the API (xhigh is its own
+// default for coding; max is the ceiling). Pass the level through unchanged.
 export const mapClaudeOneShotEffortLevel = (
   reasoningEffort: ReasoningEffort,
-): "low" | "medium" | "high" => {
-  switch (reasoningEffort) {
-    case "low":
-      return "low";
-    case "medium":
-      return "medium";
-    case "high":
-      return "high";
-    case "xhigh":
-      return "high";
-  }
-};
+): ReasoningEffort => reasoningEffort;
 
 export const buildClaudeOneShotSettingsArg = (reasoningEffort: ReasoningEffort): string =>
   JSON.stringify({

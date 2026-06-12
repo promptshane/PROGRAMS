@@ -162,6 +162,39 @@ export interface BuildClaudePrintArgsInput {
   permissionMode?: string | null;
 }
 
+// Curated dev allowlist for the execution phase: lets the agent run tests,
+// builds, and read-only git, but NOT arbitrary/destructive/remote commands
+// (no rm, no git push/pull/commit, no curl/wget/sudo). In headless --print mode
+// any tool call outside this set is denied rather than prompted, so the list is
+// the guard rail.
+export const CLAUDE_DEV_ALLOWED_TOOLS = [
+  "Edit", "Write", "Read", "Glob", "Grep",
+  "Bash(npm:*)", "Bash(npx:*)", "Bash(pnpm:*)", "Bash(yarn:*)", "Bash(bun:*)",
+  "Bash(node:*)", "Bash(tsc:*)", "Bash(make:*)", "Bash(cargo:*)", "Bash(go:*)",
+  "Bash(python:*)", "Bash(python3:*)", "Bash(pip:*)", "Bash(pip3:*)",
+  "Bash(pytest:*)", "Bash(jest:*)", "Bash(vitest:*)", "Bash(eslint:*)", "Bash(prettier:*)",
+  "Bash(ls:*)", "Bash(cat:*)", "Bash(rg:*)", "Bash(grep:*)", "Bash(find:*)", "Bash(echo:*)", "Bash(pwd:*)",
+  "Bash(mkdir:*)", "Bash(mv:*)", "Bash(cp:*)", "Bash(touch:*)",
+  "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)", "Bash(git show:*)",
+].join(",");
+
+// Assemble the execution allowlist with per-run additions: Task (parallel
+// subagents) for ultracode, WebSearch/WebFetch when web access is enabled.
+export const buildClaudeExecAllowedTools = ({
+  web,
+  ultracode,
+}: {
+  web: boolean;
+  ultracode: boolean;
+}): string => {
+  const extra: string[] = [];
+  // Subagent tool is "Task" historically / "Agent" in newer builds — allow both
+  // so ultracode works regardless of CLI version.
+  if (ultracode) extra.push("Task", "Agent");
+  if (web) extra.push("WebSearch", "WebFetch");
+  return extra.length ? `${CLAUDE_DEV_ALLOWED_TOOLS},${extra.join(",")}` : CLAUDE_DEV_ALLOWED_TOOLS;
+};
+
 export const buildClaudePrintArgs = ({
   prompt,
   model,

@@ -7,6 +7,8 @@ import {
   useRef,
   useState,
   type DragEvent as ReactDragEvent,
+  type ClipboardEvent as ReactClipboardEvent,
+  type ChangeEvent as ReactChangeEvent,
 } from "react";
 import { getVisibleAppPageOptions, resolveVisibleAppPage, type AppPage } from "@shared/app-shell";
 import {
@@ -17,8 +19,10 @@ import {
 import {
   type AgentSession,
   type AgentStage,
+  type AiProvider,
   type AppEvent,
   type AppUpdateStatus,
+  type ChatImage,
   type AttachPathInspection,
   type DirectorId,
   type AuthSnapshot,
@@ -28,6 +32,8 @@ import {
   type GenerateProjectOutlineReportInput,
   type ModelCatalog,
   type Project,
+  type ProjectChatMode,
+  type ReasoningEffort,
   type ProjectSafetyState,
   type ProjectCategory,
   type ProjectDetail,
@@ -52,15 +58,23 @@ import {
   ChevronDownIcon,
   GithubIcon,
   ArrowUpIcon,
+  HistoryIcon,
 } from "./components/icons";
 import { HomeProjectTile, HomepageComposer } from "./components/home-tiles";
 import { ProjectOptionsSheet } from "./components/project-options-sheet";
 import { SettingsModal } from "./components/settings-modal";
 import { UsageOverviewSheet } from "./components/usage-panel";
+import { UsageTriggerButton } from "./components/usage-trigger";
 import { ProgramDetailsModal, StoredDataModal, ConnectionsModal, RuntimeModal } from "./components/program-details-modal";
 import { AgentsPage } from "./components/agents-page";
 import { SystemHealthButton, SystemHealthModal } from "./components/system-health-panel";
 import { AgentProjectDetailsModal } from "./components/agent-project-details-modal";
+import {
+  PlanDrawer,
+  ResponseArea,
+  type AssistantTurn,
+  type ChatTurn,
+} from "./components/response-area";
 import { RunCommandModal } from "./components/run-command-modal";
 import {
   emptySettings,
@@ -72,7 +86,15 @@ import {
   emptyModelCatalog,
   SIDEBAR_AGENTS,
 } from "./lib/constants";
-import { formatDate, providerLabel } from "./lib/formatting";
+import { formatDate, providerLabel, labelForReasoningEffort } from "./lib/formatting";
+import { reasoningEffortsForModel, maxReasoningEffortForModel } from "@shared/reasoning-levels";
+import {
+  type ChatSession,
+  archiveActiveChat,
+  loadHistorySession,
+  loadProjectChatHistory,
+  saveActiveChat,
+} from "./lib/project-chat-store";
 import {
   type AddProjectFormState,
   type ComposerOptions,
@@ -103,6 +125,28 @@ type SafetyConfirmRequest = {
   danger?: boolean;
 };
 
+const USAGE_ACTIVE_REFRESH_INTERVAL_MS = 15_000;
+const USAGE_ACTIVE_REFRESH_STALE_MS = 55_000;
+const USAGE_BACKGROUND_REFRESH_INTERVAL_MS = 5 * 60_000;
+const USAGE_BACKGROUND_REFRESH_STALE_MS = 5 * 60_000;
+
+// Project-chat model picker: provider-appropriate aliases + display labels. The
+// alias is what the backend expects (CodexModel / ClaudeModel).
+const PROJECT_CHAT_MODEL_OPTIONS: Record<AiProvider, { value: string; label: string }[]> = {
+  codex: [
+    { value: "gpt-5.5", label: "GPT-5.5" },
+    { value: "gpt-5.5-mini", label: "GPT-5.5 Mini" },
+  ],
+  claude: [
+    { value: "fable", label: "Fable 5" },
+    { value: "opus", label: "Opus 4.8" },
+    { value: "sonnet", label: "Sonnet 4.6" },
+  ],
+};
+
+const projectChatModelLabel = (provider: AiProvider, alias: string): string =>
+  PROJECT_CHAT_MODEL_OPTIONS[provider].find((o) => o.value === alias)?.label ?? alias;
+
 function App() {
   const programsApi = "programs" in window ? window.programs : undefined;
   const [settings, setSettings] = useState<Settings>(emptySettings);
@@ -113,6 +157,13 @@ function App() {
   const [usage, setUsage] = useState<UsageSnapshot>(emptyUsage);
   const usageRef = useRef(usage);
   usageRef.current = usage;
+  const usageAuthSignature = [
+    auth.codex.loggedIn ? `codex:${auth.codex.email ?? auth.codex.version ?? "connected"}` : "codex:logged-out",
+    auth.claude.loggedIn
+      ? `claude:${auth.claude.email ?? auth.claude.displayName ?? auth.claude.version ?? "connected"}`
+      : "claude:logged-out",
+  ].join("|");
+  const usageAuthSignatureRef = useRef<string | null>(null);
   const [appUpdate, setAppUpdate] = useState<AppUpdateStatus>(emptyAppUpdateStatus);
   const autoInstallAppUpdateAttemptedKeysRef = useRef<Set<string>>(new Set());
   const autoInstallAppUpdateInFlightRef = useRef(false);
@@ -184,17 +235,30 @@ function App() {
   const [selectedProjectDiffStats, setSelectedProjectDiffStats] = useState<DiffStats | null>(null);
 
   // Project-page embedded chat UI
-  const [projectChatMessages, setProjectChatMessages] = useState<
-    { id: string; role: 'user' | 'assistant'; content: string; createdAt: Date }[]
-  >([]);
+  const [projectChatTurns, setProjectChatTurns] = useState<ChatTurn[]>([]);
   const [projectChatInput, setProjectChatInput] = useState('');
   const [projectChatLoading, setProjectChatLoading] = useState(false);
   const [projectChatMode, setProjectChatMode] = useState<'plan' | 'ask' | 'auto'>('ask');
   const [projectChatModeOpen, setProjectChatModeOpen] = useState(false);
-  const [projectChatModel, setProjectChatModel] = useState('claude-sonnet-4-6');
-  const [projectChatReasoning, setProjectChatReasoning] = useState('normal');
+  // Project-chat model is the provider-appropriate alias (codex: gpt-5.5/-mini;
+  // claude: fable/opus/sonnet). Reasoning defaults to the selected model's max.
+  const [projectChatModel, setProjectChatModel] = useState<string>('gpt-5.5');
+  const [projectChatReasoning, setProjectChatReasoning] = useState<ReasoningEffort>('xhigh');
+  // Per-run coding-power toggles + attached images for the next message.
+  const [projectChatWeb, setProjectChatWeb] = useState(false);
+  const [projectChatUltracode, setProjectChatUltracode] = useState(false);
+  const [projectChatImages, setProjectChatImages] = useState<ChatImage[]>([]);
+  const projectChatImageInputRef = useRef<HTMLInputElement | null>(null);
+  const [projectChatHistory, setProjectChatHistory] = useState<ChatSession[]>([]);
+  const [showChatHistory, setShowChatHistory] = useState(false);
+  const [planDrawerTurnId, setPlanDrawerTurnId] = useState<string | null>(null);
   const projectChatScrollRef = useRef<HTMLDivElement>(null);
   const projectChatModeRef = useRef<HTMLDivElement>(null);
+  const projectChatHistoryRef = useRef<HTMLDivElement>(null);
+  // Tracks which assistant turn an in-flight real run is streaming into.
+  const chatRunningTurnRef = useRef<{ projectId: string; turnId: string; mode: ProjectChatMode | "auto" } | null>(null);
+  // Turn ids we've already auto-approved (Auto mode) so we only execute once.
+  const autoApprovedRef = useRef<Set<string>>(new Set());
 
   const [previewingCommitSha, setPreviewingCommitSha] = useState<string | null>(null);
   const [previewProjectId, setPreviewProjectId] = useState<string | null>(null);
@@ -218,6 +282,7 @@ function App() {
   const [isUpdateDropTarget, setIsUpdateDropTarget] = useState(false);
   const updateSectionRef = useRef<HTMLDivElement | null>(null);
   const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const projectChatInputRef = useRef<HTMLTextAreaElement | null>(null);
   const safetyConfirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
   const updateDropDepthRef = useRef(0);
   const shownErrorProjectIds = useRef<Set<string>>(new Set());
@@ -306,10 +371,27 @@ function App() {
 
   const syncProjectSelection = useCallback((projectId: string | null) => {
     const requestId = ++projectSelectionRequestIdRef.current;
+    const previousProjectId = selectedProjectIdRef.current;
     selectedProjectIdRef.current = projectId;
     agentSelectedProjectIdRef.current = projectId;
 
+    // Stop any in-flight chat run and close transient chat UI.
+    if (chatRunningTurnRef.current) {
+      void window.programs.cancelProjectChat(chatRunningTurnRef.current.projectId).catch(() => undefined);
+      chatRunningTurnRef.current = null;
+    }
+    setProjectChatLoading(false);
+    setPlanDrawerTurnId(null);
+
+    // Archive the chat from the project we're leaving so it lands in history.
+    if (previousProjectId) {
+      archiveActiveChat(previousProjectId);
+    }
+    setShowChatHistory(false);
+
     if (!projectId) {
+      setProjectChatTurns([]);
+      setProjectChatHistory([]);
       setSelectedProjectId(null);
       setAgentSelectedProjectId(null);
       setAgentSession(null);
@@ -318,6 +400,12 @@ function App() {
       setRequestedDirectorProfileId(null);
       return;
     }
+
+    // Fresh chat per project: sweep any leftover active chat into history, then
+    // start empty so prior messages are never shown on open.
+    archiveActiveChat(projectId);
+    setProjectChatHistory(loadProjectChatHistory(projectId));
+    setProjectChatTurns([]);
 
     const now = new Date().toISOString();
     setProjectLastViewed((prev) => {
@@ -353,6 +441,21 @@ function App() {
         setProgramAgentSession(null);
       }
     })();
+  }, []);
+
+  // Keep the persisted "active" chat in sync (covers the delayed mock reply too),
+  // so an in-progress conversation survives a crash/restart and archives cleanly.
+  useEffect(() => {
+    if (!selectedProjectId) return;
+    saveActiveChat(selectedProjectId, projectChatTurns);
+  }, [selectedProjectId, projectChatTurns]);
+
+  // Cancel any in-flight chat run when the component unmounts.
+  useEffect(() => () => {
+    if (chatRunningTurnRef.current) {
+      void window.programs.cancelProjectChat(chatRunningTurnRef.current.projectId).catch(() => undefined);
+      chatRunningTurnRef.current = null;
+    }
   }, []);
 
   const requestProjectRelationshipRefresh = useCallback(
@@ -605,6 +708,54 @@ function App() {
     syncComposerTextareaHeight(composerInputRef.current);
   }, [composerValue, showUpdatePanel, selectedProjectId]);
 
+  // Grow the project-chat composer as the user types (and collapse after send).
+  useLayoutEffect(() => {
+    syncComposerTextareaHeight(projectChatInputRef.current, { maxHeight: 140 });
+  }, [projectChatInput]);
+
+  // Reset the chat model + thinking level to the provider's default (max for the
+  // model) whenever the underlying advanced defaults change.
+  useEffect(() => {
+    const provider = settings.advancedDefaults.provider;
+    const model = provider === "codex" ? settings.advancedDefaults.model : settings.advancedDefaults.claudeModel;
+    setProjectChatModel(model);
+    setProjectChatReasoning(maxReasoningEffortForModel(provider, provider === "claude" ? model : ""));
+  }, [settings.advancedDefaults.provider, settings.advancedDefaults.model, settings.advancedDefaults.claudeModel]);
+
+  // User picks a model in the chat: snap thinking to that model's max.
+  const handleProjectChatModelChange = useCallback((alias: string) => {
+    const provider = settings.advancedDefaults.provider;
+    setProjectChatModel(alias);
+    setProjectChatReasoning(maxReasoningEffortForModel(provider, provider === "claude" ? alias : ""));
+  }, [settings.advancedDefaults.provider]);
+
+  // Read attached/pasted image files into base64 (capped) for the next message.
+  const addProjectChatImageFiles = useCallback((files: ArrayLike<File>) => {
+    const images = Array.from(files).filter((file) => file.type.startsWith("image/"));
+    for (const file of images) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = typeof reader.result === "string" ? reader.result : "";
+        const comma = result.indexOf(",");
+        if (comma === -1) return;
+        const dataBase64 = result.slice(comma + 1);
+        setProjectChatImages((prev) => (prev.length >= 6 ? prev : [...prev, { dataBase64, mediaType: file.type }]));
+      };
+      reader.readAsDataURL(file);
+    }
+  }, []);
+
+  const handleProjectChatPaste = useCallback((event: ReactClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(event.clipboardData.items)
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file != null);
+    if (files.length > 0) {
+      event.preventDefault();
+      addProjectChatImageFiles(files);
+    }
+  }, [addProjectChatImageFiles]);
+
   useEffect(() => {
     if (activePage !== currentPage) {
       setCurrentPage(activePage);
@@ -627,7 +778,11 @@ function App() {
 
   useEffect(() => {
     if (!programsApi) return;
-    const intervalMs = fastHealthPoll ? 1000 : 5000;
+    // Only poll aggressively while the health sheet is open. When it's closed the
+    // always-visible status button just needs a coarse refresh, so back off to
+    // 30s. (Each poll spawns several system processes; tight intervals were a
+    // major source of load.)
+    const intervalMs = showHealthSheet ? (fastHealthPoll ? 1000 : 5000) : 30000;
     const poll = () => {
       void programsApi.getSystemHealth().then((snap) => {
         setSystemHealth(snap);
@@ -637,7 +792,7 @@ function App() {
     poll();
     const id = setInterval(poll, intervalMs);
     return () => clearInterval(id);
-  }, [programsApi, fastHealthPoll]);
+  }, [programsApi, fastHealthPoll, showHealthSheet]);
 
   useEffect(() => {
     if (!programsApi || !showUsageSheet) {
@@ -658,19 +813,53 @@ function App() {
   ]);
 
   useEffect(() => {
-    if (!programsApi || !showUsageSheet) return;
+    if (!programsApi || !showUsageSheet) {
+      return;
+    }
+
     const id = setInterval(() => {
       const updated = usageRef.current.updatedAt ? new Date(usageRef.current.updatedAt) : null;
-      if (!updated || Date.now() - updated.getTime() >= 55_000) {
-        void refreshUsage();
+      if (!updated || Date.now() - updated.getTime() >= USAGE_ACTIVE_REFRESH_STALE_MS) {
+        void refreshUsage().catch(() => undefined);
       }
-    }, 15_000);
+    }, USAGE_ACTIVE_REFRESH_INTERVAL_MS);
+
     return () => clearInterval(id);
   }, [programsApi, showUsageSheet]);
 
   useEffect(() => {
+    if (!programsApi || showUsageSheet) {
+      return;
+    }
+
+    const hasLoggedInUsageProvider = auth.codex.loggedIn || auth.claude.loggedIn;
+    if (!hasLoggedInUsageProvider) {
+      usageAuthSignatureRef.current = usageAuthSignature;
+      return;
+    }
+
+    const authChanged = usageAuthSignatureRef.current !== usageAuthSignature;
+    usageAuthSignatureRef.current = usageAuthSignature;
+
+    const refreshIfStale = () => {
+      const updated = usageRef.current.updatedAt ? new Date(usageRef.current.updatedAt) : null;
+      if (!updated || Date.now() - updated.getTime() >= USAGE_BACKGROUND_REFRESH_STALE_MS) {
+        void refreshUsage().catch(() => undefined);
+      }
+    };
+
+    if (authChanged) {
+      void refreshUsage().catch(() => undefined);
+    } else {
+      refreshIfStale();
+    }
+    const id = setInterval(refreshIfStale, USAGE_BACKGROUND_REFRESH_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [programsApi, showUsageSheet, usageAuthSignature, auth.codex.loggedIn, auth.claude.loggedIn]);
+
+  useEffect(() => {
     setProjectChatModel(
-      settings.advancedDefaults.provider === 'codex' ? 'gpt-5.4' : 'claude-sonnet-4-6'
+      settings.advancedDefaults.provider === 'codex' ? 'gpt-5.5' : 'claude-sonnet-4-6'
     );
   }, [settings.advancedDefaults.provider]);
 
@@ -818,6 +1007,61 @@ function App() {
                 }
               : current,
           );
+          // Map a streaming PlanDraft onto the running project-chat turn.
+          {
+            const running = chatRunningTurnRef.current;
+            const plan = event.plan;
+            if (running && plan && running.projectId === event.projectId) {
+              const failed = plan.status === "failed";
+              const completed = plan.status === "completed";
+              const awaiting = plan.status === "awaitingApproval";
+              const isAuto = running.mode === "auto";
+              // In Auto mode a ready plan keeps "running" (we auto-build it); in
+              // Plan mode it pauses at "awaiting_approval" for the user to confirm.
+              const turnStatus = failed
+                ? "failed"
+                : completed
+                  ? "completed"
+                  : awaiting
+                    ? (isAuto ? "running" : "awaiting_approval")
+                    : "running";
+              const terminal = turnStatus === "failed" || turnStatus === "completed" || turnStatus === "awaiting_approval";
+              setProjectChatTurns((prev) =>
+                prev.map((t) => {
+                  if (t.id !== running.turnId || t.role !== "assistant") return t;
+                  return {
+                    ...t,
+                    thinkingStatus: plan.thinkingStatus,
+                    planningStatus: plan.planningStatus,
+                    buildingStatus: plan.buildingStatus,
+                    verifyingStatus: plan.verifyingStatus,
+                    thought: plan.transcript || plan.explanation || t.thought,
+                    steps: plan.steps,
+                    plan:
+                      plan.summary || plan.impact || plan.diff
+                        ? { summary: plan.summary, impact: plan.impact, diff: plan.diff }
+                        : t.plan,
+                    finalText: failed
+                      ? plan.errorMessage ?? plan.finalText ?? "Something went wrong."
+                      : plan.finalText ?? t.finalText,
+                    status: turnStatus,
+                    durationSec:
+                      terminal && t.durationSec == null
+                        ? Math.max(0, Math.round((Date.now() - t.createdAt.getTime()) / 1000))
+                        : t.durationSec,
+                  };
+                }),
+              );
+              if (awaiting && isAuto && !autoApprovedRef.current.has(running.turnId)) {
+                // Auto mode: a plan is ready — build it without asking.
+                autoApprovedRef.current.add(running.turnId);
+                void window.programs.approvePlan({ projectId: event.projectId }).catch(() => undefined);
+              } else if (failed || completed || (awaiting && !isAuto)) {
+                chatRunningTurnRef.current = null;
+                setProjectChatLoading(false);
+              }
+            }
+          }
           return;
         case "project.history":
           setProjectDetails((current) =>
@@ -1510,20 +1754,6 @@ function App() {
     }
   };
 
-  const handleKill = async () => {
-    if (!selectedProject) {
-      return;
-    }
-
-    await withBusy("project.kill", async () => {
-      const runtime = selectedRuntime;
-      await window.programs.killProject(selectedProject.id);
-      if (runtime?.source !== "self") {
-        await refreshProject(selectedProject.id);
-      }
-    });
-  };
-
   const handleOpen = async () => {
     if (!selectedProject) {
       return;
@@ -1539,32 +1769,107 @@ function App() {
 
   const handleProjectChatSend = useCallback(() => {
     const content = projectChatInput.trim();
-    if (!content || projectChatLoading) return;
-    setProjectChatMessages(prev => [
+    const projectId = selectedProjectId;
+    if (!content || projectChatLoading || chatRunningTurnRef.current || !projectId) return;
+
+    const now = new Date();
+    const userId = `u-${now.getTime()}`;
+    const assistantId = `a-${now.getTime()}`;
+    const provider = settings.advancedDefaults.provider; // "claude" | "codex"
+    const uiMode = projectChatMode; // 'ask' | 'plan' | 'auto'
+    const backendMode: ProjectChatMode = uiMode === 'ask' ? 'ask' : 'plan';
+    // The chat's model picker holds a provider-appropriate alias; map it to the
+    // CodexModel / ClaudeModel slot the backend expects.
+    const isCodex = provider === 'codex';
+    const codexModel = isCodex ? projectChatModel : settings.advancedDefaults.model;
+    const claudeModel = isCodex ? settings.advancedDefaults.claudeModel : projectChatModel;
+    const reasoningEffort = projectChatReasoning;
+    // Ultracode (parallel subagents) is Claude-only.
+    const ultracode = provider === 'claude' && projectChatUltracode;
+    const images = projectChatImages;
+
+    const assistantTurn: AssistantTurn = {
+      id: assistantId,
+      role: 'assistant',
+      createdAt: now,
+      provider,
+      mode: uiMode,
+      model: projectChatModelLabel(provider, projectChatModel),
+      reasoningEffort,
+      status: 'running',
+      thinkingStatus: 'pending',
+      planningStatus: 'pending',
+      buildingStatus: 'pending',
+      verifyingStatus: 'pending',
+      thought: '',
+      steps: [],
+      plan: null,
+      finalText: null,
+      durationSec: null,
+    };
+
+    setProjectChatTurns((prev) => [
       ...prev,
-      { id: String(Date.now()), role: 'user', content, createdAt: new Date() },
+      { id: userId, role: 'user', content, createdAt: now },
+      assistantTurn,
     ]);
     setProjectChatInput('');
+    setProjectChatImages([]);
     setProjectChatLoading(true);
-    setTimeout(() => {
-      setProjectChatMessages(prev => [
-        ...prev,
-        {
-          id: String(Date.now() + 1),
-          role: 'assistant',
-          content: `Got it. Once connected, I'll be able to read and modify this project's files directly from your dashboard — similar to working in VS Code or Claude Code.\n\nYou asked: "${content}"`,
-          createdAt: new Date(),
-        },
-      ]);
+    chatRunningTurnRef.current = { projectId, turnId: assistantId, mode: uiMode };
+
+    // Real run — streams back as `project.plan` events (mapped onto this turn in
+    // the onEvent handler). Only a synchronous throw (e.g. provider not ready)
+    // lands here; service-internal failures arrive as a failed PlanDraft.
+    void window.programs
+      .startProjectChat({ projectId, provider, mode: backendMode, prompt: content, model: codexModel, claudeModel, reasoningEffort, webEnabled: projectChatWeb, ultracode, images })
+      .catch((error: unknown) => {
+        if (chatRunningTurnRef.current?.turnId !== assistantId) return;
+        chatRunningTurnRef.current = null;
+        const message = error instanceof Error ? error.message : 'That request could not start.';
+        setProjectChatTurns((prev) =>
+          prev.map((t) =>
+            t.id === assistantId && t.role === 'assistant'
+              ? { ...t, status: 'failed', thinkingStatus: 'failed', finalText: message, durationSec: 0 }
+              : t,
+          ),
+        );
+        setProjectChatLoading(false);
+      });
+  }, [projectChatInput, projectChatLoading, projectChatMode, selectedProjectId, projectChatModel, projectChatReasoning, projectChatWeb, projectChatUltracode, projectChatImages, settings.advancedDefaults.provider, settings.advancedDefaults.model, settings.advancedDefaults.claudeModel]);
+
+  const handleApproveTurn = (turnId: string) => {
+    const projectId = selectedProjectId;
+    if (!projectId || chatRunningTurnRef.current) return;
+    chatRunningTurnRef.current = { projectId, turnId, mode: 'plan' };
+    setProjectChatLoading(true);
+    setProjectChatTurns((prev) =>
+      prev.map((t) =>
+        t.id === turnId && t.role === 'assistant'
+          ? { ...t, status: 'running', buildingStatus: 'in_progress' }
+          : t,
+      ),
+    );
+    void window.programs.approvePlan({ projectId }).catch((error: unknown) => {
+      if (chatRunningTurnRef.current?.turnId !== turnId) return;
+      chatRunningTurnRef.current = null;
+      const message = error instanceof Error ? error.message : 'That build could not start.';
+      setProjectChatTurns((prev) =>
+        prev.map((t) =>
+          t.id === turnId && t.role === 'assistant'
+            ? { ...t, status: 'failed', buildingStatus: 'failed', finalText: message }
+            : t,
+        ),
+      );
       setProjectChatLoading(false);
-    }, 700);
-  }, [projectChatInput, projectChatLoading]);
+    });
+  };
 
   useEffect(() => {
     if (projectChatScrollRef.current) {
       projectChatScrollRef.current.scrollTop = projectChatScrollRef.current.scrollHeight;
     }
-  }, [projectChatMessages, projectChatLoading]);
+  }, [projectChatTurns, projectChatLoading]);
 
   const cycleProjectChatMode = useCallback(() => {
     setProjectChatMode(m => m === 'plan' ? 'ask' : m === 'ask' ? 'auto' : 'plan');
@@ -1580,6 +1885,34 @@ function App() {
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [projectChatModeOpen]);
+
+  useEffect(() => {
+    if (!showChatHistory) return;
+    const handler = (e: MouseEvent) => {
+      if (!projectChatHistoryRef.current?.contains(e.target as Node)) {
+        setShowChatHistory(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showChatHistory]);
+
+  const handleLoadHistorySession = (sessionId: string) => {
+    if (!selectedProjectId) return;
+    const { turns, history } = loadHistorySession(selectedProjectId, sessionId);
+    setProjectChatTurns(turns);
+    setProjectChatHistory(history);
+    setShowChatHistory(false);
+  };
+
+  const handleNewChat = () => {
+    if (!selectedProjectId) return;
+    // Archive the current chat (if non-empty) and start fresh.
+    const history = archiveActiveChat(selectedProjectId);
+    setProjectChatTurns([]);
+    setProjectChatHistory(history);
+    setShowChatHistory(false);
+  };
 
   const openProjectWhenReady = async (projectId: string): Promise<boolean> => {
     for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -2073,10 +2406,9 @@ function App() {
             {displayedProjects.length} / {projects.length}
           </span>
         </div>
-        <div className="projectBrowseTopBarControls">
-          {systemHealth && (
-            <SystemHealthButton health={systemHealth} onClick={() => setShowHealthSheet(true)} />
-          )}
+        <div className="pageChromeTopBarControls">
+          {systemHealth && <SystemHealthButton health={systemHealth} onClick={() => setShowHealthSheet(true)} />}
+          <UsageTriggerButton auth={auth} usage={usage} onClick={toggleUsageSheet} />
         </div>
       </div>
       <div className="chatViewportDivider pageChromeDivider" aria-hidden="true" />
@@ -2093,27 +2425,10 @@ function App() {
         <button type="button" className="agentTopBarButton windowNoDrag" onClick={() => syncProjectSelection(null)}>
           Back
         </button>
-        <div className="detailProviderToggle windowNoDrag" role="group" aria-label="AI provider">
-          <button
-            type="button"
-            className={settings.advancedDefaults.provider === "claude" ? "detailProviderOption detailProviderOption-active" : "detailProviderOption"}
-            onClick={() => void handleUpdateAgentDefaults({ provider: "claude" })}
-            disabled={busyKey === "settings.agentDefaults"}
-          >
-            Claude
-          </button>
-          <button
-            type="button"
-            className={settings.advancedDefaults.provider === "codex" ? "detailProviderOption detailProviderOption-active" : "detailProviderOption"}
-            onClick={() => void handleUpdateAgentDefaults({ provider: "codex" })}
-            disabled={busyKey === "settings.agentDefaults"}
-          >
-            GPT
-          </button>
+        <div className="pageChromeTopBarControls">
+          {systemHealth ? <SystemHealthButton health={systemHealth} onClick={() => setShowHealthSheet(true)} /> : null}
+          <UsageTriggerButton auth={auth} usage={usage} onClick={toggleUsageSheet} />
         </div>
-        {systemHealth ? (
-          <SystemHealthButton health={systemHealth} onClick={() => setShowHealthSheet(true)} />
-        ) : null}
       </div>
 
       <div className="chatViewportDivider pageChromeDivider" aria-hidden="true" />
@@ -2141,7 +2456,7 @@ function App() {
                   className={`projectStatusDot projectStatusDot-${detailDotState}${detailCanStop ? " projectStatusDot-stopAction" : ""} summaryStatusDot`}
                   aria-label={detailCanStop ? "Stop project" : detailIsLaunching ? "Starting..." : "Run project"}
                   title={detailCanStop ? "Stop project" : detailIsLaunching ? "Starting..." : "Run project"}
-                  onClick={() => { if (detailCanStop) void handleKill(); else if (!detailIsLaunching && !showRunningState) void handleRun(); }}
+                  onClick={() => { if (!detailIsLaunching) void handleHomeTileQuickAction(selectedProject); }}
                   disabled={detailIsLaunching}
                 />
                 <div className="summaryInfoMenuWrap">
@@ -2273,42 +2588,141 @@ function App() {
         ) : null}
       </div>
 
-      <div className="projectChatPane">
+      <div className="projectChatPane" data-provider={settings.advancedDefaults.provider}>
+        <div className="chatProviderToggleRow">
+          <div className="detailProviderToggle windowNoDrag" role="group" aria-label="AI provider">
+            <button
+              type="button"
+              className={`detailProviderOption detailProviderOption--claude${settings.advancedDefaults.provider === "claude" ? " detailProviderOption-active" : ""}`}
+              onClick={() => void handleUpdateAgentDefaults({ provider: "claude" })}
+              disabled={busyKey === "settings.agentDefaults"}
+            >
+              Claude
+            </button>
+            <button
+              type="button"
+              className={`detailProviderOption detailProviderOption--gpt${settings.advancedDefaults.provider === "codex" ? " detailProviderOption-active" : ""}`}
+              onClick={() => void handleUpdateAgentDefaults({ provider: "codex" })}
+              disabled={busyKey === "settings.agentDefaults"}
+            >
+              GPT
+            </button>
+          </div>
+          <div className="chatHistoryWrap" ref={projectChatHistoryRef}>
+            <button
+              type="button"
+              className="chatHistoryButton"
+              aria-label="Chat history"
+              title="Chat history"
+              aria-expanded={showChatHistory}
+              onClick={() => setShowChatHistory((v) => !v)}
+            >
+              <HistoryIcon />
+            </button>
+            {showChatHistory ? (
+              <div className="chatHistoryDropdown">
+                <button type="button" className="chatHistoryNewButton" onClick={handleNewChat}>
+                  <PlusIcon />
+                  <span>New chat</span>
+                </button>
+                <div className="chatHistoryDropdownHead">Chat history</div>
+                {projectChatHistory.length === 0 ? (
+                  <div className="chatHistoryEmpty">No previous chats.</div>
+                ) : (
+                  <ul className="chatHistoryList">
+                    {projectChatHistory.map((session) => (
+                      <li key={session.id}>
+                        <button
+                          type="button"
+                          className="chatHistoryItem"
+                          onClick={() => handleLoadHistorySession(session.id)}
+                        >
+                          <span className="chatHistoryItemTitle">{session.title}</span>
+                          <span className="chatHistoryItemDate">{formatDate(session.updatedAt)}</span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            ) : null}
+          </div>
+        </div>
         <div className="projectChatScroll" ref={projectChatScrollRef}>
-          {projectChatMessages.length === 0 && !projectChatLoading ? (
+          {projectChatTurns.length === 0 ? (
             <div className="projectChatEmptyState">
               <span>Ask me anything about this project</span>
             </div>
           ) : (
             <div className="projectChatMessageList">
-              {projectChatMessages.map(msg => (
-                <div key={msg.id} className={`projectChatBubble projectChatBubble--${msg.role}`}>
-                  <div className="projectChatBubbleContent">{msg.content}</div>
-                  <div className="projectChatBubbleTime">
-                    {msg.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              {projectChatTurns.map(turn =>
+                turn.role === 'user' ? (
+                  <div key={turn.id} className="projectChatBubble projectChatBubble--user">
+                    <div className="projectChatBubbleContent">{turn.content}</div>
+                    <div className="projectChatBubbleTime">
+                      {turn.createdAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </div>
                   </div>
-                </div>
-              ))}
-              {projectChatLoading && (
-                <div className="projectChatBubble projectChatBubble--assistant">
-                  <span className="agentChatTypingDots">
-                    <span className="agentChatDot" />
-                    <span className="agentChatDot" />
-                    <span className="agentChatDot" />
-                  </span>
-                </div>
+                ) : (
+                  <ResponseArea
+                    key={turn.id}
+                    turn={turn}
+                    onOpenPlan={setPlanDrawerTurnId}
+                    onApprove={handleApproveTurn}
+                  />
+                ),
               )}
             </div>
           )}
         </div>
 
         <div className="projectChatComposer">
+          {projectChatImages.length > 0 && (
+            <div className="projectChatThumbs">
+              {projectChatImages.map((img, i) => (
+                <div key={i} className="projectChatThumb">
+                  <img src={`data:${img.mediaType};base64,${img.dataBase64}`} alt="Attached" />
+                  <button
+                    type="button"
+                    className="projectChatThumbRemove"
+                    aria-label="Remove image"
+                    onClick={() => setProjectChatImages(prev => prev.filter((_, idx) => idx !== i))}
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="projectChatInputRow">
+            <button
+              type="button"
+              className="projectChatAttachButton"
+              onClick={() => projectChatImageInputRef.current?.click()}
+              disabled={projectChatLoading}
+              aria-label="Attach image"
+              title="Attach image (or paste)"
+            >
+              <PlusIcon />
+            </button>
+            <input
+              ref={projectChatImageInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              hidden
+              onChange={(e: ReactChangeEvent<HTMLInputElement>) => {
+                if (e.target.files) addProjectChatImageFiles(e.target.files);
+                e.target.value = '';
+              }}
+            />
             <textarea
+              ref={projectChatInputRef}
               className="projectChatInput"
               placeholder="Message..."
               value={projectChatInput}
               onChange={e => setProjectChatInput(e.target.value)}
+              onPaste={handleProjectChatPaste}
               onKeyDown={e => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault();
@@ -2325,7 +2739,7 @@ function App() {
               type="button"
               className="projectChatSendButton"
               onClick={handleProjectChatSend}
-              disabled={!projectChatInput.trim() || projectChatLoading}
+              disabled={(!projectChatInput.trim() && projectChatImages.length === 0) || projectChatLoading}
               aria-label="Send"
             >
               <ArrowUpIcon />
@@ -2359,38 +2773,60 @@ function App() {
               </button>
             </div>
 
+            <div className="projectChatToggles">
+              <button
+                type="button"
+                className={`projectChatToggle${projectChatWeb ? ' projectChatToggle--on' : ''}`}
+                onClick={() => setProjectChatWeb(v => !v)}
+                title="Web: let the agent search/fetch the internet for this message"
+              >
+                Web
+              </button>
+              {settings.advancedDefaults.provider === 'claude' && (
+                <button
+                  type="button"
+                  className={`projectChatToggle${projectChatUltracode ? ' projectChatToggle--on' : ''}`}
+                  onClick={() => setProjectChatUltracode(v => !v)}
+                  title="Ultracode: run parallel subagents (pairs best with Extra-high thinking)"
+                >
+                  Ultracode ⚡
+                </button>
+              )}
+            </div>
+
             <div className="projectChatRightControls">
               <select
                 className="projectChatSelect"
                 value={projectChatModel}
-                onChange={e => setProjectChatModel(e.target.value)}
+                onChange={e => handleProjectChatModelChange(e.target.value)}
                 aria-label="Model"
               >
-                {settings.advancedDefaults.provider === 'codex' ? (
-                  <>
-                    <option value="gpt-5.4">GPT-5.4</option>
-                    <option value="gpt-5.4-mini">GPT-5.4 Mini</option>
-                    <option value="gpt-5.3-codex">GPT-5.3 Codex</option>
-                  </>
-                ) : (
-                  <>
-                    <option value="claude-sonnet-4-6">Sonnet 4.6</option>
-                    <option value="claude-opus-4-8">Opus 4.8</option>
-                    <option value="claude-haiku-4-5">Haiku 4.5</option>
-                  </>
-                )}
+                {PROJECT_CHAT_MODEL_OPTIONS[settings.advancedDefaults.provider].map(opt => (
+                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                ))}
               </select>
               <select
                 className="projectChatSelect"
                 value={projectChatReasoning}
-                onChange={e => setProjectChatReasoning(e.target.value)}
-                aria-label="Reasoning"
+                onChange={e => setProjectChatReasoning(e.target.value as ReasoningEffort)}
+                aria-label="Thinking level"
               >
-                <option value="normal">Normal</option>
-                <option value="extended">Extended</option>
+                {reasoningEffortsForModel(
+                  settings.advancedDefaults.provider,
+                  settings.advancedDefaults.provider === 'claude' ? projectChatModel : '',
+                ).map(level => (
+                  <option key={level} value={level}>{labelForReasoningEffort(level)}</option>
+                ))}
               </select>
               {(() => {
-                const totalChars = projectChatMessages.reduce((s, m) => s + m.content.length, 0);
+                const totalChars = projectChatTurns.reduce(
+                  (s, t) =>
+                    s +
+                    (t.role === 'user'
+                      ? t.content.length
+                      : t.thought.length + (t.finalText?.length ?? 0)),
+                  0,
+                );
                 const pct = Math.min(100, Math.round((totalChars / 200000) * 100));
                 const r = 9;
                 const circ = 2 * Math.PI * r;
@@ -2752,6 +3188,21 @@ function App() {
           }}
         />
       ) : null}
+
+      {(() => {
+        if (!planDrawerTurnId) return null;
+        const turn = projectChatTurns.find((t) => t.id === planDrawerTurnId);
+        const plan = turn && turn.role === "assistant" ? turn.plan : null;
+        if (!plan) return null;
+        const canApprove = turn?.role === "assistant" && turn.status === "awaiting_approval";
+        return (
+          <PlanDrawer
+            plan={plan}
+            onClose={() => setPlanDrawerTurnId(null)}
+            onApprove={canApprove ? () => handleApproveTurn(planDrawerTurnId) : undefined}
+          />
+        );
+      })()}
 
       {showProjectDetails && selectedProject ? (
         <AgentProjectDetailsModal

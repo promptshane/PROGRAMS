@@ -1362,7 +1362,7 @@ test("Dan directorChat uses small conversation turns and blocks legacy memory-pr
   });
 
   assert.equal(conversationHarness.aiCalls[0]?.provider, "codex");
-  assert.equal(conversationHarness.aiCalls[0]?.model, "gpt-5.4-mini");
+  assert.equal(conversationHarness.aiCalls[0]?.model, "gpt-5.5-mini");
 
   const synthesisSession = createSession();
   const synthesisHarness = createBackendHarness([createDanPayload()]);
@@ -1402,7 +1402,7 @@ test("Todd directorChat uses small research turns and blocks legacy memory-proce
   });
 
   assert.equal(researchHarness.aiCalls[0]?.provider, "codex");
-  assert.equal(researchHarness.aiCalls[0]?.model, "gpt-5.4-mini");
+  assert.equal(researchHarness.aiCalls[0]?.model, "gpt-5.5-mini");
 
   const roadmapSession = createSession();
   const roadmapHarness = createBackendHarness([createToddPayload()]);

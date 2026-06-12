@@ -1,15 +1,54 @@
 import { basename } from "node:path";
-import { exec } from "node:child_process";
+import { spawn } from "node:child_process";
 import { app } from "electron";
 import type { SystemHealthProcess, SystemHealthSeverity, SystemHealthSnapshot } from "@shared/types";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+// Run a shell command and return its stdout. We spawn the shell in its own
+// process group (`detached`) so that on timeout we can kill the ENTIRE group
+// (shell + every child/grandchild) rather than just the shell. Node's built-in
+// exec timeout only signals the shell, which lets piped children — e.g. a
+// streaming `pmset` feeding a `tail` — get orphaned and leak forever, eventually
+// exhausting the process table and producing `spawn EAGAIN`.
 function runCmd(cmd: string, timeoutMs = 4000): Promise<string> {
   return new Promise((resolve) => {
-    exec(cmd, { timeout: timeoutMs }, (err, stdout) => {
-      resolve(err ? "" : stdout);
+    let settled = false;
+    let stdout = "";
+    const child = spawn("/bin/sh", ["-c", cmd], { detached: true });
+
+    const finish = (value: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+
+    const killGroup = () => {
+      if (child.pid === undefined) return;
+      // Negative pid targets the whole process group created by `detached`.
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        // group already gone — fall back to killing the shell directly
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* nothing left to kill */
+        }
+      }
+    };
+
+    const timer = setTimeout(() => {
+      killGroup();
+      finish("");
+    }, timeoutMs);
+
+    child.stdout?.on("data", (chunk) => {
+      stdout += chunk.toString();
     });
+    child.on("error", () => finish(""));
+    child.on("close", (code) => finish(code === 0 ? stdout : ""));
   });
 }
 
@@ -175,16 +214,19 @@ function parseSwap(sysctlOutput: string): { usedMb: number | null; totalMb: numb
 // ── thermal ───────────────────────────────────────────────────────────────────
 
 function parseThermal(pmsetOutput: string): "nominal" | "fair" | "serious" | "critical" {
-  // Empty thermlog = no throttling events = nominal
+  // `pmset -g therm` reports CPU_Speed_Limit as a percentage of full speed.
+  // 100 = no thermal throttling; lower values mean the system is being throttled
+  // to shed heat. When no thermal info is available (empty output or a "No
+  // thermal warning level has been recorded" note) we treat it as nominal.
   if (!pmsetOutput.trim()) return "nominal";
 
-  const matches = [...pmsetOutput.matchAll(/Thermal Pressure\s*[:\|]\s*(\w+)/gi)];
-  if (matches.length === 0) return "nominal";
+  const speedMatch = pmsetOutput.match(/CPU_Speed_Limit\s*=\s*(\d+)/i);
+  if (!speedMatch) return "nominal";
 
-  const last = matches[matches.length - 1][1].toLowerCase();
-  if (last === "critical") return "critical";
-  if (last === "serious") return "serious";
-  if (last === "fair") return "fair";
+  const speedLimit = Number(speedMatch[1]);
+  if (speedLimit < 50) return "critical";
+  if (speedLimit < 75) return "serious";
+  if (speedLimit < 100) return "fair";
   return "nominal";
 }
 
@@ -224,7 +266,10 @@ export async function collectSystemHealth(): Promise<SystemHealthSnapshot> {
     runCmd("top -l 1 -n 0 -s 0 | grep 'CPU usage'"),
     runCmd("memory_pressure"),
     runCmd("sysctl vm.swapusage"),
-    runCmd("pmset -g thermlog | tail -n 50"),
+    // `pmset -g therm` prints the current thermal state once and exits.
+    // (Do NOT use `pmset -g thermlog` — it is a continuous stream that never
+    // exits and will orphan/leak processes.)
+    runCmd("pmset -g therm"),
   ]);
 
   const rawProcesses = parseRawProcesses(psCommOutput);

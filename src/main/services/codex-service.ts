@@ -51,7 +51,7 @@ interface PendingLogin {
 }
 
 type JsonSchema = Record<string, unknown>;
-type TurnPhase = "plan" | "execute";
+type TurnPhase = "plan" | "execute" | "ask";
 
 interface ActiveTurn {
   projectId: string;
@@ -65,8 +65,23 @@ interface ActiveTurn {
   projectRoot: string;
   finalMessages: string[];
   pendingItems: Map<string, unknown>;
+  transcribedLines?: Set<string>;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
+}
+
+// Shape of a Codex app-server thread item (subset we read). Codex emits these
+// via item/started + item/completed notifications during a turn.
+interface CodexItem {
+  id: string;
+  type: string;
+  text?: string;
+  phase?: string | null;
+  command?: string | string[] | null;
+  query?: string | null;
+  server?: string | null;
+  tool?: string | null;
+  changes?: Array<{ path: string }>;
 }
 
 interface ActiveOneShot {
@@ -242,6 +257,30 @@ Instructions:
 - Your final answer must be strict JSON matching the requested schema.
 `.trim();
 
+// Codex app-server turn input: the text prompt plus any attached images as
+// localImage items (the model views them as multimodal input).
+const buildCodexTurnInput = (text: string, imagePaths: string[] = []): Array<Record<string, unknown>> => [
+  { type: "text", text },
+  ...imagePaths.map((path) => ({ type: "localImage", path })),
+];
+
+const buildAskPrompt = (project: Project, prompt: string, contextPaths: string[]): string => `
+You are a helpful assistant answering a question about the software project "${project.name}".
+
+Current project description:
+${project.description}
+
+Question:
+${prompt}
+
+${formatContextPaths(contextPaths)}
+
+Instructions:
+- Read the codebase as needed to answer accurately.
+- Do NOT modify any files.
+- Answer conversationally and concisely in plain text (no JSON).
+`.trim();
+
 const buildExecutionPrompt = async (project: Project, draft: PlanDraft): Promise<string> => `
 Implement the approved update for "${project.name}".
 
@@ -343,6 +382,10 @@ export class CodexService {
       buildingStatus: "pending",
       verifyingStatus: "pending",
       explanation: "Codex is working directly without a draft plan.",
+      transcript: "",
+      webEnabled: input.webEnabled ?? false,
+      ultracode: input.ultracode ?? false,
+      imagePaths: input.imagePaths ?? [],
       steps: [],
       summary: null,
       impact: null,
@@ -705,6 +748,10 @@ export class CodexService {
       buildingStatus: "pending",
       verifyingStatus: "pending",
       explanation: "Codex is building the plan.",
+      transcript: "",
+      webEnabled: input.webEnabled ?? false,
+      ultracode: input.ultracode ?? false,
+      imagePaths: input.imagePaths ?? [],
       steps: [],
       summary: null,
       impact: null,
@@ -729,7 +776,7 @@ export class CodexService {
             (activeThreadId) => ({
               threadId: activeThreadId,
               cwd: project.localPath,
-              input: [{ type: "text", text: this.previewPlanningPrompt(project, input) }],
+              input: buildCodexTurnInput(this.previewPlanningPrompt(project, input), input.imagePaths),
               effort: input.reasoningEffort,
               model: input.model,
               outputSchema: planOutputSchema,
@@ -737,7 +784,7 @@ export class CodexService {
               approvalPolicy: "never",
               sandboxPolicy: {
                 type: "readOnly",
-                networkAccess: false,
+                networkAccess: input.webEnabled ?? false,
               },
               summary: "auto",
             }),
@@ -776,6 +823,104 @@ export class CodexService {
     });
   }
 
+  // Read-only "ask": stream a plain-text answer (no plan, no file edits) using a
+  // readOnly sandbox and no output schema. Mirrors startPlanningTurn but phase "ask".
+  async answerQuestion(project: Project, settings: Settings, input: StartPlanInput): Promise<PlanDraft> {
+    const draft: PlanDraft = {
+      projectId: project.id,
+      provider: "codex",
+      threadId: project.threadId,
+      turnId: null,
+      prompt: input.prompt,
+      speed: input.speed,
+      model: input.model,
+      claudeModel: input.claudeModel,
+      reasoningEffort: input.reasoningEffort,
+      planningMode: input.planningMode,
+      autoApprove: input.autoApprove,
+      contextPaths: [...input.contextPaths],
+      skillInstructions: input.skillInstructions ?? null,
+      coreDetailsContext: input.coreDetailsContext ?? null,
+      pingTaskSnapshot: input.pingTaskSnapshot ?? null,
+      status: "executing",
+      thinkingStatus: "in_progress",
+      planningStatus: "skipped",
+      buildingStatus: "skipped",
+      verifyingStatus: "skipped",
+      explanation: "",
+      transcript: "",
+      webEnabled: input.webEnabled ?? false,
+      ultracode: input.ultracode ?? false,
+      imagePaths: input.imagePaths ?? [],
+      steps: [],
+      summary: null,
+      impact: null,
+      diff: null,
+      diffStats: null,
+      finalText: null,
+      verificationDetails: null,
+      errorMessage: null,
+      lastUpdatedAt: new Date().toISOString(),
+    };
+
+    this.syncDraft(draft);
+
+    return new Promise<PlanDraft>((resolve, reject) => {
+      void (async () => {
+        try {
+          const { result, threadId: resolvedThreadId } = await this.startTurnWithThreadRetry(
+            project,
+            settings,
+            input.speed,
+            input.model,
+            (activeThreadId) => ({
+              threadId: activeThreadId,
+              cwd: project.localPath,
+              input: buildCodexTurnInput(buildAskPrompt(project, input.prompt, input.contextPaths), input.imagePaths),
+              effort: input.reasoningEffort,
+              model: input.model,
+              personality: "pragmatic",
+              approvalPolicy: "never",
+              sandboxPolicy: {
+                type: "readOnly",
+                networkAccess: input.webEnabled ?? false,
+              },
+              summary: "auto",
+            }),
+          );
+
+          const turnId = result.turn?.id ?? null;
+          const activeTurn: ActiveTurn = {
+            projectId: project.id,
+            projectPath: project.localPath,
+            threadId: resolvedThreadId,
+            turnId,
+            phase: "ask",
+            prompt: input.prompt,
+            speed: input.speed,
+            draft,
+            projectRoot: project.localPath,
+            finalMessages: [],
+            pendingItems: new Map(),
+            resolve: (value) => resolve(value as PlanDraft),
+            reject,
+          };
+
+          draft.threadId = resolvedThreadId;
+          draft.turnId = turnId;
+          this.activeTurns.set(project.id, activeTurn);
+          this.syncDraft(draft);
+        } catch (error) {
+          draft.status = "failed";
+          draft.thinkingStatus = "failed";
+          draft.errorMessage = error instanceof Error ? error.message : "Codex could not answer.";
+          this.syncDraft(draft);
+          reject(error instanceof Error ? error : new Error("Codex could not answer."));
+        }
+      })();
+    });
+  }
+
   async executeApprovedPlan(project: Project, settings: Settings, draft: PlanDraft): Promise<ExecutionPayload> {
     const threadId = draft.threadId ?? (await this.ensureThread(project, settings, draft.speed, draft.model)).threadId;
     draft.threadId = threadId;
@@ -791,7 +936,7 @@ export class CodexService {
           (activeThreadId) => ({
             threadId: activeThreadId,
             cwd: project.localPath,
-            input: [{ type: "text", text: executionPrompt }],
+            input: buildCodexTurnInput(executionPrompt, draft.imagePaths),
             effort: draft.reasoningEffort,
             model: draft.model,
             outputSchema: executionOutputSchema,
@@ -800,7 +945,7 @@ export class CodexService {
             sandboxPolicy: {
               type: "workspaceWrite",
               writableRoots: [project.localPath],
-              networkAccess: false,
+              networkAccess: draft.webEnabled,
             },
             summary: "auto",
           }),
@@ -1193,7 +1338,7 @@ export class CodexService {
       }
       case "item/started":
       case "item/completed": {
-        const payload = params as { threadId: string; turnId: string; item: { id: string; type: string; text?: string; phase?: string | null; changes?: Array<{ path: string }> } };
+        const payload = params as { threadId: string; turnId: string; item: CodexItem };
         const turn = this.findTurn(payload.threadId, payload.turnId);
         const oneShot = this.findOneShot(payload.threadId, payload.turnId);
         if (!turn && !oneShot) {
@@ -1204,11 +1349,19 @@ export class CodexService {
           if (turn) {
             turn.pendingItems.set(payload.item.id, payload.item);
             turn.finalMessages.push(payload.item.text);
-            turn.draft.finalText = payload.item.text;
             if (turn.phase === "plan") {
+              // The agent message is the structured plan JSON — keep it for
+              // parsing in completeTurn, but don't surface the raw JSON as the
+              // response (completeTurn sets finalText to the clean summary).
               turn.draft.thinkingStatus = "in_progress";
               turn.draft.planningStatus = "in_progress";
+            } else if (turn.phase === "ask") {
+              // Read-only answer: plain text — safe to surface directly.
+              turn.draft.finalText = payload.item.text;
+              turn.draft.explanation = payload.item.text;
+              turn.draft.thinkingStatus = "in_progress";
             } else {
+              // Execution: also structured JSON — don't surface raw.
               turn.draft.buildingStatus = "in_progress";
             }
             this.syncDraft(turn.draft);
@@ -1222,6 +1375,12 @@ export class CodexService {
 
         if (turn) {
           turn.pendingItems.set(payload.item.id, payload.item);
+          // Surface live reasoning + tool activity so planning/coding isn't a
+          // silent wait — this streams into the renderer's "thinking" transcript.
+          const line = this.formatTranscriptLine(payload.item, method as "item/started" | "item/completed");
+          if (line) {
+            this.appendTranscript(turn, line);
+          }
         }
         return;
       }
@@ -1247,6 +1406,55 @@ export class CodexService {
     }
   }
 
+  // Append one line of live activity to the draft transcript, skipping exact
+  // duplicates (an item can surface on both started and completed).
+  private appendTranscript(turn: ActiveTurn, line: string): void {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      return;
+    }
+    turn.transcribedLines ??= new Set<string>();
+    if (turn.transcribedLines.has(trimmed)) {
+      return;
+    }
+    turn.transcribedLines.add(trimmed);
+    turn.draft.transcript = turn.draft.transcript ? `${turn.draft.transcript}\n${trimmed}` : trimmed;
+    this.syncDraft(turn.draft);
+  }
+
+  // Turn a Codex thread item into a short human-readable activity line, or null
+  // if it carries nothing worth surfacing. Reasoning/web items are emitted once
+  // complete; command/tool items are emitted as they start so progress shows ASAP.
+  private formatTranscriptLine(item: CodexItem, method: "item/started" | "item/completed"): string | null {
+    switch (item.type) {
+      case "reasoning":
+        return method === "item/completed" && item.text ? item.text.trim() : null;
+      case "commandExecution": {
+        if (method !== "item/started") {
+          return null;
+        }
+        const cmd = Array.isArray(item.command) ? item.command.join(" ") : item.command ?? "";
+        const short = cmd.length > 120 ? `${cmd.slice(0, 117)}…` : cmd;
+        return short ? `\`${short}\`` : null;
+      }
+      case "fileChange": {
+        if (method !== "item/completed") {
+          return null;
+        }
+        const paths = (item.changes ?? []).map((c) => c.path).filter(Boolean);
+        return paths.length ? `Edited ${paths.join(", ")}` : null;
+      }
+      case "mcpToolCall":
+        return method === "item/started" && (item.server || item.tool)
+          ? `Tool ${[item.server, item.tool].filter(Boolean).join("/")}`
+          : null;
+      case "webSearch":
+        return method === "item/completed" && item.query ? `Searched the web: ${item.query}` : null;
+      default:
+        return null;
+    }
+  }
+
   private async completeTurn(turn: ActiveTurn, turnResult: unknown): Promise<void> {
     this.activeTurns.delete(turn.projectId);
     const parsedStatus = turnResultSchema.parse(turnResult);
@@ -1256,6 +1464,8 @@ export class CodexService {
       if (turn.phase === "plan") {
         turn.draft.thinkingStatus = "failed";
         turn.draft.planningStatus = "failed";
+      } else if (turn.phase === "ask") {
+        turn.draft.thinkingStatus = "failed";
       } else {
         turn.draft.buildingStatus = "failed";
         if (turn.draft.planningMode === "none" && turn.draft.thinkingStatus === "in_progress") {
@@ -1271,6 +1481,17 @@ export class CodexService {
     const finalText = [...turn.finalMessages].reverse().find(Boolean) ?? turn.draft.finalText ?? "";
 
     try {
+      if (turn.phase === "ask") {
+        // Plain-text answer — no schema parsing.
+        turn.draft.status = "completed";
+        turn.draft.thinkingStatus = "completed";
+        turn.draft.finalText = finalText;
+        turn.draft.errorMessage = null;
+        this.syncDraft(turn.draft);
+        turn.resolve({ ...turn.draft });
+        return;
+      }
+
       if (turn.phase === "plan") {
         const parsed = planResultSchema.parse(parseJsonFromText(finalText));
         turn.draft.status = "awaitingApproval";
@@ -1278,6 +1499,8 @@ export class CodexService {
         turn.draft.planningStatus = "completed";
         turn.draft.summary = parsed.summary;
         turn.draft.impact = parsed.impact;
+        // Surface the clean summary as the response — never the raw JSON.
+        turn.draft.finalText = parsed.summary;
         turn.draft.errorMessage = null;
         this.syncDraft(turn.draft);
         turn.resolve({ ...turn.draft });
@@ -1293,7 +1516,8 @@ export class CodexService {
       turn.draft.verifyingStatus = "in_progress";
       turn.draft.summary = parsed.summary;
       turn.draft.errorMessage = null;
-      turn.draft.finalText = finalText;
+      // Clean prose, not the raw {summary,description,commitMessage} JSON.
+      turn.draft.finalText = parsed.summary;
       turn.draft.verificationDetails = "Saving local changes and update history.";
       this.syncDraft(turn.draft);
       turn.resolve({

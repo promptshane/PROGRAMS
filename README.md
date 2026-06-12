@@ -3,6 +3,7 @@
 PROGRAMS is a macOS-first Electron desktop app for AI-assisted coding with:
 
 - Codex plan-first updates
+- Claude and Codex usage indicators with orange and blue provider grouping
 - local-first project management
 - local run / kill / open controls
 - a user-facing update history

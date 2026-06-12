@@ -8,6 +8,7 @@ import { z } from "zod";
 import {
   buildClaudeAuthStatus,
   buildClaudePrintArgs,
+  buildClaudeExecAllowedTools,
   type ClaudeCliAuthMetadata,
   type ClaudeCliFeatures,
   type ClaudeLocalAuthMetadata,
@@ -134,6 +135,16 @@ const formatContextPaths = (contextPaths: string[]): string =>
 const formatSkillInstructions = (value: string | null | undefined): string =>
   value?.trim() ? `Attached skill:\n${value.trim()}\n` : "";
 
+// Reference attached image files so the model views them with its Read tool.
+const formatImagePaths = (paths: string[] = []): string =>
+  paths.length === 0
+    ? ""
+    : `Attached images (view each with the Read tool):\n${paths.map((p) => `- ${p}`).join("\n")}\n\n`;
+
+// Injected into execution prompts when ultracode is on — grants the model
+// standing permission to fan work out across parallel subagents.
+const ULTRACODE_WORKFLOWS_GRANT = `Parallel workflows are enabled: when subtasks are independent (editing separate files, running tests while writing code, investigating multiple areas), delegate them to parallel subagents via the Task tool to move faster. Subagents are one level deep and cannot spawn their own; coordinate their results yourself.`;
+
 const buildPlanningPrompt = (
   project: Project,
   prompt: string,
@@ -141,6 +152,7 @@ const buildPlanningPrompt = (
   skillInstructions: string | null,
   coreDetailsContext?: string | null,
   promptOnlyJsonFallback = true,
+  imagePaths: string[] = [],
 ): string => `
 ${baseDeveloperInstructions}
 
@@ -154,7 +166,7 @@ ${project.description}
 ${coreDetailsContext ? `${coreDetailsContext}\n\n` : ""}Requested change:
 ${prompt}
 
-${formatContextPaths(contextPaths)}
+${formatImagePaths(imagePaths)}${formatContextPaths(contextPaths)}
 
 Instructions:
 - Explore the codebase as needed.
@@ -164,6 +176,28 @@ Instructions:
 ${promptOnlyJsonFallback
     ? '- Your final answer must be ONLY strict JSON (no markdown fences) matching this schema:\n  {"summary": string, "impact": string}'
     : ""}
+`.trim();
+
+const buildAskPrompt = (
+  project: Project,
+  prompt: string,
+  contextPaths: string[],
+  imagePaths: string[] = [],
+): string => `
+You are a helpful assistant answering a question about the software project "${project.name}".
+
+Current project description:
+${project.description}
+
+Question:
+${prompt}
+
+${formatImagePaths(imagePaths)}${formatContextPaths(contextPaths)}
+
+Instructions:
+- Read the codebase as needed to answer accurately.
+- Do NOT modify any files.
+- Answer conversationally and concisely in plain text (no JSON, no code fences unless quoting code).
 `.trim();
 
 const buildExecutionPrompt = async (
@@ -186,9 +220,9 @@ ${draft.explanation}
 Plan steps:
 ${draft.steps.map((step) => `- ${step.step}`).join("\n") || "- Use the approved plan above."}
 
-${formatContextPaths(draft.contextPaths)}
+${formatImagePaths(draft.imagePaths)}${formatContextPaths(draft.contextPaths)}
 
-${draft.coreDetailsContext ? `${draft.coreDetailsContext}\n\n` : ""}Requirements:
+${draft.ultracode ? `${ULTRACODE_WORKFLOWS_GRANT}\n\n` : ""}${draft.coreDetailsContext ? `${draft.coreDetailsContext}\n\n` : ""}Requirements:
 - Make the code changes now.
 - Keep the project description current and user-facing.
 ${promptOnlyJsonFallback
@@ -369,6 +403,63 @@ const extractClaudeEventText = (event: {
   }
 
   return typeof messageContent === "string" ? messageContent : "";
+};
+
+const truncateActivity = (value: string, max = 120): string =>
+  value.length > max ? `${value.slice(0, max - 1)}…` : value;
+
+// Turn a Claude `tool_use` content block into a short human-readable activity
+// line for the live thinking stream (incl. parallel subagents under ultracode).
+const formatClaudeToolUse = (block: { name?: unknown; input?: unknown }): string | null => {
+  const name = typeof block.name === "string" ? block.name : "";
+  const input = (block.input ?? {}) as Record<string, unknown>;
+  const str = (value: unknown): string => (typeof value === "string" ? value : "");
+  switch (name) {
+    case "Task":
+    case "Agent": {
+      const desc = str(input.description) || str(input.prompt);
+      return desc ? `Spawned subagent: ${truncateActivity(desc)}` : "Spawned a subagent";
+    }
+    case "Bash": {
+      const cmd = str(input.command);
+      return cmd ? `Ran \`${truncateActivity(cmd)}\`` : null;
+    }
+    case "Edit":
+    case "MultiEdit":
+      return str(input.file_path) ? `Edited ${str(input.file_path)}` : null;
+    case "Write":
+      return str(input.file_path) ? `Wrote ${str(input.file_path)}` : null;
+    case "Read":
+      return str(input.file_path) ? `Read ${str(input.file_path)}` : null;
+    case "Glob":
+    case "Grep":
+      return str(input.pattern) ? `Searched ${truncateActivity(str(input.pattern), 60)}` : null;
+    case "WebSearch":
+      return str(input.query) ? `Searched the web: ${truncateActivity(str(input.query), 80)}` : null;
+    case "WebFetch":
+      return str(input.url) ? `Fetched ${truncateActivity(str(input.url), 80)}` : null;
+    default:
+      return name || null;
+  }
+};
+
+const extractClaudeToolActivity = (event: {
+  content?: unknown;
+  message?: { content?: unknown } | null;
+}): string[] => {
+  const lines: string[] = [];
+  const scan = (value: unknown): void => {
+    if (!Array.isArray(value)) return;
+    for (const block of value) {
+      if (block && typeof block === "object" && (block as { type?: unknown }).type === "tool_use") {
+        const line = formatClaudeToolUse(block as { name?: unknown; input?: unknown });
+        if (line) lines.push(line);
+      }
+    }
+  };
+  scan(event.content);
+  scan(event.message?.content ?? null);
+  return lines;
 };
 
 const isLikelyJsonResponse = (value: string): boolean => {
@@ -562,6 +653,32 @@ export class ClaudeService {
     this.emit({ type: "project.plan", projectId: draft.projectId, plan: { ...draft } });
   }
 
+  // Surface tool activity (incl. parallel subagents) into the live thinking
+  // transcript. Dedupes against what's already streamed since the CLI can repeat
+  // a tool_use block across events.
+  private appendClaudeActivity(
+    draft: PlanDraft,
+    event: { content?: unknown; message?: { content?: unknown } | null },
+  ): void {
+    const lines = extractClaudeToolActivity(event);
+    if (lines.length === 0) {
+      return;
+    }
+    const existing = draft.transcript ? draft.transcript.split("\n") : [];
+    let changed = false;
+    for (const line of lines) {
+      if (existing.includes(line)) {
+        continue;
+      }
+      existing.push(line);
+      draft.transcript = draft.transcript ? `${draft.transcript}\n${line}` : line;
+      changed = true;
+    }
+    if (changed) {
+      this.syncDraft(draft);
+    }
+  }
+
   clearPlan(projectId: string): void {
     this.planDrafts.delete(projectId);
     this.emit({ type: "project.plan", projectId, plan: null });
@@ -590,6 +707,10 @@ export class ClaudeService {
       buildingStatus: "pending",
       verifyingStatus: "pending",
       explanation: "Claude is working directly without a draft plan.",
+      transcript: "",
+      webEnabled: input.webEnabled ?? false,
+      ultracode: input.ultracode ?? false,
+      imagePaths: input.imagePaths ?? [],
       steps: [],
       summary: null,
       impact: null,
@@ -603,6 +724,147 @@ export class ClaudeService {
 
     this.syncDraft(draft);
     return draft;
+  }
+
+  // Read-only "ask": stream a plain-text answer (no plan, no file edits). Uses
+  // --permission-mode plan and no allowed tools so Claude can read the project
+  // but cannot modify it. Mirrors startPlanningTurn's spawn/stream lifecycle.
+  async answerQuestion(project: Project, settings: Settings, input: StartPlanInput): Promise<PlanDraft> {
+    const draft: PlanDraft = {
+      projectId: project.id,
+      provider: "claude",
+      threadId: null,
+      turnId: null,
+      prompt: input.prompt,
+      speed: input.speed,
+      model: input.model,
+      claudeModel: input.claudeModel,
+      reasoningEffort: input.reasoningEffort,
+      planningMode: input.planningMode,
+      autoApprove: input.autoApprove,
+      contextPaths: [...input.contextPaths],
+      skillInstructions: input.skillInstructions ?? null,
+      coreDetailsContext: input.coreDetailsContext ?? null,
+      pingTaskSnapshot: input.pingTaskSnapshot ?? null,
+      status: "executing",
+      thinkingStatus: "in_progress",
+      planningStatus: "skipped",
+      buildingStatus: "skipped",
+      verifyingStatus: "skipped",
+      explanation: "",
+      transcript: "",
+      webEnabled: input.webEnabled ?? false,
+      ultracode: input.ultracode ?? false,
+      imagePaths: input.imagePaths ?? [],
+      steps: [],
+      summary: null,
+      impact: null,
+      diff: null,
+      diffStats: null,
+      finalText: null,
+      verificationDetails: null,
+      errorMessage: null,
+      lastUpdatedAt: new Date().toISOString(),
+    };
+
+    this.syncDraft(draft);
+
+    return new Promise<PlanDraft>((resolve, reject) => {
+      void (async () => {
+        try {
+          const status = await this.requireReadyStatus(settings);
+          const commandEnv = await getCommandEnv();
+          const binaryPath = status.binaryPath!;
+          const features = await this.getCliFeatures(binaryPath);
+          const prompt = buildAskPrompt(project, input.prompt, input.contextPaths, input.imagePaths);
+          const args = buildClaudePrintArgs({
+            prompt,
+            model: input.claudeModel,
+            settingsArg: buildClaudeOneShotSettingsArg(input.reasoningEffort),
+            maxTurns: 6,
+            // Read-only phase: only web tools are additive (when enabled).
+            allowedTools: input.webEnabled ? "WebSearch,WebFetch" : null,
+            permissionMode: features?.supportsPermissionMode ? "plan" : null,
+          });
+
+          const child = spawn(binaryPath, args, {
+            cwd: project.localPath,
+            env: commandEnv,
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+          child.stdin.end();
+
+          this.activeProcesses.set(project.id, child);
+          const chunks: string[] = [];
+          let stderr = "";
+
+          readline.createInterface({ input: child.stdout }).on("line", (line) => {
+            chunks.push(line);
+            try {
+              const event = JSON.parse(line) as Parameters<typeof extractClaudeEventText>[0] & {
+                type?: string;
+                subtype?: string;
+              };
+              const text = extractClaudeEventText(event);
+              this.appendClaudeActivity(draft, event);
+              if (
+                text &&
+                (event.type === "assistant" ||
+                  event.type === "content_block_delta" ||
+                  event.subtype === "text")
+              ) {
+                draft.explanation = mergeStreamingExplanation(draft.explanation, text);
+                this.syncDraft(draft);
+              }
+            } catch {
+              // Ignore non-JSON lines.
+            }
+          });
+
+          readline.createInterface({ input: child.stderr }).on("line", (line) => {
+            stderr = stderr ? `${stderr}\n${line}` : line;
+          });
+
+          child.on("exit", (code) => {
+            this.activeProcesses.delete(project.id);
+            try {
+              if (code !== 0) {
+                throw new Error(this.extractErrorMessage(chunks, stderr) ?? "Claude could not answer.");
+              }
+              const finalPayload = this.extractFinalResult(chunks);
+              const answer = stringifyStructuredPayload(finalPayload);
+              draft.finalText = answer;
+              draft.thinkingStatus = "completed";
+              draft.status = "completed";
+              draft.errorMessage = null;
+              this.syncDraft(draft);
+              resolve({ ...draft });
+            } catch (error) {
+              draft.status = "failed";
+              draft.thinkingStatus = "failed";
+              draft.errorMessage = error instanceof Error ? error.message : "Claude could not answer.";
+              this.syncDraft(draft);
+              reject(error instanceof Error ? error : new Error("Claude could not answer."));
+            }
+          });
+
+          child.on("error", (err) => {
+            this.activeProcesses.delete(project.id);
+            draft.status = "failed";
+            draft.thinkingStatus = "failed";
+            draft.errorMessage = err.message;
+            this.syncDraft(draft);
+            reject(err);
+          });
+        } catch (error) {
+          draft.status = "failed";
+          draft.thinkingStatus = "failed";
+          draft.errorMessage = error instanceof Error ? error.message : "Claude could not answer.";
+          this.syncDraft(draft);
+          reject(error instanceof Error ? error : new Error("Claude could not answer."));
+        }
+      })();
+    });
   }
 
   async getUsage(settings: Settings): Promise<ProviderUsage> {
@@ -1045,6 +1307,10 @@ export class ClaudeService {
       buildingStatus: "pending",
       verifyingStatus: "pending",
       explanation: "Claude is building the plan.",
+      transcript: "",
+      webEnabled: input.webEnabled ?? false,
+      ultracode: input.ultracode ?? false,
+      imagePaths: input.imagePaths ?? [],
       steps: [],
       summary: null,
       impact: null,
@@ -1073,6 +1339,7 @@ export class ClaudeService {
             input.skillInstructions ?? null,
             input.coreDetailsContext ?? null,
             !supportsNativeJsonSchema,
+            input.imagePaths,
           );
           const args = buildClaudePrintArgs({
             prompt,
@@ -1080,6 +1347,8 @@ export class ClaudeService {
             settingsArg: buildClaudeOneShotSettingsArg(input.reasoningEffort),
             maxTurns: 5,
             jsonSchema: supportsNativeJsonSchema ? planOutputSchema : null,
+            // Read-only phase: only web tools are additive (when enabled).
+            allowedTools: input.webEnabled ? "WebSearch,WebFetch" : null,
             permissionMode: features?.supportsPermissionMode ? "plan" : null,
           });
 
@@ -1111,13 +1380,14 @@ export class ClaudeService {
               }
 
               const finalPayload = this.extractFinalResult(chunks);
-              const { parsed, finalText } = parseStructuredPayload("Claude", finalPayload, planResultSchema);
+              const { parsed } = parseStructuredPayload("Claude", finalPayload, planResultSchema);
               draft.status = "awaitingApproval";
               draft.thinkingStatus = "completed";
               draft.planningStatus = "completed";
               draft.summary = parsed.summary;
               draft.impact = parsed.impact;
-              draft.finalText = finalText;
+              // Surface the clean summary, never the raw structured JSON.
+              draft.finalText = parsed.summary;
               draft.errorMessage = null;
               this.syncDraft(draft);
               resolve({ ...draft });
@@ -1166,8 +1436,10 @@ export class ClaudeService {
         prompt,
         model: draft.claudeModel,
         settingsArg: buildClaudeOneShotSettingsArg(draft.reasoningEffort),
-        maxTurns: 20,
-        allowedTools: "Edit,Write,Bash(npm install:*),Bash(npx:*),Read,Glob,Grep",
+        // Ultracode runs can fan out across parallel subagents, so give the turn
+        // more room to orchestrate.
+        maxTurns: draft.ultracode ? 40 : 20,
+        allowedTools: buildClaudeExecAllowedTools({ web: draft.webEnabled, ultracode: draft.ultracode }),
         jsonSchema: supportsNativeJsonSchema ? executionOutputSchema : null,
       });
 
@@ -1213,7 +1485,7 @@ export class ClaudeService {
           }
 
           const finalPayload = this.extractFinalResult(chunks);
-          const { parsed, finalText } = parseStructuredPayload("Claude", finalPayload, executionResultSchema);
+          const { parsed } = parseStructuredPayload("Claude", finalPayload, executionResultSchema);
           draft.status = "executing";
           if (draft.planningMode === "none") {
             draft.thinkingStatus = "completed";
@@ -1221,7 +1493,8 @@ export class ClaudeService {
           draft.buildingStatus = "completed";
           draft.verifyingStatus = "in_progress";
           draft.summary = parsed.summary;
-          draft.finalText = finalText;
+          // Clean prose, not the raw structured JSON.
+          draft.finalText = parsed.summary;
           draft.errorMessage = null;
           draft.verificationDetails = "Saving local changes and update history.";
           this.syncDraft(draft);
@@ -1284,6 +1557,10 @@ export class ClaudeService {
         message?: { content?: unknown } | null;
       };
       const text = extractClaudeEventText(event);
+
+      // Surface tool activity (Read/Bash/Edit/Task subagents/web) into the live
+      // thinking stream for plan + execute phases.
+      this.appendClaudeActivity(draft, event);
 
       // Skip non-content events (init, rate limits, etc.)
       if (event.type === "system" || event.type === "rate_limit_event") {

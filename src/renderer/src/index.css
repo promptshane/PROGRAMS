@@ -10,6 +10,15 @@
   --sysHealth-yellow: #eab308;
   --sysHealth-orange: #f97316;
   --sysHealth-red: #ef4444;
+  /* Provider color coding — Claude = electric orange, GPT/Codex = electric blue */
+  --provider-claude: #ff7a18;
+  --provider-gpt: #2f9bff;
+  /* Active provider accent (set per-view via [data-provider]); defaults to GPT */
+  --provider-accent: var(--provider-gpt);
+  /* Status color system (matches system-health): good / mid / bad */
+  --status-good: var(--sysHealth-green);
+  --status-mid: var(--sysHealth-yellow);
+  --status-bad: var(--sysHealth-red);
 }
 
 :root[data-theme="dark"] {
@@ -920,6 +929,15 @@ code {
   border-top: 1px solid var(--border);
 }
 
+/* The composer/send button track the active provider's accent. */
+.projectChatPane[data-provider="claude"] {
+  --provider-accent: var(--provider-claude);
+}
+
+.projectChatPane[data-provider="codex"] {
+  --provider-accent: var(--provider-gpt);
+}
+
 .projectChatScroll {
   flex: 1 1 0;
   min-height: 0;
@@ -936,6 +954,455 @@ code {
   justify-content: center;
   color: var(--text-muted, #888);
   font-size: 0.8125rem;
+}
+
+/* --- Response area (per-message block in the project chat) ------------- */
+.responseArea {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  align-self: stretch;
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel-soft, rgba(255, 255, 255, 0.04)) 60%, transparent);
+}
+
+/* Provider-colored outline + inner accent (Claude orange / GPT blue). */
+.responseArea--claude {
+  --provider-accent: var(--provider-claude);
+  border-color: color-mix(in srgb, var(--provider-claude) 55%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--provider-claude) 22%, transparent),
+    0 0 16px color-mix(in srgb, var(--provider-claude) 14%, transparent);
+}
+
+.responseArea--codex {
+  --provider-accent: var(--provider-gpt);
+  border-color: color-mix(in srgb, var(--provider-gpt) 55%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--provider-gpt) 22%, transparent),
+    0 0 16px color-mix(in srgb, var(--provider-gpt) 14%, transparent);
+}
+
+/* Two-phase progress bar */
+.projectProgressPhase {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.projectProgressPhaseLabels {
+  display: flex;
+  gap: 18px;
+}
+
+.projectProgressPhaseNode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.74rem;
+  color: var(--text-muted, #888);
+}
+
+.projectProgressPhaseDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--text-muted, #888) 55%, transparent);
+}
+
+.projectProgressPhaseNode--active {
+  color: var(--text);
+}
+
+.projectProgressPhaseNode--active .projectProgressPhaseDot {
+  background: var(--status-mid);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-mid) 24%, transparent);
+  animation: updateStageBlink 1s ease-in-out infinite;
+}
+
+.projectProgressPhaseNode--done {
+  color: var(--text);
+}
+
+.projectProgressPhaseNode--done .projectProgressPhaseDot {
+  background: var(--status-good);
+}
+
+.projectProgressPhaseNode--failed {
+  color: var(--text);
+}
+
+.projectProgressPhaseNode--failed .projectProgressPhaseDot {
+  background: var(--status-bad);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-bad) 24%, transparent);
+}
+
+/* Named thinking/response box (per response area) */
+.projectProgressTodosLabel,
+.responseAreaThoughtLabel {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted, #888);
+}
+
+/* The named box header carries the provider's color. */
+.responseAreaThoughtLabel {
+  color: var(--provider-accent);
+}
+
+.responseAreaThought {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.responseAreaThoughtHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.responseAreaThoughtMeta {
+  margin-left: auto;
+  font-size: 0.7rem;
+  color: var(--text-muted, #888);
+}
+
+.responseAreaBadge {
+  font-size: 0.66rem;
+  font-weight: 500;
+  color: var(--text-muted, #888);
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  white-space: nowrap;
+}
+
+.responseAreaThoughtChevron {
+  font-size: 0.7rem;
+  color: var(--text-muted, #888);
+}
+
+.responseAreaThoughtHeader:hover .responseAreaThoughtMeta,
+.responseAreaThoughtHeader:hover .responseAreaThoughtChevron {
+  color: var(--text);
+}
+
+.responseAreaWorking {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--status-mid);
+  animation: updateStageBlink 1s ease-in-out infinite;
+}
+
+.responseAreaThoughtPreview {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  background: color-mix(in srgb, var(--panel-soft, rgba(255, 255, 255, 0.05)) 70%, transparent);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--text);
+  cursor: pointer;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.responseAreaThoughtPreview:hover {
+  border-color: var(--border-strong, rgba(255, 255, 255, 0.24));
+}
+
+.responseAreaThoughtPreviewText {
+  animation: projectProgressThoughtIn 0.3s ease;
+}
+
+.responseAreaThoughtTranscript {
+  max-height: 240px;
+  overflow-y: auto;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  background: color-mix(in srgb, var(--panel-soft, rgba(255, 255, 255, 0.05)) 70%, transparent);
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: var(--text-muted, #aaa);
+  white-space: pre-wrap;
+}
+
+.responseAreaThoughtIdle {
+  color: var(--text-muted, #888);
+  font-style: italic;
+}
+
+.responseAreaResponse {
+  position: relative;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel-soft, rgba(255, 255, 255, 0.06)) 80%, transparent);
+  font-size: 0.84rem;
+  line-height: 1.6;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.responseCopyButton {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  padding: 2px 8px;
+  font-size: 0.66rem;
+  border-radius: 6px;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  background: var(--panel-soft, rgba(255, 255, 255, 0.06));
+  color: var(--text-muted, #888);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+
+.responseAreaResponse:hover .responseCopyButton,
+.responseCopyButton:focus-visible {
+  opacity: 1;
+}
+
+.responseCopyButton:hover {
+  color: var(--text);
+}
+
+.responseAreaResponse--streaming {
+  color: var(--text-muted, #aaa);
+}
+
+.responseAreaFooter {
+  display: flex;
+  gap: 8px;
+}
+
+.responseApprove {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--status-good) 55%, transparent);
+  background: color-mix(in srgb, var(--status-good) 20%, transparent);
+  color: var(--text);
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s ease;
+}
+
+.responseApprove:hover {
+  background: color-mix(in srgb, var(--status-good) 32%, transparent);
+}
+
+.responseViewPlan {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--provider-accent) 45%, transparent);
+  background: color-mix(in srgb, var(--provider-accent) 14%, transparent);
+  color: var(--text);
+  font-size: 0.76rem;
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+  transition: background 0.15s ease;
+}
+
+.responseViewPlan:hover {
+  background: color-mix(in srgb, var(--provider-accent) 24%, transparent);
+}
+
+@keyframes projectProgressThoughtIn {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Right-side plan drawer */
+.planDrawerOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 64;
+  background: rgba(5, 8, 12, 0.4);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.planDrawerPanel {
+  width: min(560px, 50vw);
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel-strong, var(--panel));
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(24px);
+  animation: planDrawerIn 200ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes planDrawerIn {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+.planDrawerHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.planDrawerHeader h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.planDrawerHeaderActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.planDrawerClose {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted, #888);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.planDrawerClose:hover {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text);
+}
+
+.planDrawerBody {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.planDrawerSection {
+  font-size: 0.85rem;
+  line-height: 1.55;
+  color: var(--text);
+}
+
+.planDrawerSection h4 {
+  margin: 0 0 8px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted, #888);
+}
+
+/* To-do list with blinking status dots */
+.projectProgressTodos {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.projectProgressTodosIdle {
+  font-size: 0.76rem;
+  color: var(--text-muted, #888);
+  font-style: italic;
+}
+
+.projectProgressTodoList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.projectProgressTodo {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 0.8rem;
+  color: var(--text-muted, #999);
+}
+
+.projectProgressTodoDot {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--text-muted, #888) 50%, transparent);
+}
+
+.projectProgressTodo--in_progress {
+  color: var(--text);
+}
+
+.projectProgressTodo--in_progress .projectProgressTodoDot {
+  background: var(--status-mid);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-mid) 28%, transparent);
+  animation: updateStageBlink 1s ease-in-out infinite;
+}
+
+.projectProgressTodo--completed {
+  color: var(--text);
+}
+
+.projectProgressTodo--completed .projectProgressTodoDot {
+  background: var(--status-good);
+}
+
+.projectProgressTodo--completed .projectProgressTodoText {
+  text-decoration: line-through;
+  text-decoration-color: color-mix(in srgb, var(--text-muted, #888) 60%, transparent);
+}
+
+.projectProgressTodo--failed {
+  color: var(--text);
+}
+
+.projectProgressTodo--failed .projectProgressTodoDot {
+  background: var(--status-bad);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-bad) 28%, transparent);
 }
 
 .projectChatMessageList {
@@ -1023,23 +1490,119 @@ code {
   width: 32px;
   height: 32px;
   border-radius: 8px;
-  background: #007AFF;
+  background: var(--provider-accent);
   color: #fff;
   border: none;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: opacity 0.15s, background 0.15s;
+  box-shadow: 0 0 12px color-mix(in srgb, var(--provider-accent) 45%, transparent);
+  transition: opacity 0.15s, background 0.15s, box-shadow 0.15s;
 }
 
 .projectChatSendButton:disabled {
   opacity: 0.35;
   cursor: default;
+  box-shadow: none;
 }
 
 .projectChatSendButton:not(:disabled):hover {
-  background: #0066dd;
+  background: color-mix(in srgb, var(--provider-accent) 85%, #000);
+}
+
+.projectChatAttachButton {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted, #888);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.projectChatAttachButton:not(:disabled):hover {
+  color: var(--text);
+  border-color: var(--border-strong, rgba(255, 255, 255, 0.24));
+}
+
+.projectChatAttachButton:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.projectChatThumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-bottom: 8px;
+}
+
+.projectChatThumb {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+}
+
+.projectChatThumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.projectChatThumbRemove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.projectChatToggles {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.projectChatToggle {
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--text-muted, #888);
+  background: transparent;
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.12));
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.projectChatToggle:hover {
+  color: var(--text);
+}
+
+.projectChatToggle--on {
+  color: var(--provider-accent);
+  border-color: color-mix(in srgb, var(--provider-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--provider-accent) 14%, transparent);
 }
 
 .projectChatControlBar {
@@ -1163,6 +1726,8 @@ code {
   flex: 0 0 auto;
   max-height: 220px;
   overflow-y: auto;
+  /* Distance the line beneath the info panel so it mirrors the upper divider. */
+  margin-bottom: 16px;
 }
 
 .dashboardGrid {
@@ -1480,6 +2045,146 @@ code {
   transform: scale(1.06);
   background: color-mix(in srgb, #05070a 84%, var(--text));
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.72), 0 12px 24px rgba(0, 0, 0, 0.32);
+}
+
+/* Chat history button + popover (selected project page) */
+.chatHistoryWrap {
+  position: relative;
+  display: flex;
+  justify-content: center;
+}
+
+.chatHistoryButton {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-muted, #888);
+  cursor: pointer;
+  transition: color 140ms ease, background 140ms ease;
+}
+
+.chatHistoryButton svg {
+  width: 14px;
+  height: 14px;
+}
+
+.chatHistoryButton:hover,
+.chatHistoryButton:focus-visible,
+.chatHistoryButton[aria-expanded="true"] {
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.chatHistoryDropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  width: 240px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding: 6px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+  backdrop-filter: blur(18px);
+}
+
+.chatHistoryNewButton {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 140ms ease;
+}
+
+.chatHistoryNewButton svg {
+  width: 14px;
+  height: 14px;
+}
+
+.chatHistoryNewButton:hover {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.chatHistoryDropdownHead {
+  padding: 6px 8px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted, #888);
+}
+
+.chatHistoryEmpty {
+  padding: 10px 8px;
+  font-size: 0.78rem;
+  color: var(--text-muted, #888);
+  font-style: italic;
+}
+
+.chatHistoryList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chatHistoryItem {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 8px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.chatHistoryItem:hover {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.chatHistoryItemTitle {
+  font-size: 0.8rem;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chatHistoryItemDate {
+  font-size: 0.66rem;
+  color: var(--text-muted, #888);
+}
+
+/* Provider (Claude/GPT) toggle (left) + chat history button (right), below the line */
+.chatProviderToggleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 20px 0;
 }
 
 .summaryGithubRow {
@@ -3467,12 +4172,13 @@ select {
   font-weight: 500;
 }
 
-.projectBrowseTopBarControls {
+.pageChromeTopBarControls {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
+  min-width: 0;
 }
 
 .projectBrowseToggle {
@@ -3546,6 +4252,41 @@ select {
   font-size: 0.78rem;
   font-weight: 600;
   color: var(--text);
+}
+
+.usageTriggerProviderGroup {
+  --usage-trigger-provider: var(--provider-gpt);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 5px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--usage-trigger-provider) 58%, transparent);
+  background:
+    linear-gradient(180deg,
+      color-mix(in srgb, var(--usage-trigger-provider) 14%, transparent),
+      color-mix(in srgb, var(--usage-trigger-provider) 5%, transparent)
+    );
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--usage-trigger-provider) 12%, transparent),
+    0 0 10px color-mix(in srgb, var(--usage-trigger-provider) 13%, transparent);
+}
+
+.usageTriggerProviderGroup--claude {
+  --usage-trigger-provider: var(--provider-claude);
+}
+
+.usageTriggerProviderGroup--codex {
+  --usage-trigger-provider: var(--provider-gpt);
+}
+
+.usageTriggerDivider {
+  width: 1px;
+  height: 14px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--border-strong) 74%, var(--border));
 }
 
 /* modal body */
@@ -4276,16 +5017,6 @@ select {
   background: #31df86;
 }
 
-.projectStatusDot-updating {
-  background: #ff6565;
-  animation: projectStatusPulseRed 1.1s steps(2, end) infinite;
-}
-
-.projectStatusDot-runningUpdating {
-  background: #31df86;
-  animation: projectStatusPulseMixed 1.2s linear infinite;
-}
-
 .projectStatusDot:not(:disabled):hover,
 .projectStatusDot:not(:disabled):focus-visible {
   transform: scale(1.06);
@@ -4313,11 +5044,6 @@ select {
 .projectStatusDot-stopAction:hover::after,
 .projectStatusDot-stopAction:focus-visible::after {
   transform: rotate(-45deg) scale(1);
-}
-
-.projectStatusDot-runningUpdating.projectStatusDot-stopAction:hover,
-.projectStatusDot-runningUpdating.projectStatusDot-stopAction:focus-visible {
-  animation: none;
 }
 
 .projectStatusDot:disabled {
@@ -4417,6 +5143,21 @@ select {
   color: var(--text);
 }
 
+/* Provider identity colors on the usage toggle (Claude orange / GPT blue). */
+.usageProviderOption--claude.active {
+  background: color-mix(in srgb, var(--provider-claude) 18%, transparent);
+  color: var(--provider-claude);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--provider-claude) 50%, transparent),
+    0 0 10px color-mix(in srgb, var(--provider-claude) 28%, transparent);
+}
+
+.usageProviderOption--gpt.active {
+  background: color-mix(in srgb, var(--provider-gpt) 18%, transparent);
+  color: var(--provider-gpt);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--provider-gpt) 50%, transparent),
+    0 0 10px color-mix(in srgb, var(--provider-gpt) 28%, transparent);
+}
+
 .usageProviderOption:disabled {
   cursor: default;
   opacity: 0.6;
@@ -4454,8 +5195,9 @@ select {
 }
 
 .usageCard-selected {
-  border-color: rgba(255, 255, 255, 0.84);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.72), inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  border-color: color-mix(in srgb, var(--provider-accent) 72%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--provider-accent) 55%, transparent),
+    0 0 18px color-mix(in srgb, var(--provider-accent) 20%, transparent);
 }
 
 .usageCard-loading {
@@ -4464,10 +5206,21 @@ select {
 
 .usageCard-codex {
   --usage-accent: #8bdcff;
+  --provider-accent: var(--provider-gpt);
 }
 
 .usageCard-claude {
   --usage-accent: #ffbf86;
+  --provider-accent: var(--provider-claude);
+}
+
+/* Provider name on each card carries its identity color. */
+.usageCard-codex h4 {
+  color: var(--provider-gpt);
+}
+
+.usageCard-claude h4 {
+  color: var(--provider-claude);
 }
 
 .usageCard h4,
@@ -4807,17 +5560,6 @@ select {
   }
 }
 
-@keyframes projectStatusPulseRed {
-  0%,
-  100% {
-    opacity: 1;
-  }
-
-  50% {
-    opacity: 0.24;
-  }
-}
-
 @keyframes projectStatusPulseLaunch {
   0%,
   49.999% {
@@ -4826,25 +5568,6 @@ select {
   }
 
   50%,
-  100% {
-    background: #31df86;
-    opacity: 1;
-  }
-}
-
-@keyframes projectStatusPulseMixed {
-  0%,
-  42% {
-    background: #31df86;
-    opacity: 1;
-  }
-
-  50%,
-  92% {
-    background: #ff6565;
-    opacity: 0.9;
-  }
-
   100% {
     background: #31df86;
     opacity: 1;
@@ -5066,7 +5789,7 @@ select {
   }
 
   .projectBrowseTopBar,
-  .projectBrowseTopBarControls {
+  .pageChromeTopBarControls {
     align-items: stretch;
   }
 
@@ -5074,7 +5797,7 @@ select {
     right: 16px;
   }
 
-  .projectBrowseTopBarControls {
+  .pageChromeTopBarControls {
     width: 100%;
     justify-content: flex-start;
   }
@@ -5882,6 +6605,21 @@ select {
 .detailProviderOption-active {
   background: color-mix(in srgb, var(--text) 10%, transparent);
   color: var(--text);
+}
+
+/* Selected provider lights up in its color (Claude orange / GPT blue). */
+.detailProviderOption--claude.detailProviderOption-active {
+  background: color-mix(in srgb, var(--provider-claude) 18%, transparent);
+  color: var(--provider-claude);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--provider-claude) 55%, transparent),
+    0 0 10px color-mix(in srgb, var(--provider-claude) 30%, transparent);
+}
+
+.detailProviderOption--gpt.detailProviderOption-active {
+  background: color-mix(in srgb, var(--provider-gpt) 18%, transparent);
+  color: var(--provider-gpt);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--provider-gpt) 55%, transparent),
+    0 0 10px color-mix(in srgb, var(--provider-gpt) 30%, transparent);
 }
 
 .detailProviderOption:hover:not(.detailProviderOption-active):not(:disabled) {

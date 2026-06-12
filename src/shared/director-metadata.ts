@@ -195,8 +195,8 @@ export interface DirectorModelSelection {
   activeModel: string;
 }
 
-export const BIG_CODEX_MODEL: CodexModel = "gpt-5.4";
-export const SMALL_CODEX_MODEL: CodexModel = "gpt-5.4-mini";
+export const BIG_CODEX_MODEL: CodexModel = "gpt-5.5";
+export const SMALL_CODEX_MODEL: CodexModel = "gpt-5.5-mini";
 export const BIG_CLAUDE_MODEL: ClaudeModel = "opus";
 export const SMALL_CLAUDE_MODEL: ClaudeModel = "sonnet";
 

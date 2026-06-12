@@ -19,6 +19,7 @@ import {
   labelForPlanningMode,
 } from "../lib/formatting";
 import type { ComposerOptions } from "../lib/constants";
+import { reasoningEffortsForModel } from "@shared/reasoning-levels";
 
 export type ComposerMenuKey = "model" | "speed" | "thinking" | "plan";
 
@@ -190,38 +191,17 @@ export function ComposerControlBar({
           >
             <div className="composerMenuSection">
               <span className="composerMenuSectionTitle">Thinking depth</span>
-              <ComposerMenuOption
-                label="Low"
-                active={options.reasoningEffort === "low"}
-                onClick={() => {
-                  onReasoningChange("low");
-                  closeMenus();
-                }}
-              />
-              <ComposerMenuOption
-                label="Normal"
-                active={options.reasoningEffort === "medium"}
-                onClick={() => {
-                  onReasoningChange("medium");
-                  closeMenus();
-                }}
-              />
-              <ComposerMenuOption
-                label="High"
-                active={options.reasoningEffort === "high"}
-                onClick={() => {
-                  onReasoningChange("high");
-                  closeMenus();
-                }}
-              />
-              <ComposerMenuOption
-                label="Extra high"
-                active={options.reasoningEffort === "xhigh"}
-                onClick={() => {
-                  onReasoningChange("xhigh");
-                  closeMenus();
-                }}
-              />
+              {reasoningEffortsForModel(options.provider, options.claudeModel).map((level) => (
+                <ComposerMenuOption
+                  key={level}
+                  label={labelForReasoningEffort(level)}
+                  active={options.reasoningEffort === level}
+                  onClick={() => {
+                    onReasoningChange(level);
+                    closeMenus();
+                  }}
+                />
+              ))}
             </div>
           </ComposerMenu>
         ) : null}

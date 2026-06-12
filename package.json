@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "main": "out/main/index.js",
-  "description": "PROGRAMS is a desktop control panel for local-first AI-assisted coding with Codex.",
+  "description": "PROGRAMS is a desktop control panel for local-first AI-assisted coding with themed Claude and Codex usage indicators.",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",

@@ -27,6 +27,7 @@ import type {
   RevisePendingApprovalInput,
   ResolveDroppedContextPathsInput,
   RouteUpdateToProgrammingInput,
+  ProjectChatInput,
   RunValidationInput,
   SetValidationFrequencyInput,
   SettingsUpdateInput,
@@ -112,6 +113,8 @@ export const registerIpc = (backend: ProgramsBackend): void => {
   ipcMain.handle("updates.revisePlan", (_event, input: StartPlanInput) => backend.revisePlan(input));
   ipcMain.handle("updates.cancelPlan", (_event, projectId: string) => backend.cancelPlan(projectId));
   ipcMain.handle("updates.approvePlan", (_event, input: ApprovePlanInput) => backend.approvePlan(input));
+  ipcMain.handle("projectChat.start", (_event, input: ProjectChatInput) => backend.startProjectChat(input));
+  ipcMain.handle("projectChat.cancel", (_event, projectId: string) => backend.cancelProjectChat(projectId));
   ipcMain.handle("updates.undoUpdate", (_event, projectId: string, updateId: string) =>
     backend.undoUpdate(projectId, updateId),
   );

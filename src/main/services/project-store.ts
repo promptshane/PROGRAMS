@@ -67,13 +67,16 @@ const normalizeModel = (value: string | undefined): Settings["advancedDefaults"]
 
   if (
     normalized === "gpt-5-codex" ||
+    normalized === "gpt-5.5-codex" ||
     normalized === "gpt-5.4-codex" ||
+    normalized === "gpt-5.4" ||
+    normalized === "gpt-5.3-codex" ||
     normalized === "gpt-5.2-codex" ||
     normalized === "gpt-5.1-codex-max" ||
     normalized === "gpt-5.1-codex" ||
     normalized === "gpt-5.1-codex-mini"
   ) {
-    return "gpt-5.4";
+    return "gpt-5.5";
   }
 
   if ((CODEX_MODEL_OPTIONS as readonly string[]).includes(normalized)) {

@@ -52,6 +52,7 @@ import type {
   PauseAutomationRunInput,
   StopAutomationRunInput,
   RequestAutomationFailureRecoveryInput,
+  ProjectChatInput,
   StartPlanInput,
   UpdateProjectInput,
   UsageSnapshot,
@@ -157,6 +158,8 @@ const api = {
   revisePlan: (input: StartPlanInput) => ipcRenderer.invoke("updates.revisePlan", input),
   cancelPlan: (projectId: string) => ipcRenderer.invoke("updates.cancelPlan", projectId),
   approvePlan: (input: ApprovePlanInput) => ipcRenderer.invoke("updates.approvePlan", input),
+  startProjectChat: (input: ProjectChatInput) => ipcRenderer.invoke("projectChat.start", input),
+  cancelProjectChat: (projectId: string) => ipcRenderer.invoke("projectChat.cancel", projectId),
   undoUpdate: (projectId: string, updateId: string) =>
     ipcRenderer.invoke("updates.undoUpdate", projectId, updateId),
 

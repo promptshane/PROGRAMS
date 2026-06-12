@@ -78,7 +78,7 @@ export function UsageOverviewSheet({
             <div className="usageProviderToggle" role="tablist" aria-label="Agent provider">
               <button
                 type="button"
-                className={provider === "claude" ? "usageProviderOption active" : "usageProviderOption"}
+                className={`usageProviderOption usageProviderOption--claude${provider === "claude" ? " active" : ""}`}
                 onClick={() => onProviderChange("claude")}
                 disabled={providerBusy}
               >
@@ -86,7 +86,7 @@ export function UsageOverviewSheet({
               </button>
               <button
                 type="button"
-                className={provider === "codex" ? "usageProviderOption active" : "usageProviderOption"}
+                className={`usageProviderOption usageProviderOption--gpt${provider === "codex" ? " active" : ""}`}
                 onClick={() => onProviderChange("codex")}
                 disabled={providerBusy}
               >

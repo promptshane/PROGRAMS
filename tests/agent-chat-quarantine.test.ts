@@ -88,7 +88,7 @@ const createBackend = (settingsOverride?: Record<string, unknown>) => {
   const settings = {
     advancedDefaults: {
       provider: "codex",
-      model: "gpt-5.4",
+      model: "gpt-5.5",
       claudeModel: "sonnet",
     },
     defaultSpeed: "normal",
@@ -905,7 +905,7 @@ test("Pong validation queues approval only when the active validation model is l
   const smallBackend = createBackend({
     advancedDefaults: {
       provider: "codex",
-      model: "gpt-5.4-mini",
+      model: "gpt-5.5-mini",
       claudeModel: "sonnet",
     },
   }) as Record<string, unknown>;
@@ -939,7 +939,7 @@ test("Pong validation queues approval only when the active validation model is l
 
   assert.equal(smallQueuedApproval, false);
   assert.equal(smallImmediateInput?.provider, "codex");
-  assert.equal(smallImmediateInput?.model, "gpt-5.4-mini");
+  assert.equal(smallImmediateInput?.model, "gpt-5.5-mini");
 });
 
 test("Ping execution switches the approved plan draft to the small execution runtime", async () => {

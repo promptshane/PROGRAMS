@@ -9,7 +9,7 @@ import type {
 
 export const DEFAULT_ADVANCED_DEFAULTS: AdvancedDefaults = {
   provider: "codex",
-  model: "gpt-5.4",
+  model: "gpt-5.5",
   claudeModel: "sonnet",
   reasoningEffort: "xhigh",
   serviceTier: "flex",

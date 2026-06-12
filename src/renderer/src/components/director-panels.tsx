@@ -1,5 +1,6 @@
 import { useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type MutableRefObject, type ReactNode } from "react";
 import { getDirectorMetadata, type DirectorFlowLink } from "@shared/director-metadata";
+import { reasoningEffortsForModel } from "@shared/reasoning-levels";
 import { ConceptOverview } from "./core-details";
 import { StatusChip } from "./ui-primitives";
 import { ExecutionReportPanel } from "./execution-panels";
@@ -223,10 +224,11 @@ export function DirectorSummaryPanel({
               disabled={isSavingDefaults || !projectId}
               onChange={(event) => void handleDirectorOverride({ reasoningEffort: event.target.value as ReasoningEffort })}
             >
-              <option value="low">Low</option>
-              <option value="medium">Medium</option>
-              <option value="high">High</option>
-              <option value="xhigh">Extra High</option>
+              {reasoningEffortsForModel(settings.advancedDefaults.provider, effectiveClaudeModel).map((level) => (
+                <option key={level} value={level}>
+                  {labelForReasoningEffort(level)}
+                </option>
+              ))}
             </select>
           </label>
 

@@ -101,6 +101,8 @@ export const labelForReasoningEffort = (reasoningEffort: ComposerOptions["reason
       return "High";
     case "xhigh":
       return "Extra high";
+    case "max":
+      return "Max";
   }
 };
 

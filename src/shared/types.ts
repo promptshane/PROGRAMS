@@ -2,7 +2,7 @@ export type UiMode = "simple" | "advanced";
 export type SpeedMode = "normal" | "fast";
 export type Theme = "dark" | "light";
 export type AiProvider = "codex" | "claude";
-export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
+export type ReasoningEffort = "low" | "medium" | "high" | "xhigh" | "max";
 export type PlanningMode = "review" | "auto" | "none";
 export type UpdateStageStatus = "pending" | "in_progress" | "completed" | "failed" | "skipped";
 export type CodexModel = string;
@@ -20,36 +20,36 @@ export interface ModelCatalog {
   updatedAt: string | null;
 }
 
-export const CODEX_MODEL_OPTIONS = ["gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex"] as const;
-export const CLAUDE_MODEL_OPTIONS = ["sonnet", "opus"] as const;
+export const CODEX_MODEL_OPTIONS = ["gpt-5.5", "gpt-5.5-mini"] as const;
+export const CLAUDE_MODEL_OPTIONS = ["fable", "opus", "sonnet"] as const;
 export const DEFAULT_MODEL_CATALOG: ModelCatalog = {
   codex: [
     {
-      id: "gpt-5.4",
-      label: "GPT-5.4",
+      id: "gpt-5.5",
+      label: "GPT-5.5",
       detail: "Latest frontier agentic coding model.",
     },
     {
-      id: "gpt-5.4-mini",
-      label: "GPT-5.4 Mini",
+      id: "gpt-5.5-mini",
+      label: "GPT-5.5 Mini",
       detail: "Smaller frontier agentic coding model.",
-    },
-    {
-      id: "gpt-5.3-codex",
-      label: "GPT-5.3 Codex",
-      detail: "Frontier Codex-optimized agentic coding model.",
     },
   ],
   claude: [
     {
-      id: "sonnet",
-      label: "Claude Sonnet",
-      detail: "Alias for the latest Claude Sonnet release in Claude Code.",
+      id: "fable",
+      label: "Claude Fable",
+      detail: "Alias for the latest Claude Fable release in Claude Code.",
     },
     {
       id: "opus",
       label: "Claude Opus",
       detail: "Alias for the latest Claude Opus release in Claude Code.",
+    },
+    {
+      id: "sonnet",
+      label: "Claude Sonnet",
+      detail: "Alias for the latest Claude Sonnet release in Claude Code.",
     },
   ],
   source: "fallback",
@@ -392,6 +392,10 @@ export interface PlanDraft {
   buildingStatus: UpdateStageStatus;
   verifyingStatus: UpdateStageStatus;
   explanation: string;
+  transcript: string; // newline-joined live activity + reasoning, streamed
+  webEnabled: boolean; // per-run: allow the agent web search/fetch
+  ultracode: boolean; // per-run (Claude): enable parallel subagents
+  imagePaths: string[]; // temp-file paths of attached images for this run
   steps: PlanStep[];
   summary: string | null;
   impact: string | null;
@@ -633,10 +637,35 @@ export interface StartPlanInput {
   coreDetailsContext?: string | null;
   pingTaskSnapshot?: PingTaskSnapshot | null;
   usageBefore?: UsageCapture | null;
+  webEnabled?: boolean;
+  ultracode?: boolean;
+  imagePaths?: string[];
 }
 
 export interface ApprovePlanInput {
   projectId: string;
+}
+
+export type ProjectChatMode = "ask" | "plan";
+
+// A pasted/attached image, carried as base64 from the renderer; the backend
+// writes it to a temp file and passes the path to the CLI.
+export interface ChatImage {
+  dataBase64: string;
+  mediaType: string;
+}
+
+export interface ProjectChatInput {
+  projectId: string;
+  provider: AiProvider;
+  mode: ProjectChatMode;
+  prompt: string;
+  model?: CodexModel;
+  claudeModel?: ClaudeModel;
+  reasoningEffort?: ReasoningEffort;
+  webEnabled?: boolean;
+  ultracode?: boolean;
+  images?: ChatImage[];
 }
 
 export interface RenameProjectInput {

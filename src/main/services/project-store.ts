@@ -53,7 +53,7 @@ import {
   sanitizePongMemory,
   sanitizeSlackMessages,
 } from "../../shared/agent-session.ts";
-import { DEFAULT_SETTINGS, DEFAULT_SETUP_STATE } from "../defaults.ts";
+import { DEFAULT_AUTOMATION_SETTINGS, DEFAULT_SETTINGS, DEFAULT_SETUP_STATE } from "../defaults.ts";
 import { ensureDirectory, pathExists } from "../utils/fs.ts";
 
 const LEGACY_FLOWCHART_PATH = "";
@@ -109,6 +109,68 @@ const normalizeClaudeModel = (value: string | undefined): Settings["advancedDefa
 const normalizeProvider = (value: string | undefined): Settings["advancedDefaults"]["provider"] => {
   return value === "codex" || value === "claude" ? value : DEFAULT_SETTINGS.advancedDefaults.provider;
 };
+
+const normalizeAutomationProvider = (value: string | undefined): Settings["automation"]["provider"] => {
+  return value === "codex" || value === "claude" ? value : DEFAULT_AUTOMATION_SETTINGS.provider;
+};
+
+const normalizeReasoningEffort = (
+  value: string | undefined,
+  fallback: Settings["automation"]["reasoningEffort"],
+): Settings["automation"]["reasoningEffort"] => {
+  return value === "low" || value === "medium" || value === "high" || value === "xhigh" || value === "max"
+    ? value
+    : fallback;
+};
+
+const normalizeModelWithFallback = (
+  value: string | undefined,
+  fallback: Settings["automation"]["model"],
+): Settings["automation"]["model"] => {
+  const normalized = value?.trim();
+  return normalized ? normalizeModel(normalized) : fallback;
+};
+
+const normalizeClaudeModelWithFallback = (
+  value: string | undefined,
+  fallback: Settings["automation"]["claudeModel"],
+): Settings["automation"]["claudeModel"] => {
+  const normalized = value?.trim();
+  return normalized ? normalizeClaudeModel(normalized) : fallback;
+};
+
+const normalizeAutomationProjectIds = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? Array.from(new Set(
+        value
+          .filter((item): item is string => typeof item === "string")
+          .map((item) => item.trim())
+          .filter(Boolean),
+      ))
+    : [];
+
+const normalizeUsagePausePercent = (value: unknown): number => {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_AUTOMATION_SETTINGS.usagePausePercent;
+  }
+  return Math.max(1, Math.min(100, Math.round(value)));
+};
+
+const normalizeAutomationSettings = (
+  automation: Partial<Settings["automation"]> | null | undefined,
+): Settings["automation"] => ({
+  ...DEFAULT_AUTOMATION_SETTINGS,
+  ...automation,
+  enabled: automation?.enabled === true,
+  projectIds: normalizeAutomationProjectIds(automation?.projectIds),
+  note: typeof automation?.note === "string" ? automation.note : DEFAULT_AUTOMATION_SETTINGS.note,
+  provider: normalizeAutomationProvider(automation?.provider),
+  model: normalizeModelWithFallback(automation?.model, DEFAULT_AUTOMATION_SETTINGS.model),
+  claudeModel: normalizeClaudeModelWithFallback(automation?.claudeModel, DEFAULT_AUTOMATION_SETTINGS.claudeModel),
+  reasoningEffort: normalizeReasoningEffort(automation?.reasoningEffort, DEFAULT_AUTOMATION_SETTINGS.reasoningEffort),
+  usagePausePercent: normalizeUsagePausePercent(automation?.usagePausePercent),
+  rotateMode: automation?.rotateMode === "one-at-a-time" ? "one-at-a-time" : DEFAULT_AUTOMATION_SETTINGS.rotateMode,
+});
 
 type LegacyHomeScratchpadItem = {
   id: string;
@@ -845,6 +907,7 @@ export class ProjectStore {
       model: normalizeModel(settings.advancedDefaults?.model),
       claudeModel: normalizeClaudeModel(settings.advancedDefaults?.claudeModel),
     };
+    const automation = normalizeAutomationSettings(settings.automation);
 
     return {
       ...DEFAULT_SETTINGS,
@@ -853,6 +916,7 @@ export class ProjectStore {
       autoInstallAppUpdates: settings.autoInstallAppUpdates ?? DEFAULT_SETTINGS.autoInstallAppUpdates,
       appSourcePath,
       advancedDefaults,
+      automation,
     };
   }
 
@@ -894,6 +958,10 @@ export class ProjectStore {
       advancedDefaults: {
         ...current.advancedDefaults,
         ...input.advancedDefaults,
+      },
+      automation: {
+        ...current.automation,
+        ...input.automation,
       },
     });
 

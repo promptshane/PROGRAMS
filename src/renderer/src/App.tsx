@@ -24,6 +24,7 @@ import {
   type AppUpdateStatus,
   type ChatImage,
   type AttachPathInspection,
+  type BasicAutomationStatus,
   type DirectorId,
   type AuthSnapshot,
   type DiffStats,
@@ -147,6 +148,45 @@ const PROJECT_CHAT_MODEL_OPTIONS: Record<AiProvider, { value: string; label: str
 const projectChatModelLabel = (provider: AiProvider, alias: string): string =>
   PROJECT_CHAT_MODEL_OPTIONS[provider].find((o) => o.value === alias)?.label ?? alias;
 
+const emptyBasicAutomationStatus = (): BasicAutomationStatus => ({
+  state: "off",
+  enabled: false,
+  currentProjectId: null,
+  pausedUntil: null,
+  lastRunSummary: null,
+  skippedProjects: [],
+  updatedAt: new Date().toISOString(),
+});
+
+const automationProjectIdsToRecord = (projectIds: string[]): Record<string, boolean> =>
+  Object.fromEntries(projectIds.map((projectId) => [projectId, true]));
+
+const readStoredStarredProjectIds = (): string[] => {
+  try {
+    const raw = localStorage.getItem("starredProjectIds");
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return [];
+    }
+    return Object.entries(parsed)
+      .filter(([, value]) => Boolean(value))
+      .map(([projectId]) => projectId);
+  } catch {
+    return [];
+  }
+};
+
+const writeStoredStarredProjectIds = (projectIds: string[]): void => {
+  try {
+    localStorage.setItem("starredProjectIds", JSON.stringify(automationProjectIdsToRecord(projectIds)));
+  } catch {
+    // Best-effort compatibility with older local-only starred storage.
+  }
+};
+
 function App() {
   const programsApi = "programs" in window ? window.programs : undefined;
   const [settings, setSettings] = useState<Settings>(emptySettings);
@@ -176,10 +216,8 @@ function App() {
   const [launchingProjects, setLaunchingProjects] = useState<Record<string, boolean>>({});
   const [currentPage, setCurrentPage] = useState<AppPage>("projects");
   const [projectCategories, setProjectCategories] = useState<Record<string, ProjectCategory>>({});
-  const [automationPriorityProjectIds, setAutomationPriorityProjectIds] = useState<Record<string, boolean>>(() => {
-    try { return JSON.parse(localStorage.getItem("starredProjectIds") ?? "{}") as Record<string, boolean>; }
-    catch { return {}; }
-  });
+  const [automationPriorityProjectIds, setAutomationPriorityProjectIds] = useState<Record<string, boolean>>({});
+  const [basicAutomationStatus, setBasicAutomationStatus] = useState<BasicAutomationStatus>(emptyBasicAutomationStatus);
   const [showSidebar, setShowSidebar] = useState(false);
   const [sidebarProjectsOpen, setSidebarProjectsOpen] = useState(false);
   const [sidebarAgentsOpen, setSidebarAgentsOpen] = useState(false);
@@ -516,15 +554,33 @@ function App() {
 
     void (async () => {
       const bootstrap = await programsApi.bootstrap();
-      setSettings(bootstrap.settings);
-      setTheme(bootstrap.settings.theme);
+      let bootSettings = bootstrap.settings;
+      if (bootSettings.automation.projectIds.length === 0) {
+        const projectIdSet = new Set(bootstrap.projects.map((project) => project.id));
+        const migratedProjectIds = readStoredStarredProjectIds().filter((projectId) => projectIdSet.has(projectId));
+        if (migratedProjectIds.length > 0) {
+          bootSettings = await programsApi.updateSettings({
+            automation: {
+              projectIds: migratedProjectIds,
+            },
+          });
+        }
+      }
+      writeStoredStarredProjectIds(bootSettings.automation.projectIds);
+      setSettings(bootSettings);
+      setTheme(bootSettings.theme);
       setProjects(bootstrap.projects);
       setProjectRuntimes(bootstrap.runtimes);
       setAuth(bootstrap.auth);
       setSetup(bootstrap.setup);
       setAppUpdate(bootstrap.appUpdate);
       setModelCatalog(bootstrap.modelCatalog);
-      setComposerOptions(getComposerDefaults(bootstrap.settings));
+      setComposerOptions(getComposerDefaults(bootSettings));
+      setAutomationPriorityProjectIds(automationProjectIdsToRecord(bootSettings.automation.projectIds));
+      const automationStatus = await programsApi.readBasicAutomationStatus().catch(() => null);
+      if (automationStatus) {
+        setBasicAutomationStatus(automationStatus);
+      }
 
       // Derive project categories
       const cats: Record<string, ProjectCategory> = {};
@@ -895,6 +951,9 @@ function App() {
           return;
         case "appUpdate.status":
           setAppUpdate(event.status);
+          return;
+        case "automation.basic.status":
+          setBasicAutomationStatus(event.status);
           return;
         case "project.updated":
           setProjects((current) => {
@@ -1658,6 +1717,40 @@ function App() {
     });
   };
 
+  const handleUpdateAutomationSettings = async (
+    automation: Partial<Settings["automation"]>,
+  ) => {
+    const previousSettings = settings;
+    const optimisticSettings: Settings = {
+      ...settings,
+      automation: {
+        ...settings.automation,
+        ...automation,
+      },
+    };
+    setSettings(optimisticSettings);
+    if (automation.projectIds) {
+      setAutomationPriorityProjectIds(automationProjectIdsToRecord(automation.projectIds));
+      writeStoredStarredProjectIds(automation.projectIds);
+    }
+
+    try {
+      const updated = await window.programs.updateSettings({ automation });
+      setSettings(updated);
+      setAutomationPriorityProjectIds(automationProjectIdsToRecord(updated.automation.projectIds));
+      writeStoredStarredProjectIds(updated.automation.projectIds);
+      const status = await window.programs.readBasicAutomationStatus().catch(() => null);
+      if (status) {
+        setBasicAutomationStatus(status);
+      }
+    } catch (error) {
+      setSettings(previousSettings);
+      setAutomationPriorityProjectIds(automationProjectIdsToRecord(previousSettings.automation.projectIds));
+      writeStoredStarredProjectIds(previousSettings.automation.projectIds);
+      pushToast(error instanceof Error ? error.message : "PROGRAMS could not update automation settings.", "error");
+    }
+  };
+
   const handleSetupClaude = async () => {
     await withBusy("auth.claude", async () => {
       const status = await window.programs.setupClaude();
@@ -2279,16 +2372,11 @@ function App() {
   };
 
   const handleToggleAutomationPriority = (projectId: string) => {
-    setAutomationPriorityProjectIds((current) => {
-      const next = { ...current };
-      if (next[projectId]) {
-        delete next[projectId];
-      } else {
-        next[projectId] = true;
-      }
-      localStorage.setItem("starredProjectIds", JSON.stringify(next));
-      return next;
-    });
+    const currentProjectIds = settings.automation.projectIds;
+    const nextProjectIds = currentProjectIds.includes(projectId)
+      ? currentProjectIds.filter((candidate) => candidate !== projectId)
+      : [...currentProjectIds, projectId];
+    void handleUpdateAutomationSettings({ projectIds: nextProjectIds });
   };
 
   const handleSaveEnvFile = async (projectId: string, entries: EnvVariableEntry[]) => {
@@ -3287,11 +3375,16 @@ function App() {
       {showUsageSheet ? (
         <UsageOverviewSheet
           provider={settings.advancedDefaults.provider}
+          settings={settings}
+          modelCatalog={modelCatalog}
           usage={usage}
           projects={projects}
+          automationStatus={basicAutomationStatus}
           automationPriorityProjectIds={automationPriorityProjectIds}
           providerBusy={busyKey === "settings.agentDefaults"}
           onProviderChange={(provider) => void handleUpdateAgentDefaults({ provider })}
+          onAutomationSettingsChange={(automation) => void handleUpdateAutomationSettings(automation)}
+          onToggleAutomationProject={(projectId) => handleToggleAutomationPriority(projectId)}
           onClose={() => setShowUsageSheet(false)}
         />
       ) : null}

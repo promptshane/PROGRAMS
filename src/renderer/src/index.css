@@ -5454,6 +5454,126 @@ select {
   align-content: start;
 }
 
+.usageAutomationHeader,
+.usageAutomationProjectsHead {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.usageAutomationSwitch {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 8px 16px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  cursor: pointer;
+  min-width: 68px;
+}
+
+.usageAutomationSwitch.active {
+  border-color: color-mix(in srgb, var(--provider-claude) 60%, transparent);
+  background: color-mix(in srgb, var(--provider-claude) 18%, transparent);
+  color: var(--provider-claude);
+}
+
+.usageAutomationStatus {
+  display: grid;
+  gap: 5px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.usageAutomationStatus span,
+.usageAutomationProjectsHead span,
+.usageAutomationField span,
+.usageAutomationFootnote {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.usageAutomationStatus strong,
+.usageAutomationProjectsHead strong,
+.usageAutomationSkipped strong {
+  color: var(--text);
+}
+
+.usageAutomationStatus-running {
+  border-color: color-mix(in srgb, var(--provider-claude) 45%, transparent);
+}
+
+.usageAutomationStatus-waiting_for_usage,
+.usageAutomationStatus-paused {
+  border-color: color-mix(in srgb, #f5b858 45%, transparent);
+}
+
+.usageAutomationStatus-blocked {
+  border-color: color-mix(in srgb, #ff6565 45%, transparent);
+}
+
+.usageAutomationField {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.usageAutomationField-full {
+  width: 100%;
+}
+
+.usageAutomationTextarea {
+  min-height: 104px;
+  resize: vertical;
+}
+
+.usageAutomationControlsGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.usageAutomationProjects,
+.usageAutomationSkipped {
+  display: grid;
+  gap: 10px;
+}
+
+.usageAutomationProjectList {
+  display: grid;
+  gap: 8px;
+}
+
+.usageAutomationProjectRow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 9px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text);
+  font-size: 0.92rem;
+}
+
+.usageAutomationProjectRow span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usageAutomationFootnote {
+  margin-top: 2px;
+}
+
 @keyframes usageSkeletonShimmer {
   0% {
     background-position: 0% 50%;
@@ -5942,6 +6062,16 @@ select {
 
   .usageProviderOption {
     min-width: 0;
+  }
+
+  .usageAutomationHeader,
+  .usageAutomationProjectsHead {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .usageAutomationControlsGrid {
+    grid-template-columns: 1fr;
   }
 }
 

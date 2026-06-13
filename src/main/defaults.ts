@@ -1,6 +1,7 @@
 import "dotenv/config";
 import type {
   AdvancedDefaults,
+  BasicAutomationSettings,
   RuntimeState,
   Settings,
   SetupState,
@@ -16,6 +17,18 @@ export const DEFAULT_ADVANCED_DEFAULTS: AdvancedDefaults = {
   customInstructions: "",
 };
 
+export const DEFAULT_AUTOMATION_SETTINGS: BasicAutomationSettings = {
+  enabled: false,
+  projectIds: [],
+  note: "",
+  provider: "claude",
+  model: "gpt-5.5",
+  claudeModel: "opus",
+  reasoningEffort: "max",
+  usagePausePercent: 95,
+  rotateMode: "one-at-a-time",
+};
+
 export const DEFAULT_SETTINGS: Settings = {
   theme: "dark",
   uiMode: "simple",
@@ -23,6 +36,7 @@ export const DEFAULT_SETTINGS: Settings = {
   autoApprovePlans: false,
   autoInstallAppUpdates: true,
   advancedDefaults: DEFAULT_ADVANCED_DEFAULTS,
+  automation: DEFAULT_AUTOMATION_SETTINGS,
   appSourcePath: "/Users/kc/Desktop/PROGRAMS",
   codexBinaryPath: null,
   claudeBinaryPath: null,

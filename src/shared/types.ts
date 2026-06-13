@@ -104,6 +104,20 @@ export interface AdvancedDefaults {
   customInstructions: string;
 }
 
+export type BasicAutomationRotateMode = "one-at-a-time";
+
+export interface BasicAutomationSettings {
+  enabled: boolean;
+  projectIds: string[];
+  note: string;
+  provider: AiProvider;
+  model: CodexModel;
+  claudeModel: ClaudeModel;
+  reasoningEffort: ReasoningEffort;
+  usagePausePercent: number;
+  rotateMode: BasicAutomationRotateMode;
+}
+
 export interface Settings {
   theme: Theme;
   uiMode: UiMode;
@@ -111,6 +125,7 @@ export interface Settings {
   autoApprovePlans: boolean;
   autoInstallAppUpdates: boolean;
   advancedDefaults: AdvancedDefaults;
+  automation: BasicAutomationSettings;
   appSourcePath: string | null;
   codexBinaryPath: string | null;
   claudeBinaryPath: string | null;
@@ -495,6 +510,7 @@ export interface SettingsUpdateInput {
   autoApprovePlans?: boolean;
   autoInstallAppUpdates?: boolean;
   advancedDefaults?: Partial<AdvancedDefaults>;
+  automation?: Partial<BasicAutomationSettings>;
   appSourcePath?: string | null;
   codexBinaryPath?: string | null;
   claudeBinaryPath?: string | null;
@@ -604,6 +620,30 @@ export interface BootstrapPayload {
   modelCatalog: ModelCatalog;
 }
 
+export type BasicAutomationStatusState =
+  | "off"
+  | "idle"
+  | "running"
+  | "waiting_for_usage"
+  | "paused"
+  | "blocked";
+
+export interface BasicAutomationSkippedProject {
+  projectId: string;
+  reason: string;
+  detail: string | null;
+}
+
+export interface BasicAutomationStatus {
+  state: BasicAutomationStatusState;
+  enabled: boolean;
+  currentProjectId: string | null;
+  pausedUntil: string | null;
+  lastRunSummary: string | null;
+  skippedProjects: BasicAutomationSkippedProject[];
+  updatedAt: string;
+}
+
 export type AppEvent =
   | { type: "toast"; level: ToastLevel; message: string }
   | { type: "auth.codex"; status: CodexAuthStatus }
@@ -620,6 +660,7 @@ export type AppEvent =
   | { type: "agent.session"; projectId: string; session: AgentSession | null }
   | { type: "auth.claude.codePrompt"; prompt: string }
   | { type: "auth.github"; status: GithubAuthStatus }
+  | { type: "automation.basic.status"; status: BasicAutomationStatus }
   | { type: "project.githubConnection"; projectId: string; connection: GithubConnection | null };
 
 export interface StartPlanInput {

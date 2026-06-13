@@ -108,7 +108,7 @@ test("UsageTriggerButton renders two dots when only one provider is logged in", 
   assert.match(markup, /usageTriggerProviderGroup--claude/);
   assert.doesNotMatch(markup, /usageTriggerProviderGroup--codex/);
   assert.match(markup, /aria-label="Open usage overview for Claude"/);
-  assert.match(markup, />Usage</);
+  assert.doesNotMatch(markup, />Usage</);
 });
 
 test("UsageTriggerButton renders four dots with a divider when both providers are logged in", () => {

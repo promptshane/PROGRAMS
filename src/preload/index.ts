@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from "electron";
 import type {
   AgentSession,
+  BasicAutomationStatus,
   ClaudeConnectionTestResult,
   ConfirmAgentDataInput,
   DirectorChatInput,
@@ -112,6 +113,8 @@ const api = {
   inspectAttachPath: (localPath: string): Promise<AttachPathInspection> =>
     ipcRenderer.invoke("projects.inspectAttachPath", localPath),
   readUsage: (): Promise<UsageSnapshot> => ipcRenderer.invoke("usage.read"),
+  readBasicAutomationStatus: (): Promise<BasicAutomationStatus> =>
+    ipcRenderer.invoke("automation.basic.status"),
 
   readAppUpdateStatus: (): Promise<AppUpdateStatus> => ipcRenderer.invoke("appUpdate.read"),
   installAppUpdate: (): Promise<{ started: true }> => ipcRenderer.invoke("appUpdate.install"),

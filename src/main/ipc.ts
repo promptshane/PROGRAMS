@@ -73,6 +73,7 @@ export const registerIpc = (backend: ProgramsBackend): void => {
   ipcMain.handle("projects.github.save", (_event, projectId: string) => backend.saveToGithub(projectId));
   ipcMain.handle("projects.github.download", (_event, projectId: string) => backend.downloadFromGithub(projectId));
   ipcMain.handle("usage.read", () => backend.readUsage());
+  ipcMain.handle("automation.basic.status", () => backend.readBasicAutomationStatus());
 
   ipcMain.handle("projects.list", () => backend.listProjects());
   ipcMain.handle("projects.read", (_event, projectId: string) => backend.readProject(projectId));

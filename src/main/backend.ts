@@ -31,6 +31,7 @@ import {
   removePendingApproval,
   updatePendingApproval,
 } from "@main/utils/approval-queue";
+import { resolveBasicAutomationUsagePause } from "@main/utils/basic-automation";
 import { getProviderPreflightError } from "@main/utils/provider-auth";
 import { parseEnvEntries, parseProjectOutlineReportResponse, serializeEnvEntries } from "@main/utils/project-outline";
 import { parseAgentJsonResponse, AgentJsonParseError } from "@main/utils/agent-json";
@@ -140,6 +141,8 @@ import type {
   CascadeProposal,
   CoreDetailsProposal,
   AiProvider,
+  BasicAutomationSkippedProject,
+  BasicAutomationStatus,
   AutomationConstraints,
   AutomationRunState,
   AutomationStopReason,
@@ -650,6 +653,9 @@ const APP_UPDATE_SOURCE_FILES = [
 const SLACK_DIRECTOR_INTRO_DELAY_MS = 0;
 const SLACK_DIRECTOR_POST_INTRO_DELAY_MS = 0;
 const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+const BASIC_AUTOMATION_WAIT_POLL_MS = 30_000;
+const BASIC_AUTOMATION_IDLE_POLL_MS = 45_000;
+const BASIC_AUTOMATION_RUN_SETTLE_MS = 1_500;
 
 const PROJECT_KNOWLEDGE_IGNORED_DIRS = new Set([
   ".git",
@@ -3297,6 +3303,17 @@ const resolveUsagePercent = (usage: UsageSnapshot["codex"] | UsageSnapshot["clau
   return values.length > 0 ? Math.max(...values) : null;
 };
 
+type BasicAutomationRunResult = {
+  outcome: "success" | "no_changes";
+  summary: string;
+};
+
+type PreparedPlanExecution = {
+  executingProject: Project;
+  service: CodexService | ClaudeService;
+  providerLabel: string;
+};
+
 type ToddReviewNextAction =
   | "retry_ping"
   | "send_to_pong"
@@ -5501,6 +5518,19 @@ export class ProgramsBackend {
   private lastAppUpdateStatusJson: string | null = null;
   private initializationPromise: Promise<void> | null = null;
   private readonly automationJobs = new Set<string>();
+  private basicAutomationLoopPromise: Promise<void> | null = null;
+  private basicAutomationLastSettingsSignature: string | null = null;
+  private basicAutomationCompletedProjectIds = new Set<string>();
+  private basicAutomationCursor = 0;
+  private basicAutomationStatus: BasicAutomationStatus = {
+    state: "off",
+    enabled: false,
+    currentProjectId: null,
+    pausedUntil: null,
+    lastRunSummary: null,
+    skippedProjects: [],
+    updatedAt: new Date().toISOString(),
+  };
 
   constructor(
     private readonly store: ProjectStore,
@@ -5611,6 +5641,7 @@ export class ProgramsBackend {
   async updateSettings(input: SettingsUpdateInput): Promise<Settings> {
     await this.ensureInitialized();
     const settings = await this.store.updateSettings(input);
+    this.syncBasicAutomationForSettings(settings);
     if (input.appSourcePath !== undefined) {
       this.appUpdateFailedKey = null;
       this.appUpdateBuildError = null;
@@ -8088,6 +8119,301 @@ Your final answer must be ONLY strict JSON (no markdown fences) matching:
       this.emit({ type: "agent.session", projectId, session });
     }
     return session;
+  }
+
+  async readBasicAutomationStatus(): Promise<BasicAutomationStatus> {
+    await this.ensureInitialized();
+    return { ...this.basicAutomationStatus, skippedProjects: [...this.basicAutomationStatus.skippedProjects] };
+  }
+
+  private setBasicAutomationStatus(patch: Partial<BasicAutomationStatus>): void {
+    this.basicAutomationStatus = {
+      ...this.basicAutomationStatus,
+      ...patch,
+      skippedProjects: patch.skippedProjects
+        ? [...patch.skippedProjects]
+        : [...this.basicAutomationStatus.skippedProjects],
+      updatedAt: new Date().toISOString(),
+    };
+    this.emit({ type: "automation.basic.status", status: this.basicAutomationStatus });
+  }
+
+  private syncBasicAutomationSettingsSignature(settings: Settings): void {
+    const signature = JSON.stringify({
+      projectIds: settings.automation.projectIds,
+      note: settings.automation.note,
+      provider: settings.automation.provider,
+      model: settings.automation.model,
+      claudeModel: settings.automation.claudeModel,
+      reasoningEffort: settings.automation.reasoningEffort,
+    });
+    if (signature === this.basicAutomationLastSettingsSignature) {
+      return;
+    }
+    this.basicAutomationLastSettingsSignature = signature;
+    this.basicAutomationCompletedProjectIds.clear();
+    this.basicAutomationCursor = 0;
+  }
+
+  private syncBasicAutomationForSettings(settings: Settings): void {
+    if (!settings.automation.enabled) {
+      this.setBasicAutomationStatus({
+        state: "off",
+        enabled: false,
+        currentProjectId: null,
+        pausedUntil: null,
+        lastRunSummary: this.basicAutomationStatus.lastRunSummary,
+        skippedProjects: [],
+      });
+      return;
+    }
+
+    this.syncBasicAutomationSettingsSignature(settings);
+    if (!this.basicAutomationLoopPromise) {
+      this.basicAutomationLoopPromise = this.runBasicAutomationLoop()
+        .catch((error) => {
+          this.setBasicAutomationStatus({
+            state: "blocked",
+            enabled: true,
+            currentProjectId: null,
+            pausedUntil: null,
+            lastRunSummary: error instanceof Error ? error.message : "Automation stopped after an unexpected error.",
+          });
+        })
+        .finally(() => {
+          this.basicAutomationLoopPromise = null;
+        });
+    }
+  }
+
+  private async waitForBasicAutomationUsage(currentProjectId: string | null): Promise<boolean> {
+    for (;;) {
+      const settings = await this.store.readSettings();
+      if (!settings.automation.enabled) {
+        this.syncBasicAutomationForSettings(settings);
+        return false;
+      }
+
+      const usage = await this.readUsage();
+      const decision = resolveBasicAutomationUsagePause(
+        usage,
+        settings.automation.provider,
+        settings.automation.usagePausePercent,
+      );
+      if (decision.allowed) {
+        return true;
+      }
+
+      this.setBasicAutomationStatus({
+        state: decision.state,
+        enabled: true,
+        currentProjectId,
+        pausedUntil: decision.pausedUntil,
+        lastRunSummary: decision.summary,
+      });
+      const waitUntil = decision.pausedUntil ? new Date(decision.pausedUntil).getTime() : NaN;
+      const waitMs = Number.isFinite(waitUntil)
+        ? Math.max(5_000, Math.min(BASIC_AUTOMATION_WAIT_POLL_MS, waitUntil - Date.now()))
+        : BASIC_AUTOMATION_WAIT_POLL_MS;
+      await delay(waitMs);
+    }
+  }
+
+  private clearTerminalActivePlan(projectId: string): void {
+    const activePlan = this.codex.getActivePlan(projectId) ?? this.claude.getActivePlan(projectId);
+    if (!activePlan || (activePlan.status !== "completed" && activePlan.status !== "failed")) {
+      return;
+    }
+    this.aiService(activePlan.provider).clearPlan(projectId);
+  }
+
+  private async getBasicAutomationRunnableProject(
+    projects: Project[],
+  ): Promise<{ project: Project | null; skippedProjects: BasicAutomationSkippedProject[] }> {
+    const skippedProjects: BasicAutomationSkippedProject[] = [];
+    if (projects.length === 0) {
+      return { project: null, skippedProjects };
+    }
+
+    for (let offset = 0; offset < projects.length; offset += 1) {
+      const index = (this.basicAutomationCursor + offset) % projects.length;
+      const project = projects[index]!;
+      if (this.basicAutomationCompletedProjectIds.has(project.id)) {
+        skippedProjects.push({
+          projectId: project.id,
+          reason: "done",
+          detail: "This project made no further changes for the current automation note.",
+        });
+        continue;
+      }
+
+      this.clearTerminalActivePlan(project.id);
+      const activePlan = this.codex.getActivePlan(project.id) ?? this.claude.getActivePlan(project.id);
+      if (activePlan && activePlan.status !== "completed" && activePlan.status !== "failed") {
+        skippedProjects.push({
+          projectId: project.id,
+          reason: "active-plan",
+          detail: "A manual plan or edit is already active for this project.",
+        });
+        continue;
+      }
+
+      const changedFiles = await this.git.readWorkingTreeChangedFiles(project.localPath);
+      if (changedFiles.length > 0) {
+        skippedProjects.push({
+          projectId: project.id,
+          reason: "dirty-worktree",
+          detail: `${changedFiles.slice(0, 5).join(", ")}${changedFiles.length > 5 ? ` and ${changedFiles.length - 5} more` : ""}`,
+        });
+        continue;
+      }
+
+      this.basicAutomationCursor = (index + 1) % projects.length;
+      return { project, skippedProjects };
+    }
+
+    return { project: null, skippedProjects };
+  }
+
+  private buildBasicAutomationPrompt(project: Project, note: string): string {
+    return `You are running unattended overnight automation for "${project.name}".
+
+User automation note:
+${note.trim()}
+
+Work from the current repository state. Choose exactly one focused, useful update that advances the note. Keep the scope small enough for one safe edit. If the note is already satisfied for this project, make no file changes and explain that no further work is needed. Do not ask follow-up questions.`;
+  }
+
+  private async runBasicAutomationProjectOnce(project: Project, settings: Settings): Promise<BasicAutomationRunResult> {
+    await this.requireProviderReady(settings.automation.provider, settings);
+    const service = this.aiService(settings.automation.provider);
+    const input: StartPlanInput = {
+      projectId: project.id,
+      provider: settings.automation.provider,
+      prompt: this.buildBasicAutomationPrompt(project, settings.automation.note),
+      speed: settings.automation.provider === "codex" ? settings.defaultSpeed : "normal",
+      model: settings.automation.model,
+      claudeModel: settings.automation.claudeModel,
+      reasoningEffort: settings.automation.reasoningEffort,
+      planningMode: "auto",
+      autoApprove: true,
+      contextPaths: [],
+      webEnabled: false,
+      ultracode: false,
+    };
+
+    const planningProject = await this.updateProjectStatus(project, "planning", null);
+    const draft = await service.startPlanningTurn(planningProject, settings, input);
+    let latest = await this.requireProject(project.id);
+    latest.threadId = draft.threadId;
+    latest.updatedAt = new Date().toISOString();
+    await this.store.updateProject(latest);
+    this.emit({ type: "project.updated", project: latest });
+    latest = await this.updateProjectStatus(latest, "awaitingApproval", null);
+
+    if (!(await this.waitForBasicAutomationUsage(project.id))) {
+      return { outcome: "no_changes", summary: "Automation stopped before editing." };
+    }
+
+    return this.executePlanAndPersist(latest, settings, draft);
+  }
+
+  private async runBasicAutomationLoop(): Promise<void> {
+    for (;;) {
+      const settings = await this.store.readSettings();
+      if (!settings.automation.enabled) {
+        this.syncBasicAutomationForSettings(settings);
+        return;
+      }
+      this.syncBasicAutomationSettingsSignature(settings);
+
+      if (!settings.automation.note.trim()) {
+        this.setBasicAutomationStatus({
+          state: "blocked",
+          enabled: true,
+          currentProjectId: null,
+          pausedUntil: null,
+          lastRunSummary: "Add an automation note before turning overnight automation on.",
+          skippedProjects: [],
+        });
+        await delay(BASIC_AUTOMATION_IDLE_POLL_MS);
+        continue;
+      }
+
+      if (settings.automation.projectIds.length === 0) {
+        this.setBasicAutomationStatus({
+          state: "idle",
+          enabled: true,
+          currentProjectId: null,
+          pausedUntil: null,
+          lastRunSummary: "Choose at least one starred project for automation.",
+          skippedProjects: [],
+        });
+        await delay(BASIC_AUTOMATION_IDLE_POLL_MS);
+        continue;
+      }
+
+      if (!(await this.waitForBasicAutomationUsage(null))) {
+        return;
+      }
+
+      const projectsById = new Map((await this.store.listProjects()).map((project) => [project.id, project]));
+      const selectedProjects = settings.automation.projectIds.flatMap((projectId) => {
+        const project = projectsById.get(projectId);
+        return project ? [project] : [];
+      });
+      const { project, skippedProjects } = await this.getBasicAutomationRunnableProject(selectedProjects);
+      if (!project) {
+        this.setBasicAutomationStatus({
+          state: "idle",
+          enabled: true,
+          currentProjectId: null,
+          pausedUntil: null,
+          lastRunSummary: skippedProjects.length > 0
+            ? "No selected project is runnable right now."
+            : "No selected projects were found.",
+          skippedProjects,
+        });
+        await delay(BASIC_AUTOMATION_IDLE_POLL_MS);
+        continue;
+      }
+
+      this.setBasicAutomationStatus({
+        state: "running",
+        enabled: true,
+        currentProjectId: project.id,
+        pausedUntil: null,
+        lastRunSummary: `Running one automated update for ${project.name}.`,
+        skippedProjects,
+      });
+
+      try {
+        const result = await this.runBasicAutomationProjectOnce(project, settings);
+        if (result.outcome === "no_changes") {
+          this.basicAutomationCompletedProjectIds.add(project.id);
+        }
+        this.setBasicAutomationStatus({
+          state: "idle",
+          enabled: true,
+          currentProjectId: null,
+          pausedUntil: null,
+          lastRunSummary: `${project.name}: ${result.summary}`,
+          skippedProjects,
+        });
+      } catch (error) {
+        this.basicAutomationCompletedProjectIds.add(project.id);
+        this.setBasicAutomationStatus({
+          state: "paused",
+          enabled: true,
+          currentProjectId: null,
+          pausedUntil: null,
+          lastRunSummary: `${project.name}: ${error instanceof Error ? error.message : "Automation run failed."}`,
+          skippedProjects,
+        });
+      }
+
+      await delay(BASIC_AUTOMATION_RUN_SETTLE_MS);
+    }
   }
 
   private patchAutomationState(
@@ -12553,6 +12879,21 @@ Return strict JSON with:
   }
 
   private async executePlan(project: Project, settings: Settings, draft: PlanDraft): Promise<void> {
+    const prepared = await this.preparePlanExecution(project, settings, draft);
+    void this.executePreparedPlanAndPersist(prepared, settings, draft).catch((error) => {
+      console.warn(
+        "[executePlan] Background edit failed:",
+        error instanceof Error ? error.message : error,
+      );
+    });
+  }
+
+  private async executePlanAndPersist(project: Project, settings: Settings, draft: PlanDraft): Promise<BasicAutomationRunResult> {
+    const prepared = await this.preparePlanExecution(project, settings, draft);
+    return this.executePreparedPlanAndPersist(prepared, settings, draft);
+  }
+
+  private async preparePlanExecution(project: Project, settings: Settings, draft: PlanDraft): Promise<PreparedPlanExecution> {
     applyPingExecutionRuntimeToDraft(draft);
     await this.requireProviderReady(draft.provider, settings);
     const executingProject = await this.updateProjectStatus(project, "executing", null);
@@ -12575,138 +12916,153 @@ Return strict JSON with:
       throw error;
     }
 
-    void service
-      .executeApprovedPlan(executingProject, settings, draft)
-      .then(async (result) => {
-        let latest = await this.requireProject(executingProject.id);
-        await this.git.ensureRepository(latest.localPath);
-        latest.description = result.description;
-        latest.threadId = result.draft.threadId;
-        latest.updatedAt = new Date().toISOString();
-        latest.status = "executing";
-        latest.lastError = null;
-        await this.store.updateProject(latest);
-        this.emit({ type: "project.updated", project: latest });
+    return {
+      executingProject,
+      service,
+      providerLabel,
+    };
+  }
 
-        result.draft.verifyingStatus = "in_progress";
-        result.draft.verificationDetails = "Preparing the local save.";
-        const changedFiles = await this.git.readWorkingTreeChangedFiles(latest.localPath);
-        result.draft.diffStats = await this.git.readWorkingTreeDiffStats(latest.localPath);
-        service.syncDraft(result.draft);
+  private async executePreparedPlanAndPersist(
+    prepared: PreparedPlanExecution,
+    settings: Settings,
+    draft: PlanDraft,
+  ): Promise<BasicAutomationRunResult> {
+    const { executingProject, service, providerLabel } = prepared;
+    try {
+      const result = await service.executeApprovedPlan(executingProject, settings, draft);
+      let latest = await this.requireProject(executingProject.id);
+      await this.git.ensureRepository(latest.localPath);
+      latest.description = result.description;
+      latest.threadId = result.draft.threadId;
+      latest.updatedAt = new Date().toISOString();
+      latest.status = "executing";
+      latest.lastError = null;
+      await this.store.updateProject(latest);
+      this.emit({ type: "project.updated", project: latest });
 
-        const commitSha = await this.git.commitAll(latest.localPath, result.commitMessage);
-        if (!commitSha) {
-          result.draft.status = "completed";
-          if (result.draft.planningMode === "none" && result.draft.thinkingStatus === "in_progress") {
-            result.draft.thinkingStatus = "completed";
-          }
-          result.draft.buildingStatus = "completed";
-          result.draft.verifyingStatus = "completed";
-          result.draft.verificationDetails = "No local file changes were needed.";
-          service.syncDraft(result.draft);
-          latest = await this.updateProjectStatus(latest, "idle", null);
-          await this.finalizePingExecutionOutcome(latest.id, {
-            status: "no_changes",
-            summary: "No local file changes were needed.",
-            changedFiles: [],
-            historyUpdateId: null,
-            commitSha: null,
-          });
-          this.emit({
-            type: "toast",
-            level: "info",
-            message: `${providerLabel} finished, but no local file changes were needed.`,
-          });
-          return;
-        }
+      result.draft.verifyingStatus = "in_progress";
+      result.draft.verificationDetails = "Preparing the local save.";
+      const changedFiles = await this.git.readWorkingTreeChangedFiles(latest.localPath);
+      result.draft.diffStats = await this.git.readWorkingTreeDiffStats(latest.localPath);
+      service.syncDraft(result.draft);
 
-        const historyRecord: UpdateRecord = {
-          id: randomUUID(),
-          projectId: latest.id,
-          prompt: draft.prompt,
-          summary: result.summary,
-          commitSha,
-          createdAt: new Date().toISOString(),
-          kind: "update",
-          status: "saved",
-          errorMessage: null,
-        };
-        await this.store.addUpdateRecord(historyRecord);
-        latest.lastUpdatedAt = historyRecord.createdAt;
-        latest.status = "idle";
-        latest.updatedAt = new Date().toISOString();
-        latest.lastError = null;
-        await this.store.updateProject(latest);
-        await this.recomputeProjectRelationships(await this.store.listProjects(), true);
-        latest = await this.requireProject(latest.id);
-        this.emit({ type: "project.updated", project: latest });
-        await this.emitHistory(latest.id);
+      const commitSha = await this.git.commitAll(latest.localPath, result.commitMessage);
+      if (!commitSha) {
         result.draft.status = "completed";
         if (result.draft.planningMode === "none" && result.draft.thinkingStatus === "in_progress") {
           result.draft.thinkingStatus = "completed";
         }
         result.draft.buildingStatus = "completed";
         result.draft.verifyingStatus = "completed";
-        result.draft.verificationDetails = "Update saved locally.";
+        result.draft.verificationDetails = "No local file changes were needed.";
         service.syncDraft(result.draft);
+        latest = await this.updateProjectStatus(latest, "idle", null);
         await this.finalizePingExecutionOutcome(latest.id, {
-          status: "success",
-          summary: result.summary || "Update saved locally.",
-          changedFiles,
-          historyUpdateId: historyRecord.id,
-          commitSha,
-        });
-        this.emit({
-          type: "toast",
-          level: "success",
-          message: "Update saved locally.",
-        });
-      })
-      .catch(async (error) => {
-        const latest = await this.requireProject(executingProject.id);
-        const currentDraft = service.getActivePlan(executingProject.id);
-        if (currentDraft) {
-          currentDraft.status = "failed";
-          currentDraft.errorMessage =
-            error instanceof Error ? error.message : `PROGRAMS could not finish the update with ${providerLabel}.`;
-          currentDraft.verificationDetails = currentDraft.errorMessage;
-          if (currentDraft.verifyingStatus === "in_progress" || currentDraft.buildingStatus === "completed") {
-            currentDraft.verifyingStatus = "failed";
-          } else {
-            currentDraft.buildingStatus = "failed";
-            if (currentDraft.planningMode === "none" && currentDraft.thinkingStatus === "in_progress") {
-              currentDraft.thinkingStatus = "failed";
-            }
-          }
-          service.syncDraft(currentDraft);
-        }
-        await this.updateProjectStatus(
-          latest,
-          "error",
-          error instanceof Error ? error.message : `PROGRAMS could not finish the update with ${providerLabel}.`,
-        );
-        if (isPingStartupFailure(error)) {
-          await this.rollbackPingStartupState(
-            latest.id,
-            error instanceof Error ? error.message : `PROGRAMS could not finish the update with ${providerLabel}.`,
-            undefined,
-            {
-              existingProject: latest,
-              preferredProjectStatus: "error",
-            },
-          );
-          return;
-        }
-        await this.finalizePingExecutionOutcome(latest.id, {
-          status: "blocked",
-          summary: error instanceof Error ? error.message : `PROGRAMS could not finish the update with ${providerLabel}.`,
+          status: "no_changes",
+          summary: "No local file changes were needed.",
           changedFiles: [],
-          blocker: error instanceof Error ? error.message : `PROGRAMS could not finish the update with ${providerLabel}.`,
-          toddFollowUpReason: error instanceof Error ? error.message : `PROGRAMS could not finish the update with ${providerLabel}.`,
           historyUpdateId: null,
           commitSha: null,
         });
+        this.emit({
+          type: "toast",
+          level: "info",
+          message: `${providerLabel} finished, but no local file changes were needed.`,
+        });
+        return {
+          outcome: "no_changes",
+          summary: "No local file changes were needed.",
+        };
+      }
+
+      const historyRecord: UpdateRecord = {
+        id: randomUUID(),
+        projectId: latest.id,
+        prompt: draft.prompt,
+        summary: result.summary,
+        commitSha,
+        createdAt: new Date().toISOString(),
+        kind: "update",
+        status: "saved",
+        errorMessage: null,
+      };
+      await this.store.addUpdateRecord(historyRecord);
+      latest.lastUpdatedAt = historyRecord.createdAt;
+      latest.status = "idle";
+      latest.updatedAt = new Date().toISOString();
+      latest.lastError = null;
+      await this.store.updateProject(latest);
+      await this.recomputeProjectRelationships(await this.store.listProjects(), true);
+      latest = await this.requireProject(latest.id);
+      this.emit({ type: "project.updated", project: latest });
+      await this.emitHistory(latest.id);
+      result.draft.status = "completed";
+      if (result.draft.planningMode === "none" && result.draft.thinkingStatus === "in_progress") {
+        result.draft.thinkingStatus = "completed";
+      }
+      result.draft.buildingStatus = "completed";
+      result.draft.verifyingStatus = "completed";
+      result.draft.verificationDetails = "Update saved locally.";
+      service.syncDraft(result.draft);
+      await this.finalizePingExecutionOutcome(latest.id, {
+        status: "success",
+        summary: result.summary || "Update saved locally.",
+        changedFiles,
+        historyUpdateId: historyRecord.id,
+        commitSha,
       });
+      this.emit({
+        type: "toast",
+        level: "success",
+        message: "Update saved locally.",
+      });
+      return {
+        outcome: "success",
+        summary: result.summary || "Update saved locally.",
+      };
+    } catch (error) {
+      const latest = await this.requireProject(executingProject.id);
+      const message = error instanceof Error ? error.message : `PROGRAMS could not finish the update with ${providerLabel}.`;
+      const currentDraft = service.getActivePlan(executingProject.id);
+      if (currentDraft) {
+        currentDraft.status = "failed";
+        currentDraft.errorMessage = message;
+        currentDraft.verificationDetails = currentDraft.errorMessage;
+        if (currentDraft.verifyingStatus === "in_progress" || currentDraft.buildingStatus === "completed") {
+          currentDraft.verifyingStatus = "failed";
+        } else {
+          currentDraft.buildingStatus = "failed";
+          if (currentDraft.planningMode === "none" && currentDraft.thinkingStatus === "in_progress") {
+            currentDraft.thinkingStatus = "failed";
+          }
+        }
+        service.syncDraft(currentDraft);
+      }
+      await this.updateProjectStatus(latest, "error", message);
+      if (isPingStartupFailure(error)) {
+        await this.rollbackPingStartupState(
+          latest.id,
+          message,
+          undefined,
+          {
+            existingProject: latest,
+            preferredProjectStatus: "error",
+          },
+        );
+        throw error;
+      }
+      await this.finalizePingExecutionOutcome(latest.id, {
+        status: "blocked",
+        summary: message,
+        changedFiles: [],
+        blocker: message,
+        toddFollowUpReason: message,
+        historyUpdateId: null,
+        commitSha: null,
+      });
+      throw error;
+    }
   }
 
   private async requireProject(projectId: string): Promise<Project> {
@@ -12732,6 +13088,7 @@ Return strict JSON with:
     await this.runner.restorePersistedRuntimes(projects, settings.appSourcePath, process.env.ELECTRON_RENDERER_URL ?? null);
     await this.normalizeAutomationSessionsOnStartup(projects);
     await this.reconcileProjectStatuses(projects, false);
+    this.syncBasicAutomationForSettings(settings);
   }
 
   private resolveProjectIconColor(

@@ -463,6 +463,7 @@ interface UpdateRow {
   project_id: string;
   prompt: string;
   summary: string;
+  description: string | null;
   commit_sha: string | null;
   flowchart: string;
   flowchart_graph_json: string | null;
@@ -543,6 +544,7 @@ const mapUpdateRow = (row: UpdateRow): UpdateRecord => ({
   projectId: row.project_id,
   prompt: row.prompt,
   summary: row.summary,
+  description: row.description,
   commitSha: row.commit_sha,
   createdAt: row.created_at,
   kind: row.kind,
@@ -606,6 +608,7 @@ export class ProjectStore {
         project_id TEXT NOT NULL,
         prompt TEXT NOT NULL,
         summary TEXT NOT NULL,
+        description TEXT,
         commit_sha TEXT,
         flowchart TEXT NOT NULL,
         flowchart_graph_json TEXT,
@@ -663,6 +666,7 @@ export class ProjectStore {
       );
     `);
 
+    this.ensureColumn("updates", "description", "TEXT");
     this.ensureColumn("updates", "flowchart_graph_json", "TEXT");
     this.ensureColumn("pending_planned_updates", "flowchart_graph_json", "TEXT");
     this.ensureColumn("pending_planned_updates", "previous_flowchart_graph_json", "TEXT");
@@ -1089,13 +1093,14 @@ export class ProjectStore {
   async addUpdateRecord(update: UpdateRecord): Promise<UpdateRecord> {
     this.run(
       `INSERT INTO updates (
-        id, project_id, prompt, summary, commit_sha, flowchart, flowchart_graph_json, created_at, kind, status, error_message
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        id, project_id, prompt, summary, description, commit_sha, flowchart, flowchart_graph_json, created_at, kind, status, error_message
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         update.id,
         update.projectId,
         update.prompt,
         update.summary,
+        update.description ?? null,
         update.commitSha,
         LEGACY_FLOWCHART_TEXT,
         null,
@@ -1112,11 +1117,12 @@ export class ProjectStore {
   async updateHistoryRecord(update: UpdateRecord): Promise<UpdateRecord> {
     this.run(
       `UPDATE updates
-       SET prompt = ?, summary = ?, commit_sha = ?, flowchart = ?, flowchart_graph_json = ?, kind = ?, status = ?, error_message = ?
+       SET prompt = ?, summary = ?, description = ?, commit_sha = ?, flowchart = ?, flowchart_graph_json = ?, kind = ?, status = ?, error_message = ?
        WHERE id = ?`,
       [
         update.prompt,
         update.summary,
+        update.description ?? null,
         update.commitSha,
         LEGACY_FLOWCHART_TEXT,
         null,

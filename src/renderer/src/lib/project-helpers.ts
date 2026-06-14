@@ -188,6 +188,14 @@ export const getHomeTileDotState = (
   return "ready";
 };
 
+export const hasProjectBrowserTarget = (project: Project): boolean =>
+  Boolean(project.runtimeConfig.lastRunUrl ?? project.runtimeConfig.openUrl);
+
+export const shouldOpenProjectWhenReady = (project: Project, runtime: RuntimeState): boolean =>
+  hasProjectBrowserTarget(project) ||
+  Boolean(runtime.url) ||
+  (runtime.running && runtime.source === "managed");
+
 export const getHomeAppUpdateButtonState = (status: AppUpdateStatus): HomeAppUpdateButtonState => {
   if (status.buildState === "packaging" || status.buildState === "installing") {
     return "prepare";

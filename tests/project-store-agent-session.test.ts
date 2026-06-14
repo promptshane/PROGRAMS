@@ -98,6 +98,18 @@ try {
   };
 
   await store.createProject(project);
+  await store.addUpdateRecord({
+    id: "update-1",
+    projectId: project.id,
+    prompt: "Add the checkpoint.",
+    summary: "Added onboarding checkpoint.",
+    description: "The onboarding flow now pauses at a clearer checkpoint before entering the workspace.",
+    commitSha: "abc123",
+    createdAt: now,
+    kind: "update",
+    status: "saved",
+    errorMessage: null,
+  });
 
   const session = {
     id: "session-1",
@@ -269,6 +281,7 @@ try {
   await store.saveAgentSession(session);
   const reloaded = await store.getAgentSession(project.id);
   const reloadedProject = await store.readProject(project.id);
+  const history = await store.readHistory(project.id);
 
   console.log(JSON.stringify({
     projectId: reloaded?.projectId ?? null,
@@ -286,6 +299,7 @@ try {
     slackPresenceGuestId: reloaded?.slackPresenceGuestId ?? null,
     toddConfirmedFunction: reloaded?.toddMemory?.confirmedConcept?.function?.summary ?? null,
     pingCurrentRunPrompt: reloaded?.pingMemory?.currentRun?.task.planPrompt ?? null,
+    historyDescription: history[0]?.description ?? null,
   }));
 } finally {
   await rm(tempDir, { recursive: true, force: true });
@@ -322,6 +336,7 @@ try {
     assert.equal(result.slackPresenceGuestId, "creative-director");
     assert.equal(result.toddConfirmedFunction, "Guide users into the workspace with a confident first-run flow.");
     assert.equal(result.pingCurrentRunPrompt, "Implement the onboarding checkpoint change.");
+    assert.equal(result.historyDescription, "The onboarding flow now pauses at a clearer checkpoint before entering the workspace.");
   } finally {
     await rm(userDataDir, { recursive: true, force: true });
     await rm(projectDir, { recursive: true, force: true });

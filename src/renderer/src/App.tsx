@@ -6,7 +6,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type DragEvent as ReactDragEvent,
   type ClipboardEvent as ReactClipboardEvent,
   type ChangeEvent as ReactChangeEvent,
 } from "react";
@@ -87,18 +86,18 @@ import {
   emptyModelCatalog,
   SIDEBAR_AGENTS,
 } from "./lib/constants";
-import { formatDate, providerLabel, labelForReasoningEffort } from "./lib/formatting";
+import { formatDate, labelForReasoningEffort } from "./lib/formatting";
 import { reasoningEffortsForModel, maxReasoningEffortForModel } from "@shared/reasoning-levels";
 import {
   type ChatSession,
   archiveActiveChat,
   loadHistorySession,
+  loadProjectActiveChat,
   loadProjectChatHistory,
   saveActiveChat,
 } from "./lib/project-chat-store";
 import {
   type AddProjectFormState,
-  type ComposerOptions,
   type HomeAppUpdateButtonState,
   type ProjectFilterMode,
   type ProjectSortMode,
@@ -109,12 +108,10 @@ import {
   applyTheme,
   sortProjectsForDisplay,
   syncComposerTextareaHeight,
-  hasFileDragPayload,
-  dedupePaths,
   wait,
-  getComposerDefaults,
   getHomeAppUpdateButtonState,
   getHomeTileDotState,
+  shouldOpenProjectWhenReady,
   getAutoInstallAppUpdateKey,
 } from "./lib/project-helpers";
 
@@ -242,10 +239,7 @@ function App() {
   const [healthHistory, setHealthHistory] = useState<SystemHealthSnapshot[]>([]);
   const [showHealthSheet, setShowHealthSheet] = useState(false);
   const [fastHealthPoll, setFastHealthPoll] = useState(false);
-  const [showUpdatePanel, setShowUpdatePanel] = useState(true);
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
-  const [composerValue, setComposerValue] = useState("");
-  const [composerOptions, setComposerOptions] = useState<ComposerOptions>(getComposerDefaults(emptySettings));
   const [showSettings, setShowSettings] = useState(false);
   const [showUsageSheet, setShowUsageSheet] = useState(false);
   const [showProjectDetails, setShowProjectDetails] = useState(false);
@@ -274,6 +268,8 @@ function App() {
 
   // Project-page embedded chat UI
   const [projectChatTurns, setProjectChatTurns] = useState<ChatTurn[]>([]);
+  const projectChatTurnsRef = useRef<ChatTurn[]>(projectChatTurns);
+  projectChatTurnsRef.current = projectChatTurns;
   const [projectChatInput, setProjectChatInput] = useState('');
   const [projectChatLoading, setProjectChatLoading] = useState(false);
   const [projectChatMode, setProjectChatMode] = useState<'plan' | 'ask' | 'auto'>('ask');
@@ -317,15 +313,10 @@ function App() {
   const [projectAssumedFlags, setProjectAssumedFlags] = useState<Record<string, boolean>>({});
   const [outlineReports, setOutlineReports] = useState<Record<string, ProjectOutlineReport | null | undefined>>({});
   const [envSnapshots, setEnvSnapshots] = useState<Record<string, EnvFileSnapshot | undefined>>({});
-  const [isUpdateDropTarget, setIsUpdateDropTarget] = useState(false);
-  const updateSectionRef = useRef<HTMLDivElement | null>(null);
-  const composerInputRef = useRef<HTMLTextAreaElement | null>(null);
   const projectChatInputRef = useRef<HTMLTextAreaElement | null>(null);
   const safetyConfirmResolverRef = useRef<((confirmed: boolean) => void) | null>(null);
-  const updateDropDepthRef = useRef(0);
   const shownErrorProjectIds = useRef<Set<string>>(new Set());
   const lastProjectRelationshipRefreshAtRef = useRef(0);
-  const [planError, setPlanError] = useState<string | null>(null);
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
@@ -382,7 +373,6 @@ function App() {
 
   const selectedDetail = selectedProjectId ? projectDetails[selectedProjectId] ?? null : null;
   const selectedRuntime = selectedProjectId ? projectRuntimes[selectedProjectId] ?? selectedDetail?.runtime ?? null : null;
-  const activePlan = selectedDetail?.activePlan ?? null;
   const activePage = resolveVisibleAppPage(currentPage);
   const visiblePageOptions = getVisibleAppPageOptions();
   const presentSidebarAgentId: DirectorId | null = selectedProjectId
@@ -421,9 +411,8 @@ function App() {
     setProjectChatLoading(false);
     setPlanDrawerTurnId(null);
 
-    // Archive the chat from the project we're leaving so it lands in history.
     if (previousProjectId) {
-      archiveActiveChat(previousProjectId);
+      saveActiveChat(previousProjectId, projectChatTurnsRef.current);
     }
     setShowChatHistory(false);
 
@@ -439,11 +428,8 @@ function App() {
       return;
     }
 
-    // Fresh chat per project: sweep any leftover active chat into history, then
-    // start empty so prior messages are never shown on open.
-    archiveActiveChat(projectId);
     setProjectChatHistory(loadProjectChatHistory(projectId));
-    setProjectChatTurns([]);
+    setProjectChatTurns(loadProjectActiveChat(projectId));
 
     const now = new Date().toISOString();
     setProjectLastViewed((prev) => {
@@ -575,7 +561,6 @@ function App() {
       setSetup(bootstrap.setup);
       setAppUpdate(bootstrap.appUpdate);
       setModelCatalog(bootstrap.modelCatalog);
-      setComposerOptions(getComposerDefaults(bootSettings));
       setAutomationPriorityProjectIds(automationProjectIdsToRecord(bootSettings.automation.projectIds));
       const automationStatus = await programsApi.readBasicAutomationStatus().catch(() => null);
       if (automationStatus) {
@@ -686,28 +671,9 @@ function App() {
   }, [currentPage, programsApi, requestProjectRelationshipRefresh]);
 
   useEffect(() => {
-    setComposerOptions(getComposerDefaults(settings));
-  }, [
-    selectedProjectId,
-    settings.uiMode,
-    settings.defaultSpeed,
-    settings.autoApprovePlans,
-    settings.advancedDefaults.provider,
-    settings.advancedDefaults.model,
-    settings.advancedDefaults.claudeModel,
-    settings.advancedDefaults.reasoningEffort,
-  ]);
-
-  useEffect(() => {
     if (selectedProjectId) {
       setShowUsageSheet(false);
-      setComposerValue("");
-      setPlanError(null);
     }
-  }, [selectedProjectId]);
-
-  useEffect(() => {
-    setShowUpdatePanel(Boolean(selectedProjectId));
   }, [selectedProjectId]);
 
   useEffect(() => {
@@ -733,11 +699,6 @@ function App() {
   }, [currentPage, selectedProjectId]);
 
   useEffect(() => {
-    updateDropDepthRef.current = 0;
-    setIsUpdateDropTarget(false);
-  }, [selectedProjectId, showUpdatePanel]);
-
-  useEffect(() => {
     if (!programsApi || !storedDataProjectId) {
       return;
     }
@@ -759,10 +720,6 @@ function App() {
       pushToast(error instanceof Error ? error.message : "PROGRAMS could not load the environment file.", "error");
     });
   }, [programsApi, connectionsProjectId]);
-
-  useLayoutEffect(() => {
-    syncComposerTextareaHeight(composerInputRef.current);
-  }, [composerValue, showUpdatePanel, selectedProjectId]);
 
   // Grow the project-chat composer as the user types (and collapse after send).
   useLayoutEffect(() => {
@@ -1094,7 +1051,7 @@ function App() {
                     planningStatus: plan.planningStatus,
                     buildingStatus: plan.buildingStatus,
                     verifyingStatus: plan.verifyingStatus,
-                    thought: plan.transcript || plan.explanation || t.thought,
+                    thought: plan.transcript || t.thought || plan.explanation || "",
                     steps: plan.steps,
                     plan:
                       plan.summary || plan.impact || plan.diff
@@ -1237,10 +1194,10 @@ function App() {
     // When returning to a project, don't show a completed/failed plan — make the area fresh
     const displayDetail = isTerminal ? { ...detail, activePlan: null } : detail;
     setProjectDetails((current) => ({ ...current, [projectId]: displayDetail }));
-    // Show a one-time error banner if the plan failed on its own (not user-stopped — those are cleared immediately by the backend)
+    // Show a one-time failure toast if the plan failed on its own.
     if (isTerminal && plan.status === "failed" && plan.errorMessage && !shownErrorProjectIds.current.has(projectId)) {
       shownErrorProjectIds.current.add(projectId);
-      setPlanError(plan.errorMessage);
+      pushToast(plan.errorMessage, "error");
     }
     setProjectRuntimes((current) => ({
       ...current,
@@ -1492,7 +1449,6 @@ function App() {
       setSettings(updated);
       setTheme(updated.theme);
       setAppUpdate(nextAppUpdate);
-      setComposerOptions(getComposerDefaults(updated));
       const [codexStatus, claudeStatus] = await Promise.all([
         window.programs.getCodexStatus(),
         window.programs.getClaudeStatus(),
@@ -2019,9 +1975,6 @@ function App() {
     return false;
   };
 
-  const hasProjectBrowserTarget = (project: Project): boolean =>
-    Boolean(project.runtimeConfig.lastRunUrl ?? project.runtimeConfig.openUrl);
-
   const handleHomeTileQuickAction = async (project: Project) => {
     await withBusy(`project.quick.${project.id}`, async () => {
       const runtime = projectRuntimes[project.id] ?? null;
@@ -2051,7 +2004,7 @@ function App() {
       try {
         await window.programs.runProject(project.id);
         let detail = await refreshProject(project.id);
-        const expectsBrowserTarget = hasProjectBrowserTarget(detail.project);
+        const expectsBrowserTarget = shouldOpenProjectWhenReady(detail.project, detail.runtime);
         const opened = expectsBrowserTarget ? await openProjectWhenReady(project.id) : false;
         if (opened) {
           detail = await refreshProject(project.id);
@@ -2102,7 +2055,7 @@ function App() {
       try {
         await window.programs.restartProject(project.id);
         let detail = await refreshProject(project.id);
-        const expectsBrowserTarget = hasProjectBrowserTarget(detail.project);
+        const expectsBrowserTarget = shouldOpenProjectWhenReady(detail.project, detail.runtime);
         const opened = expectsBrowserTarget ? await openProjectWhenReady(project.id) : false;
         if (opened) {
           detail = await refreshProject(project.id);
@@ -2135,177 +2088,6 @@ function App() {
         });
         throw error;
       }
-    });
-  };
-
-  const handlePickContextPaths = async () => {
-    if (!selectedProject) {
-      return;
-    }
-
-    await withBusy("context.pick", async () => {
-      const result = await window.programs.pickContextPaths(selectedProject.id);
-      if (result.canceled || result.paths.length === 0) {
-        return;
-      }
-
-      setComposerOptions((current) => ({
-        ...current,
-        contextPaths: dedupePaths([...current.contextPaths, ...result.paths]),
-      }));
-    });
-  };
-
-  const resetUpdateDropTarget = () => {
-    updateDropDepthRef.current = 0;
-    setIsUpdateDropTarget(false);
-  };
-
-  const handleUpdateSectionDragEnter = (event: ReactDragEvent<HTMLDivElement>) => {
-    if (!hasFileDragPayload(event.dataTransfer)) {
-      return;
-    }
-
-    event.preventDefault();
-    updateDropDepthRef.current += 1;
-    setIsUpdateDropTarget(true);
-  };
-
-  const handleUpdateSectionDragOver = (event: ReactDragEvent<HTMLDivElement>) => {
-    if (!hasFileDragPayload(event.dataTransfer)) {
-      return;
-    }
-
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "copy";
-    if (!isUpdateDropTarget) {
-      setIsUpdateDropTarget(true);
-    }
-  };
-
-  const handleUpdateSectionDragLeave = (event: ReactDragEvent<HTMLDivElement>) => {
-    if (!hasFileDragPayload(event.dataTransfer)) {
-      return;
-    }
-
-    event.preventDefault();
-    updateDropDepthRef.current = Math.max(0, updateDropDepthRef.current - 1);
-    if (updateDropDepthRef.current === 0) {
-      setIsUpdateDropTarget(false);
-    }
-  };
-
-  const handleUpdateSectionDrop = async (event: ReactDragEvent<HTMLDivElement>) => {
-    if (!selectedProject || !hasFileDragPayload(event.dataTransfer)) {
-      return;
-    }
-
-    event.preventDefault();
-    resetUpdateDropTarget();
-
-    const nativePaths = window.programs.resolveDroppedFilePaths(Array.from(event.dataTransfer.files));
-    if (nativePaths.length === 0) {
-      return;
-    }
-
-    try {
-      const result = await window.programs.resolveDroppedContextPaths({
-        projectId: selectedProject.id,
-        paths: nativePaths,
-      });
-
-      if (result.paths.length) {
-        setComposerOptions((current) => ({
-          ...current,
-          contextPaths: dedupePaths([...current.contextPaths, ...result.paths]),
-        }));
-      }
-
-      if (result.rejectedCount > 0) {
-        pushToast(
-          result.paths.length
-            ? "Some dropped items were ignored. Only files and folders inside this project can be attached here."
-            : "Only files and folders inside this project can be attached here.",
-          "error",
-        );
-      }
-    } catch (error) {
-      pushToast(error instanceof Error ? error.message : "PROGRAMS could not attach the dropped files.", "error");
-    }
-  };
-
-  const handlePlanAction = async () => {
-    if (!selectedProject) {
-      return;
-    }
-
-    const prompt = composerValue.trim();
-    if (!prompt) {
-      pushToast("Describe the change you want first.", "error");
-      return;
-    }
-
-    if (activePlan?.status === "planning" || activePlan?.status === "executing") {
-      pushToast(`Wait for the current ${providerLabel(composerOptions.provider)} turn to finish or cancel it first.`, "error");
-      return;
-    }
-
-    if (composerOptions.planningMode === "auto" || composerOptions.planningMode === "none") {
-      const confirmed = await confirmDirtyWorkIfNeeded(selectedProject.id, "Start AI edit?", "Start AI edit");
-      if (!confirmed) {
-        return;
-      }
-    }
-
-    const input = {
-      projectId: selectedProject.id,
-      provider: composerOptions.provider,
-      prompt,
-      speed: composerOptions.speed,
-      model: composerOptions.model,
-      claudeModel: composerOptions.claudeModel,
-      reasoningEffort: composerOptions.reasoningEffort,
-      planningMode: composerOptions.planningMode,
-      autoApprove: composerOptions.planningMode === "auto",
-      contextPaths: composerOptions.contextPaths,
-    } as const;
-
-    await withBusy("plan.send", async () => {
-      if (activePlan?.status === "awaitingApproval") {
-        await window.programs.revisePlan(input);
-      } else {
-        await window.programs.startPlan(input);
-      }
-      setComposerValue("");
-      setComposerOptions((current) => ({
-        ...current,
-        contextPaths: [],
-      }));
-    });
-  };
-
-  const handleConfirmUpdate = async () => {
-    if (!selectedProject) {
-      return;
-    }
-
-    const confirmed = await confirmDirtyWorkIfNeeded(selectedProject.id, "Approve plan and start work?", "Approve plan");
-    if (!confirmed) {
-      return;
-    }
-
-    await withBusy("plan.approve", async () => {
-      await window.programs.approvePlan({ projectId: selectedProject.id });
-    });
-  };
-
-  const handleCancelPlan = async () => {
-    if (!selectedProject) {
-      return;
-    }
-
-    await withBusy("plan.cancel", async () => {
-      await window.programs.cancelPlan(selectedProject.id);
     });
   };
 
@@ -2410,8 +2192,6 @@ function App() {
   const detailCanStop = isProjectRunning && !detailIsLaunching;
   const selectedProjectLastSavedAt = selectedProject?.githubConnection?.lastPushedAt ?? null;
   const selectedProjectHasGithubRepo = Boolean(selectedProject?.githubConnection?.repoUrl);
-  const canConfirmPlan = activePlan?.status === "awaitingApproval";
-  const showUpdateDock = Boolean(activePlan);
   const isSelectedProjectView = activePage === "projects" && Boolean(selectedProject);
   const useComposerLayout = isSelectedProjectView || activePage === "agents";
   const homeAppUpdateButton = getHomeAppUpdateButtonState(appUpdate);

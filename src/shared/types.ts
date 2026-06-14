@@ -357,6 +357,7 @@ export interface UpdateRecord {
   projectId: string;
   prompt: string;
   summary: string;
+  description?: string | null;
   commitSha: string | null;
   createdAt: string;
   kind: UpdateKind;

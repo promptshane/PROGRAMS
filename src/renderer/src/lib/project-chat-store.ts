@@ -113,6 +113,11 @@ export function loadProjectChatHistory(projectId: string): ChatSession[] {
   return sortedHistory(readStore(projectId).history);
 }
 
+/** Load the active chat for a project. Stale running turns are settled. */
+export function loadProjectActiveChat(projectId: string): ChatTurn[] {
+  return reviveTurns(readStore(projectId).active);
+}
+
 /** Persist the in-progress active chat so it survives a crash/restart. */
 export function saveActiveChat(projectId: string, turns: ChatTurn[]): void {
   const store = readStore(projectId);

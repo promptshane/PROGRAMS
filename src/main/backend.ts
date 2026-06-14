@@ -12092,6 +12092,10 @@ Respond with ONLY the command string — no explanation, no markdown, no quotes.
     // can read them. Kept for the whole plan→execute lifecycle; replaced on the
     // next send (see persistChatImages).
     const imagePaths = await this.persistChatImages(input.projectId, input.images);
+    const existingSession = input.mode === "plan"
+      ? await this.store.getAgentSession(input.projectId)
+      : null;
+    const coreDetailsContext = existingSession ? formatCoreDetails(existingSession) || null : null;
     const planInput: StartPlanInput = {
       projectId: input.projectId,
       provider: input.provider,
@@ -12103,6 +12107,7 @@ Respond with ONLY the command string — no explanation, no markdown, no quotes.
       planningMode: input.mode === "plan" ? "review" : "none",
       autoApprove: false,
       contextPaths: [],
+      coreDetailsContext,
       webEnabled: input.webEnabled ?? false,
       ultracode: input.ultracode ?? false,
       imagePaths,
@@ -12166,6 +12171,7 @@ Respond with ONLY the command string — no explanation, no markdown, no quotes.
       projectId: project.id,
       prompt: `Undo ${target.summary}`,
       summary: `Undid: ${target.summary}`,
+      description: target.description ? `Reverted update details: ${target.description}` : null,
       commitSha: revertSha,
       createdAt: new Date().toISOString(),
       kind: "undo",
@@ -12981,6 +12987,7 @@ Return strict JSON with:
         projectId: latest.id,
         prompt: draft.prompt,
         summary: result.summary,
+        description: result.description,
         commitSha,
         createdAt: new Date().toISOString(),
         kind: "update",

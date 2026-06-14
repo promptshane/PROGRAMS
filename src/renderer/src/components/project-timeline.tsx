@@ -119,6 +119,12 @@ export function ProjectTimeline({
 
                 {isExpanded && (
                   <div className="timelineNodeExpanded">
+                    {update.description ? (
+                      <div>
+                        <span className="fieldLabel">Details</span>
+                        <p className="helperText timelinePromptText">{update.description}</p>
+                      </div>
+                    ) : null}
                     {update.prompt && (
                       <div>
                         <span className="fieldLabel">Prompt</span>

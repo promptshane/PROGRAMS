@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   getAutoInstallAppUpdateKey,
+  shouldOpenProjectWhenReady,
   sortProjectsForDisplay,
 } from "../src/renderer/src/lib/project-helpers.ts";
 import {
   createEmptyProjectRelationshipSummary,
   type AppUpdateStatus,
   type Project,
+  type RuntimeState,
 } from "../src/shared/types.ts";
 
 const createProject = (
@@ -162,6 +164,38 @@ const createAppUpdateStatus = (overrides: Partial<AppUpdateStatus> = {}): AppUpd
   action: "install",
   reason: "A newer build is ready to install.",
   ...overrides,
+});
+
+const createRuntime = (overrides: Partial<RuntimeState> = {}): RuntimeState => ({
+  projectId: "project-1",
+  running: false,
+  pid: null,
+  url: null,
+  startedAt: null,
+  logs: [],
+  source: "none",
+  controllable: true,
+  ...overrides,
+});
+
+test("shouldOpenProjectWhenReady includes first-run managed runtimes without a stored URL", () => {
+  const project = createProject("first-run", "First Run", {
+    runtimeConfig: {
+      packageManager: "npm",
+      installCommand: null,
+      runCommand: "npm run dev",
+      openUrl: null,
+      lastRunUrl: null,
+      initialIdea: null,
+      assignedPort: null,
+      launch: null,
+    },
+  });
+
+  assert.equal(shouldOpenProjectWhenReady(project, createRuntime()), false);
+  assert.equal(shouldOpenProjectWhenReady(project, createRuntime({ running: true, source: "managed", pid: 1234 })), true);
+  assert.equal(shouldOpenProjectWhenReady(project, createRuntime({ running: true, source: "external", pid: 1234 })), false);
+  assert.equal(shouldOpenProjectWhenReady(project, createRuntime({ running: true, source: "managed", url: "http://127.0.0.1:5173/" })), true);
 });
 
 test("getAutoInstallAppUpdateKey returns an install candidate for ready writable updates", () => {

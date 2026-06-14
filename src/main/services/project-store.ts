@@ -53,6 +53,7 @@ import {
   sanitizePongMemory,
   sanitizeSlackMessages,
 } from "../../shared/agent-session.ts";
+import { coercePillarStatus, derivePillarStatus } from "../../shared/pillar-status.ts";
 import { DEFAULT_AUTOMATION_SETTINGS, DEFAULT_SETTINGS, DEFAULT_SETUP_STATE } from "../defaults.ts";
 import { ensureDirectory, pathExists } from "../utils/fs.ts";
 
@@ -1320,14 +1321,20 @@ export class ProjectStore {
     const { directorStateMap } = sanitizeDirectorStateMap(JSON.parse((r.director_state_map_json as string) || "{}"));
     const { pendingApprovals } = sanitizePendingApprovals(JSON.parse((r.pending_approvals_json as string) || "[]"));
     const migratePillars = (pillars: CorePillar[]): CorePillar[] =>
-      pillars.map((p, idx) => ({
-        ...p,
-        pillarType: p.pillarType ?? "core",
-        description: p.description ?? null,
-        connectedPillarIds: p.connectedPillarIds ?? [],
-        order: p.order ?? idx,
-        corePillars: migratePillars(p.corePillars ?? []),
-      }));
+      pillars.map((p, idx) => {
+        const pillarType = p.pillarType ?? "core";
+        return {
+          ...p,
+          pillarType,
+          status: p.status
+            ? coercePillarStatus(p.status)
+            : derivePillarStatus({ pillarType, assumptionSource: p.assumptionSource ?? null }),
+          description: p.description ?? null,
+          connectedPillarIds: p.connectedPillarIds ?? [],
+          order: p.order ?? idx,
+          corePillars: migratePillars(p.corePillars ?? []),
+        };
+      });
 
     const corePillars = migratePillars(rawPillars);
     const currentCorePillars = migratePillars(JSON.parse((r.current_core_pillars_json as string) || "[]"));

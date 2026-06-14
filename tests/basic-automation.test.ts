@@ -115,6 +115,7 @@ const loadProjectStoreModule = async (userDataDir: string) => {
   const absoluteImports = new Map([
     ["../../shared/types.ts", pathToFileURL(path.join(projectRoot, "src/shared/types.ts")).href],
     ["../../shared/agent-session.ts", pathToFileURL(path.join(projectRoot, "src/shared/agent-session.ts")).href],
+    ["../../shared/pillar-status.ts", pathToFileURL(path.join(projectRoot, "src/shared/pillar-status.ts")).href],
     ["../defaults.ts", pathToFileURL(path.join(projectRoot, "src/main/defaults.ts")).href],
     ["../utils/fs.ts", pathToFileURL(path.join(projectRoot, "src/main/utils/fs.ts")).href],
   ]);

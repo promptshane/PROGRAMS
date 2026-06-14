@@ -10,6 +10,7 @@ const createCorePillar = (id: string, name: string): CorePillar => ({
   id,
   name,
   pillarType: "core",
+  status: "canonical",
   function: null,
   thesis: null,
   corePillars: [],

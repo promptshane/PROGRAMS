@@ -363,6 +363,7 @@ const createFlowPillars = (): CorePillar[] => [
     id: "onboarding",
     name: "Onboarding",
     pillarType: "core",
+    status: "canonical",
     function: createDetail("Guide the user from arrival into the product."),
     thesis: createDetail("The first interaction should feel obvious and narrow."),
     corePillars: [
@@ -370,6 +371,7 @@ const createFlowPillars = (): CorePillar[] => [
         id: "onboarding-help",
         name: "Guided Help",
         pillarType: "tbd",
+        status: "suggested",
         function: createDetail("Surface guidance without overwhelming the user.", "assumed"),
         thesis: createDetail("Help should appear only when the user needs it.", "assumed"),
         corePillars: [],
@@ -386,6 +388,7 @@ const createFlowPillars = (): CorePillar[] => [
         id: "onboarding-ambient",
         name: "Ambient Support",
         pillarType: "side",
+        status: "maybe",
         function: createDetail("Add a softer side branch for supportive copy."),
         thesis: createDetail("The main series should stay focused while the side branch stays optional."),
         corePillars: [],
@@ -412,6 +415,7 @@ const createFlowPillars = (): CorePillar[] => [
     id: "workspace",
     name: "Workspace",
     pillarType: "core",
+    status: "canonical",
     function: createDetail("Give the user a stable working surface."),
     thesis: createDetail("After setup, the product should feel ready to use."),
     corePillars: [
@@ -419,6 +423,7 @@ const createFlowPillars = (): CorePillar[] => [
         id: "workspace-experiment",
         name: "Experimental Split View",
         pillarType: "ghost",
+        status: "maybe",
         function: createDetail("Test an experimental split layout."),
         thesis: createDetail("The branch may never ship, but it could reshape the experience."),
         corePillars: [],
@@ -435,6 +440,7 @@ const createFlowPillars = (): CorePillar[] => [
         id: "workspace-end",
         name: "Launch Baseline",
         pillarType: "hard-stop",
+        status: "canonical",
         function: createDetail("Mark the point where the first release can end."),
         thesis: createDetail("The core flow should have a clear terminal point."),
         corePillars: [],
@@ -769,6 +775,8 @@ test("Dan draft operations update the existing draft without rebuilding the whol
   assert.equal(updatedWorkspace?.corePillars.some((pillar) => pillar.name === "Ambient Guidance"), true);
   assert.equal(findPillarByName(session.danDraftCoreDetails?.corePillars ?? [], "Launch Baseline"), null);
   assert.equal(postLaunchRitual?.pillarType, "side");
+  // Agents may only ever create unconfirmed suggestions — never confirmed canon.
+  assert.equal(postLaunchRitual?.status, "suggested");
   assert.deepEqual(postLaunchRitual?.connectedPillarIds, workspace ? [workspace.id] : []);
   assert.equal(session.danMemory.rawMemories[0]?.relatedPillarIds[0], originalAmbient?.id);
 });

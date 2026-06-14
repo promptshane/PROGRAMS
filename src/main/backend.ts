@@ -124,6 +124,7 @@ import {
   formatPillarFlowSection,
   sortPillarsByOrder,
 } from "@shared/pillar-flow";
+import { AGENT_PILLAR_STATUS } from "@shared/pillar-status";
 import type {
   AgentChatInput,
   AgentChatMessage,
@@ -1496,6 +1497,9 @@ const clonePillarWithStatus = (
   status: "confirmed" | "edited",
 ): CorePillar => ({
   ...pillar,
+  // User confirmation promotes an agent-suggested pillar to canon; a plain
+  // edit leaves the lifecycle status untouched.
+  status: status === "confirmed" && pillar.status === "suggested" ? "canonical" : pillar.status,
   function: cloneDetailWithStatus(pillar.function, status),
   thesis: cloneDetailWithStatus(pillar.thesis, status),
   fullFlow: cloneDetailWithStatus(pillar.fullFlow, status),
@@ -1814,6 +1818,7 @@ const buildGeneratedCoreDetailsConcept = (input: {
     id: randomUUID(),
     name: pillar.name,
     pillarType: "core",
+    status: AGENT_PILLAR_STATUS,
     function: pillar.function ? { summary: pillar.function, status: "assumed" } : null,
     thesis: pillar.thesis ? { summary: pillar.thesis, status: "assumed" } : null,
     corePillars: [],
@@ -1992,6 +1997,7 @@ const applyDanDraftOperationsState = (
         id: randomUUID(),
         name: operation.name,
         pillarType: "core",
+        status: AGENT_PILLAR_STATUS,
         function: null,
         thesis: null,
         corePillars: [],
@@ -3771,6 +3777,7 @@ const buildDanDraftCoreDetailsState = (
       id: existing?.id ?? randomUUID(),
       name: draftPillar.name.trim(),
       pillarType: normalizeDanPillarType(draftPillar.pillarType),
+      status: existing?.status ?? AGENT_PILLAR_STATUS,
       function: createDraftDetail(draftPillar.function),
       thesis: createDraftDetail(draftPillar.thesis),
       corePillars: [],
@@ -7175,6 +7182,9 @@ Your final answer must be ONLY strict JSON (no markdown fences) matching:
 
     if (field === "core_pillars") {
       for (const pillar of session.corePillars) {
+        if (pillar.status === "suggested") {
+          pillar.status = "canonical";
+        }
         if (pillar.function?.status === "assumed" || pillar.function?.status === "edited") {
           pillar.function.status = "confirmed";
         }

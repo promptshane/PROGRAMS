@@ -55,6 +55,7 @@ const { createEmptyProjectRelationshipSummary } = await import(
 const absoluteImports = new Map([
   ["../../shared/types.ts", pathToFileURL(path.join(projectRoot, "src/shared/types.ts")).href],
   ["../../shared/agent-session.ts", pathToFileURL(path.join(projectRoot, "src/shared/agent-session.ts")).href],
+  ["../../shared/pillar-status.ts", pathToFileURL(path.join(projectRoot, "src/shared/pillar-status.ts")).href],
   ["../defaults.ts", pathToFileURL(path.join(projectRoot, "src/main/defaults.ts")).href],
   ["../utils/fs.ts", pathToFileURL(path.join(projectRoot, "src/main/utils/fs.ts")).href],
 ]);
@@ -132,6 +133,7 @@ try {
         id: "pillar-1",
         name: "Onboarding",
         pillarType: "core",
+        status: "canonical",
         function: confirmedDetail("Orient the user and collect the minimum setup inputs."),
         thesis: confirmedDetail("The first interaction should feel guided, not overwhelming."),
         corePillars: [],

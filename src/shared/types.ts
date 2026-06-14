@@ -983,6 +983,10 @@ export type ProjectCategory = "program" | "general-project" | "idea-in-progress"
 
 export type PillarType = "core" | "side" | "ghost" | "tbd" | "hard-stop";
 
+// Orthogonal lifecycle axis (separate from pillarType's lane/color role and
+// endState's ending role). Single source of truth for "is this confirmed canon?".
+export type PillarStatus = "canonical" | "maybe" | "open" | "suggested" | "silenced";
+
 export type PillarEndState = "end" | "tbd";
 
 export interface PillarThread {
@@ -1129,6 +1133,7 @@ export interface CorePillar {
   id: string;
   name: string;
   pillarType: PillarType;
+  status: PillarStatus;
   function: CorePillarDetail | null;
   thesis: CorePillarDetail | null;
   corePillars: CorePillar[];

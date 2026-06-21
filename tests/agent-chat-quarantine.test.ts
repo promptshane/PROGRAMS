@@ -231,6 +231,292 @@ test("refreshProject queues a new live approval even when a legacy later refresh
   );
 });
 
+test("refreshProjectDetails runs immediately with the Usage provider defaults and no approval", async () => {
+  const backend = createBackend({
+    advancedDefaults: {
+      provider: "claude",
+      model: "gpt-5.5-mini",
+      claudeModel: "opus",
+    },
+  }) as Record<string, unknown>;
+  (backend.ensureInitialized as Function) = async () => {};
+  (backend.queueApproval as Function) = () => {
+    throw new Error("Direct project details refresh must not queue an approval.");
+  };
+
+  let capturedInput: Record<string, unknown> | null = null;
+  (backend.refreshProjectNow as Function) = async (input: Record<string, unknown>) => {
+    capturedInput = input;
+    return {
+      session: null,
+      provider: "claude",
+      status: "success",
+      completedAt: "2026-06-18T12:00:00.000Z",
+      warning: null,
+    };
+  };
+
+  const result = await (backend.refreshProjectDetails as Function)("project-1");
+
+  assert.deepEqual(capturedInput, {
+    projectId: "project-1",
+    provider: "claude",
+    model: "gpt-5.5-mini",
+    claudeModel: "opus",
+  });
+  assert.equal(result.provider, "claude");
+  assert.equal(result.status, "success");
+});
+
+test("refreshProjectDetails shares one in-flight scan per project", async () => {
+  const backend = createBackend() as Record<string, unknown>;
+  (backend.ensureInitialized as Function) = async () => {};
+
+  let calls = 0;
+  let release: (() => void) | null = null;
+  (backend.refreshProjectNow as Function) = async () => {
+    calls += 1;
+    await new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return {
+      session: null,
+      provider: "codex",
+      status: "success",
+      completedAt: "2026-06-18T12:00:00.000Z",
+      warning: null,
+    };
+  };
+
+  const first = (backend.refreshProjectDetails as Function)("project-1");
+  const second = (backend.refreshProjectDetails as Function)("project-1");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(calls, 1);
+  assert.ok(release);
+  release?.();
+
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+  assert.equal(firstResult.status, "success");
+  assert.equal(secondResult.status, "success");
+});
+
+test("refreshProjectDetails returns provider failures without mutating existing details", async () => {
+  const backend = createBackend({
+    advancedDefaults: {
+      provider: "claude",
+      model: "gpt-5.5",
+      claudeModel: "sonnet",
+    },
+  }) as Record<string, unknown>;
+  (backend.ensureInitialized as Function) = async () => {};
+
+  const session = (backend.createEmptyAgentSession as Function)("project-1", "claude") as AgentSession;
+  session.danMemory.confirmedConcept = {
+    function: { summary: "Confirmed function", status: "confirmed", confirmedAt: "2026-06-01T00:00:00.000Z" },
+    thesis: null,
+    corePillars: [],
+    fullFlow: null,
+    threads: [],
+  };
+  session.danMemory.derivedConcept = {
+    function: { summary: "Previous snapshot", status: "assumed", confirmedAt: "2026-06-01T00:00:00.000Z" },
+    thesis: null,
+    corePillars: [],
+    fullFlow: null,
+    threads: [],
+  };
+  const before = JSON.parse(JSON.stringify(session)) as AgentSession;
+
+  (backend.refreshProjectNow as Function) = async () => {
+    throw new Error("Claude is not signed in.");
+  };
+  (backend.getAgentSession as Function) = async () => session;
+
+  const result = await (backend.refreshProjectDetails as Function)("project-1");
+
+  assert.equal(result.status, "failure");
+  assert.match(result.warning ?? "", /Claude is not signed in/i);
+  assert.deepEqual(session.danMemory.confirmedConcept, before.danMemory.confirmedConcept);
+  assert.deepEqual(session.danMemory.derivedConcept, before.danMemory.derivedConcept);
+});
+
+test("refreshProjectNow updates technical and derived state without changing confirmed hard memory", async () => {
+  const backend = createBackend({
+    advancedDefaults: {
+      provider: "codex",
+      model: "gpt-5.5",
+      claudeModel: "sonnet",
+    },
+  }) as Record<string, unknown>;
+  (backend.ensureInitialized as Function) = async () => {};
+  (backend.requireProviderReady as Function) = async () => {};
+
+  const scanRoot = await mkdtemp(path.join(os.tmpdir(), "programs-refresh-success-"));
+  await writeFile(path.join(scanRoot, "package.json"), '{"name":"refresh-project"}', "utf8");
+  const project = {
+    id: "project-1",
+    name: "Refresh Project",
+    description: "Refresh project details.",
+    localPath: scanRoot,
+    runtimeConfig: {},
+  };
+  (backend.requireProject as Function) = async () => project;
+
+  let storedSession = (backend.createEmptyAgentSession as Function)("project-1", "codex") as AgentSession;
+  storedSession.danMemory.confirmedConcept = {
+    function: { summary: "Confirmed product intent", status: "confirmed", confirmedAt: "2026-06-01T00:00:00.000Z" },
+    thesis: null,
+    corePillars: [],
+    fullFlow: null,
+    threads: [],
+  };
+  storedSession.danMemory.hardMemory = JSON.parse(JSON.stringify(storedSession.danMemory.confirmedConcept));
+  const confirmedBefore = JSON.parse(JSON.stringify(storedSession.danMemory.confirmedConcept));
+  const hardMemoryBefore = JSON.parse(JSON.stringify(storedSession.danMemory.hardMemory));
+
+  (backend.store as Record<string, unknown>).getAgentSession = async () => storedSession;
+  (backend.store as Record<string, unknown>).saveAgentSession = async (session: AgentSession) => {
+    storedSession = session;
+  };
+  (backend.stageSlackDirectorIntroSequence as Function) = async () => null;
+  (backend.generateOutlineReportNow as Function) = async () => ({
+    projectId: "project-1",
+    storedData: [{ label: "SQLite", description: "Project database.", children: [] }],
+    connections: [{ name: "Example API", kind: "API", description: "External API.", envKeys: ["EXAMPLE_KEY"] }],
+    costs: [],
+    referencedEnvKeys: ["EXAMPLE_KEY"],
+    generatedAt: "2026-06-18T12:00:00.000Z",
+  });
+  let runtimeRefreshes = 0;
+  (backend.refreshProjectRuntimeConfig as Function) = async () => {
+    runtimeRefreshes += 1;
+    return project;
+  };
+  (backend.decorateAgentSessionKnowledgeState as Function) = async (session: AgentSession) => session;
+
+  let aiCall = 0;
+  (backend.aiService as Function) = () => ({
+    runOneShot: async () => {
+      aiCall += 1;
+      return aiCall === 1
+        ? JSON.stringify({
+            scanSummary: "The current app includes refreshed project details.",
+            detectedFeatures: ["Project details refresh"],
+            same: [],
+            updated: ["Project details"],
+            currentState: "Project details can be refreshed from the codebase.",
+            response: "I found the new refresh workflow.",
+          })
+        : JSON.stringify({
+            function: "Refresh project details from the current codebase.",
+            thesis: "Keep PROGRAMS aligned with external edits.",
+            corePillars: [{
+              name: "Project refresh",
+              function: "Scans the current project.",
+              thesis: "Prevents stale project context.",
+            }],
+            fullFlow: "Open Project Details and refresh the current project snapshot.",
+          });
+    },
+  });
+
+  try {
+    const result = await (backend.refreshProjectNow as Function)({
+      projectId: "project-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      claudeModel: "sonnet",
+    });
+
+    assert.equal(result.status, "success");
+    assert.equal(runtimeRefreshes, 1);
+    assert.equal(storedSession.toddMemory.codebaseIndexedMap?.summary, "Project details can be refreshed from the codebase.");
+    assert.equal(storedSession.danMemory.derivedConcept?.function?.summary, "Refresh project details from the current codebase.");
+    assert.deepEqual(storedSession.danMemory.confirmedConcept, confirmedBefore);
+    assert.deepEqual(storedSession.danMemory.hardMemory, hardMemoryBefore);
+  } finally {
+    await rm(scanRoot, { recursive: true, force: true });
+  }
+});
+
+test("refreshProjectNow reports partial success and retains the prior snapshot when derived generation fails", async () => {
+  const backend = createBackend() as Record<string, unknown>;
+  (backend.ensureInitialized as Function) = async () => {};
+  (backend.requireProviderReady as Function) = async () => {};
+
+  const scanRoot = await mkdtemp(path.join(os.tmpdir(), "programs-refresh-partial-"));
+  await writeFile(path.join(scanRoot, "package.json"), '{"name":"refresh-project"}', "utf8");
+  const project = {
+    id: "project-1",
+    name: "Refresh Project",
+    description: "Refresh project details.",
+    localPath: scanRoot,
+    runtimeConfig: {},
+  };
+  (backend.requireProject as Function) = async () => project;
+
+  let storedSession = (backend.createEmptyAgentSession as Function)("project-1", "codex") as AgentSession;
+  storedSession.danMemory.derivedConcept = {
+    function: { summary: "Previous generated snapshot", status: "assumed", confirmedAt: "2026-06-01T00:00:00.000Z" },
+    thesis: null,
+    corePillars: [],
+    fullFlow: null,
+    threads: [],
+  };
+  const previousDerived = JSON.parse(JSON.stringify(storedSession.danMemory.derivedConcept));
+
+  (backend.store as Record<string, unknown>).getAgentSession = async () => storedSession;
+  (backend.store as Record<string, unknown>).saveAgentSession = async (session: AgentSession) => {
+    storedSession = session;
+  };
+  (backend.stageSlackDirectorIntroSequence as Function) = async () => null;
+  (backend.generateOutlineReportNow as Function) = async () => ({
+    projectId: "project-1",
+    storedData: [],
+    connections: [],
+    costs: [],
+    referencedEnvKeys: [],
+    generatedAt: "2026-06-18T12:00:00.000Z",
+  });
+  (backend.refreshProjectRuntimeConfig as Function) = async () => project;
+  (backend.decorateAgentSessionKnowledgeState as Function) = async (session: AgentSession) => session;
+
+  let aiCall = 0;
+  (backend.aiService as Function) = () => ({
+    runOneShot: async () => {
+      aiCall += 1;
+      if (aiCall === 1) {
+        return JSON.stringify({
+          scanSummary: "Technical scan completed.",
+          detectedFeatures: ["Refresh"],
+          same: [],
+          updated: ["Refresh"],
+          currentState: "Technical state updated.",
+          response: "Technical scan completed.",
+        });
+      }
+      throw new Error("Derived concept generation failed.");
+    },
+  });
+
+  try {
+    const result = await (backend.refreshProjectNow as Function)({
+      projectId: "project-1",
+      provider: "codex",
+      model: "gpt-5.5",
+      claudeModel: "sonnet",
+    });
+
+    assert.equal(result.status, "partial-success");
+    assert.match(result.warning ?? "", /Derived concept generation failed/i);
+    assert.equal(storedSession.toddMemory.codebaseIndexedMap?.summary, "Technical state updated.");
+    assert.deepEqual(storedSession.danMemory.derivedConcept, previousDerived);
+  } finally {
+    await rm(scanRoot, { recursive: true, force: true });
+  }
+});
+
 test("deferPendingApproval keeps the approval in the queue as later instead of deleting it", async () => {
   const backend = createBackend() as Record<string, unknown>;
   (backend.ensureInitialized as Function) = async () => {};

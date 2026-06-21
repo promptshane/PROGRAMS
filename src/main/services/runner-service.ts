@@ -4,7 +4,7 @@ import { join, resolve } from "node:path";
 import type { Project, RuntimeState } from "../../shared/types.ts";
 import { EMPTY_RUNTIME } from "../defaults.ts";
 import { readTextFile, writeTextFile } from "../utils/fs.ts";
-import { repairMissingCdSeparator, resolvePortInjection } from "../utils/project.ts";
+import { rankRuntimeLaunchUrl, repairMissingCdSeparator, resolvePortInjection } from "../utils/project.ts";
 import { isValidAssignedPort } from "../utils/port-allocator.ts";
 import { execCommand, execFileCommand, getCommandEnv } from "../utils/process.ts";
 
@@ -527,7 +527,7 @@ export class RunnerService {
       runtime.logs = [...runtime.logs, ...text.split(/\r?\n/).filter(Boolean)].slice(-200);
 
       const detectedUrl = this.readRuntimeUrl(text);
-      if (detectedUrl && detectedUrl !== runtime.url) {
+      if (detectedUrl && detectedUrl !== runtime.url && this.shouldAdoptRuntimeUrl(runtime.url, detectedUrl, project)) {
         runtime.url = detectedUrl;
         void this.persistRegistry();
         void this.onRuntimeUrlDetected?.(project.id, detectedUrl);
@@ -680,13 +680,39 @@ export class RunnerService {
     return null;
   }
 
+  // A project can expose several listening ports — e.g. a Vite UI on 5173 plus an
+  // API / SQLite bridge on 3001 launched together by `concurrently`. Both print a
+  // URL to stdout, so without a preference PROGRAMS can latch onto the API and
+  // open a bare JSON endpoint ("Cannot GET /") instead of the page. Rank a URL by
+  // how likely it is to be the thing the user wants to open: the detected frontend
+  // (openUrl) wins, then the project's assigned port, then anything else.
+  private runtimeUrlRank(url: string, project: Project): number {
+    return rankRuntimeLaunchUrl(url, {
+      openUrl: project.runtimeConfig.openUrl,
+      assignedPort: project.runtimeConfig.assignedPort,
+    });
+  }
+
+  // Adopt a newly-detected URL only when it is at least as good a launch target as
+  // the one we already have. This keeps a frontend URL pinned once seen, so a
+  // later "listening on :3001" backend log can't steal the runtime URL — and it is
+  // order-independent (works whether the UI or API logs its URL first).
+  private shouldAdoptRuntimeUrl(current: string | null, candidate: string, project: Project): boolean {
+    if (!current) {
+      return true;
+    }
+
+    return this.runtimeUrlRank(candidate, project) >= this.runtimeUrlRank(current, project);
+  }
+
   private collectKnownRuntimeUrls(project: Project): Array<{ url: string; host: string; port: number }> {
     const assignedPort = project.runtimeConfig.assignedPort;
     // The assigned port is where the project is forced to bind, so it leads the
     // list: waitForPortFree() targets it, and external/restored detection probes
-    // it before any stale shared default left over in lastRunUrl/openUrl.
+    // it first. openUrl (the detected frontend) comes before lastRunUrl so a stale
+    // backend URL persisted from an earlier run can't outrank the real page.
     const assignedUrl = isValidAssignedPort(assignedPort) ? `http://127.0.0.1:${assignedPort}/` : null;
-    return [assignedUrl, project.runtimeConfig.lastRunUrl, project.runtimeConfig.openUrl]
+    return [assignedUrl, project.runtimeConfig.openUrl, project.runtimeConfig.lastRunUrl]
       .map((value) => parseLocalUrl(value))
       .filter((value): value is { url: string; host: string; port: number } => Boolean(value));
   }

@@ -5904,6 +5904,16 @@ select {
     grid-template-columns: 1fr;
   }
 
+  .agentDetailsSectionHeader,
+  .agentDetailsRefreshControls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .agentDetailsRefreshControls {
+    justify-content: flex-start;
+  }
+
   .agentDetailsCard {
     padding: 16px;
   }
@@ -9067,6 +9077,19 @@ select {
   color: var(--text-muted);
 }
 
+.agentDetailsRefreshControls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.agentDetailsRefreshTimestamp {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
 .agentDetailsSectionToggle {
   display: flex;
   align-items: center;
@@ -10399,4 +10422,309 @@ select {
   font-style: italic;
   padding: 4px 8px;
   margin-bottom: 8px;
+}
+
+/* ── Homepage agent (cross-project concierge) ── */
+.homeAgentMainArea {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 24px 20px;
+  gap: 16px;
+}
+
+.homeAgentScroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px 4px;
+}
+
+.homeAgentEmpty {
+  margin: auto;
+  text-align: center;
+  max-width: 460px;
+  color: var(--muted);
+}
+
+.homeAgentEmptyTitle {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text);
+  margin: 0 0 8px;
+}
+
+.homeAgentEmptyHint {
+  font-size: 0.88rem;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.homeAgentRow {
+  display: flex;
+}
+
+.homeAgentRow--user {
+  justify-content: flex-end;
+}
+
+.homeAgentRow--agent {
+  justify-content: flex-start;
+}
+
+.homeAgentBubble {
+  max-width: 86%;
+  padding: 12px 14px;
+  border-radius: var(--radius-lg);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.homeAgentBubble--user {
+  background: var(--accent);
+  color: var(--button-primary-text);
+  border-bottom-right-radius: var(--radius-sm);
+}
+
+.homeAgentBubble--agent {
+  background: var(--panel-strong);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-bottom-left-radius: var(--radius-sm);
+}
+
+.homeAgentBubble--working {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.homeAgentReply {
+  white-space: pre-wrap;
+}
+
+.homeAgentQuestions {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.85rem;
+  color: var(--text);
+}
+
+.homePreviewCard {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  background: var(--panel-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.homePreviewTitle {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.homePreviewGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.homePreviewGroupLabel {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.homePreviewItem {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  cursor: pointer;
+}
+
+.homePreviewItem input {
+  margin-top: 3px;
+}
+
+.homePreviewItemBody {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.homePreviewItemHead {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.homePreviewItemReason,
+.homePreviewItemContent {
+  font-size: 0.8rem;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.homePreviewConfirm {
+  align-self: flex-start;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: var(--button-primary);
+  color: var(--button-primary-text);
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.homePreviewConfirm:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.homeReceipt {
+  align-self: flex-start;
+  max-width: 86%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.homeReceiptHead {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.homeReceiptChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.homeReceiptChip {
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel-strong);
+  color: var(--text);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+
+.homeReceiptChip:hover {
+  border-color: var(--accent);
+}
+
+.homeReceiptChip--failed {
+  color: var(--status-bad);
+  border-color: var(--status-bad);
+  cursor: default;
+}
+
+.homeAgentComposer {
+  display: flex;
+  gap: 10px;
+  align-items: flex-end;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  padding: 10px;
+}
+
+.homeAgentTextarea {
+  flex: 1;
+  resize: none;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  outline: none;
+  max-height: 200px;
+}
+
+.homeAgentSend {
+  padding: 8px 18px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: var(--button-primary);
+  color: var(--button-primary-text);
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.homeAgentSend:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ── Constellation homepage ── */
+.constellationHomepage {
+  position: absolute;
+  inset: 0;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  isolation: isolate;
+  background: #010207;
+  user-select: none;
+}
+
+.constellationHomepage::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  box-shadow: inset 0 0 180px rgba(0, 0, 0, 0.78);
+}
+
+.constellationCanvas {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: default;
+  touch-action: none;
+  overscroll-behavior: none;
+  outline: none;
+}
+
+.constellationTopRightControls {
+  position: absolute;
+  top: 8px;
+  right: 24px;
+  z-index: 3;
+}
+
+.constellationA11yStatus {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }

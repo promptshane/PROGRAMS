@@ -60,7 +60,8 @@ import {
   ArrowUpIcon,
   HistoryIcon,
 } from "./components/icons";
-import { HomeProjectTile, HomepageComposer } from "./components/home-tiles";
+import { HomeProjectTile } from "./components/home-tiles";
+import { ConstellationHomepage } from "./components/constellation-homepage";
 import { ProjectOptionsSheet } from "./components/project-options-sheet";
 import { SettingsModal } from "./components/settings-modal";
 import { UsageOverviewSheet } from "./components/usage-panel";
@@ -211,7 +212,7 @@ function App() {
   const [projectRuntimes, setProjectRuntimes] = useState<Record<string, RuntimeState>>({});
   const [projectDetails, setProjectDetails] = useState<Record<string, ProjectDetail>>({});
   const [launchingProjects, setLaunchingProjects] = useState<Record<string, boolean>>({});
-  const [currentPage, setCurrentPage] = useState<AppPage>("projects");
+  const [currentPage, setCurrentPage] = useState<AppPage>("homepage");
   const [projectCategories, setProjectCategories] = useState<Record<string, ProjectCategory>>({});
   const [automationPriorityProjectIds, setAutomationPriorityProjectIds] = useState<Record<string, boolean>>({});
   const [basicAutomationStatus, setBasicAutomationStatus] = useState<BasicAutomationStatus>(emptyBasicAutomationStatus);
@@ -265,6 +266,7 @@ function App() {
   const [githubDownloadState, setGithubDownloadState] = useState<null | "downloading" | "downloaded" | "up-to-date" | "error">(null);
   const [githubDownloadError, setGithubDownloadError] = useState<string | null>(null);
   const [selectedProjectDiffStats, setSelectedProjectDiffStats] = useState<DiffStats | null>(null);
+  const [refreshingProjectDetailIds, setRefreshingProjectDetailIds] = useState<Record<string, boolean>>({});
 
   // Project-page embedded chat UI
   const [projectChatTurns, setProjectChatTurns] = useState<ChatTurn[]>([]);
@@ -2023,7 +2025,17 @@ function App() {
         }
 
         if (!opened && expectsBrowserTarget) {
-          pushToast("PROGRAMS started the project. The dot will turn solid green once its local URL is ready.", "info");
+          // PROGRAMS couldn't open a URL within the wait window. Re-check the live
+          // runtime: if the process has already exited, the launch genuinely
+          // failed (bad run command, crash on boot, …) — offer the same
+          // provider-assisted run-command fix we show when none was found. If it's
+          // still running it may just be slow, so keep the gentle "almost there".
+          const latest = await refreshProject(project.id);
+          if (!latest.runtime.running) {
+            setRunCommandPromptProject(latest.project);
+          } else {
+            pushToast("PROGRAMS started the project. The dot will turn solid green once its local URL is ready.", "info");
+          }
         }
       } catch (error) {
         setLaunchingProjects((current) => {
@@ -2153,6 +2165,34 @@ function App() {
     });
   };
 
+  const handleRefreshProjectDetails = async (projectId: string) => {
+    setRefreshingProjectDetailIds((current) => ({ ...current, [projectId]: true }));
+    try {
+      const result = await window.programs.refreshProjectDetails(projectId);
+      if (result.session && selectedProjectIdRef.current === projectId) {
+        setProgramAgentSession(result.session);
+        setAgentSession(result.session);
+      }
+      await refreshProject(projectId);
+
+      if (result.status === "success") {
+        pushToast(`Project details refreshed with ${result.provider === "claude" ? "Claude" : "GPT"}.`, "success");
+      } else if (result.status === "partial-success") {
+        pushToast(result.warning ?? "Project details were partially refreshed.", "info");
+      } else {
+        pushToast(result.warning ?? "Project details refresh failed.", "error");
+      }
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Project details refresh failed.", "error");
+    } finally {
+      setRefreshingProjectDetailIds((current) => {
+        const next = { ...current };
+        delete next[projectId];
+        return next;
+      });
+    }
+  };
+
   const handleToggleAutomationPriority = (projectId: string) => {
     const currentProjectIds = settings.automation.projectIds;
     const nextProjectIds = currentProjectIds.includes(projectId)
@@ -2193,7 +2233,7 @@ function App() {
   const selectedProjectLastSavedAt = selectedProject?.githubConnection?.lastPushedAt ?? null;
   const selectedProjectHasGithubRepo = Boolean(selectedProject?.githubConnection?.repoUrl);
   const isSelectedProjectView = activePage === "projects" && Boolean(selectedProject);
-  const useComposerLayout = isSelectedProjectView || activePage === "agents";
+  const useComposerLayout = isSelectedProjectView || activePage === "agents" || activePage === "homepage";
   const homeAppUpdateButton = getHomeAppUpdateButtonState(appUpdate);
 
   const sidebarAppUpdateButton = homeAppUpdateButton === "prepare"
@@ -2914,7 +2954,23 @@ function App() {
 
         <main className={`shellContent${useComposerLayout ? " shellContent-composerLayout shellContent-detailLocked" : ""}`}>
           {activePage === "homepage" ? (
-            <HomepageComposer />
+            <ConstellationHomepage
+              topRightControls={
+                <>
+                  {systemHealth ? (
+                    <SystemHealthButton
+                      health={systemHealth}
+                      onClick={() => setShowHealthSheet(true)}
+                    />
+                  ) : null}
+                  <UsageTriggerButton
+                    auth={auth}
+                    usage={usage}
+                    onClick={toggleUsageSheet}
+                  />
+                </>
+              }
+            />
           ) : activePage === "agents" ? (
             <AgentsPage
               projects={projects}
@@ -3080,6 +3136,8 @@ function App() {
           modelCatalog={modelCatalog}
           onUpdateAgentDefaults={handleUpdateAgentDefaults}
           onSessionUpdate={(session) => setProgramAgentSession(session)}
+          refreshBusy={Boolean(refreshingProjectDetailIds[selectedProject.id])}
+          onRefreshProjectDetails={() => handleRefreshProjectDetails(selectedProject.id)}
           pushToast={pushToast}
           hasGithubConnection={selectedProjectHasGithubRepo}
           isProjectRunning={isProjectRunning}
@@ -3270,6 +3328,7 @@ function App() {
       {runCommandPromptProject ? (
         <RunCommandModal
           project={runCommandPromptProject}
+          provider={settings.advancedDefaults.provider}
           onDismiss={() => setRunCommandPromptProject(null)}
           onPrepareRepair={handlePrepareLaunchRepair}
           onConfirm={async (cmd) => {

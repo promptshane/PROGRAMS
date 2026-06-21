@@ -57,6 +57,25 @@ export const getWorkingConcept = (session: AgentSession | null): AgentCoreDetail
   session?.danMemory?.draftConcept
   ?? getConfirmedConcept(session);
 
+export const getProjectDetailsPrimaryConcept = (session: AgentSession | null): AgentCoreDetails | null =>
+  getConfirmedConcept(session)
+  ?? session?.danMemory?.derivedConcept
+  ?? null;
+
+export const getProjectDetailsCurrentSnapshot = (session: AgentSession | null): AgentCoreDetails | null =>
+  getConfirmedConcept(session)
+    ? session?.danMemory?.derivedConcept ?? null
+    : null;
+
+export const getProjectDetailsLastScannedAt = (session: AgentSession | null): string | null => {
+  const candidates = [
+    session?.toddMemory?.codebaseIndexedMap?.indexedAt ?? null,
+    session?.danMemory?.derivedUpdatedAt ?? null,
+  ].filter((value): value is string => Boolean(value));
+
+  return candidates.sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null;
+};
+
 const normalizeConflictText = (value: string | null | undefined): string =>
   (value ?? "").trim().replace(/\s+/g, " ").toLowerCase();
 
@@ -134,8 +153,7 @@ export const summarizeCorePillars = (pillars: CorePillar[]): string | null => {
   return `Concept currently centers on ${names[0]} and ${names[1]}.`;
 };
 
-export const buildAgentProjectDescription = (session: AgentSession | null): string => {
-  const concept = getConfirmedConcept(session);
+export const buildConceptDescription = (concept: AgentCoreDetails | null): string => {
   const functionSummary = normalizeSentence(concept?.function?.summary);
   const thesisSummary = normalizeSentence(concept?.thesis?.summary);
   const pillarSummary = summarizeCorePillars(concept?.corePillars ?? []);
@@ -155,6 +173,9 @@ export const buildAgentProjectDescription = (session: AgentSession | null): stri
 
   return sentences.slice(0, 2).join(" ") || "Core details are still taking shape for this project.";
 };
+
+export const buildAgentProjectDescription = (session: AgentSession | null): string =>
+  buildConceptDescription(getProjectDetailsPrimaryConcept(session));
 
 export const getDirectorProfileMeta = (directorId: DirectorId) => ({
   name: DIRECTOR_NAMES[directorId],

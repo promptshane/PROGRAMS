@@ -35,6 +35,7 @@ import { resolveBasicAutomationUsagePause } from "@main/utils/basic-automation";
 import { getProviderPreflightError } from "@main/utils/provider-auth";
 import { parseEnvEntries, parseProjectOutlineReportResponse, serializeEnvEntries } from "@main/utils/project-outline";
 import { parseAgentJsonResponse, AgentJsonParseError } from "@main/utils/agent-json";
+import { buildHomeAgentPrompt, parseHomeRoutingResponse, HOME_ROUTING_SCHEMA } from "@main/utils/home-agent-chat";
 import {
   detectRuntimeConfig,
   deriveAttachedProjectName,
@@ -132,6 +133,13 @@ import type {
   AgentChatDirectorApprovalPayload,
   AgentChatDirectorMode,
   AgentCoreDetails,
+  ConfirmHomeDeliveriesInput,
+  HomeChatInput,
+  HomeChatMessage,
+  HomeChatResponse,
+  HomeRoutingPlan,
+  HomeSession,
+  ProjectDigest,
   DirectorChatRuntimeStage,
   AgentExecuteUpdateInput,
   AgentPlannedUpdate,
@@ -251,6 +259,7 @@ import type {
   RevisePendingApprovalInput,
   DirectorSettingsOverride,
   DirectorStateSnapshot,
+  ProjectDetailsRefreshResult,
   RefreshProjectInput,
   RegenerateToddPlanInput,
   CorePillar,
@@ -5525,6 +5534,7 @@ export class ProgramsBackend {
   private lastAppUpdateStatusJson: string | null = null;
   private initializationPromise: Promise<void> | null = null;
   private readonly automationJobs = new Set<string>();
+  private readonly projectDetailsRefreshJobs = new Map<string, Promise<ProjectDetailsRefreshResult>>();
   private basicAutomationLoopPromise: Promise<void> | null = null;
   private basicAutomationLastSettingsSignature: string | null = null;
   private basicAutomationCompletedProjectIds = new Set<string>();
@@ -7831,6 +7841,259 @@ Your final answer must be ONLY strict JSON (no markdown fences) matching:
     };
   }
 
+  // --- Homepage agent (cross-project concierge) ---
+
+  async getHomeSession(): Promise<HomeSession> {
+    await this.ensureInitialized();
+    return this.loadOrCreateHomeSession();
+  }
+
+  private async loadOrCreateHomeSession(): Promise<HomeSession> {
+    const existing = await this.store.readHomeSession();
+    if (existing) {
+      return {
+        ...existing,
+        messages: existing.messages ?? [],
+        pendingPlan: existing.pendingPlan ?? null,
+      };
+    }
+    const now = new Date().toISOString();
+    const session: HomeSession = {
+      id: randomUUID(),
+      messages: [],
+      pendingPlan: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await this.store.writeHomeSession(session);
+    return session;
+  }
+
+  /** Compact, auto-computed summary of a project so the home agent can route. */
+  private buildProjectDigest(project: Project, session: AgentSession | null): ProjectDigest {
+    const stateMap = session?.directorStateMap ?? {};
+    const pickState = (key: "currentState" | "idealState"): string | null => {
+      for (const dir of ["rd-director", "project-manager", "creative-director"] as DirectorId[]) {
+        const value = stateMap[dir]?.[key];
+        if (value && value.trim()) {
+          return value.trim();
+        }
+      }
+      return null;
+    };
+
+    const pillars = session?.corePillars ?? [];
+    const pillarNames = pillars.map((pillar) => pillar.name).filter((name) => Boolean(name));
+    const thesis = pillars.find((pillar) => pillar.thesis?.summary?.trim())?.thesis?.summary?.trim() ?? null;
+
+    const whereItsAt =
+      pickState("currentState")
+      ?? (pillarNames.length ? `Concept in progress. Pillars: ${pillarNames.join(", ")}.` : "Concept not yet defined.");
+    const whereItsGoing = pickState("idealState") ?? thesis ?? "Direction not yet defined.";
+
+    return {
+      projectId: project.id,
+      name: project.name,
+      description: project.description ?? "",
+      whereItsAt,
+      whereItsGoing,
+    };
+  }
+
+  async buildAllProjectDigests(): Promise<ProjectDigest[]> {
+    const projects = await this.store.listProjects();
+    const digests: ProjectDigest[] = [];
+    for (const project of projects) {
+      const session = await this.store.getAgentSession(project.id);
+      digests.push(this.buildProjectDigest(project, session));
+    }
+    return digests;
+  }
+
+  /**
+   * runOneShot needs a project for its working directory; the home agent has
+   * none. Borrow an existing project's path, or fall back to a synthetic one
+   * rooted at the user's home directory (no repo access is used here).
+   */
+  private syntheticHomeProject(): Project {
+    const now = new Date().toISOString();
+    return {
+      id: "__home__",
+      name: "Home",
+      iconColor: "#334155",
+      description: "Homepage agent workspace",
+      localPath: app.getPath("home"),
+      threadId: null,
+      lastUpdatedAt: null,
+      status: "idle",
+      createdAt: now,
+      updatedAt: now,
+      runtimeConfig: {} as Project["runtimeConfig"],
+      lastError: null,
+      githubConnection: null,
+      relationship: createEmptyProjectRelationshipSummary(),
+    };
+  }
+
+  private async resolveHomeProjectParentDirectory(): Promise<string> {
+    const projects = await this.store.listProjects();
+    if (projects.length > 0) {
+      return dirname(projects[0].localPath);
+    }
+    return app.getPath("documents");
+  }
+
+  async homeChat(input: HomeChatInput): Promise<HomeChatResponse> {
+    await this.ensureInitialized();
+    const settings = await this.store.readSettings();
+    const session = await this.loadOrCreateHomeSession();
+
+    const userMessage: HomeChatMessage = {
+      id: randomUUID(),
+      role: "user",
+      content: input.message,
+      createdAt: new Date().toISOString(),
+    };
+    const priorMessages = [...session.messages];
+    session.messages.push(userMessage);
+
+    const digests = await this.buildAllProjectDigests();
+    const prompt = buildHomeAgentPrompt(digests, priorMessages, input.message);
+
+    const projects = await this.store.listProjects();
+    const cwdProject = projects[0] ?? this.syntheticHomeProject();
+    const model = input.provider === "claude" ? input.claudeModel : input.model;
+    const raw = await this.aiService(input.provider).runOneShot(
+      cwdProject,
+      settings,
+      prompt,
+      model,
+      HOME_ROUTING_SCHEMA,
+      "high",
+    );
+    const plan = parseHomeRoutingResponse(raw);
+
+    const hasActionable = plan.deliveries.length > 0 || plan.newProjectProposals.length > 0;
+    const hasAnything = hasActionable || plan.clarifyingQuestions.length > 0;
+
+    const assistantMessage: HomeChatMessage = {
+      id: randomUUID(),
+      role: "assistant",
+      content: plan.reply,
+      createdAt: new Date().toISOString(),
+      plan: hasAnything ? plan : null,
+    };
+    session.messages.push(assistantMessage);
+    session.pendingPlan = hasActionable ? plan : null;
+    session.updatedAt = new Date().toISOString();
+    await this.store.writeHomeSession(session);
+
+    return { session, plan };
+  }
+
+  async confirmHomeDeliveries(input: ConfirmHomeDeliveriesInput): Promise<HomeSession> {
+    await this.ensureInitialized();
+    const settings = await this.store.readSettings();
+    const session = await this.loadOrCreateHomeSession();
+
+    const plan = session.pendingPlan;
+    if (!plan || plan.id !== input.planId) {
+      throw new Error("This routing plan is no longer available. Send your note again.");
+    }
+
+    const provider = settings.advancedDefaults.provider;
+    const model = settings.advancedDefaults.model;
+    const claudeModel = settings.advancedDefaults.claudeModel;
+
+    // 1. Create approved new projects, mapping each proposal to its created project.
+    const approvedProposalIds = new Set(input.approvedProposals.map((proposal) => proposal.id));
+    const createdByProposalId = new Map<string, Project>();
+    const parentDirectory = await this.resolveHomeProjectParentDirectory();
+    for (const proposal of plan.newProjectProposals) {
+      if (!approvedProposalIds.has(proposal.id)) continue;
+      const override = input.approvedProposals.find((item) => item.id === proposal.id);
+      const name = (override?.name ?? proposal.name).trim() || proposal.name;
+      try {
+        const created = await this.createProject({
+          name,
+          iconColor: "",
+          parentDirectory,
+          initialIdea: proposal.initialIdea,
+        });
+        createdByProposalId.set(proposal.id, created);
+      } catch (error) {
+        // Failure surfaces on the associated deliveries below.
+        void error;
+      }
+    }
+
+    // 2. Send approved deliveries through the existing per-project pipeline (Jeff).
+    const approvedDeliveryIds = new Set(input.approvedDeliveryIds);
+    for (const delivery of plan.deliveries) {
+      if (!approvedDeliveryIds.has(delivery.id)) continue;
+
+      let projectId = delivery.projectId;
+      let projectName = delivery.projectName;
+      if (!projectId && delivery.newProjectProposalId) {
+        const created = createdByProposalId.get(delivery.newProjectProposalId);
+        if (!created) {
+          delivery.status = "failed";
+          delivery.errorMessage = "The new project wasn't created, so this note couldn't be delivered.";
+          continue;
+        }
+        projectId = created.id;
+        projectName = created.name;
+      }
+      if (!projectId) {
+        delivery.status = "failed";
+        delivery.errorMessage = "No project to deliver to.";
+        continue;
+      }
+
+      try {
+        const relay = `📥 From Home — ${delivery.nature} update:\n\n${delivery.content}`;
+        const response = await this.agentChat({
+          projectId,
+          provider,
+          model,
+          claudeModel,
+          message: relay,
+          targetDirectorId: "project-manager",
+        });
+        delivery.status = "sent";
+        delivery.resultMessageId = response.message.id;
+        delivery.projectId = projectId;
+        delivery.projectName = projectName || (await this.store.readProject(projectId))?.name || projectName;
+      } catch (error) {
+        delivery.status = "failed";
+        delivery.errorMessage = error instanceof Error ? error.message : String(error);
+      }
+    }
+
+    // 3. Append a receipt system message carrying the resolved plan (for chips), clear the pending plan.
+    const sentCount = plan.deliveries.filter((delivery) => delivery.status === "sent").length;
+    const failedCount = plan.deliveries.filter((delivery) => delivery.status === "failed").length;
+    const receiptContent =
+      sentCount > 0
+        ? `Sent ${sentCount} ${sentCount === 1 ? "note" : "notes"}.${failedCount > 0 ? ` ${failedCount} couldn't be delivered.` : ""}`
+        : failedCount > 0
+          ? "Nothing was delivered — every selected note failed."
+          : "Nothing was sent.";
+
+    session.messages.push({
+      id: randomUUID(),
+      role: "system",
+      content: receiptContent,
+      createdAt: new Date().toISOString(),
+      plan,
+    });
+    session.pendingPlan = null;
+    session.updatedAt = new Date().toISOString();
+    await this.store.writeHomeSession(session);
+
+    return session;
+  }
+
   async agentChat(input: AgentChatInput): Promise<AgentChatResponse> {
 
     await this.ensureInitialized();
@@ -8801,7 +9064,7 @@ Work from the current repository state. Choose exactly one focused, useful updat
     return false;
   }
 
-  private async refreshProjectNow(input: RefreshProjectInput): Promise<void> {
+  private async refreshProjectNow(input: RefreshProjectInput): Promise<ProjectDetailsRefreshResult> {
     await this.ensureInitialized();
     const settings = await this.store.readSettings();
     await this.requireProviderReady(input.provider, settings);
@@ -8857,6 +9120,7 @@ Work from the current repository state. Choose exactly one focused, useful updat
     let refreshedToddCurrentState: string | null = null;
     let latestFingerprint: ProjectKnowledgeFingerprint | null = null;
     let outlineReport: ProjectOutlineReport | null = null;
+    let warning: string | null = null;
 
     try {
       // Generate outline report for file tree
@@ -8951,7 +9215,14 @@ Return your response as a conversational summary of what you found.`;
       }
       session.slackPresenceGuestId = null;
       await persistSession();
-      return;
+      await this.decorateAgentSessionKnowledgeState(session);
+      return {
+        session,
+        provider: input.provider,
+        status: "failure",
+        completedAt: new Date().toISOString(),
+        warning: errorMessage,
+      };
     }
 
     // --- STEP 2: Dan receives a derived current-state snapshot in soft memory only ---
@@ -9012,6 +9283,7 @@ Return ONLY strict JSON matching:
       await persistSession();
     } catch (error) {
       derivedRefreshStatus = `Dan's derived soft memory refresh failed: ${error instanceof Error ? error.message : "Unknown error"}`;
+      warning = derivedRefreshStatus;
       danWorkingMsg.content = derivedRefreshStatus;
       danWorkingMsg.status = "complete";
       danWorkingMsg.createdAt = new Date().toISOString();
@@ -9046,7 +9318,70 @@ Return ONLY strict JSON matching:
     jeffMessage.createdAt = new Date().toISOString();
     jeffMessage.metadata = null;
     this.syncSlackMessageToAgentChat(session, "project-manager", jeffMessage);
+
+    try {
+      const refreshedProject = await this.refreshProjectRuntimeConfig(await this.requireProject(input.projectId));
+      this.emit({ type: "project.updated", project: refreshedProject });
+    } catch (error) {
+      const runtimeWarning = `Runtime details could not be refreshed: ${error instanceof Error ? error.message : "Unknown error"}`;
+      warning = warning ? `${warning} ${runtimeWarning}` : runtimeWarning;
+    }
+
+    await this.decorateAgentSessionKnowledgeState(session);
     await persistSession();
+
+    return {
+      session,
+      provider: input.provider,
+      status: warning ? "partial-success" : "success",
+      completedAt: new Date().toISOString(),
+      warning,
+    };
+  }
+
+  private startProjectDetailsRefresh(input: RefreshProjectInput): Promise<ProjectDetailsRefreshResult> {
+    const existing = this.projectDetailsRefreshJobs.get(input.projectId);
+    if (existing) {
+      return existing;
+    }
+
+    const job = this.refreshProjectNow(input).finally(() => {
+      if (this.projectDetailsRefreshJobs.get(input.projectId) === job) {
+        this.projectDetailsRefreshJobs.delete(input.projectId);
+      }
+    });
+    this.projectDetailsRefreshJobs.set(input.projectId, job);
+    return job;
+  }
+
+  async refreshProjectDetails(projectId: string): Promise<ProjectDetailsRefreshResult> {
+    await this.ensureInitialized();
+    const settings = await this.store.readSettings();
+    const provider = settings.advancedDefaults.provider;
+    const input: RefreshProjectInput = {
+      projectId,
+      provider,
+      model: settings.advancedDefaults.model,
+      claudeModel: settings.advancedDefaults.claudeModel,
+    };
+
+    try {
+      return await this.startProjectDetailsRefresh(input);
+    } catch (error) {
+      let session: AgentSession | null = null;
+      try {
+        session = await this.getAgentSession(projectId);
+      } catch {
+        session = null;
+      }
+      return {
+        session,
+        provider,
+        status: "failure",
+        completedAt: new Date().toISOString(),
+        warning: error instanceof Error ? error.message : "Project details refresh failed.",
+      };
+    }
   }
 
   async refreshProject(input: RefreshProjectInput): Promise<void> {
@@ -9337,7 +9672,7 @@ Return ONLY strict JSON matching:
     }
     if (action === "refreshProject") {
       await this.saveAgentSession(projectId, session);
-      await this.refreshProjectNow(payload.input as RefreshProjectInput);
+      await this.startProjectDetailsRefresh(payload.input as RefreshProjectInput);
       return (await this.getAgentSession(projectId)) ?? session;
     }
     if (action === "applyStoredData") {

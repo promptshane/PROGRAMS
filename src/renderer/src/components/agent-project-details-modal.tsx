@@ -2,11 +2,15 @@ import { Fragment, useEffect, useMemo, useState, type CSSProperties } from "reac
 import { Modal, StatusChip } from "./ui-primitives";
 import { DirectorProfilePanel } from "./director-panels";
 import { ConceptOverview } from "./core-details";
-import { formatDate } from "../lib/formatting";
+import { formatDate, labelForAgentProvider } from "../lib/formatting";
 import {
-  getConfirmedConcept,
+  buildConceptDescription,
   buildAgentProjectDescription,
   buildDisplayedUpdatePlan,
+  getConfirmedConcept,
+  getProjectDetailsCurrentSnapshot,
+  getProjectDetailsLastScannedAt,
+  getProjectDetailsPrimaryConcept,
 } from "../lib/session-helpers";
 import {
   AGENT_DETAILS_RANGE_OPTIONS,
@@ -44,6 +48,8 @@ export function AgentProjectDetailsModal({
   modelCatalog,
   onUpdateAgentDefaults,
   onSessionUpdate,
+  refreshBusy,
+  onRefreshProjectDetails,
   pushToast,
   onClose,
   initialView,
@@ -61,6 +67,8 @@ export function AgentProjectDetailsModal({
   modelCatalog: ModelCatalog;
   onUpdateAgentDefaults: (advancedDefaults: Partial<Settings["advancedDefaults"]>) => Promise<void>;
   onSessionUpdate: (session: AgentSession) => void;
+  refreshBusy: boolean;
+  onRefreshProjectDetails: () => void | Promise<void>;
   pushToast: (message: string, level: "info" | "success" | "error") => void;
   onClose: () => void;
   initialView?: DetailsView;
@@ -99,7 +107,11 @@ export function AgentProjectDetailsModal({
     },
   );
   const description = buildAgentProjectDescription(session);
-  const concept = getConfirmedConcept(session);
+  const confirmedConcept = getConfirmedConcept(session);
+  const concept = getProjectDetailsPrimaryConcept(session);
+  const currentCodebaseSnapshot = getProjectDetailsCurrentSnapshot(session);
+  const latestScanAt = getProjectDetailsLastScannedAt(session);
+  const providerLabel = labelForAgentProvider(settings.advancedDefaults.provider);
   const displayedPlan = useMemo(
     () => buildDisplayedUpdatePlan(session),
     [session],
@@ -266,6 +278,19 @@ export function AgentProjectDetailsModal({
           <section className="agentDetailsSection">
             <div className="agentDetailsSectionHeader">
               <h4>Project Description</h4>
+              <div className="agentDetailsRefreshControls">
+                {latestScanAt ? (
+                  <span className="agentDetailsRefreshTimestamp">Last scanned {formatDate(latestScanAt)}</span>
+                ) : null}
+                <button
+                  type="button"
+                  className="secondaryButton smallButton"
+                  onClick={() => void onRefreshProjectDetails()}
+                  disabled={refreshBusy}
+                >
+                  {refreshBusy ? "Scanning..." : `Refresh with ${providerLabel}`}
+                </button>
+              </div>
             </div>
             <div className="agentDetailsCard">
               <p className="agentDetailsDescription">{description}</p>
@@ -278,6 +303,29 @@ export function AgentProjectDetailsModal({
               </button>
             </div>
           </section>
+
+          {currentCodebaseSnapshot ? (
+            <section className="agentDetailsSection">
+              <div className="agentDetailsSectionHeader">
+                <h4>Current codebase snapshot</h4>
+                {session?.danMemory?.derivedUpdatedAt ? (
+                  <span className="agentDetailsRefreshTimestamp">
+                    Generated {formatDate(session.danMemory.derivedUpdatedAt)}
+                  </span>
+                ) : null}
+              </div>
+              <div className="agentDetailsCard">
+                <p className="agentDetailsDescription">
+                  {buildConceptDescription(currentCodebaseSnapshot)}
+                </p>
+                <ConceptOverview
+                  concept={currentCodebaseSnapshot}
+                  title="Snapshot details"
+                  emptyLabel="No current codebase snapshot is available."
+                />
+              </div>
+            </section>
+          ) : null}
 
           {shouldShowRecoverySection ? (
             <section className="agentDetailsSection">
@@ -384,6 +432,7 @@ export function AgentProjectDetailsModal({
           <div className="conceptDetailsPanel">
             <ConceptOverview
               concept={concept}
+              title={confirmedConcept ? "Confirmed concept" : "Current codebase snapshot"}
               emptyLabel="The concept has not been confirmed yet."
             />
           </div>

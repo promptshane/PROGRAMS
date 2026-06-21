@@ -97,6 +97,7 @@ export function AgentsPage({
 }) {
   const [showProjectDetails, setShowProjectDetails] = useState(false);
   const [projectDetailsInitialView, setProjectDetailsInitialView] = useState<DetailsView | undefined>(undefined);
+  const [projectDetailsRefreshProjectId, setProjectDetailsRefreshProjectId] = useState<string | null>(null);
   const [showDirectorProfile, setShowDirectorProfile] = useState<DirectorId | null>(null);
   const [activePanel, setActivePanel] = useState<
     | { type: "none" }
@@ -174,6 +175,24 @@ export function AgentsPage({
     () => getLatestAgentChatUserTurn(displayMessages),
     [displayMessages],
   );
+
+  const handleRefreshProjectDetails = async (projectId: string) => {
+    setProjectDetailsRefreshProjectId(projectId);
+    try {
+      const result = await window.programs.refreshProjectDetails(projectId);
+      if (result.status === "success") {
+        pushToast(`Project details refreshed with ${result.provider === "claude" ? "Claude" : "GPT"}.`, "success");
+      } else if (result.status === "partial-success") {
+        pushToast(result.warning ?? "Project details were partially refreshed.", "info");
+      } else {
+        pushToast(result.warning ?? "Project details refresh failed.", "error");
+      }
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : "Project details refresh failed.", "error");
+    } finally {
+      setProjectDetailsRefreshProjectId((current) => current === projectId ? null : current);
+    }
+  };
   const jeffPresenceState = useMemo(
     () => deriveJeffPresenceState({
       messages: displayMessages,
@@ -1071,6 +1090,8 @@ export function AgentsPage({
           modelCatalog={modelCatalog}
           onUpdateAgentDefaults={onUpdateAgentDefaults}
           onSessionUpdate={onSessionUpdate}
+          refreshBusy={projectDetailsRefreshProjectId === selectedProject.id}
+          onRefreshProjectDetails={() => handleRefreshProjectDetails(selectedProject.id)}
           pushToast={pushToast}
           initialView={projectDetailsInitialView}
           onClose={() => {

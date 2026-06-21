@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { Project } from "@shared/types";
+import type { AiProvider, Project } from "@shared/types";
 import { Modal } from "./ui-primitives";
 
 type SuggestState =
@@ -16,15 +16,20 @@ type RepairState =
 
 export function RunCommandModal({
   project,
+  provider,
   onConfirm,
   onPrepareRepair,
   onDismiss,
 }: {
   project: Project;
+  provider: AiProvider;
   onConfirm: (runCommand: string) => Promise<void>;
   onPrepareRepair: () => Promise<boolean>;
   onDismiss: () => void;
 }) {
+  // The backend already routes suggestRunCommand to the selected provider; mirror
+  // that here so the copy says "Codex"/"Claude" to match what the user picked.
+  const providerLabel = provider === "codex" ? "Codex" : "Claude";
   const [command, setCommand] = useState(project.runtimeConfig.runCommand ?? "");
   const [isConfirming, setIsConfirming] = useState(false);
   const [packageScripts, setPackageScripts] = useState<string[]>([]);
@@ -67,13 +72,13 @@ export function RunCommandModal({
       } else {
         setSuggestState({
           phase: "failed",
-          message: "Claude couldn't determine a run command from the project files. Enter it manually below.",
+          message: `${providerLabel} couldn't determine a run command from the project files. Enter it manually below.`,
         });
       }
     } catch (err) {
       setSuggestState({
         phase: "failed",
-        message: err instanceof Error ? err.message : "Claude couldn't complete the request.",
+        message: err instanceof Error ? err.message : `${providerLabel} couldn't complete the request.`,
       });
     }
   };
@@ -141,9 +146,9 @@ export function RunCommandModal({
         {/* Tier 3: Ask Claude */}
         {suggestState.phase === "confirming" ? (
           <div className="spanTwo dangerCard">
-            <strong>This will use Claude tokens.</strong>
+            <strong>This will use {providerLabel} tokens.</strong>
             <p>
-              Claude will read this project&apos;s file list, package.json, and README to suggest a
+              {providerLabel} will read this project&apos;s file list, package.json, and README to suggest a
               run command. Proceed?
             </p>
             <div className="modalActions">
@@ -154,12 +159,12 @@ export function RunCommandModal({
                 Cancel
               </button>
               <button className="primaryButton" onClick={() => void handleAskClaude()}>
-                Ask Claude
+                Ask {providerLabel}
               </button>
             </div>
           </div>
         ) : suggestState.phase === "asking" ? (
-          <p className="spanTwo fieldLabel">Asking Claude...</p>
+          <p className="spanTwo fieldLabel">Asking {providerLabel}...</p>
         ) : suggestState.phase === "failed" ? (
           <p className="spanTwo fieldLabel">{suggestState.message}</p>
         ) : (
@@ -169,7 +174,7 @@ export function RunCommandModal({
               onClick={() => setSuggestState({ phase: "confirming" })}
               disabled={isConfirming}
             >
-              Ask Claude to detect it
+              Ask {providerLabel} to detect it
             </button>
           </div>
         )}

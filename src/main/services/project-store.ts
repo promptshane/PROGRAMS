@@ -23,6 +23,7 @@ import type {
   DirectorId,
   DirectorFocusMode,
   GithubConnection,
+  HomeSession,
   JeffExecutionReport,
   JeffMemory,
   PendingApproval,
@@ -988,6 +989,22 @@ export class ProjectStore {
 
     this.run("REPLACE INTO settings (key, value_json) VALUES (?, ?)", ["setup", JSON.stringify(next)]);
     return next;
+  }
+
+  async readHomeSession(): Promise<HomeSession | null> {
+    const raw = this.getSingleValue<string>("SELECT value_json FROM settings WHERE key = ?", ["home"]);
+    if (!raw) {
+      return null;
+    }
+    try {
+      return JSON.parse(raw) as HomeSession;
+    } catch {
+      return null;
+    }
+  }
+
+  async writeHomeSession(session: HomeSession): Promise<void> {
+    this.run("REPLACE INTO settings (key, value_json) VALUES (?, ?)", ["home", JSON.stringify(session)]);
   }
 
   async listProjects(): Promise<Project[]> {

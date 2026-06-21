@@ -964,6 +964,46 @@ const inferOpenUrl = async (
   return null;
 };
 
+export const parseRuntimeUrlPort = (url: string | null | undefined): number | null => {
+  if (!url?.trim()) {
+    return null;
+  }
+  try {
+    const port = Number(new URL(url.trim()).port);
+    return Number.isInteger(port) && port > 0 ? port : null;
+  } catch {
+    return null;
+  }
+};
+
+// Rank how suitable a detected local URL is as the thing to OPEN in a browser for
+// a project. A single project can surface several URLs at once — e.g. a Vite UI
+// on 5173 plus an API / SQLite bridge on 3001 started together by `concurrently`
+// — and both print a URL to stdout. Without a preference PROGRAMS can latch onto
+// the API and open a bare JSON endpoint. The detected frontend (openUrl) wins,
+// then the project's assigned port, then anything else; an unparseable URL ranks
+// below all real candidates.
+export const rankRuntimeLaunchUrl = (
+  url: string | null | undefined,
+  options: { openUrl: string | null | undefined; assignedPort: number | null | undefined },
+): number => {
+  const port = parseRuntimeUrlPort(url);
+  if (port === null) {
+    return -1;
+  }
+
+  const frontendPort = parseRuntimeUrlPort(options.openUrl);
+  if (frontendPort !== null && port === frontendPort) {
+    return 2;
+  }
+
+  if (typeof options.assignedPort === "number" && options.assignedPort > 0 && port === options.assignedPort) {
+    return 1;
+  }
+
+  return 0;
+};
+
 export const detectRuntimeConfig = async (projectPath: string): Promise<ProjectRuntimeConfig> => {
   const resolution = await resolveLaunchPlan(projectPath);
 

@@ -877,6 +877,93 @@ export interface AgentChatMessage {
 
 export type SlackChatMessage = AgentChatMessage;
 
+// --- Homepage Agent (cross-project concierge) ---
+
+/**
+ * A compact, auto-computed summary of a single project so the homepage agent
+ * can decide where each piece of a note belongs. Never persisted — rebuilt from
+ * existing project + session data on every homeChat turn.
+ */
+export interface ProjectDigest {
+  projectId: string;
+  name: string;
+  description: string;
+  whereItsAt: string;
+  whereItsGoing: string;
+}
+
+export type HomeDeliveryNature = "creative" | "technical" | "general";
+
+export type HomeDeliveryStatus = "proposed" | "sent" | "failed";
+
+/** One piece of a note routed to a single project's manager (Jeff). */
+export interface HomeDelivery {
+  id: string;
+  /** Empty string when this delivery depends on a not-yet-created project proposal. */
+  projectId: string;
+  projectName: string;
+  /** When set, this delivery should be sent to the project created from this proposal id. */
+  newProjectProposalId?: string | null;
+  content: string;
+  nature: HomeDeliveryNature;
+  reason: string;
+  status: HomeDeliveryStatus;
+  resultMessageId?: string | null;
+  errorMessage?: string | null;
+}
+
+/** A proposed new project the user must explicitly confirm before creation. */
+export interface HomeNewProjectProposal {
+  id: string;
+  name: string;
+  initialIdea: string;
+  reason: string;
+}
+
+/** The model's routing decision for one homeChat turn. Held as a preview until confirmed. */
+export interface HomeRoutingPlan {
+  id: string;
+  reply: string;
+  clarifyingQuestions: string[];
+  deliveries: HomeDelivery[];
+  newProjectProposals: HomeNewProjectProposal[];
+}
+
+export interface HomeChatMessage {
+  id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  createdAt: string;
+  /** Present on the assistant turn that proposed a plan, so the UI can render the preview card. */
+  plan?: HomeRoutingPlan | null;
+}
+
+export interface HomeSession {
+  id: string;
+  messages: HomeChatMessage[];
+  pendingPlan: HomeRoutingPlan | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface HomeChatInput {
+  provider: AiProvider;
+  model: CodexModel;
+  claudeModel: ClaudeModel;
+  message: string;
+}
+
+export interface HomeChatResponse {
+  session: HomeSession;
+  plan: HomeRoutingPlan;
+}
+
+export interface ConfirmHomeDeliveriesInput {
+  planId: string;
+  approvedDeliveryIds: string[];
+  approvedProposals: { id: string; name?: string }[];
+}
+
 export interface ScratchpadItem {
   id: string;
   text: string;
@@ -1959,6 +2046,16 @@ export interface RefreshProjectInput {
   provider: AiProvider;
   model: CodexModel;
   claudeModel: ClaudeModel;
+}
+
+export type ProjectDetailsRefreshStatus = "success" | "partial-success" | "failure";
+
+export interface ProjectDetailsRefreshResult {
+  session: AgentSession | null;
+  provider: AiProvider;
+  status: ProjectDetailsRefreshStatus;
+  completedAt: string;
+  warning: string | null;
 }
 
 // --- Regenerate Todd Plan ---

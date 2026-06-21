@@ -10,6 +10,10 @@ import type {
   DirectorId,
   AgentChatInput,
   AgentChatResponse,
+  ConfirmHomeDeliveriesInput,
+  HomeChatInput,
+  HomeChatResponse,
+  HomeSession,
   PendingApproval,
   ApprovePendingApprovalInput,
   RevisePendingApprovalInput,
@@ -42,6 +46,7 @@ import type {
   RunCommandSuggestions,
   ProjectCreateInput,
   ProjectDetail,
+  ProjectDetailsRefreshResult,
   ProjectOutlineReport,
   RenameProjectInput,
   ResolveDroppedContextPathsInput,
@@ -121,6 +126,8 @@ const api = {
 
   listProjects: () => ipcRenderer.invoke("projects.list"),
   readProject: (projectId: string): Promise<ProjectDetail> => ipcRenderer.invoke("projects.read", projectId),
+  refreshProjectDetails: (projectId: string): Promise<ProjectDetailsRefreshResult> =>
+    ipcRenderer.invoke("projects.refreshDetails", projectId),
   refreshProjectRelationships: (): Promise<Project[]> => ipcRenderer.invoke("projects.refreshRelationships"),
   createProject: (input: ProjectCreateInput) => ipcRenderer.invoke("projects.create", input),
   attachProject: (input: ProjectAttachInput) => ipcRenderer.invoke("projects.attach", input),
@@ -168,6 +175,13 @@ const api = {
 
   getAgentSession: (projectId: string): Promise<AgentSession | null> =>
     ipcRenderer.invoke("agents.getSession", projectId),
+
+  // Homepage agent (cross-project concierge)
+  getHomeSession: (): Promise<HomeSession> => ipcRenderer.invoke("home.session"),
+  homeChat: (input: HomeChatInput): Promise<HomeChatResponse> =>
+    ipcRenderer.invoke("home.chat", input),
+  confirmHomeDeliveries: (input: ConfirmHomeDeliveriesInput): Promise<HomeSession> =>
+    ipcRenderer.invoke("home.confirm", input),
 
   // Director system
   directorChat: (input: DirectorChatInput): Promise<DirectorChatResponse> =>

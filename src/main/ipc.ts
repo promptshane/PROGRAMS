@@ -8,6 +8,8 @@ import type {
   ApprovePlanInput,
   ApprovePendingApprovalInput,
   ConfirmAgentDataInput,
+  ConfirmHomeDeliveriesInput,
+  HomeChatInput,
   DirectorChatInput,
   DirectorFocusMode,
   DirectorId,
@@ -77,6 +79,7 @@ export const registerIpc = (backend: ProgramsBackend): void => {
 
   ipcMain.handle("projects.list", () => backend.listProjects());
   ipcMain.handle("projects.read", (_event, projectId: string) => backend.readProject(projectId));
+  ipcMain.handle("projects.refreshDetails", (_event, projectId: string) => backend.refreshProjectDetails(projectId));
   ipcMain.handle("projects.refreshRelationships", () => backend.refreshProjectRelationships());
   ipcMain.handle("projects.create", (_event, input: ProjectCreateInput) => backend.createProject(input));
   ipcMain.handle("projects.attach", (_event, input: ProjectAttachInput) => backend.attachProject(input));
@@ -122,6 +125,12 @@ export const registerIpc = (backend: ProgramsBackend): void => {
 
   ipcMain.handle("agents.getSession", (_event, projectId: string) =>
     backend.getAgentSession(projectId));
+
+  // Homepage agent (cross-project concierge)
+  ipcMain.handle("home.session", () => backend.getHomeSession());
+  ipcMain.handle("home.chat", (_event, input: HomeChatInput) => backend.homeChat(input));
+  ipcMain.handle("home.confirm", (_event, input: ConfirmHomeDeliveriesInput) =>
+    backend.confirmHomeDeliveries(input));
 
   // Director system
   ipcMain.handle("directors.chat", (_event, input: DirectorChatInput) =>

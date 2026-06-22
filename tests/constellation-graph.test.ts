@@ -10,9 +10,9 @@ import {
   focusRotationForPoint,
   getConstellationBackTarget,
   getConstellationColoredNodeIds,
+  getConstellationHierarchyHighlight,
   getConstellationLabelIds,
   getConstellationWheelYawDelta,
-  isConstellationCategoryDescendantHighlighted,
   projectConstellationPoint,
   resolveConstellationInteractionTarget,
   rotateConstellationPointAroundAxis,
@@ -175,7 +175,7 @@ test("horizontal wheel gestures produce bounded yaw changes without consuming ve
   );
 });
 
-test("category focus subtly highlights only that category's descendants", () => {
+test("hierarchy focus gives project hubs and subsystem extensions distinct white tiers", () => {
   const graph = createFakeConstellationGraph();
   const category = graph.nodes.find((node) => node.id === "category:stories");
   const project = graph.nodes.find(
@@ -187,16 +187,31 @@ test("category focus subtly highlights only that category's descendants", () => 
   const otherProject = graph.nodes.find(
     (node) => node.kind === "project" && node.categoryId === "tools",
   );
+  const siblingProject = graph.nodes.find(
+    (node) =>
+      node.kind === "project"
+      && node.categoryId === "stories"
+      && node.id !== project?.id,
+  );
+  const projectSystem = graph.nodes.find(
+    (node) => node.kind === "system" && node.parentId === project?.id,
+  );
   assert.ok(category);
   assert.ok(project);
   assert.ok(system);
   assert.ok(otherProject);
+  assert.ok(siblingProject);
+  assert.ok(projectSystem);
 
-  assert.equal(isConstellationCategoryDescendantHighlighted(project, category, null), true);
-  assert.equal(isConstellationCategoryDescendantHighlighted(system, category, null), true);
-  assert.equal(isConstellationCategoryDescendantHighlighted(category, category, null), false);
-  assert.equal(isConstellationCategoryDescendantHighlighted(otherProject, category, null), false);
-  assert.equal(isConstellationCategoryDescendantHighlighted(project, category, project), false);
+  assert.equal(getConstellationHierarchyHighlight(project, category, null), "strong");
+  assert.equal(getConstellationHierarchyHighlight(system, category, null), "soft");
+  assert.equal(getConstellationHierarchyHighlight(category, category, null), null);
+  assert.equal(getConstellationHierarchyHighlight(otherProject, category, null), null);
+  assert.equal(getConstellationHierarchyHighlight(project, category, project), null);
+
+  assert.equal(getConstellationHierarchyHighlight(projectSystem, project, null), "strong");
+  assert.equal(getConstellationHierarchyHighlight(siblingProject, project, null), "soft");
+  assert.equal(getConstellationHierarchyHighlight(otherProject, project, null), null);
 });
 
 test("hierarchy interaction maps cluster stars to the current navigation level", () => {

@@ -25,6 +25,8 @@ export interface ConstellationWheelInput {
   shiftKey: boolean;
 }
 
+export type ConstellationHierarchyHighlight = "strong" | "soft" | null;
+
 export type ConstellationFocusKind = "overview" | "category" | "project" | "system";
 
 export const DEFAULT_CONSTELLATION_ROTATION: Readonly<ConstellationRotation> = {
@@ -139,15 +141,35 @@ export const getConstellationWheelYawDelta = (
   return Math.max(-0.28, Math.min(0.28, rawDelta * deltaModeScale * 0.0018));
 };
 
-export const isConstellationCategoryDescendantHighlighted = (
+export const getConstellationHierarchyHighlight = (
   node: ConstellationNode,
   selectedNode: ConstellationNode | null,
   hoveredNode: ConstellationNode | null,
-): boolean =>
-  !hoveredNode
-  && selectedNode?.kind === "category"
-  && node.id !== selectedNode.id
-  && node.categoryId === selectedNode.categoryId;
+): ConstellationHierarchyHighlight => {
+  if (hoveredNode || !selectedNode) return null;
+
+  if (
+    selectedNode.kind === "category"
+    && node.id !== selectedNode.id
+    && node.categoryId === selectedNode.categoryId
+  ) {
+    if (node.kind === "project") return "strong";
+    if (node.kind === "system") return "soft";
+  }
+
+  if (selectedNode.kind === "project") {
+    if (node.kind === "system" && node.parentId === selectedNode.id) return "strong";
+    if (
+      node.kind === "project"
+      && node.id !== selectedNode.id
+      && node.categoryId === selectedNode.categoryId
+    ) {
+      return "soft";
+    }
+  }
+
+  return null;
+};
 
 const graphIndex = (graph: ConstellationGraph): Map<string, ConstellationNode> =>
   new Map(graph.nodes.map((node) => [node.id, node]));

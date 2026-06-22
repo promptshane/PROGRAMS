@@ -21,9 +21,9 @@ import {
   getConstellationColoredNodeIds,
   getConstellationFocusAnchorId,
   getConstellationFocusKind,
+  getConstellationHierarchyHighlight,
   getConstellationLabelIds,
   getConstellationWheelYawDelta,
-  isConstellationCategoryDescendantHighlighted,
   projectConstellationPoint,
   resolveConstellationInteractionTarget,
   rotateConstellationPointAroundAxis,
@@ -52,7 +52,7 @@ interface ProjectedNode extends ConstellationProjection {
   visualRadius: number;
 }
 
-type StarSpriteIntensity = "quiet" | "highlighted" | "active";
+type StarSpriteIntensity = "quiet" | "soft" | "highlighted" | "active";
 
 const categoryById = new Map(CONSTELLATION_CATEGORIES.map((category) => [category.id, category]));
 const MAX_CANVAS_PIXELS = 6_500_000;
@@ -64,6 +64,7 @@ const LOCAL_ORBIT_SPEED = 0.000022;
 const LOCAL_ORBIT_DELAY = 900;
 const MANUAL_SPIN_HOLD_MS = 650;
 const WHITE_STAR_COLOR = "#edf5f8";
+const SOFT_WHITE_STAR_COLOR = "#f2f8fb";
 const HIGHLIGHTED_WHITE_STAR_COLOR = "#f8fcff";
 
 const makeAmbientStars = (): AmbientStar[] => {
@@ -333,12 +334,22 @@ export function ConstellationHomepage({
       const center = 64;
       const isActive = intensity === "active";
       const isHighlighted = intensity === "highlighted";
+      const isSoft = intensity === "soft";
       const glow = spriteContext.createRadialGradient(center, center, 0, center, center, 62);
       glow.addColorStop(0, "rgba(255, 255, 255, 1)");
       glow.addColorStop(0.035, "rgba(247, 252, 255, 0.98)");
-      glow.addColorStop(0.095, rgba(color, isActive ? 0.92 : isHighlighted ? 0.66 : 0.42));
-      glow.addColorStop(0.24, rgba(color, isActive ? 0.32 : isHighlighted ? 0.21 : 0.13));
-      glow.addColorStop(0.58, rgba(color, isActive ? 0.075 : isHighlighted ? 0.047 : 0.03));
+      glow.addColorStop(
+        0.095,
+        rgba(color, isActive ? 0.92 : isHighlighted ? 0.72 : isSoft ? 0.52 : 0.42),
+      );
+      glow.addColorStop(
+        0.24,
+        rgba(color, isActive ? 0.32 : isHighlighted ? 0.235 : isSoft ? 0.16 : 0.13),
+      );
+      glow.addColorStop(
+        0.58,
+        rgba(color, isActive ? 0.075 : isHighlighted ? 0.052 : isSoft ? 0.037 : 0.03),
+      );
       glow.addColorStop(1, rgba(color, 0));
       spriteContext.fillStyle = glow;
       spriteContext.fillRect(0, 0, 128, 128);
@@ -346,18 +357,30 @@ export function ConstellationHomepage({
       if (diffraction) {
         const horizontal = spriteContext.createLinearGradient(0, center, 128, center);
         horizontal.addColorStop(0, "rgba(255,255,255,0)");
-        horizontal.addColorStop(0.45, rgba(color, isActive ? 0.04 : isHighlighted ? 0.027 : 0.018));
+        horizontal.addColorStop(
+          0.45,
+          rgba(color, isActive ? 0.04 : isHighlighted ? 0.029 : isSoft ? 0.022 : 0.018),
+        );
         horizontal.addColorStop(0.5, "rgba(255,255,255,0.32)");
-        horizontal.addColorStop(0.55, rgba(color, isActive ? 0.04 : isHighlighted ? 0.027 : 0.018));
+        horizontal.addColorStop(
+          0.55,
+          rgba(color, isActive ? 0.04 : isHighlighted ? 0.029 : isSoft ? 0.022 : 0.018),
+        );
         horizontal.addColorStop(1, "rgba(255,255,255,0)");
         spriteContext.fillStyle = horizontal;
         spriteContext.fillRect(0, center - 0.45, 128, 0.9);
 
         const vertical = spriteContext.createLinearGradient(center, 0, center, 128);
         vertical.addColorStop(0, "rgba(255,255,255,0)");
-        vertical.addColorStop(0.46, rgba(color, isActive ? 0.035 : isHighlighted ? 0.022 : 0.014));
+        vertical.addColorStop(
+          0.46,
+          rgba(color, isActive ? 0.035 : isHighlighted ? 0.024 : isSoft ? 0.018 : 0.014),
+        );
         vertical.addColorStop(0.5, "rgba(255,255,255,0.24)");
-        vertical.addColorStop(0.54, rgba(color, isActive ? 0.035 : isHighlighted ? 0.022 : 0.014));
+        vertical.addColorStop(
+          0.54,
+          rgba(color, isActive ? 0.035 : isHighlighted ? 0.024 : isSoft ? 0.018 : 0.014),
+        );
         vertical.addColorStop(1, "rgba(255,255,255,0)");
         spriteContext.fillStyle = vertical;
         spriteContext.fillRect(center - 0.4, 0, 0.8, 128);
@@ -591,16 +614,20 @@ export function ConstellationHomepage({
         if (selectedNode?.kind === "category") {
           emphasis = node.id === selectedNode.id
             ? 1
-            : node.categoryId === selectedNode.categoryId
-              ? 0.48
+            : node.kind === "project" && node.categoryId === selectedNode.categoryId
+              ? 0.62
+              : node.kind === "system" && node.categoryId === selectedNode.categoryId
+                ? 0.34
               : 0.05;
         } else if (selectedProjectId) {
           emphasis = nodeBelongsToProject(node, selectedProjectId)
             ? node.id === selectedProjectId
               ? 1
-              : 0.46
-            : node.categoryId === selectedNode?.categoryId
-              ? 0.08
+              : 0.54
+            : node.kind === "project" && node.categoryId === selectedNode?.categoryId
+              ? 0.26
+              : node.categoryId === selectedNode?.categoryId
+                ? 0.07
               : 0.035;
         }
         if (selectedNode?.kind === "system") {
@@ -690,18 +717,20 @@ export function ConstellationHomepage({
         const twinkle = reducedMotion
           ? 1
           : 1 - twinkleAmplitude * 0.5 + Math.sin(time * 0.0018 + node.phase) * twinkleAmplitude;
-        const isCategoryDescendant = isConstellationCategoryDescendantHighlighted(
+        const hierarchyHighlight = getConstellationHierarchyHighlight(
           node,
           selectedNode,
           hoveredNode,
         );
+        const highlightAlphaScale =
+          hierarchyHighlight === "strong" ? 1.2 : hierarchyHighlight === "soft" ? 1.06 : 1;
         const alpha = Math.min(
           1,
           baseAlpha
             * depthFactor
             * contextFactor
             * twinkle
-            * (isCategoryDescendant ? 1.16 : 1),
+            * highlightAlphaScale,
         );
         const activeColor = coloredNodeIdsRef.current.has(node.id);
         const diffraction =
@@ -709,16 +738,31 @@ export function ConstellationHomepage({
           || node.kind === "project"
           || node.priority > 0.91;
         const spriteIntensity: StarSpriteIntensity =
-          activeColor ? "active" : isCategoryDescendant ? "highlighted" : "quiet";
+          activeColor
+            ? "active"
+            : hierarchyHighlight === "strong"
+              ? "highlighted"
+              : hierarchyHighlight === "soft"
+                ? "soft"
+                : "quiet";
         const spriteColor =
           activeColor
             ? nodeCategoryColor(node)
-            : isCategoryDescendant
+            : hierarchyHighlight === "strong"
               ? HIGHLIGHTED_WHITE_STAR_COLOR
-              : WHITE_STAR_COLOR;
+              : hierarchyHighlight === "soft"
+                ? SOFT_WHITE_STAR_COLOR
+                : WHITE_STAR_COLOR;
         const sprite = createStarSprite(spriteColor, spriteIntensity, diffraction);
         const emphasisScale = 1 + emphasis * 0.25;
-        const spriteScale = activeColor ? 12 : isCategoryDescendant ? 10.6 : 10;
+        const spriteScale =
+          activeColor
+            ? 12
+            : hierarchyHighlight === "strong"
+              ? 10.9
+              : hierarchyHighlight === "soft"
+                ? 10.25
+                : 10;
         const drawSize = Math.max(16, projected.visualRadius * spriteScale * emphasisScale);
         context.globalAlpha = alpha;
         context.drawImage(

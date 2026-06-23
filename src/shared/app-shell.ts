@@ -1,4 +1,4 @@
-export type AppPage = "homepage" | "projects" | "agents";
+export type AppPage = "homepage" | "systems-syntax" | "projects" | "agents";
 
 export interface AppPageDefinition {
   id: AppPage;
@@ -7,6 +7,7 @@ export interface AppPageDefinition {
 
 export const APP_PAGE_OPTIONS: AppPageDefinition[] = [
   { id: "homepage", label: "Homepage" },
+  { id: "systems-syntax", label: "Systems Syntax" },
   { id: "projects", label: "Projects" },
   { id: "agents", label: "Agents" },
 ];

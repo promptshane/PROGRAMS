@@ -62,9 +62,11 @@ import {
 } from "./components/icons";
 import { HomeProjectTile } from "./components/home-tiles";
 import { ConstellationHomepage } from "./components/constellation-homepage";
+import { SystemsSyntaxPage } from "./components/systems-syntax-page";
 import { ProjectOptionsSheet } from "./components/project-options-sheet";
 import { SettingsModal } from "./components/settings-modal";
 import { UsageOverviewSheet } from "./components/usage-panel";
+import { AutomationOverviewSheet } from "./components/automation-panel";
 import { UsageTriggerButton } from "./components/usage-trigger";
 import { ProgramDetailsModal, StoredDataModal, ConnectionsModal, RuntimeModal } from "./components/program-details-modal";
 import { AgentsPage } from "./components/agents-page";
@@ -243,6 +245,7 @@ function App() {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [showUsageSheet, setShowUsageSheet] = useState(false);
+  const [showAutomationSheet, setShowAutomationSheet] = useState(false);
   const [showProjectDetails, setShowProjectDetails] = useState(false);
   const [showAddProjectChooser, setShowAddProjectChooser] = useState(false);
   const [showAddProject, setShowAddProject] = useState(false);
@@ -1479,11 +1482,19 @@ function App() {
 
   const toggleUsageSheet = () => {
     setShowSettings(false);
+    setShowAutomationSheet(false);
     setShowUsageSheet((current) => !current);
+  };
+
+  const toggleAutomationSheet = () => {
+    setShowSettings(false);
+    setShowUsageSheet(false);
+    setShowAutomationSheet((current) => !current);
   };
 
   const openSettingsModal = () => {
     setShowUsageSheet(false);
+    setShowAutomationSheet(false);
     setShowSettings(true);
   };
 
@@ -2938,15 +2949,15 @@ function App() {
               <button
                 type="button"
                 className={
-                  showUsageSheet
-                    ? "sidebarFooterButton sidebarFooterButton-usage active windowNoDrag"
-                    : "sidebarFooterButton sidebarFooterButton-usage windowNoDrag"
+                  showAutomationSheet
+                    ? "sidebarFooterButton sidebarFooterButton-automation active windowNoDrag"
+                    : "sidebarFooterButton sidebarFooterButton-automation windowNoDrag"
                 }
-                onClick={toggleUsageSheet}
-                aria-label="Open usage overview"
+                onClick={toggleAutomationSheet}
+                aria-label="Open auto"
               >
                 <TimerIcon />
-                <span>Usage</span>
+                <span>Auto</span>
               </button>
             </div>
           </div>
@@ -2971,6 +2982,8 @@ function App() {
                 </>
               }
             />
+          ) : activePage === "systems-syntax" ? (
+            <SystemsSyntaxPage />
           ) : activePage === "agents" ? (
             <AgentsPage
               projects={projects}
@@ -3213,17 +3226,23 @@ function App() {
       {showUsageSheet ? (
         <UsageOverviewSheet
           provider={settings.advancedDefaults.provider}
+          usage={usage}
+          providerBusy={busyKey === "settings.agentDefaults"}
+          onProviderChange={(provider) => void handleUpdateAgentDefaults({ provider })}
+          onClose={() => setShowUsageSheet(false)}
+        />
+      ) : null}
+
+      {showAutomationSheet ? (
+        <AutomationOverviewSheet
           settings={settings}
           modelCatalog={modelCatalog}
-          usage={usage}
           projects={projects}
           automationStatus={basicAutomationStatus}
           automationPriorityProjectIds={automationPriorityProjectIds}
-          providerBusy={busyKey === "settings.agentDefaults"}
-          onProviderChange={(provider) => void handleUpdateAgentDefaults({ provider })}
           onAutomationSettingsChange={(automation) => void handleUpdateAutomationSettings(automation)}
           onToggleAutomationProject={(projectId) => handleToggleAutomationPriority(projectId)}
-          onClose={() => setShowUsageSheet(false)}
+          onClose={() => setShowAutomationSheet(false)}
         />
       ) : null}
 

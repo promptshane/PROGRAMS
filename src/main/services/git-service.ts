@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import * as readline from "node:readline";
 import { ensureDirectory, pathExists } from "../utils/fs.ts";
-import { execCommand, execFileCommand, getCommandEnv } from "../utils/process.ts";
+import { execCommand, execCommandWithInput, execFileCommand, getCommandEnv } from "../utils/process.ts";
 import type { DiffStats, GithubAuthStatus } from "@shared/types";
 
 export interface GitRepositoryInfo {
@@ -27,6 +28,16 @@ interface CommandResultLike {
 const readCommandErrorMessage = (stdout: string, stderr: string, fallback: string): string => {
   const message = stderr.trim() || stdout.trim();
   return message || fallback;
+};
+
+// Counts the lines `git diff` would report as added for a brand-new file: one per
+// newline, plus one for a final line that has no trailing newline. Empty file = 0.
+export const countDiffAddedLines = (contents: string): number => {
+  if (contents.length === 0) {
+    return 0;
+  }
+  const newlines = contents.split("\n").length - 1;
+  return contents.endsWith("\n") ? newlines : newlines + 1;
 };
 
 export const parseGithubAuthStatusResult = (
@@ -125,7 +136,51 @@ export class GitService {
       sawTextDiff = true;
     }
 
+    // `git diff` only reports tracked files; brand-new files are invisible to it,
+    // so a project whose only changes are new files would show no diff stats even
+    // though those changes are real and saveable. Count untracked (non-ignored)
+    // files as additions so the working-tree stat matches what a save would commit.
+    const untracked = await this.readUntrackedDiffStats(localPath);
+    if (untracked) {
+      added += untracked.added;
+      sawTextDiff = true;
+    }
+
     return sawTextDiff ? { added, removed } : null;
+  }
+
+  // Sums added lines across untracked, non-ignored files. Binary files are skipped
+  // (git itself reports them as "-" in numstat), as are unreadable paths.
+  private async readUntrackedDiffStats(localPath: string): Promise<{ added: number } | null> {
+    const listing = await execCommand(
+      "git ls-files --others --exclude-standard -z",
+      localPath,
+    );
+    if (listing.code !== 0) {
+      return null;
+    }
+
+    const files = listing.stdout.split("\0").filter((entry) => entry.length > 0);
+    if (files.length === 0) {
+      return null;
+    }
+
+    let added = 0;
+    let counted = false;
+    for (const relativePath of files) {
+      try {
+        const contents = await readFile(join(localPath, relativePath));
+        if (contents.includes(0)) {
+          continue; // binary file — matches git's "-" numstat behaviour
+        }
+        added += countDiffAddedLines(contents.toString("utf8"));
+        counted = true;
+      } catch {
+        // Unreadable (e.g. removed mid-scan, permission) — skip like git would.
+      }
+    }
+
+    return counted ? { added } : null;
   }
 
   async readWorkingTreeChangedFiles(localPath: string): Promise<string[]> {
@@ -212,6 +267,39 @@ ${result.stderr}`.toLowerCase();
     return result.stdout.trim().length > 0;
   }
 
+  // Removes from the index any tracked files that the current .gitignore now
+  // ignores (e.g. node_modules/dist committed before ignore rules existed),
+  // leaving them on disk. Only the index is touched, so this can be committed on
+  // its own without bundling unrelated working-tree edits. Returns the count of
+  // files untracked. Paths are passed via stdin to avoid argv limits on huge trees.
+  async untrackIgnoredFiles(localPath: string): Promise<number> {
+    const listing = await execCommand(
+      "git ls-files -z --ignored --cached --exclude-standard",
+      localPath,
+    );
+    if (listing.code !== 0) {
+      return 0;
+    }
+
+    const files = listing.stdout.split("\0").filter((entry) => entry.length > 0);
+    if (files.length === 0) {
+      return 0;
+    }
+
+    // NUL-terminated pathspec list; trailing NUL so the final entry is complete.
+    const pathspecInput = `${files.join("\0")}\0`;
+    const removal = await execCommandWithInput(
+      "git rm --cached --quiet --pathspec-from-file=- --pathspec-file-nul",
+      localPath,
+      pathspecInput,
+    );
+    if (removal.code !== 0) {
+      throw new Error(removal.stderr || "Could not stop tracking ignored files.");
+    }
+
+    return files.length;
+  }
+
   async stageAll(localPath: string): Promise<void> {
     const addResult = await execCommand("git add -A", localPath);
     if (addResult.code !== 0) {
@@ -262,6 +350,32 @@ ${result.stderr}`.toLowerCase();
 
     const statusResult = await execCommand("git status --porcelain", localPath);
     if (!statusResult.stdout.trim()) {
+      return null;
+    }
+
+    const commitResult = await execCommand(
+      `git commit -m "${message.replace(/"/g, '\\"')}"`,
+      localPath,
+    );
+    if (commitResult.code !== 0) {
+      throw new Error(commitResult.stderr || "Could not save the update history.");
+    }
+
+    const shaResult = await execCommand("git rev-parse HEAD", localPath);
+    if (shaResult.code !== 0) {
+      throw new Error("The update was saved, but the version ID could not be read.");
+    }
+
+    return shaResult.stdout.trim();
+  }
+
+  // Commits whatever is already staged, without running `git add` first. Returns
+  // null when the index has nothing staged. Use this to commit a deliberately
+  // prepared index (e.g. untracking ignored files) without sweeping in unrelated
+  // working-tree edits.
+  async commitStaged(localPath: string, message: string): Promise<string | null> {
+    const stagedResult = await execCommand("git diff --cached --name-only", localPath);
+    if (stagedResult.code !== 0 || !stagedResult.stdout.trim()) {
       return null;
     }
 

@@ -24,3 +24,14 @@ project-backups/
 build/icon.icns
 build/icon.iconset
 build/icon.png
+
+# Dependencies and build output
+node_modules/
+.next/
+.nuxt/
+.turbo/
+.cache/
+dist/
+build/
+out/
+coverage/

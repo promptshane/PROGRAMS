@@ -12,3 +12,12 @@ test("Agents is visible in the app shell", () => {
   assert.equal(resolveVisibleAppPage("agents"), "agents");
   assert.equal(APP_PAGE_OPTIONS.some((page) => page.id === "agents"), true);
 });
+
+test("Systems Syntax is directly beneath Homepage", () => {
+  const visiblePages = getVisibleAppPageOptions();
+  assert.deepEqual(
+    visiblePages.slice(0, 2).map((page) => page.id),
+    ["homepage", "systems-syntax"],
+  );
+  assert.equal(resolveVisibleAppPage("systems-syntax"), "systems-syntax");
+});

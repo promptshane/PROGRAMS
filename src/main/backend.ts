@@ -11244,6 +11244,18 @@ Return ONLY strict JSON matching:
     await this.git.setupGitCredentialHelper();
     await this.git.ensureRepository(project.localPath);
     await ensureProjectGitignoreSecretRules(project.localPath);
+    // One-time cleanup: untrack build artifacts (node_modules, dist, …) that were
+    // committed before the ignore rules existed. Done as its own commit so it does
+    // not bundle the user's pending edits, and so future diff stats stop counting
+    // generated files.
+    const untrackedCount = await this.git.untrackIgnoredFiles(project.localPath);
+    if (untrackedCount > 0) {
+      const fileLabel = untrackedCount === 1 ? "1 generated file" : `${untrackedCount} generated files`;
+      await this.git.commitStaged(
+        project.localPath,
+        `Stop tracking ${fileLabel} (node_modules, build output)`,
+      );
+    }
     const changedFilesBeforeSave = await this.git.readWorkingTreeChangedFiles(project.localPath);
     const secretLikeFiles = changedFilesBeforeSave.filter(isSecretLikePath);
     if (secretLikeFiles.length > 0) {

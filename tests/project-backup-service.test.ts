@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import test from "node:test";
 import {
   BACKUP_EXCLUDED_DIRECTORY_NAMES,
+  BUILD_ARTIFACT_GITIGNORE_RULES,
   ensureProjectGitignoreSecretRules,
   isSecretLikePath,
   ProjectBackupService,
@@ -172,6 +173,11 @@ test("ensureProjectGitignoreSecretRules appends required safety rules", async (t
 
   assert.equal(existsSync(join(projectPath, ".gitignore")), true);
   for (const rule of SECRET_GITIGNORE_RULES) {
+    assert.match(gitignore, new RegExp(`^${rule.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
+  }
+  // Build artifacts must also be ignored so `git add -A` doesn't sweep in
+  // node_modules/dist and produce inflated save summaries.
+  for (const rule of BUILD_ARTIFACT_GITIGNORE_RULES) {
     assert.match(gitignore, new RegExp(`^${rule.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
   }
 });

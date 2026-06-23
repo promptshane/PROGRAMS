@@ -13,6 +13,7 @@ import {
   createFakeConstellationGraph,
   type ConstellationEdge,
   type ConstellationNode,
+  type ConstellationVector3,
 } from "../lib/constellation-graph";
 import {
   DEFAULT_CONSTELLATION_ROTATION,
@@ -39,8 +40,7 @@ interface ViewportSize {
 }
 
 interface AmbientStar {
-  x: number;
-  y: number;
+  position: ConstellationVector3;
   size: number;
   alpha: number;
   phase: number;
@@ -63,6 +63,10 @@ const IDLE_ROTATION_SPEED = 0.000028;
 const LOCAL_ORBIT_SPEED = 0.000022;
 const LOCAL_ORBIT_DELAY = 900;
 const MANUAL_SPIN_HOLD_MS = 650;
+// Distant stars live on a sphere far larger than the camera distance, so the
+// camera sits *inside* the starfield and a full spin sweeps the sky around us.
+const STAR_SPHERE_RADIUS = 2600;
+const AMBIENT_STAR_COUNT = 620;
 const WHITE_STAR_COLOR = "#edf5f8";
 const SOFT_WHITE_STAR_COLOR = "#f2f8fb";
 const HIGHLIGHTED_WHITE_STAR_COLOR = "#f8fcff";
@@ -76,13 +80,23 @@ const makeAmbientStars = (): AmbientStar[] => {
     value ^= value + Math.imul(value ^ (value >>> 7), value | 61);
     return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
   };
-  return Array.from({ length: 185 }, () => ({
-    x: random(),
-    y: random(),
-    size: 0.28 + random() * 1.05,
-    alpha: 0.035 + random() * 0.22,
-    phase: random() * Math.PI * 2,
-  }));
+  return Array.from({ length: AMBIENT_STAR_COUNT }, () => {
+    // Uniform distribution over the sphere surface (avoids polar clustering).
+    const theta = random() * Math.PI * 2;
+    const z = 2 * random() - 1;
+    const ring = Math.sqrt(Math.max(0, 1 - z * z));
+    const brightness = random();
+    return {
+      position: {
+        x: ring * Math.cos(theta) * STAR_SPHERE_RADIUS,
+        y: ring * Math.sin(theta) * STAR_SPHERE_RADIUS,
+        z: z * STAR_SPHERE_RADIUS,
+      },
+      phase: random() * Math.PI * 2,
+      size: 0.4 + brightness * 1.1,
+      alpha: 0.05 + brightness * 0.42,
+    };
+  });
 };
 
 const buildAdjacency = (edges: ConstellationEdge[]): Map<string, Set<string>> => {
@@ -545,13 +559,35 @@ export function ConstellationHomepage({
       context.fillStyle = background;
       context.fillRect(0, 0, width, height);
 
+      context.globalCompositeOperation = "lighter";
       for (const star of ambientStars) {
+        const projection = projectConstellationPoint(
+          star.position,
+          rotation,
+          width,
+          height,
+          cameraDistance,
+          focalLength,
+        );
+        // Cull the hemisphere behind the camera and anything off-screen.
+        if (!projection.visible) continue;
+        if (
+          projection.x < -6
+          || projection.x > width + 6
+          || projection.y < -6
+          || projection.y > height + 6
+        ) {
+          continue;
+        }
         const twinkle = reducedMotion ? 0.72 : 0.72 + Math.sin(time * 0.00055 + star.phase) * 0.2;
-        context.fillStyle = `rgba(205, 222, 235, ${star.alpha * twinkle})`;
+        // Fade the few stars streaking close past the camera at the field's rim.
+        const proximityFade = Math.min(1, 1.6 / projection.scale);
+        context.fillStyle = `rgba(205, 222, 235, ${star.alpha * twinkle * proximityFade})`;
         context.beginPath();
-        context.arc(star.x * width, star.y * height, star.size, 0, Math.PI * 2);
+        context.arc(projection.x, projection.y, star.size, 0, Math.PI * 2);
         context.fill();
       }
+      context.globalCompositeOperation = "source-over";
 
       drawHorizon(rotation, width, height, cameraDistance, focalLength);
 
@@ -702,6 +738,7 @@ export function ConstellationHomepage({
       }
 
       const orderedNodes = [...projectedNodes.values()].sort((left, right) => left.z - right.z);
+      context.globalCompositeOperation = "lighter";
       for (const projected of orderedNodes) {
         const { node } = projected;
         const emphasis = emphasisForNode(node);
@@ -774,6 +811,7 @@ export function ConstellationHomepage({
         );
         context.globalAlpha = 1;
       }
+      context.globalCompositeOperation = "source-over";
 
       const labelIds = getConstellationLabelIds(graph, selected, hovered);
       context.textBaseline = "middle";

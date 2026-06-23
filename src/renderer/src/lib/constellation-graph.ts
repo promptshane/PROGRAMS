@@ -1,10 +1,10 @@
-export type ConstellationCategoryId =
-  | "stories"
-  | "philosophy"
-  | "tools"
-  | "games"
-  | "videos"
-  | "music";
+import {
+  CREATIVE_CATEGORIES,
+  type CreativeCategoryDefinition,
+  type CreativeCategoryId,
+} from "@shared/creative-categories";
+
+export type ConstellationCategoryId = CreativeCategoryId;
 
 export type ConstellationNodeKind = "self" | "category" | "project" | "system";
 
@@ -44,60 +44,26 @@ export interface ConstellationGraph {
   edges: ConstellationEdge[];
 }
 
-export interface ConstellationCategoryDefinition {
-  id: ConstellationCategoryId;
-  label: string;
-  color: string;
-  glow: string;
+export interface ConstellationCategoryDefinition extends CreativeCategoryDefinition {
   anchor: ConstellationVector3;
 }
 
 export const CONSTELLATION_SPHERE_RADIUS = 620;
 
-export const CONSTELLATION_CATEGORIES: readonly ConstellationCategoryDefinition[] = [
-  {
-    id: "stories",
-    label: "Stories",
-    color: "#ef8aa5",
-    glow: "#e85f86",
-    anchor: { x: -0.63, y: -0.35, z: 0.69 },
-  },
-  {
-    id: "philosophy",
-    label: "Philosophy",
-    color: "#aaa0e8",
-    glow: "#8878da",
-    anchor: { x: 0.59, y: -0.48, z: 0.65 },
-  },
-  {
-    id: "tools",
-    label: "Tools",
-    color: "#87c8df",
-    glow: "#5aa9c8",
-    anchor: { x: -0.54, y: 0.61, z: -0.58 },
-  },
-  {
-    id: "games",
-    label: "Games",
-    color: "#c5d58d",
-    glow: "#aebf66",
-    anchor: { x: 0.61, y: 0.48, z: -0.63 },
-  },
-  {
-    id: "videos",
-    label: "Videos",
-    color: "#f2ad72",
-    glow: "#db7d43",
-    anchor: { x: 0.1, y: -0.82, z: -0.56 },
-  },
-  {
-    id: "music",
-    label: "Music",
-    color: "#72d6bd",
-    glow: "#39ac91",
-    anchor: { x: -0.1, y: 0.82, z: 0.56 },
-  },
-] as const;
+const CATEGORY_ANCHORS: Record<ConstellationCategoryId, ConstellationVector3> = {
+  stories: { x: -0.63, y: -0.35, z: 0.69 },
+  philosophy: { x: 0.59, y: -0.48, z: 0.65 },
+  tools: { x: -0.54, y: 0.61, z: -0.58 },
+  games: { x: 0.61, y: 0.48, z: -0.63 },
+  videos: { x: 0.1, y: -0.82, z: -0.56 },
+  music: { x: -0.1, y: 0.82, z: 0.56 },
+};
+
+export const CONSTELLATION_CATEGORIES: readonly ConstellationCategoryDefinition[] =
+  CREATIVE_CATEGORIES.map((category) => ({
+    ...category,
+    anchor: CATEGORY_ANCHORS[category.id],
+  }));
 
 const PROJECT_NAMES: Record<ConstellationCategoryId, readonly string[]> = {
   stories: [

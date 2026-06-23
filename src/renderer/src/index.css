@@ -347,7 +347,7 @@ code {
   text-overflow: ellipsis;
 }
 
-.sidebarFooterButton-usage {
+.sidebarFooterButton-automation {
   margin-left: 0;
 }
 
@@ -5070,8 +5070,14 @@ select {
 
 .usageOverviewLayout {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 16px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.automationOverviewLayout {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -10727,4 +10733,853 @@ select {
   clip: rect(0 0 0 0);
   white-space: nowrap;
   border: 0;
+}
+
+/* ── Systems Syntax ── */
+.systemsSyntaxPage {
+  min-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 22px 24px 28px;
+}
+
+.systemsSyntaxHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  max-width: 1240px;
+  width: 100%;
+  margin: 0 auto;
+}
+
+.systemsSyntaxHeader h1 {
+  margin: 5px 0 4px;
+  font-size: clamp(1.7rem, 3vw, 2.35rem);
+  letter-spacing: -0.04em;
+}
+
+.systemsSyntaxHeader p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.systemsSyntaxNewProjectButton {
+  min-height: 42px;
+  padding: 0 17px;
+  border: 1px solid color-mix(in srgb, var(--accent) 44%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--accent) 20%, var(--panel));
+  color: var(--text);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 760;
+  box-shadow: none;
+}
+
+.systemsSyntaxNewProjectButton:hover {
+  background: color-mix(in srgb, var(--accent) 28%, var(--panel));
+}
+
+.systemsSyntaxLayout {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(220px, 270px) minmax(0, 1fr);
+  gap: 18px;
+  width: 100%;
+  max-width: 1240px;
+  margin: 0 auto;
+}
+
+.systemsSyntaxFinder,
+.systemsSyntaxEditor {
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+}
+
+.systemsSyntaxFinder {
+  min-height: 0;
+  max-height: calc(100vh - 142px);
+  overflow-y: auto;
+  padding: 12px;
+}
+
+.systemsSyntaxOverviewButton {
+  width: 100%;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 9px 11px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.84rem;
+  font-weight: 700;
+  text-align: left;
+  box-shadow: none;
+}
+
+.systemsSyntaxOverviewButton > span:last-child {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.systemsSyntaxOverviewButton:hover,
+.systemsSyntaxOverviewButton.active {
+  border-color: color-mix(in srgb, var(--text) 12%, transparent);
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.systemsSyntaxProjectGroups {
+  display: grid;
+  gap: 13px;
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 1px solid var(--border);
+}
+
+.systemsSyntaxProjectGroup {
+  min-width: 0;
+}
+
+.systemsSyntaxProjectGroupTitle {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px 5px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 760;
+  letter-spacing: 0.055em;
+  text-transform: uppercase;
+}
+
+.systemsSyntaxProjectGroupTitle > span:last-child {
+  font-size: 0.62rem;
+}
+
+.systemsSyntaxCategoryDot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--systems-syntax-category);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--systems-syntax-category) 70%, transparent);
+}
+
+.systemsSyntaxProjectList {
+  display: grid;
+  gap: 2px;
+}
+
+.systemsSyntaxProjectButton {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 9px 7px 22px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.79rem;
+  text-align: left;
+  box-shadow: none;
+  opacity: 0.72;
+}
+
+.systemsSyntaxProjectButton > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.systemsSyntaxProjectButton > span:last-child {
+  color: var(--muted);
+  font-size: 0.65rem;
+}
+
+.systemsSyntaxProjectButton:hover,
+.systemsSyntaxProjectButton.active {
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--systems-syntax-category) 28%, var(--border));
+  background: color-mix(in srgb, var(--systems-syntax-category) 8%, transparent);
+}
+
+.systemsSyntaxEmptyCategoryButton {
+  width: 100%;
+  padding: 5px 8px 5px 22px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.7rem;
+  text-align: left;
+  box-shadow: none;
+  opacity: 0.7;
+}
+
+.systemsSyntaxEmptyCategoryButton:hover {
+  color: var(--text);
+  opacity: 1;
+}
+
+.systemsSyntaxBlockTreeSection {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+.systemsSyntaxPanelTitle {
+  padding: 4px 10px 10px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.systemsSyntaxTree {
+  display: grid;
+  gap: 2px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.systemsSyntaxTreeRoot {
+  margin-top: 2px;
+}
+
+.systemsSyntaxTreeItem {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.82rem;
+  text-align: left;
+  box-shadow: none;
+  opacity: 0.72;
+  transition: background 130ms ease, border-color 130ms ease, opacity 130ms ease;
+}
+
+.systemsSyntaxTreeItem:hover {
+  opacity: 1;
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+.systemsSyntaxTreeItem.active {
+  opacity: 1;
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  border-color: color-mix(in srgb, var(--text) 12%, transparent);
+}
+
+.systemsSyntaxTreeItem.dropTarget {
+  opacity: 1;
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.systemsSyntaxTreeItem > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.systemsSyntaxTreeCount {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.systemsSyntaxEditor {
+  min-width: 0;
+  padding: clamp(20px, 4vw, 38px);
+  overflow: hidden;
+}
+
+.systemsSyntaxBreadcrumbs {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 22px;
+  color: var(--muted);
+}
+
+.systemsSyntaxBreadcrumbs span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.systemsSyntaxBreadcrumbs button {
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.78rem;
+  box-shadow: none;
+}
+
+.systemsSyntaxBreadcrumbs button:hover {
+  color: var(--text);
+}
+
+.systemsSyntaxBreadcrumbs button.current {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.systemsSyntaxOverviewHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--border);
+}
+
+.systemsSyntaxOverviewHeader h2 {
+  margin: 0;
+  font-size: clamp(1.4rem, 2.5vw, 1.9rem);
+  letter-spacing: -0.035em;
+}
+
+.systemsSyntaxOverviewHeader p {
+  max-width: 620px;
+  margin: 7px 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.55;
+}
+
+.systemsSyntaxCategoryGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding-top: 18px;
+}
+
+.systemsSyntaxCategoryCard {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 15px;
+  border: 1px solid color-mix(in srgb, var(--systems-syntax-category) 22%, var(--border));
+  border-radius: 14px;
+  background:
+    linear-gradient(
+      145deg,
+      color-mix(in srgb, var(--systems-syntax-category) 7%, transparent),
+      transparent 58%
+    ),
+    color-mix(in srgb, var(--text) 2%, transparent);
+}
+
+.systemsSyntaxCategoryCardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.systemsSyntaxCategoryCardHeader > div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.systemsSyntaxCategoryCardHeader h3 {
+  margin: 0;
+  font-size: 0.92rem;
+}
+
+.systemsSyntaxCategoryCardHeader > span {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.systemsSyntaxOverviewProjects {
+  display: grid;
+  gap: 5px;
+}
+
+.systemsSyntaxOverviewProjects button {
+  min-width: 0;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--systems-syntax-category) 14%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--page-solid) 46%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.79rem;
+  text-align: left;
+  box-shadow: none;
+}
+
+.systemsSyntaxOverviewProjects button:hover {
+  border-color: color-mix(in srgb, var(--systems-syntax-category) 42%, var(--border));
+  background: color-mix(in srgb, var(--systems-syntax-category) 9%, transparent);
+}
+
+.systemsSyntaxOverviewProjects button > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.systemsSyntaxOverviewProjects button > span:last-child {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.66rem;
+}
+
+.systemsSyntaxCategoryEmpty {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.systemsSyntaxCategoryAdd {
+  align-self: flex-start;
+  margin-top: auto;
+  padding: 2px 0;
+  border: none;
+  background: transparent;
+  color: var(--systems-syntax-category);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 720;
+  box-shadow: none;
+}
+
+.systemsSyntaxCurrentHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--border);
+}
+
+.systemsSyntaxEyebrow {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.systemsSyntaxCategoryEyebrow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.systemsSyntaxCurrentIdentity {
+  min-width: 0;
+}
+
+.systemsSyntaxCurrentHeader h2 {
+  margin: 0;
+  font-size: clamp(1.35rem, 2.5vw, 1.8rem);
+  letter-spacing: -0.035em;
+}
+
+.systemsSyntaxProjectStats {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.systemsSyntaxHeaderActions {
+  flex: 0 1 540px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.systemsSyntaxEditButton {
+  height: 40px;
+  flex: 0 0 auto;
+  padding: 0 13px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 700;
+  box-shadow: none;
+}
+
+.systemsSyntaxEditButton:hover {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--text) 22%, var(--border));
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+
+.systemsSyntaxCreateForm {
+  min-width: 0;
+  flex: 1 1 390px;
+  display: flex;
+  gap: 8px;
+}
+
+.systemsSyntaxCreateForm input {
+  min-width: 0;
+  flex: 1;
+  height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--page-solid) 70%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.86rem;
+  outline: none;
+}
+
+.systemsSyntaxCreateForm input:focus {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+}
+
+.systemsSyntaxCreateForm button {
+  height: 40px;
+  padding: 0 15px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--accent) 18%, var(--panel));
+  color: var(--text);
+  font-weight: 700;
+  box-shadow: none;
+}
+
+.systemsSyntaxCreateForm button:disabled {
+  cursor: default;
+  opacity: 0.38;
+}
+
+.systemsSyntaxChildren {
+  display: flex;
+  flex-direction: column;
+  padding-top: 18px;
+}
+
+.systemsSyntaxBlockCard {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  min-height: 64px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+  transition: background 130ms ease, border-color 130ms ease, transform 130ms ease;
+}
+
+.systemsSyntaxBlockCard:hover {
+  border-color: color-mix(in srgb, var(--text) 18%, var(--border));
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+
+.systemsSyntaxBlockCard.dropTarget {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  transform: translateY(-1px);
+}
+
+.systemsSyntaxBlockCard > button {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 44px 14px 16px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  box-shadow: none;
+}
+
+.systemsSyntaxBlockName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.94rem;
+  font-weight: 680;
+  white-space: nowrap;
+}
+
+.systemsSyntaxBlockMeta {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.systemsSyntaxDragHandle {
+  position: absolute;
+  top: 50%;
+  right: 14px;
+  transform: translateY(-50%);
+  color: var(--muted);
+  font-size: 0.78rem;
+  letter-spacing: -0.18em;
+  pointer-events: none;
+  opacity: 0.62;
+}
+
+.systemsSyntaxDropZone {
+  height: 8px;
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.systemsSyntaxDropZone::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 8px;
+  right: 8px;
+  height: 2px;
+  border-radius: 999px;
+  background: transparent;
+  transition: background 100ms ease;
+}
+
+.systemsSyntaxDropZone.active::after {
+  background: var(--accent);
+}
+
+.systemsSyntaxEmpty {
+  min-height: 190px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 7px;
+  padding: 28px;
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.systemsSyntaxEmpty strong {
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.systemsSyntaxEmpty span {
+  font-size: 0.8rem;
+}
+
+.systemsSyntaxDialogForm {
+  display: grid;
+  gap: 20px;
+}
+
+.systemsSyntaxDialogForm > label {
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.systemsSyntaxDialogForm input[type="text"],
+.systemsSyntaxDialogForm > label > input {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--page-solid) 70%, transparent);
+  color: var(--text);
+  font: inherit;
+  outline: none;
+}
+
+.systemsSyntaxDialogForm input:focus {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+}
+
+.systemsSyntaxDialogForm fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.systemsSyntaxDialogForm legend {
+  margin-bottom: 9px;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.systemsSyntaxCategoryPicker {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+}
+
+.systemsSyntaxCategoryPicker label {
+  min-width: 0;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.systemsSyntaxCategoryPicker label:hover,
+.systemsSyntaxCategoryPicker label.active {
+  border-color: color-mix(in srgb, var(--systems-syntax-category) 48%, var(--border));
+  background: color-mix(in srgb, var(--systems-syntax-category) 9%, transparent);
+  color: var(--text);
+}
+
+.systemsSyntaxCategoryPicker input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.systemsSyntaxDialogActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 4px;
+}
+
+.systemsSyntaxDialogActions > div {
+  display: flex;
+  gap: 8px;
+}
+
+.systemsSyntaxDeleteTextButton {
+  padding: 4px 0;
+  border: none;
+  background: transparent;
+  color: var(--error);
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 700;
+  box-shadow: none;
+}
+
+.systemsSyntaxConfirmDelete {
+  display: grid;
+  gap: 16px;
+}
+
+.systemsSyntaxConfirmDelete .dangerCard strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.systemsSyntaxConfirmDelete .modalActions {
+  justify-content: flex-end;
+}
+
+@media (max-width: 820px) {
+  .systemsSyntaxPage {
+    padding-inline: 16px;
+  }
+
+  .systemsSyntaxHeader {
+    align-items: flex-start;
+  }
+
+  .systemsSyntaxLayout {
+    grid-template-columns: 1fr;
+  }
+
+  .systemsSyntaxFinder {
+    max-height: 220px;
+  }
+
+  .systemsSyntaxCurrentHeader {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .systemsSyntaxHeaderActions {
+    flex-basis: auto;
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .systemsSyntaxCreateForm {
+    flex-basis: auto;
+  }
+}
+
+@media (max-width: 620px) {
+  .systemsSyntaxHeader {
+    flex-direction: column;
+  }
+
+  .systemsSyntaxCategoryGrid,
+  .systemsSyntaxCategoryPicker {
+    grid-template-columns: 1fr;
+  }
+
+  .systemsSyntaxDialogActions {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .systemsSyntaxDialogActions > div {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
 }

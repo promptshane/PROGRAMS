@@ -16,6 +16,23 @@ export const SECRET_GITIGNORE_RULES = [
   "project-backups/",
 ] as const;
 
+// Generated/vendored artifacts that should never be committed. Without these,
+// `git add -A` sweeps in node_modules, build output, and OS junk — which both
+// bloats the repo and produces meaningless "+50,000 lines" save summaries.
+export const BUILD_ARTIFACT_GITIGNORE_RULES = [
+  "node_modules/",
+  ".next/",
+  ".nuxt/",
+  ".turbo/",
+  ".cache/",
+  "dist/",
+  "build/",
+  "out/",
+  "coverage/",
+  ".DS_Store",
+  "*.log",
+] as const;
+
 const BACKUP_METADATA_FILE = "backup.json";
 
 export const BACKUP_EXCLUDED_DIRECTORY_NAMES = [
@@ -119,15 +136,23 @@ export const ensureProjectGitignoreSecretRules = async (projectPath: string): Pr
       .map((line) => line.trim())
       .filter((line) => line && !line.startsWith("#")),
   );
-  const missingRules = SECRET_GITIGNORE_RULES.filter((rule) => !existingRules.has(rule));
-  if (missingRules.length === 0) {
+  const missingSecretRules = SECRET_GITIGNORE_RULES.filter((rule) => !existingRules.has(rule));
+  const missingBuildRules = BUILD_ARTIFACT_GITIGNORE_RULES.filter((rule) => !existingRules.has(rule));
+  if (missingSecretRules.length === 0 && missingBuildRules.length === 0) {
     return;
   }
 
   const trimmed = current.replace(/\s+$/g, "");
-  const prefix = trimmed ? `${trimmed}\n\n` : "";
-  const next = `${prefix}# Local secrets and PROGRAMS safety backups\n${missingRules.join("\n")}\n`;
-  await writeFile(gitignorePath, next, "utf8");
+  let next = trimmed;
+  if (missingSecretRules.length > 0) {
+    const prefix = next ? `${next}\n\n` : "";
+    next = `${prefix}# Local secrets and PROGRAMS safety backups\n${missingSecretRules.join("\n")}`;
+  }
+  if (missingBuildRules.length > 0) {
+    const prefix = next ? `${next}\n\n` : "";
+    next = `${prefix}# Dependencies and build output\n${missingBuildRules.join("\n")}`;
+  }
+  await writeFile(gitignorePath, `${next}\n`, "utf8");
 };
 
 const parseBackupMetadata = (value: string): ProjectBackupInfo | null => {

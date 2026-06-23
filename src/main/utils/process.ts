@@ -145,6 +145,51 @@ export const execCommand = async (
   });
 };
 
+// Like execCommand, but writes `input` to the child's stdin. Used for git
+// commands that accept pathspecs via `--pathspec-from-file=-`, which avoids
+// argument-length limits when the list of paths is large (e.g. node_modules).
+export const execCommandWithInput = async (
+  command: string,
+  cwd: string,
+  input: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<ExecResult> => {
+  const resolvedEnv = env === process.env ? await getCommandEnv() : await buildCommandEnv(env);
+
+  return new Promise((resolve) => {
+    const child = spawn(command, {
+      cwd,
+      env: resolvedEnv,
+      shell: true,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on("close", (code) => {
+      resolve({
+        code: code ?? 0,
+        stdout,
+        stderr,
+      });
+    });
+
+    child.stdin.on("error", () => {
+      // Child may exit before consuming stdin; the close handler reports the code.
+    });
+    child.stdin.end(input);
+  });
+};
+
 export const execFileCommand = async (
   file: string,
   args: string[],

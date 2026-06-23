@@ -117,6 +117,7 @@ import {
   shouldOpenProjectWhenReady,
   getAutoInstallAppUpdateKey,
 } from "./lib/project-helpers";
+import { isUsageSnapshotStale } from "./lib/usage-freshness";
 
 type SafetyConfirmRequest = {
   title: string;
@@ -195,13 +196,21 @@ function App() {
   const [setup, setSetup] = useState<SetupSnapshot>(emptySetup);
   const [auth, setAuth] = useState<AuthSnapshot>(emptyAuth);
   const [usage, setUsage] = useState<UsageSnapshot>(emptyUsage);
+  const [usageRefreshing, setUsageRefreshing] = useState(false);
   const usageRef = useRef(usage);
   usageRef.current = usage;
+  const usageRefreshInFlightRef = useRef<Promise<UsageSnapshot> | null>(null);
   const usageAuthSignature = [
-    auth.codex.loggedIn ? `codex:${auth.codex.email ?? auth.codex.version ?? "connected"}` : "codex:logged-out",
-    auth.claude.loggedIn
-      ? `claude:${auth.claude.email ?? auth.claude.displayName ?? auth.claude.version ?? "connected"}`
-      : "claude:logged-out",
+    auth.codex.available
+      ? auth.codex.loggedIn
+        ? `codex:connected:${auth.codex.email ?? auth.codex.version ?? "connected"}`
+        : `codex:logged-out:${auth.codex.version ?? "unknown"}`
+      : "codex:unavailable",
+    auth.claude.available
+      ? auth.claude.loggedIn
+        ? `claude:connected:${auth.claude.ready ? "ready" : "not-ready"}:${auth.claude.email ?? auth.claude.displayName ?? auth.claude.version ?? "connected"}`
+        : `claude:logged-out:${auth.claude.ready ? "ready" : "not-ready"}:${auth.claude.version ?? "unknown"}`
+      : "claude:unavailable",
   ].join("|");
   const usageAuthSignatureRef = useRef<string | null>(null);
   const [appUpdate, setAppUpdate] = useState<AppUpdateStatus>(emptyAppUpdateStatus);
@@ -817,18 +826,22 @@ function App() {
       return;
     }
 
-    void refreshUsage().catch((error: unknown) => {
-      pushToast(error instanceof Error ? error.message : "PROGRAMS could not load usage.", "error");
-    });
-  }, [
-    programsApi,
-    showUsageSheet,
-    auth.codex.available,
-    auth.codex.loggedIn,
-    auth.codex.email,
-    auth.claude.available,
-    auth.claude.loggedIn,
-  ]);
+    const authChanged = usageAuthSignatureRef.current !== usageAuthSignature;
+    usageAuthSignatureRef.current = usageAuthSignature;
+
+    if (usageRefreshInFlightRef.current) {
+      return;
+    }
+
+    if (
+      authChanged ||
+      isUsageSnapshotStale(usageRef.current.updatedAt, Date.now(), USAGE_ACTIVE_REFRESH_STALE_MS)
+    ) {
+      void refreshUsage().catch((error: unknown) => {
+        pushToast(error instanceof Error ? error.message : "PROGRAMS could not load usage.", "error");
+      });
+    }
+  }, [programsApi, showUsageSheet, usageAuthSignature]);
 
   useEffect(() => {
     if (!programsApi || !showUsageSheet) {
@@ -836,8 +849,7 @@ function App() {
     }
 
     const id = setInterval(() => {
-      const updated = usageRef.current.updatedAt ? new Date(usageRef.current.updatedAt) : null;
-      if (!updated || Date.now() - updated.getTime() >= USAGE_ACTIVE_REFRESH_STALE_MS) {
+      if (isUsageSnapshotStale(usageRef.current.updatedAt, Date.now(), USAGE_ACTIVE_REFRESH_STALE_MS)) {
         void refreshUsage().catch(() => undefined);
       }
     }, USAGE_ACTIVE_REFRESH_INTERVAL_MS);
@@ -852,7 +864,6 @@ function App() {
 
     const hasLoggedInUsageProvider = auth.codex.loggedIn || auth.claude.loggedIn;
     if (!hasLoggedInUsageProvider) {
-      usageAuthSignatureRef.current = usageAuthSignature;
       return;
     }
 
@@ -860,8 +871,7 @@ function App() {
     usageAuthSignatureRef.current = usageAuthSignature;
 
     const refreshIfStale = () => {
-      const updated = usageRef.current.updatedAt ? new Date(usageRef.current.updatedAt) : null;
-      if (!updated || Date.now() - updated.getTime() >= USAGE_BACKGROUND_REFRESH_STALE_MS) {
+      if (isUsageSnapshotStale(usageRef.current.updatedAt, Date.now(), USAGE_BACKGROUND_REFRESH_STALE_MS)) {
         void refreshUsage().catch(() => undefined);
       }
     };
@@ -1218,9 +1228,26 @@ function App() {
   };
 
   const refreshUsage = async () => {
-    const snapshot = await window.programs.readUsage();
-    setUsage(snapshot);
-    return snapshot;
+    if (usageRefreshInFlightRef.current) {
+      return usageRefreshInFlightRef.current;
+    }
+
+    setUsageRefreshing(true);
+    const refreshPromise = (async () => {
+      const snapshot = await window.programs.readUsage();
+      setUsage(snapshot);
+      return snapshot;
+    })();
+    usageRefreshInFlightRef.current = refreshPromise;
+
+    try {
+      return await refreshPromise;
+    } finally {
+      if (usageRefreshInFlightRef.current === refreshPromise) {
+        usageRefreshInFlightRef.current = null;
+        setUsageRefreshing(false);
+      }
+    }
   };
 
   const loadOutlineReport = async (projectId: string) => {
@@ -1483,7 +1510,20 @@ function App() {
   const toggleUsageSheet = () => {
     setShowSettings(false);
     setShowAutomationSheet(false);
-    setShowUsageSheet((current) => !current);
+    const nextOpen = !showUsageSheet;
+    if (nextOpen && programsApi) {
+      const authChanged = usageAuthSignatureRef.current !== usageAuthSignature;
+      usageAuthSignatureRef.current = usageAuthSignature;
+      if (
+        authChanged ||
+        isUsageSnapshotStale(usageRef.current.updatedAt, Date.now(), USAGE_ACTIVE_REFRESH_STALE_MS)
+      ) {
+        void refreshUsage().catch((error: unknown) => {
+          pushToast(error instanceof Error ? error.message : "PROGRAMS could not load usage.", "error");
+        });
+      }
+    }
+    setShowUsageSheet(nextOpen);
   };
 
   const toggleAutomationSheet = () => {
@@ -3227,6 +3267,7 @@ function App() {
         <UsageOverviewSheet
           provider={settings.advancedDefaults.provider}
           usage={usage}
+          usageRefreshing={usageRefreshing}
           providerBusy={busyKey === "settings.agentDefaults"}
           onProviderChange={(provider) => void handleUpdateAgentDefaults({ provider })}
           onClose={() => setShowUsageSheet(false)}

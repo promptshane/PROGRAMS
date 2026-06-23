@@ -11,6 +11,7 @@ import {
   migrateLegacySystemsSyntaxState,
   moveSystemsSyntaxBlock,
   moveSystemsSyntaxProject,
+  moveSystemsSyntaxProjectToCategory,
   parseSystemsSyntaxState,
   updateSystemsSyntaxBlock,
   updateSystemsSyntaxProject,
@@ -86,6 +87,55 @@ test("Systems Syntax creates, orders, edits, and deletes projects", () => {
   assert.equal(state.projects.second, undefined);
   assert.equal(state.blocks.nested, undefined);
   assert.deepEqual(state.projectOrder, ["third", "first"]);
+});
+
+test("Systems Syntax moves projects across categories", () => {
+  let state = createEmptySystemsSyntaxState();
+  state = createSystemsSyntaxProject(state, "First", "stories", "first");
+  state = createSystemsSyntaxProject(state, "Second", "tools", "second");
+  state = createSystemsSyntaxProject(state, "Third", "music", "third");
+
+  state = moveSystemsSyntaxProjectToCategory(state, "first", "tools");
+
+  assert.equal(state.projects.first.categoryId, "tools");
+  assert.deepEqual(state.projectOrder, ["second", "first", "third"]);
+
+  state = moveSystemsSyntaxProjectToCategory(state, "third", "tools", 0);
+
+  assert.equal(state.projects.third.categoryId, "tools");
+  assert.deepEqual(state.projectOrder, ["third", "second", "first"]);
+});
+
+test("Systems Syntax reorders project priority inside a category", () => {
+  let state = createEmptySystemsSyntaxState();
+  state = createSystemsSyntaxProject(state, "Alpha", "tools", "alpha");
+  state = createSystemsSyntaxProject(state, "Beta", "tools", "beta");
+  state = createSystemsSyntaxProject(state, "Gamma", "tools", "gamma");
+
+  state = moveSystemsSyntaxProjectToCategory(state, "alpha", "tools", 2);
+
+  assert.deepEqual(state.projectOrder, ["beta", "alpha", "gamma"]);
+
+  state = moveSystemsSyntaxProjectToCategory(state, "gamma", "tools", 0);
+
+  assert.deepEqual(state.projectOrder, ["gamma", "beta", "alpha"]);
+
+  state = moveSystemsSyntaxProjectToCategory(state, "beta", "tools", 3);
+
+  assert.deepEqual(state.projectOrder, ["gamma", "alpha", "beta"]);
+});
+
+test("Systems Syntax ignores invalid project category moves", () => {
+  const state = createFixture();
+
+  assert.equal(
+    moveSystemsSyntaxProjectToCategory(state, "missing-project", "tools"),
+    state,
+  );
+  assert.equal(
+    moveSystemsSyntaxProjectToCategory(state, "project-alpha", "unknown" as never),
+    state,
+  );
 });
 
 test("Systems Syntax creates ordered root and nested blocks per project", () => {

@@ -5210,8 +5210,27 @@ select {
     0 0 18px color-mix(in srgb, var(--provider-accent) 20%, transparent);
 }
 
-.usageCard-loading {
+.usageCard-loading,
+.usageCard-refreshing {
   position: relative;
+}
+
+.usageCard-refreshing {
+  border-color: color-mix(in srgb, var(--provider-accent) 62%, var(--border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--provider-accent) 48%, transparent),
+    0 0 20px color-mix(in srgb, var(--provider-accent) 22%, transparent);
+  animation: usageCardRefreshPulse 1.05s ease-in-out infinite;
+}
+
+.usageCard-refreshing::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: 26px;
+  border: 1px solid color-mix(in srgb, var(--provider-accent) 74%, transparent);
+  opacity: 0.35;
+  pointer-events: none;
+  animation: usageCardRefreshBlink 1.05s ease-in-out infinite;
 }
 
 .usageCard-codex {
@@ -5590,12 +5609,42 @@ select {
   }
 }
 
+@keyframes usageCardRefreshPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--provider-accent) 36%, transparent),
+      0 0 12px color-mix(in srgb, var(--provider-accent) 16%, transparent);
+  }
+
+  50% {
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--provider-accent) 78%, transparent),
+      0 0 26px color-mix(in srgb, var(--provider-accent) 34%, transparent);
+  }
+}
+
+@keyframes usageCardRefreshBlink {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+
+  50% {
+    opacity: 0.95;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .usageCard-refreshing,
   .usageCard-loading::after,
+  .usageCard-refreshing::after,
   .usagePreviewLabelPlaceholder,
   .usageSkeleton,
   .usageBarWhite-loading {
     animation: none;
+  }
+
+  .usageCard-refreshing::after {
+    opacity: 0.55;
   }
 }
 
@@ -10838,9 +10887,41 @@ select {
   background: color-mix(in srgb, var(--text) 8%, transparent);
 }
 
+.systemsSyntaxSortControl {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 3px;
+  margin-top: 8px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+}
+
+.systemsSyntaxSortControl button {
+  min-width: 0;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.68rem;
+  font-weight: 760;
+  box-shadow: none;
+}
+
+.systemsSyntaxSortControl button:hover,
+.systemsSyntaxSortControl button.active {
+  border-color: color-mix(in srgb, var(--text) 14%, var(--border));
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text);
+}
+
 .systemsSyntaxProjectGroups {
   display: grid;
-  gap: 13px;
+  gap: 9px;
   margin-top: 15px;
   padding-top: 15px;
   border-top: 1px solid var(--border);
@@ -10848,23 +10929,56 @@ select {
 
 .systemsSyntaxProjectGroup {
   min-width: 0;
+  padding: 4px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  transition: background 130ms ease, border-color 130ms ease;
+}
+
+.systemsSyntaxProjectGroup.projectDropTarget {
+  border-color: color-mix(in srgb, var(--systems-syntax-category) 62%, var(--border));
+  background: color-mix(in srgb, var(--systems-syntax-category) 10%, transparent);
 }
 
 .systemsSyntaxProjectGroupTitle {
+  width: 100%;
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 7px;
-  padding: 0 8px 5px;
+  gap: 6px;
+  padding: 4px 8px 5px;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
   color: var(--muted);
+  font: inherit;
   font-size: 0.68rem;
   font-weight: 760;
   letter-spacing: 0.055em;
   text-transform: uppercase;
+  text-align: left;
+  box-shadow: none;
+  cursor: pointer;
+  transition: background 100ms ease, color 100ms ease;
 }
 
-.systemsSyntaxProjectGroupTitle > span:last-child {
+.systemsSyntaxProjectGroupTitle:hover {
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  color: var(--text);
+}
+
+.systemsSyntaxCategoryCount {
   font-size: 0.62rem;
+}
+
+.systemsSyntaxCollapseChevron {
+  font-size: 0.72rem;
+  opacity: 0.6;
+  transition: opacity 100ms ease;
+}
+
+.systemsSyntaxProjectGroupTitle:hover .systemsSyntaxCollapseChevron {
+  opacity: 1;
 }
 
 .systemsSyntaxCategoryDot {
@@ -10881,42 +10995,122 @@ select {
   gap: 2px;
 }
 
-.systemsSyntaxProjectButton {
+.systemsSyntaxProjectRow {
   width: 100%;
-  min-height: 34px;
-  display: flex;
+  min-width: 0;
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 7px 9px 7px 22px;
+  gap: 6px;
   border: 1px solid transparent;
   border-radius: 9px;
   background: transparent;
   color: var(--text);
   font: inherit;
+  opacity: 0.72;
+  transition: background 130ms ease, border-color 130ms ease, opacity 130ms ease;
+}
+
+.systemsSyntaxProjectRow.priority {
+  cursor: grab;
+}
+
+.systemsSyntaxProjectRow.priority:active {
+  cursor: grabbing;
+}
+
+.systemsSyntaxProjectRow.dragging {
+  opacity: 0.36;
+}
+
+.systemsSyntaxProjectRow.dropBefore::before,
+.systemsSyntaxProjectRow.dropAfter::after {
+  content: "";
+  position: absolute;
+  left: 7px;
+  right: 7px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--systems-syntax-category);
+  pointer-events: none;
+}
+
+.systemsSyntaxProjectRow.dropBefore::before {
+  top: -5px;
+}
+
+.systemsSyntaxProjectRow.dropAfter::after {
+  bottom: -5px;
+}
+
+.systemsSyntaxProjectRow.sidebar {
+  min-height: 34px;
+  padding: 3px 5px 3px 18px;
   font-size: 0.79rem;
+}
+
+.systemsSyntaxProjectRow.overview {
+  min-height: 38px;
+  padding: 4px 6px 4px 10px;
+  border-color: color-mix(in srgb, var(--systems-syntax-category) 14%, var(--border));
+  background: color-mix(in srgb, var(--page-solid) 46%, transparent);
+  font-size: 0.79rem;
+}
+
+.systemsSyntaxProjectOpenButton {
+  min-width: 0;
+  padding: 4px 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
   text-align: left;
   box-shadow: none;
-  opacity: 0.72;
 }
 
-.systemsSyntaxProjectButton > span:first-child {
+.systemsSyntaxProjectOpenButton > span {
+  display: -webkit-box;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
 }
 
-.systemsSyntaxProjectButton > span:last-child {
+.systemsSyntaxProjectMeta {
+  flex: 0 0 auto;
   color: var(--muted);
   font-size: 0.65rem;
 }
 
-.systemsSyntaxProjectButton:hover,
-.systemsSyntaxProjectButton.active {
+
+.systemsSyntaxProjectRow:hover,
+.systemsSyntaxProjectRow.active,
+.systemsSyntaxProjectRow.renaming {
   opacity: 1;
   border-color: color-mix(in srgb, var(--systems-syntax-category) 28%, var(--border));
   background: color-mix(in srgb, var(--systems-syntax-category) 8%, transparent);
+}
+
+.systemsSyntaxProjectDropZone {
+  height: 12px;
+  position: relative;
+}
+
+.systemsSyntaxProjectDropZone::after {
+  content: "";
+  position: absolute;
+  top: 5px;
+  left: 7px;
+  right: 7px;
+  height: 3px;
+  border-radius: 999px;
+  background: transparent;
+  transition: background 100ms ease;
+}
+
+.systemsSyntaxProjectDropZone.active::after {
+  background: var(--systems-syntax-category);
 }
 
 .systemsSyntaxEmptyCategoryButton {
@@ -11055,33 +11249,10 @@ select {
   font-weight: 700;
 }
 
-.systemsSyntaxOverviewHeader {
-  display: flex;
-  justify-content: space-between;
-  gap: 20px;
-  padding-bottom: 22px;
-  border-bottom: 1px solid var(--border);
-}
-
-.systemsSyntaxOverviewHeader h2 {
-  margin: 0;
-  font-size: clamp(1.4rem, 2.5vw, 1.9rem);
-  letter-spacing: -0.035em;
-}
-
-.systemsSyntaxOverviewHeader p {
-  max-width: 620px;
-  margin: 7px 0 0;
-  color: var(--muted);
-  font-size: 0.84rem;
-  line-height: 1.55;
-}
-
 .systemsSyntaxCategoryGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
-  padding-top: 18px;
 }
 
 .systemsSyntaxCategoryCard {
@@ -11099,6 +11270,18 @@ select {
       transparent 58%
     ),
     color-mix(in srgb, var(--text) 2%, transparent);
+  transition: background 130ms ease, border-color 130ms ease;
+}
+
+.systemsSyntaxCategoryCard.projectDropTarget {
+  border-color: color-mix(in srgb, var(--systems-syntax-category) 62%, var(--border));
+  background:
+    linear-gradient(
+      145deg,
+      color-mix(in srgb, var(--systems-syntax-category) 13%, transparent),
+      transparent 58%
+    ),
+    color-mix(in srgb, var(--systems-syntax-category) 8%, transparent);
 }
 
 .systemsSyntaxCategoryCardHeader {
@@ -11131,40 +11314,10 @@ select {
   gap: 5px;
 }
 
-.systemsSyntaxOverviewProjects button {
-  min-width: 0;
-  min-height: 38px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--systems-syntax-category) 14%, var(--border));
-  border-radius: 9px;
-  background: color-mix(in srgb, var(--page-solid) 46%, transparent);
-  color: var(--text);
-  font: inherit;
-  font-size: 0.79rem;
-  text-align: left;
-  box-shadow: none;
-}
-
-.systemsSyntaxOverviewProjects button:hover {
+.systemsSyntaxOverviewProjects .systemsSyntaxProjectRow:hover,
+.systemsSyntaxOverviewProjects .systemsSyntaxProjectRow.active {
   border-color: color-mix(in srgb, var(--systems-syntax-category) 42%, var(--border));
   background: color-mix(in srgb, var(--systems-syntax-category) 9%, transparent);
-}
-
-.systemsSyntaxOverviewProjects button > span:first-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.systemsSyntaxOverviewProjects button > span:last-child {
-  flex: 0 0 auto;
-  color: var(--muted);
-  font-size: 0.66rem;
 }
 
 .systemsSyntaxCategoryEmpty {
@@ -11216,10 +11369,21 @@ select {
   min-width: 0;
 }
 
+.systemsSyntaxEditableHeading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .systemsSyntaxCurrentHeader h2 {
+  min-width: 0;
   margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-size: clamp(1.35rem, 2.5vw, 1.8rem);
   letter-spacing: -0.035em;
+  white-space: nowrap;
 }
 
 .systemsSyntaxProjectStats {
@@ -11255,6 +11419,63 @@ select {
   color: var(--text);
   border-color: color-mix(in srgb, var(--text) 22%, var(--border));
   background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+
+.systemsSyntaxInlineEditButton {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.78rem;
+  box-shadow: none;
+  opacity: 0;
+  transition: opacity 100ms ease, border-color 100ms ease, background 100ms ease, color 100ms ease;
+}
+
+.systemsSyntaxProjectRow:hover .systemsSyntaxInlineEditButton,
+.systemsSyntaxProjectRow.active .systemsSyntaxInlineEditButton,
+.systemsSyntaxProjectRow.renaming .systemsSyntaxInlineEditButton {
+  opacity: 1;
+}
+
+.systemsSyntaxInlineEditButton:hover,
+.systemsSyntaxInlineEditButton:focus-visible {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--text) 18%, var(--border));
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  opacity: 1;
+}
+
+.systemsSyntaxHeadingEditButton {
+  margin-top: 2px;
+  opacity: 1;
+}
+
+.systemsSyntaxInlineNameInput {
+  min-width: 0;
+  width: 100%;
+  height: 30px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 58%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--page-solid) 82%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-weight: 700;
+  outline: none;
+}
+
+.systemsSyntaxEditableHeading .systemsSyntaxInlineNameInput {
+  max-width: min(560px, 100%);
+  height: 42px;
+  font-size: clamp(1.1rem, 2vw, 1.45rem);
 }
 
 .systemsSyntaxCreateForm {
@@ -11312,7 +11533,12 @@ select {
   border: 1px solid var(--border);
   border-radius: 13px;
   background: color-mix(in srgb, var(--text) 3%, transparent);
+  cursor: grab;
   transition: background 130ms ease, border-color 130ms ease, transform 130ms ease;
+}
+
+.systemsSyntaxBlockCard:active {
+  cursor: grabbing;
 }
 
 .systemsSyntaxBlockCard:hover {
@@ -11326,20 +11552,51 @@ select {
   transform: translateY(-1px);
 }
 
-.systemsSyntaxBlockCard > button {
+.systemsSyntaxBlockCard.dragging {
+  opacity: 0.36;
+}
+
+.systemsSyntaxBlockCard.dropBefore::before,
+.systemsSyntaxBlockCard.dropAfter::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  height: 3px;
+  z-index: 2;
+  border-radius: 999px;
+  background: var(--accent);
+  pointer-events: none;
+}
+
+.systemsSyntaxBlockCard.dropBefore::before {
+  top: -7px;
+}
+
+.systemsSyntaxBlockCard.dropAfter::after {
+  bottom: -7px;
+}
+
+
+.systemsSyntaxBlockOpenButton {
   min-width: 0;
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
-  padding: 14px 44px 14px 16px;
+  gap: 14px;
+  padding: 14px 48px 14px 16px;
   border: none;
   background: transparent;
   color: var(--text);
   font: inherit;
   text-align: left;
   box-shadow: none;
+  cursor: grab;
+}
+
+.systemsSyntaxBlockCard:active .systemsSyntaxBlockOpenButton {
+  cursor: grabbing;
 }
 
 .systemsSyntaxBlockName {
@@ -11357,16 +11614,36 @@ select {
   font-size: 0.75rem;
 }
 
-.systemsSyntaxDragHandle {
+.systemsSyntaxBlockDeleteButton {
   position: absolute;
   top: 50%;
-  right: 14px;
-  transform: translateY(-50%);
+  right: 12px;
+  width: 26px;
+  height: 26px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
   color: var(--muted);
-  font-size: 0.78rem;
-  letter-spacing: -0.18em;
-  pointer-events: none;
-  opacity: 0.62;
+  font: inherit;
+  font-size: 1rem;
+  box-shadow: none;
+  transform: translateY(-50%);
+  opacity: 0;
+  transition: opacity 100ms ease, border-color 100ms ease, background 100ms ease, color 100ms ease;
+}
+
+.systemsSyntaxBlockCard:hover .systemsSyntaxBlockDeleteButton {
+  opacity: 1;
+}
+
+.systemsSyntaxBlockDeleteButton:hover {
+  border-color: color-mix(in srgb, var(--error) 40%, var(--border));
+  background: color-mix(in srgb, var(--error) 10%, transparent);
+  color: var(--error);
+  opacity: 1;
 }
 
 .systemsSyntaxDropZone {

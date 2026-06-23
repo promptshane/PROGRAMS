@@ -19,12 +19,14 @@ import {
 export function UsageOverviewSheet({
   provider,
   usage,
+  usageRefreshing,
   providerBusy,
   onProviderChange,
   onClose,
 }: {
   provider: AiProvider;
   usage: UsageSnapshot;
+  usageRefreshing: boolean;
   providerBusy: boolean;
   onProviderChange: (provider: AiProvider) => void;
   onClose: () => void;
@@ -35,9 +37,10 @@ export function UsageOverviewSheet({
     windows: ProviderUsage["windows"];
     note: string | null;
     loading: boolean;
+    refreshing: boolean;
   };
 
-  const isUsageLoading = !usage.updatedAt;
+  const isInitialUsageLoading = !usage.updatedAt;
   const updatedAt = usage.updatedAt ? new Date(usage.updatedAt) : null;
   const lastUpdatedLabel =
     updatedAt && !Number.isNaN(updatedAt.getTime())
@@ -48,15 +51,17 @@ export function UsageOverviewSheet({
       key: "claude",
       name: "Claude",
       windows: usage.claude.windows,
-      note: isUsageLoading ? null : usage.claude.note,
-      loading: isUsageLoading,
+      note: isInitialUsageLoading ? null : usage.claude.note,
+      loading: isInitialUsageLoading,
+      refreshing: usageRefreshing,
     },
     {
       key: "codex",
       name: "Codex",
       windows: usage.codex.windows,
-      note: isUsageLoading ? null : usage.codex.note,
-      loading: isUsageLoading,
+      note: isInitialUsageLoading ? null : usage.codex.note,
+      loading: isInitialUsageLoading,
+      refreshing: usageRefreshing,
     },
   ];
   return (
@@ -92,14 +97,15 @@ export function UsageOverviewSheet({
         <div className="usageCardGrid">
           {cards.map((card) => {
             const isSelected = card.key === provider;
+            const isBusy = card.loading || card.refreshing;
 
             return (
               <button
                 key={card.key}
-                className={`usageCard usageCard-${card.key}${isSelected ? " usageCard-selected" : ""}${card.loading ? " usageCard-loading" : ""}`}
+                className={`usageCard usageCard-${card.key}${isSelected ? " usageCard-selected" : ""}${card.loading ? " usageCard-loading" : ""}${card.refreshing ? " usageCard-refreshing" : ""}`}
                 type="button"
                 aria-pressed={isSelected}
-                aria-busy={card.loading}
+                aria-busy={isBusy}
                 disabled={providerBusy}
                 onClick={() => onProviderChange(card.key)}
               >

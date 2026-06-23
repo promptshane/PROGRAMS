@@ -166,6 +166,65 @@ export const moveSystemsSyntaxProject = (
   return { ...state, projectOrder };
 };
 
+export const moveSystemsSyntaxProjectToCategory = (
+  state: SystemsSyntaxState,
+  projectId: string,
+  targetCategoryId: CreativeCategoryId,
+  targetIndex?: number,
+): SystemsSyntaxState => {
+  const project = state.projects[projectId];
+  if (!project || !isCreativeCategoryId(targetCategoryId)) return state;
+  if (project.categoryId === targetCategoryId && targetIndex === undefined) {
+    return state;
+  }
+
+  const sourceCategoryIndex =
+    project.categoryId === targetCategoryId
+      ? state.projectOrder
+          .filter((id) => state.projects[id]?.categoryId === targetCategoryId)
+          .indexOf(projectId)
+      : -1;
+  const adjustedTargetIndex =
+    targetIndex !== undefined
+    && sourceCategoryIndex >= 0
+    && sourceCategoryIndex < targetIndex
+      ? targetIndex - 1
+      : targetIndex;
+  const projects = {
+    ...state.projects,
+    [projectId]: {
+      ...project,
+      categoryId: targetCategoryId,
+    },
+  };
+  const projectOrder = state.projectOrder.filter((id) => id !== projectId);
+  const targetProjectIds = projectOrder.filter(
+    (id) => projects[id]?.categoryId === targetCategoryId,
+  );
+  const boundedTargetIndex =
+    adjustedTargetIndex === undefined
+      ? targetProjectIds.length
+      : Math.max(0, Math.min(targetProjectIds.length, adjustedTargetIndex));
+  const insertBeforeId = targetProjectIds[boundedTargetIndex] ?? null;
+  const insertAfterId = targetProjectIds[boundedTargetIndex - 1] ?? null;
+  const insertIndex = insertBeforeId
+    ? projectOrder.indexOf(insertBeforeId)
+    : insertAfterId
+      ? projectOrder.indexOf(insertAfterId) + 1
+      : projectOrder.length;
+
+  projectOrder.splice(Math.max(0, insertIndex), 0, projectId);
+
+  if (
+    projects[projectId].categoryId === project.categoryId
+    && projectOrder.every((id, index) => id === state.projectOrder[index])
+  ) {
+    return state;
+  }
+
+  return { ...state, projects, projectOrder };
+};
+
 export const deleteSystemsSyntaxProject = (
   state: SystemsSyntaxState,
   projectId: string,

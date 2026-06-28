@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { CREATIVE_CATEGORIES } from "../src/shared/creative-categories.ts";
 import {
+  addExistingBlockPlacement,
   clearStrictTie,
+  countBlockPlacements,
   countProjectThreads,
   countThreadBlocks,
   createBlock,
@@ -10,20 +12,23 @@ import {
   createEmptyThreadsState,
   createProject,
   createThread,
-  deleteBlock,
+  deleteBlockEverywhere,
   deleteCrossThreadLooseTie,
   deleteProject,
   deleteThread,
+  getBlockPlacementIds,
   getCategoryProjects,
   getIncomingCrossThreadLooseTies,
   getOutgoingCrossThreadLooseTies,
   getProjectThreads,
   getThreadBlockOrder,
   getThreadDisplayBlockIds,
+  getThreadDisplayPlacementIds,
   migrateLegacyThreadsState,
   moveBlockInThread,
   moveThreadInProject,
   parseThreadsState,
+  removeBlockPlacement,
   setStrictTie,
   updateBlockText,
   updateProject,
@@ -89,6 +94,7 @@ test("Projects create, order, edit, group, and delete by category", () => {
   assert.equal(state.projects.second, undefined);
   assert.equal(state.threads["removed-thread"], undefined);
   assert.equal(state.blocks["removed-block"], undefined);
+  assert.equal(state.blockPlacements["removed-block"], undefined);
   assert.deepEqual(state.projectOrder, ["first", "third"]);
 });
 
@@ -204,10 +210,12 @@ test("Blocks are created, edited, counted, and deleted inside one Thread", () =>
   assert.equal(state.blocks.beta.text, "Beta revised");
   assert.equal(updateBlockText(state, "beta", "   "), state);
 
-  state = deleteBlock(state, "beta");
+  state = deleteBlockEverywhere(state, "beta");
 
   assert.equal(state.blocks.beta, undefined);
+  assert.equal(state.blockPlacements.beta, undefined);
   assert.deepEqual(state.blockOrder, ["alpha", "gamma", "other"]);
+  assert.deepEqual(state.blockPlacementOrder, ["alpha", "gamma", "other"]);
   assert.equal(countThreadBlocks(state, "thread-alpha"), 2);
 });
 
@@ -225,14 +233,14 @@ test("Strict ties require same-thread adjacency and set reciprocal before and af
   result = setStrictTie(state, "alpha", "after", "beta");
   assert.equal(result.error, null);
   state = result.state;
-  assert.equal(state.blocks.alpha.strictTies.after, "beta");
-  assert.equal(state.blocks.beta.strictTies.before, "alpha");
+  assert.equal(state.blockPlacements.alpha.strictTies.after, "beta");
+  assert.equal(state.blockPlacements.beta.strictTies.before, "alpha");
 
   result = setStrictTie(state, "gamma", "before", "beta");
   assert.equal(result.error, null);
   state = result.state;
-  assert.equal(state.blocks.gamma.strictTies.before, "beta");
-  assert.equal(state.blocks.beta.strictTies.after, "gamma");
+  assert.equal(state.blockPlacements.gamma.strictTies.before, "beta");
+  assert.equal(state.blockPlacements.beta.strictTies.after, "gamma");
 });
 
 test("Strict ties can be cleared without changing loose order", () => {
@@ -241,8 +249,8 @@ test("Strict ties can be cleared without changing loose order", () => {
 
   state = clearStrictTie(state, "alpha", "after");
 
-  assert.equal(state.blocks.alpha.strictTies.after, null);
-  assert.equal(state.blocks.beta.strictTies.before, null);
+  assert.equal(state.blockPlacements.alpha.strictTies.after, null);
+  assert.equal(state.blockPlacements.beta.strictTies.before, null);
   assert.deepEqual(threadOrder(state), ["alpha", "beta", "gamma"]);
 });
 
@@ -253,7 +261,7 @@ test("Loose order moves untied Blocks without creating strict ties", () => {
   assert.equal(result.error, null);
   state = result.state;
   assert.deepEqual(threadOrder(state), ["alpha", "gamma", "beta"]);
-  assert.deepEqual(state.blocks.gamma.strictTies, { before: null, after: null });
+  assert.deepEqual(state.blockPlacements.gamma.strictTies, { before: null, after: null });
   assert.deepEqual(getThreadBlockOrder(state, "thread-alpha"), {
     orderedBlockIds: ["alpha", "gamma", "beta"],
     unplacedBlockIds: [],
@@ -269,8 +277,8 @@ test("Loose order moves the selected strict-tied chain as one segment", () => {
   assert.equal(result.error, null);
   state = result.state;
   assert.deepEqual(threadOrder(state), ["gamma", "alpha", "beta"]);
-  assert.equal(state.blocks.alpha.strictTies.after, "beta");
-  assert.equal(state.blocks.beta.strictTies.before, "alpha");
+  assert.equal(state.blockPlacements.alpha.strictTies.after, "beta");
+  assert.equal(state.blockPlacements.beta.strictTies.before, "alpha");
 });
 
 test("Loose order jumps over neighboring strict-tied segments", () => {
@@ -282,8 +290,8 @@ test("Loose order jumps over neighboring strict-tied segments", () => {
   assert.equal(result.error, null);
   state = result.state;
   assert.deepEqual(threadOrder(state), ["gamma", "alpha", "beta"]);
-  assert.equal(state.blocks.alpha.strictTies.after, "beta");
-  assert.equal(state.blocks.beta.strictTies.before, "alpha");
+  assert.equal(state.blockPlacements.alpha.strictTies.after, "beta");
+  assert.equal(state.blockPlacements.beta.strictTies.before, "alpha");
 
   state = createFixture();
   state = setStrictTie(state, "beta", "after", "gamma").state;
@@ -293,8 +301,105 @@ test("Loose order jumps over neighboring strict-tied segments", () => {
   assert.equal(result.error, null);
   state = result.state;
   assert.deepEqual(threadOrder(state), ["beta", "gamma", "alpha"]);
-  assert.equal(state.blocks.beta.strictTies.after, "gamma");
-  assert.equal(state.blocks.gamma.strictTies.before, "beta");
+  assert.equal(state.blockPlacements.beta.strictTies.after, "gamma");
+  assert.equal(state.blockPlacements.gamma.strictTies.before, "beta");
+});
+
+test("Existing Blocks can be placed in another Thread with shared content", () => {
+  let state = createFixture();
+
+  let result = addExistingBlockPlacement(state, "thread-beta", "beta", "beta-party");
+  assert.equal(result.error, null);
+  state = result.state;
+
+  assert.equal(countBlockPlacements(state, "beta"), 2);
+  assert.deepEqual(getBlockPlacementIds(state, "beta"), ["beta", "beta-party"]);
+  assert.deepEqual(getThreadDisplayBlockIds(state, "thread-beta"), ["other", "beta"]);
+  assert.deepEqual(getThreadDisplayPlacementIds(state, "thread-beta"), ["other", "beta-party"]);
+
+  state = updateBlockText(state, "beta", "Shared firework");
+  assert.equal(state.blocks.beta.text, "Shared firework");
+  assert.equal(state.blocks[state.blockPlacements["beta-party"].blockId].text, "Shared firework");
+
+  result = addExistingBlockPlacement(state, "thread-beta", "beta", "beta-party-duplicate");
+  assert.equal(result.state, state);
+  assert.match(result.error ?? "", /already in this Thread/);
+});
+
+test("Shared Block strict ties and loose order are independent per placement", () => {
+  let state = createFixture();
+  state = addExistingBlockPlacement(state, "thread-beta", "beta", "beta-party").state;
+
+  state = setStrictTie(state, "alpha", "after", "beta").state;
+  state = setStrictTie(state, "other", "after", "beta-party").state;
+
+  assert.equal(state.blockPlacements.beta.strictTies.before, "alpha");
+  assert.equal(state.blockPlacements["beta-party"].strictTies.before, "other");
+
+  state = clearStrictTie(state, "alpha", "after");
+  assert.equal(state.blockPlacements.beta.strictTies.before, null);
+  assert.equal(state.blockPlacements["beta-party"].strictTies.before, "other");
+
+  state = clearStrictTie(state, "other", "after");
+  const result = moveBlockInThread(state, "beta-party", "up");
+  assert.equal(result.error, null);
+  state = result.state;
+
+  assert.deepEqual(getThreadDisplayBlockIds(state, "thread-alpha"), ["alpha", "beta", "gamma"]);
+  assert.deepEqual(getThreadDisplayBlockIds(state, "thread-beta"), ["beta", "other"]);
+});
+
+test("Removing one placement preserves shared content and Links until the final placement is removed", () => {
+  let state = createFixture();
+  state = addExistingBlockPlacement(state, "thread-beta", "beta", "beta-party").state;
+  state = createCrossThreadLooseTie(state, "beta", "other", "link-1").state;
+
+  state = removeBlockPlacement(state, "beta-party");
+
+  assert.equal(state.blocks.beta.text, "Beta");
+  assert.equal(countBlockPlacements(state, "beta"), 1);
+  assert.equal(state.crossThreadLooseTies["link-1"].sourceBlockId, "beta");
+  assert.deepEqual(getThreadDisplayBlockIds(state, "thread-beta"), ["other"]);
+
+  state = removeBlockPlacement(state, "beta");
+
+  assert.equal(state.blocks.beta, undefined);
+  assert.equal(state.blockPlacements.beta, undefined);
+  assert.equal(state.crossThreadLooseTies["link-1"], undefined);
+  assert.deepEqual(state.crossThreadLooseTieOrder, []);
+});
+
+test("Deleting a shared Block everywhere removes all placements, strict ties, and Links", () => {
+  let state = createFixture();
+  state = addExistingBlockPlacement(state, "thread-beta", "beta", "beta-party").state;
+  state = setStrictTie(state, "alpha", "after", "beta").state;
+  state = setStrictTie(state, "other", "after", "beta-party").state;
+  state = createCrossThreadLooseTie(state, "beta", "other", "link-1").state;
+
+  state = deleteBlockEverywhere(state, "beta");
+
+  assert.equal(state.blocks.beta, undefined);
+  assert.equal(state.blockPlacements.beta, undefined);
+  assert.equal(state.blockPlacements["beta-party"], undefined);
+  assert.equal(state.blockPlacements.alpha.strictTies.after, null);
+  assert.equal(state.blockPlacements.other.strictTies.after, null);
+  assert.equal(state.crossThreadLooseTies["link-1"], undefined);
+  assert.deepEqual(getThreadDisplayBlockIds(state, "thread-alpha"), ["alpha", "gamma"]);
+  assert.deepEqual(getThreadDisplayBlockIds(state, "thread-beta"), ["other"]);
+});
+
+test("Deleting Threads removes placements only and preserves shared Blocks elsewhere", () => {
+  let state = createFixture();
+  state = addExistingBlockPlacement(state, "thread-beta", "beta", "beta-party").state;
+  state = createCrossThreadLooseTie(state, "beta", "other", "link-1").state;
+
+  state = deleteThread(state, "thread-alpha");
+
+  assert.equal(state.threads["thread-alpha"], undefined);
+  assert.equal(state.blocks.beta.text, "Beta");
+  assert.deepEqual(getBlockPlacementIds(state, "beta"), ["beta-party"]);
+  assert.deepEqual(getThreadDisplayBlockIds(state, "thread-beta"), ["other", "beta"]);
+  assert.equal(state.crossThreadLooseTies["link-1"].sourceBlockId, "beta");
 });
 
 test("Cross-thread loose ties are directional annotations and do not affect order", () => {
@@ -340,20 +445,21 @@ test("Deleting Blocks clears strict ties and cross-thread loose ties", () => {
   state = createCrossThreadLooseTie(state, "beta", "other", "link-1").state;
   state = createCrossThreadLooseTie(state, "other", "beta", "link-2").state;
 
-  state = deleteBlock(state, "beta");
+  state = deleteBlockEverywhere(state, "beta");
 
-  assert.equal(state.blocks.alpha.strictTies.after, null);
+  assert.equal(state.blockPlacements.alpha.strictTies.after, null);
   assert.equal(state.crossThreadLooseTies["link-1"], undefined);
   assert.equal(state.crossThreadLooseTies["link-2"], undefined);
   assert.deepEqual(state.crossThreadLooseTieOrder, []);
 });
 
-test("Threads parser normalizes malformed v3 state, strict ties, and callback links", () => {
+test("Threads parser normalizes malformed v4 state, strict ties, and callback links", () => {
   const parsed = parseThreadsState(JSON.stringify({
-    version: 3,
+    version: 4,
     projectOrder: ["alpha-project", "missing", "alpha-project"],
     threadOrder: ["alpha-thread", "missing", "alpha-thread"],
-    blockOrder: ["alpha", "bravo", "cross-thread", "missing", "alpha"],
+    blockOrder: ["alpha", "bravo", "cross-thread", "unused", "missing", "alpha"],
+    blockPlacementOrder: ["alpha-place", "bravo-place", "cross-place", "duplicate-place", "missing", "alpha-place"],
     crossThreadLooseTieOrder: ["valid-link", "self-link", "valid-link"],
     projects: {
       "alpha-project": {
@@ -390,28 +496,41 @@ test("Threads parser normalizes malformed v3 state, strict ties, and callback li
       },
     },
     blocks: {
-      alpha: {
-        id: "alpha",
+      alpha: { id: "alpha", text: " Alpha " },
+      bravo: { id: "bravo", text: "Bravo" },
+      "cross-thread": { id: "cross-thread", text: "Other" },
+      unused: { id: "unused", text: "Prune me" },
+      orphan: { id: "orphan", text: "Discard me" },
+    },
+    blockPlacements: {
+      "alpha-place": {
+        id: "alpha-place",
+        blockId: "alpha",
         threadId: "alpha-thread",
-        text: " Alpha ",
-        strictTies: { before: null, after: "bravo" },
+        strictTies: { before: null, after: "bravo-place" },
       },
-      bravo: {
-        id: "bravo",
+      "bravo-place": {
+        id: "bravo-place",
+        blockId: "bravo",
         threadId: "alpha-thread",
-        text: "Bravo",
-        strictTies: { before: "alpha", after: "cross-thread" },
+        strictTies: { before: "alpha-place", after: "cross-place" },
       },
-      "cross-thread": {
-        id: "cross-thread",
+      "cross-place": {
+        id: "cross-place",
+        blockId: "cross-thread",
         threadId: "beta-thread",
-        text: "Other",
-        strictTies: { before: "bravo", after: null },
+        strictTies: { before: "bravo-place", after: null },
       },
-      orphan: {
-        id: "orphan",
+      "duplicate-place": {
+        id: "duplicate-place",
+        blockId: "alpha",
+        threadId: "alpha-thread",
+        strictTies: { before: null, after: null },
+      },
+      "orphan-place": {
+        id: "orphan-place",
+        blockId: "orphan",
         threadId: "missing",
-        text: "Discard me",
         strictTies: { before: null, after: null },
       },
     },
@@ -434,18 +553,95 @@ test("Threads parser normalizes malformed v3 state, strict ties, and callback li
     },
   }));
 
+  assert.equal(parsed.version, 4);
   assert.deepEqual(parsed.projectOrder, ["alpha-project", "beta-project"]);
   assert.deepEqual(parsed.threadOrder, ["alpha-thread", "beta-thread"]);
   assert.equal(parsed.projects["alpha-project"].name, "Alpha project");
   assert.equal(parsed.projects.invalid, undefined);
   assert.equal(parsed.threads.orphan, undefined);
   assert.equal(parsed.blocks.orphan, undefined);
-  assert.equal(parsed.blocks.alpha.strictTies.after, "bravo");
-  assert.equal(parsed.blocks.bravo.strictTies.before, "alpha");
-  assert.equal(parsed.blocks.bravo.strictTies.after, null);
-  assert.equal(parsed.blocks["cross-thread"].strictTies.before, null);
+  assert.equal(parsed.blocks.unused, undefined);
+  assert.equal(parsed.blockPlacements["alpha-place"].strictTies.after, "bravo-place");
+  assert.equal(parsed.blockPlacements["bravo-place"].strictTies.before, "alpha-place");
+  assert.equal(parsed.blockPlacements["bravo-place"].strictTies.after, null);
+  assert.equal(parsed.blockPlacements["cross-place"].strictTies.before, null);
+  assert.equal(parsed.blockPlacements["duplicate-place"], undefined);
   assert.deepEqual(parsed.blockOrder, ["alpha", "bravo", "cross-thread"]);
+  assert.deepEqual(parsed.blockPlacementOrder, ["alpha-place", "bravo-place", "cross-place"]);
   assert.deepEqual(parsed.crossThreadLooseTieOrder, ["valid-link"]);
+});
+
+test("Threads migration imports v3 state as Blocks plus one placement each", () => {
+  const migrated = parseThreadsState(JSON.stringify({
+    version: 3,
+    projectOrder: ["alpha-project", "beta-project"],
+    threadOrder: ["alpha-thread", "beta-thread"],
+    blockOrder: ["alpha", "bravo", "cross-thread"],
+    crossThreadLooseTieOrder: ["valid-link"],
+    projects: {
+      "alpha-project": {
+        id: "alpha-project",
+        name: " Alpha project ",
+        categoryId: "tools",
+      },
+      "beta-project": {
+        id: "beta-project",
+        name: "Beta project",
+        categoryId: "games",
+      },
+    },
+    threads: {
+      "alpha-thread": {
+        id: "alpha-thread",
+        name: " Alpha thread ",
+        projectId: "alpha-project",
+      },
+      "beta-thread": {
+        id: "beta-thread",
+        name: "Beta thread",
+        projectId: "beta-project",
+      },
+    },
+    blocks: {
+      alpha: {
+        id: "alpha",
+        threadId: "alpha-thread",
+        text: " Alpha ",
+        strictTies: { before: null, after: "bravo" },
+      },
+      bravo: {
+        id: "bravo",
+        threadId: "alpha-thread",
+        text: "Bravo",
+        strictTies: { before: "alpha", after: "cross-thread" },
+      },
+      "cross-thread": {
+        id: "cross-thread",
+        threadId: "beta-thread",
+        text: "Other",
+        strictTies: { before: "bravo", after: null },
+      },
+    },
+    crossThreadLooseTies: {
+      "valid-link": {
+        id: "valid-link",
+        sourceBlockId: "alpha",
+        targetBlockId: "cross-thread",
+      },
+    },
+  }));
+
+  assert.equal(migrated.version, 4);
+  assert.equal(migrated.blocks.alpha.text, "Alpha");
+  assert.deepEqual(migrated.blockOrder, ["alpha", "bravo", "cross-thread"]);
+  assert.deepEqual(migrated.blockPlacementOrder, ["alpha", "bravo", "cross-thread"]);
+  assert.equal(migrated.blockPlacements.alpha.blockId, "alpha");
+  assert.equal(migrated.blockPlacements.alpha.threadId, "alpha-thread");
+  assert.equal(migrated.blockPlacements.alpha.strictTies.after, "bravo");
+  assert.equal(migrated.blockPlacements.bravo.strictTies.before, "alpha");
+  assert.equal(migrated.blockPlacements.bravo.strictTies.after, null);
+  assert.equal(migrated.blockPlacements["cross-thread"].strictTies.before, null);
+  assert.deepEqual(migrated.crossThreadLooseTieOrder, ["valid-link"]);
 });
 
 test("Threads migration imports v2 state as loose order and adjacent strict ties", () => {
@@ -490,15 +686,15 @@ test("Threads migration imports v2 state as loose order and adjacent strict ties
     },
   }));
 
-  assert.equal(migrated.version, 3);
+  assert.equal(migrated.version, 4);
   assert.deepEqual(getThreadDisplayBlockIds(migrated, "alpha-thread"), [
     "alpha",
     "beta",
     "gamma",
   ]);
-  assert.equal(migrated.blocks.alpha.strictTies.after, "beta");
-  assert.equal(migrated.blocks.beta.strictTies.before, "alpha");
-  assert.equal(migrated.blocks.beta.strictTies.after, "gamma");
+  assert.equal(migrated.blockPlacements.alpha.strictTies.after, "beta");
+  assert.equal(migrated.blockPlacements.beta.strictTies.before, "alpha");
+  assert.equal(migrated.blockPlacements.beta.strictTies.after, "gamma");
   assert.deepEqual(migrated.crossThreadLooseTies, {});
 });
 

@@ -11854,11 +11854,45 @@ select {
 
 .threadsAddBlockForm {
   display: grid;
+  gap: 10px;
+}
+
+.threadsAddBlockModeTabs {
+  display: inline-flex;
+  justify-self: start;
+  gap: 6px;
+  padding: 2px;
+  border: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+}
+
+.threadsAddBlockModeTabs button {
+  min-height: 26px;
+  padding: 0 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 720;
+  box-shadow: none;
+}
+
+.threadsAddBlockModeTabs button:hover,
+.threadsAddBlockModeTabs button.active {
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  color: var(--text);
+}
+
+.threadsAddBlockFields {
+  display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
 }
 
-.threadsAddBlockForm textarea {
+.threadsAddBlockFields textarea {
   min-width: 0;
   resize: vertical;
   padding: 11px 12px;
@@ -11872,11 +11906,11 @@ select {
   outline: none;
 }
 
-.threadsAddBlockForm textarea:focus {
+.threadsAddBlockFields textarea:focus {
   border-color: color-mix(in srgb, var(--accent) 52%, var(--border));
 }
 
-.threadsAddBlockForm button {
+.threadsAddBlockFields button {
   align-self: stretch;
   padding: 0 14px;
   border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
@@ -11889,9 +11923,30 @@ select {
   box-shadow: none;
 }
 
-.threadsAddBlockForm button:disabled {
+.threadsAddBlockFields button:disabled {
   cursor: default;
   opacity: 0.38;
+}
+
+.threadsExistingBlockPicker {
+  display: grid;
+  gap: 10px;
+}
+
+.threadsExistingBlockPicker input {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 11px;
+  border: 1px solid color-mix(in srgb, var(--text) 13%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--page-solid) 72%, transparent);
+  color: var(--text);
+  font: inherit;
+  outline: none;
+}
+
+.threadsExistingBlockPicker input:focus {
+  border-color: color-mix(in srgb, var(--accent) 52%, var(--border));
 }
 
 .threadsBlockList {
@@ -12053,6 +12108,15 @@ select {
   background: transparent;
 }
 
+.threadsBlockTextButton.shared,
+.threadsBlockTextReadOnly.shared {
+  color: color-mix(in srgb, #e2b85d 78%, var(--text));
+}
+
+.threadsBlockTextButton.shared:hover {
+  color: color-mix(in srgb, #f0c76d 86%, var(--text));
+}
+
 .threadsBlockTextReadOnly {
   min-width: 0;
   color: color-mix(in srgb, var(--text) 90%, var(--muted));
@@ -12152,6 +12216,17 @@ select {
   border-color: color-mix(in srgb, var(--text) 18%, var(--border));
   color: var(--text);
   background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+
+.threadsMetaButton.danger {
+  border-color: color-mix(in srgb, var(--error) 18%, transparent);
+  color: color-mix(in srgb, var(--error) 68%, var(--muted));
+}
+
+.threadsMetaButton.danger:hover {
+  border-color: color-mix(in srgb, var(--error) 30%, var(--border));
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 7%, transparent);
 }
 
 .threadsMetaButton.strict.active {
@@ -12408,7 +12483,7 @@ select {
     justify-content: flex-start;
   }
 
-  .threadsAddBlockForm {
+  .threadsAddBlockFields {
     grid-template-columns: 1fr;
   }
 

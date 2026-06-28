@@ -25,8 +25,13 @@ export interface Thread {
 
 export interface Block {
   id: string;
-  threadId: string;
   text: string;
+}
+
+export interface BlockPlacement {
+  id: string;
+  blockId: string;
+  threadId: string;
   strictTies: BlockStrictTies;
 }
 
@@ -37,13 +42,15 @@ export interface CrossThreadLooseTie {
 }
 
 export interface ThreadsState {
-  version: 3;
+  version: 4;
   projects: Record<string, Project>;
   projectOrder: string[];
   threads: Record<string, Thread>;
   threadOrder: string[];
   blocks: Record<string, Block>;
   blockOrder: string[];
+  blockPlacements: Record<string, BlockPlacement>;
+  blockPlacementOrder: string[];
   crossThreadLooseTies: Record<string, CrossThreadLooseTie>;
   crossThreadLooseTieOrder: string[];
 }
@@ -58,7 +65,15 @@ export interface ThreadsMutationResult {
   error: string | null;
 }
 
-export const THREADS_STORAGE_KEY = "programs.threads.v3";
+interface LegacyBlock {
+  id: string;
+  threadId: string;
+  text: string;
+  strictTies: BlockStrictTies;
+}
+
+export const THREADS_STORAGE_KEY = "programs.threads.v4";
+export const LEGACY_THREADS_V3_STORAGE_KEY = "programs.threads.v3";
 export const LEGACY_THREADS_V2_STORAGE_KEY = "programs.threads.v2";
 export const LEGACY_THREADS_STORAGE_KEY = "programs.threads.v1";
 export const LEGACY_THREADS_SOURCE_STORAGE_KEY = "programs.systems-syntax.v2";
@@ -66,13 +81,15 @@ export const LEGACY_THREADS_SOURCE_GLOBAL_STORAGE_KEY = "programs.systems-syntax
 export const IMPORTED_LEGACY_PROJECT_ID = "imported-syntax";
 
 export const createEmptyThreadsState = (): ThreadsState => ({
-  version: 3,
+  version: 4,
   projects: {},
   projectOrder: [],
   threads: {},
   threadOrder: [],
   blocks: {},
   blockOrder: [],
+  blockPlacements: {},
+  blockPlacementOrder: [],
   crossThreadLooseTies: {},
   crossThreadLooseTieOrder: [],
 });
@@ -100,40 +117,60 @@ const mutationResult = (
   error: string | null = null,
 ): ThreadsMutationResult => ({ state, error });
 
-const copyBlockWithStrictTie = (
-  blocks: Record<string, Block>,
-  blockId: string,
+const copyPlacementWithStrictTie = (
+  blockPlacements: Record<string, BlockPlacement>,
+  placementId: string,
   position: TiePosition,
-  targetBlockId: string | null,
-): Record<string, Block> => {
-  const block = blocks[blockId];
-  if (!block || block.strictTies[position] === targetBlockId) return blocks;
+  targetPlacementId: string | null,
+): Record<string, BlockPlacement> => {
+  const placement = blockPlacements[placementId];
+  if (!placement || placement.strictTies[position] === targetPlacementId) return blockPlacements;
   return {
-    ...blocks,
-    [blockId]: {
-      ...block,
+    ...blockPlacements,
+    [placementId]: {
+      ...placement,
       strictTies: {
-        ...block.strictTies,
-        [position]: targetBlockId,
+        ...placement.strictTies,
+        [position]: targetPlacementId,
       },
     },
   };
 };
 
-const removeBlocks = (
+const removeBlockPlacements = (
   state: ThreadsState,
-  deletedBlockIds: Set<string>,
-): Pick<ThreadsState, "blocks" | "blockOrder" | "crossThreadLooseTies" | "crossThreadLooseTieOrder"> => {
-  const blocks: Record<string, Block> = {};
-  for (const [blockId, block] of Object.entries(state.blocks)) {
-    if (deletedBlockIds.has(blockId)) continue;
-    blocks[blockId] = {
-      ...block,
+  deletedPlacementIds: Set<string>,
+): Pick<
+  ThreadsState,
+  "blocks"
+  | "blockOrder"
+  | "blockPlacements"
+  | "blockPlacementOrder"
+  | "crossThreadLooseTies"
+  | "crossThreadLooseTieOrder"
+> => {
+  const blockPlacements: Record<string, BlockPlacement> = {};
+  for (const [placementId, placement] of Object.entries(state.blockPlacements)) {
+    if (deletedPlacementIds.has(placementId)) continue;
+    blockPlacements[placementId] = {
+      ...placement,
       strictTies: {
-        before: deletedBlockIds.has(block.strictTies.before ?? "") ? null : block.strictTies.before,
-        after: deletedBlockIds.has(block.strictTies.after ?? "") ? null : block.strictTies.after,
+        before: deletedPlacementIds.has(placement.strictTies.before ?? "") ? null : placement.strictTies.before,
+        after: deletedPlacementIds.has(placement.strictTies.after ?? "") ? null : placement.strictTies.after,
       },
     };
+  }
+
+  const usedBlockIds = new Set(
+    Object.values(blockPlacements).map((placement) => placement.blockId),
+  );
+  const deletedBlockIds = new Set(
+    Object.keys(state.blocks).filter((blockId) => !usedBlockIds.has(blockId)),
+  );
+
+  const blocks: Record<string, Block> = {};
+  for (const [blockId, block] of Object.entries(state.blocks)) {
+    if (!deletedBlockIds.has(blockId)) blocks[blockId] = block;
   }
 
   const crossThreadLooseTies: Record<string, CrossThreadLooseTie> = {};
@@ -149,7 +186,9 @@ const removeBlocks = (
 
   return {
     blocks,
-    blockOrder: state.blockOrder.filter((id) => !deletedBlockIds.has(id)),
+    blockOrder: state.blockOrder.filter((id) => Boolean(blocks[id])),
+    blockPlacements,
+    blockPlacementOrder: state.blockPlacementOrder.filter((id) => Boolean(blockPlacements[id])),
     crossThreadLooseTies,
     crossThreadLooseTieOrder: state.crossThreadLooseTieOrder.filter((id) =>
       Boolean(crossThreadLooseTies[id]),
@@ -157,44 +196,44 @@ const removeBlocks = (
   };
 };
 
-const replaceThreadBlockOrder = (
+const replaceThreadPlacementOrder = (
   state: ThreadsState,
   threadId: string,
-  nextThreadBlockIds: string[],
+  nextThreadPlacementIds: string[],
 ): string[] => {
   let inserted = false;
-  const nextBlockOrder: string[] = [];
-  for (const blockId of state.blockOrder) {
-    const block = state.blocks[blockId];
-    if (block?.threadId !== threadId) {
-      nextBlockOrder.push(blockId);
+  const nextPlacementOrder: string[] = [];
+  for (const placementId of state.blockPlacementOrder) {
+    const placement = state.blockPlacements[placementId];
+    if (placement?.threadId !== threadId) {
+      nextPlacementOrder.push(placementId);
       continue;
     }
     if (!inserted) {
-      nextBlockOrder.push(...nextThreadBlockIds);
+      nextPlacementOrder.push(...nextThreadPlacementIds);
       inserted = true;
     }
   }
-  if (!inserted) nextBlockOrder.push(...nextThreadBlockIds);
-  return nextBlockOrder;
+  if (!inserted) nextPlacementOrder.push(...nextThreadPlacementIds);
+  return nextPlacementOrder;
 };
 
-const getStrictSegmentIds = (
+const getStrictSegmentPlacementIds = (
   state: ThreadsState,
-  blockId: string,
+  placementId: string,
 ): string[] => {
-  const block = state.blocks[blockId];
-  if (!block) return [];
-  const threadBlockIds = getThreadBlockIds(state, block.threadId);
-  const blockIndex = threadBlockIds.indexOf(blockId);
-  if (blockIndex === -1) return [];
+  const placement = state.blockPlacements[placementId];
+  if (!placement) return [];
+  const threadPlacementIds = getThreadPlacementIds(state, placement.threadId);
+  const placementIndex = threadPlacementIds.indexOf(placementId);
+  if (placementIndex === -1) return [];
 
-  let start = blockIndex;
+  let start = placementIndex;
   while (start > 0) {
-    const currentId = threadBlockIds[start];
-    const previousId = threadBlockIds[start - 1];
-    const current = state.blocks[currentId];
-    const previous = state.blocks[previousId];
+    const currentId = threadPlacementIds[start];
+    const previousId = threadPlacementIds[start - 1];
+    const current = state.blockPlacements[currentId];
+    const previous = state.blockPlacements[previousId];
     if (
       current?.strictTies.before === previousId
       && previous?.strictTies.after === currentId
@@ -205,12 +244,12 @@ const getStrictSegmentIds = (
     break;
   }
 
-  let end = blockIndex;
-  while (end < threadBlockIds.length - 1) {
-    const currentId = threadBlockIds[end];
-    const nextId = threadBlockIds[end + 1];
-    const current = state.blocks[currentId];
-    const next = state.blocks[nextId];
+  let end = placementIndex;
+  while (end < threadPlacementIds.length - 1) {
+    const currentId = threadPlacementIds[end];
+    const nextId = threadPlacementIds[end + 1];
+    const current = state.blockPlacements[currentId];
+    const next = state.blockPlacements[nextId];
     if (
       current?.strictTies.after === nextId
       && next?.strictTies.before === currentId
@@ -221,7 +260,7 @@ const getStrictSegmentIds = (
     break;
   }
 
-  return threadBlockIds.slice(start, end + 1);
+  return threadPlacementIds.slice(start, end + 1);
 };
 
 export const createProject = (
@@ -279,10 +318,10 @@ export const deleteProject = (
       .filter((thread) => thread.projectId === projectId)
       .map((thread) => thread.id),
   );
-  const deletedBlockIds = new Set(
-    Object.values(state.blocks)
-      .filter((block) => deletedThreadIds.has(block.threadId))
-      .map((block) => block.id),
+  const deletedPlacementIds = new Set(
+    Object.values(state.blockPlacements)
+      .filter((placement) => deletedThreadIds.has(placement.threadId))
+      .map((placement) => placement.id),
   );
 
   const projects = { ...state.projects };
@@ -299,7 +338,7 @@ export const deleteProject = (
     projectOrder: state.projectOrder.filter((id) => id !== projectId),
     threads,
     threadOrder: state.threadOrder.filter((id) => !deletedThreadIds.has(id)),
-    ...removeBlocks(state, deletedBlockIds),
+    ...removeBlockPlacements(state, deletedPlacementIds),
   };
 };
 
@@ -386,10 +425,10 @@ export const deleteThread = (
 ): ThreadsState => {
   if (!state.threads[threadId]) return state;
 
-  const deletedBlockIds = new Set(
-    Object.values(state.blocks)
-      .filter((block) => block.threadId === threadId)
-      .map((block) => block.id),
+  const deletedPlacementIds = new Set(
+    Object.values(state.blockPlacements)
+      .filter((placement) => placement.threadId === threadId)
+      .map((placement) => placement.id),
   );
   const threads = { ...state.threads };
   delete threads[threadId];
@@ -398,7 +437,7 @@ export const deleteThread = (
     ...state,
     threads,
     threadOrder: state.threadOrder.filter((id) => id !== threadId),
-    ...removeBlocks(state, deletedBlockIds),
+    ...removeBlockPlacements(state, deletedPlacementIds),
   };
 };
 
@@ -406,24 +445,74 @@ export const createBlock = (
   state: ThreadsState,
   threadId: string,
   text: string,
-  id: string,
+  blockId: string,
+  placementId: string = blockId,
 ): ThreadsState => {
   const thread = state.threads[threadId];
   const trimmedText = text.trim();
-  if (!thread || !trimmedText || !id || state.blocks[id]) return state;
+  if (
+    !thread
+    || !trimmedText
+    || !blockId
+    || !placementId
+    || state.blocks[blockId]
+    || state.blockPlacements[placementId]
+  ) {
+    return state;
+  }
   return {
     ...state,
     blocks: {
       ...state.blocks,
-      [id]: {
-        id,
-        threadId,
+      [blockId]: {
+        id: blockId,
         text: trimmedText,
+      },
+    },
+    blockOrder: [...state.blockOrder, blockId],
+    blockPlacements: {
+      ...state.blockPlacements,
+      [placementId]: {
+        id: placementId,
+        blockId,
+        threadId,
         strictTies: emptyStrictTies(),
       },
     },
-    blockOrder: [...state.blockOrder, id],
+    blockPlacementOrder: [...state.blockPlacementOrder, placementId],
   };
+};
+
+export const addExistingBlockPlacement = (
+  state: ThreadsState,
+  threadId: string,
+  blockId: string,
+  placementId: string,
+): ThreadsMutationResult => {
+  if (!state.threads[threadId]) return mutationResult(state, "Thread not found.");
+  if (!state.blocks[blockId]) return mutationResult(state, "Choose an existing Block.");
+  if (!placementId || state.blockPlacements[placementId]) {
+    return mutationResult(state, "Could not add Block to this Thread.");
+  }
+  const alreadyPlaced = Object.values(state.blockPlacements).some((placement) =>
+    placement.threadId === threadId && placement.blockId === blockId,
+  );
+  if (alreadyPlaced) {
+    return mutationResult(state, "That Block is already in this Thread.");
+  }
+  return mutationResult({
+    ...state,
+    blockPlacements: {
+      ...state.blockPlacements,
+      [placementId]: {
+        id: placementId,
+        blockId,
+        threadId,
+        strictTies: emptyStrictTies(),
+      },
+    },
+    blockPlacementOrder: [...state.blockPlacementOrder, placementId],
+  });
 };
 
 export const updateBlockText = (
@@ -446,37 +535,55 @@ export const updateBlockText = (
   };
 };
 
+export const removeBlockPlacement = (
+  state: ThreadsState,
+  placementId: string,
+): ThreadsState => {
+  if (!state.blockPlacements[placementId]) return state;
+  return {
+    ...state,
+    ...removeBlockPlacements(state, new Set([placementId])),
+  };
+};
+
 export const deleteBlock = (
   state: ThreadsState,
   blockId: string,
 ): ThreadsState => {
   if (!state.blocks[blockId]) return state;
+  const deletedPlacementIds = new Set(
+    Object.values(state.blockPlacements)
+      .filter((placement) => placement.blockId === blockId)
+      .map((placement) => placement.id),
+  );
   return {
     ...state,
-    ...removeBlocks(state, new Set([blockId])),
+    ...removeBlockPlacements(state, deletedPlacementIds),
   };
 };
 
+export const deleteBlockEverywhere = deleteBlock;
+
 export const setStrictTie = (
   state: ThreadsState,
-  blockId: string,
+  placementId: string,
   position: TiePosition,
-  targetBlockId: string,
+  targetPlacementId: string,
 ): ThreadsMutationResult => {
-  const block = state.blocks[blockId];
-  const targetBlock = state.blocks[targetBlockId];
-  if (!block || !targetBlock || block.id === targetBlock.id) {
+  const placement = state.blockPlacements[placementId];
+  const targetPlacement = state.blockPlacements[targetPlacementId];
+  if (!placement || !targetPlacement || placement.id === targetPlacement.id) {
     return mutationResult(state, "Choose two different blocks for a strict tie.");
   }
-  if (block.threadId !== targetBlock.threadId) {
+  if (placement.threadId !== targetPlacement.threadId) {
     return mutationResult(state, "Strict ties can only connect blocks in the same thread.");
   }
 
-  const threadBlockIds = getThreadBlockIds(state, block.threadId);
-  const blockIndex = threadBlockIds.indexOf(blockId);
-  const targetIndex = threadBlockIds.indexOf(targetBlockId);
-  const expectedTargetIndex = position === "before" ? blockIndex - 1 : blockIndex + 1;
-  if (blockIndex === -1 || targetIndex !== expectedTargetIndex) {
+  const threadPlacementIds = getThreadPlacementIds(state, placement.threadId);
+  const placementIndex = threadPlacementIds.indexOf(placementId);
+  const targetIndex = threadPlacementIds.indexOf(targetPlacementId);
+  const expectedTargetIndex = position === "before" ? placementIndex - 1 : placementIndex + 1;
+  if (placementIndex === -1 || targetIndex !== expectedTargetIndex) {
     return mutationResult(
       state,
       "Strict ties require adjacent blocks. Reorder the blocks first.",
@@ -484,72 +591,75 @@ export const setStrictTie = (
   }
 
   const opposite = oppositeTie(position);
-  if (block.strictTies[position] === targetBlockId && targetBlock.strictTies[opposite] === blockId) {
+  if (
+    placement.strictTies[position] === targetPlacementId
+    && targetPlacement.strictTies[opposite] === placementId
+  ) {
     return mutationResult(state);
   }
-  if (block.strictTies[position] && block.strictTies[position] !== targetBlockId) {
+  if (placement.strictTies[position] && placement.strictTies[position] !== targetPlacementId) {
     return mutationResult(state, "Remove the existing strict tie in this slot first.");
   }
-  if (targetBlock.strictTies[opposite] && targetBlock.strictTies[opposite] !== blockId) {
+  if (targetPlacement.strictTies[opposite] && targetPlacement.strictTies[opposite] !== placementId) {
     return mutationResult(state, "Remove the neighboring block's strict tie first.");
   }
-  if (block.strictTies[opposite] === targetBlockId || targetBlock.strictTies[position] === blockId) {
+  if (placement.strictTies[opposite] === targetPlacementId || targetPlacement.strictTies[position] === placementId) {
     return mutationResult(state, "Those blocks are already strictly tied in the opposite direction.");
   }
 
-  let blocks = state.blocks;
-  blocks = copyBlockWithStrictTie(blocks, blockId, position, targetBlockId);
-  blocks = copyBlockWithStrictTie(blocks, targetBlockId, opposite, blockId);
-  return mutationResult(blocks === state.blocks ? state : { ...state, blocks });
+  let blockPlacements = state.blockPlacements;
+  blockPlacements = copyPlacementWithStrictTie(blockPlacements, placementId, position, targetPlacementId);
+  blockPlacements = copyPlacementWithStrictTie(blockPlacements, targetPlacementId, opposite, placementId);
+  return mutationResult(blockPlacements === state.blockPlacements ? state : { ...state, blockPlacements });
 };
 
 export const clearStrictTie = (
   state: ThreadsState,
-  blockId: string,
+  placementId: string,
   position: TiePosition,
 ): ThreadsState => {
-  const block = state.blocks[blockId];
-  const targetBlockId = block?.strictTies[position] ?? null;
-  if (!block || !targetBlockId) return state;
+  const placement = state.blockPlacements[placementId];
+  const targetPlacementId = placement?.strictTies[position] ?? null;
+  if (!placement || !targetPlacementId) return state;
   const opposite = oppositeTie(position);
-  let blocks = copyBlockWithStrictTie(state.blocks, blockId, position, null);
-  if (blocks[targetBlockId]?.strictTies[opposite] === blockId) {
-    blocks = copyBlockWithStrictTie(blocks, targetBlockId, opposite, null);
+  let blockPlacements = copyPlacementWithStrictTie(state.blockPlacements, placementId, position, null);
+  if (blockPlacements[targetPlacementId]?.strictTies[opposite] === placementId) {
+    blockPlacements = copyPlacementWithStrictTie(blockPlacements, targetPlacementId, opposite, null);
   }
-  return blocks === state.blocks ? state : { ...state, blocks };
+  return blockPlacements === state.blockPlacements ? state : { ...state, blockPlacements };
 };
 
 export const moveBlockInThread = (
   state: ThreadsState,
-  blockId: string,
+  placementId: string,
   direction: MoveDirection,
 ): ThreadsMutationResult => {
-  const block = state.blocks[blockId];
-  if (!block) return mutationResult(state, "Block not found.");
+  const placement = state.blockPlacements[placementId];
+  if (!placement) return mutationResult(state, "Block not found.");
 
-  const threadBlockIds = getThreadBlockIds(state, block.threadId);
-  const selectedSegment = getStrictSegmentIds(state, blockId);
+  const threadPlacementIds = getThreadPlacementIds(state, placement.threadId);
+  const selectedSegment = getStrictSegmentPlacementIds(state, placementId);
   if (selectedSegment.length === 0) return mutationResult(state, "Block not found.");
 
-  const selectedStart = threadBlockIds.indexOf(selectedSegment[0]);
-  const selectedEnd = threadBlockIds.indexOf(selectedSegment[selectedSegment.length - 1]);
+  const selectedStart = threadPlacementIds.indexOf(selectedSegment[0]);
+  const selectedEnd = threadPlacementIds.indexOf(selectedSegment[selectedSegment.length - 1]);
   const neighborIndex = direction === "up" ? selectedStart - 1 : selectedEnd + 1;
-  if (neighborIndex < 0 || neighborIndex >= threadBlockIds.length) {
+  if (neighborIndex < 0 || neighborIndex >= threadPlacementIds.length) {
     return mutationResult(state, direction === "up" ? "Already at the top." : "Already at the bottom.");
   }
 
-  const neighborId = threadBlockIds[neighborIndex];
-  const neighborSegment = getStrictSegmentIds(state, neighborId);
+  const neighborId = threadPlacementIds[neighborIndex];
+  const neighborSegment = getStrictSegmentPlacementIds(state, neighborId);
   if (neighborSegment.length === 0) {
     return mutationResult(state, "Block not found.");
   }
 
   const selectedSet = new Set(selectedSegment);
-  const remaining = threadBlockIds.filter((id) => !selectedSet.has(id));
+  const remaining = threadPlacementIds.filter((id) => !selectedSet.has(id));
   const insertAt = direction === "up"
     ? remaining.indexOf(neighborSegment[0])
     : remaining.indexOf(neighborSegment[neighborSegment.length - 1]) + 1;
-  const nextThreadBlockIds = [
+  const nextThreadPlacementIds = [
     ...remaining.slice(0, insertAt),
     ...selectedSegment,
     ...remaining.slice(insertAt),
@@ -557,7 +667,11 @@ export const moveBlockInThread = (
 
   return mutationResult({
     ...state,
-    blockOrder: replaceThreadBlockOrder(state, block.threadId, nextThreadBlockIds),
+    blockPlacementOrder: replaceThreadPlacementOrder(
+      state,
+      placement.threadId,
+      nextThreadPlacementIds,
+    ),
   });
 };
 
@@ -638,7 +752,13 @@ export const countThreadBlocks = (
   state: ThreadsState,
   threadId: string,
 ): number =>
-  state.blockOrder.filter((blockId) => state.blocks[blockId]?.threadId === threadId).length;
+  state.blockPlacementOrder.filter((placementId) => state.blockPlacements[placementId]?.threadId === threadId).length;
+
+export const countBlockPlacements = (
+  state: ThreadsState,
+  blockId: string,
+): number =>
+  state.blockPlacementOrder.filter((placementId) => state.blockPlacements[placementId]?.blockId === blockId).length;
 
 export const getCategoryProjects = (
   state: ThreadsState,
@@ -662,11 +782,30 @@ export const getProjectThreads = (
         Boolean(thread) && thread.projectId === projectId,
     );
 
+export const getBlockPlacementIds = (
+  state: ThreadsState,
+  blockId: string,
+): string[] =>
+  state.blockPlacementOrder.filter((placementId) => state.blockPlacements[placementId]?.blockId === blockId);
+
+export const getThreadPlacementIds = (
+  state: ThreadsState,
+  threadId: string,
+): string[] =>
+  state.blockPlacementOrder.filter((placementId) => state.blockPlacements[placementId]?.threadId === threadId);
+
+export const getThreadDisplayPlacementIds = (
+  state: ThreadsState,
+  threadId: string,
+): string[] => getThreadPlacementIds(state, threadId);
+
 export const getThreadBlockIds = (
   state: ThreadsState,
   threadId: string,
 ): string[] =>
-  state.blockOrder.filter((blockId) => state.blocks[blockId]?.threadId === threadId);
+  getThreadPlacementIds(state, threadId)
+    .map((placementId) => state.blockPlacements[placementId]?.blockId)
+    .filter((blockId): blockId is string => Boolean(blockId));
 
 export const getThreadBlockOrder = (
   state: ThreadsState,
@@ -683,26 +822,26 @@ export const getThreadDisplayBlockIds = (
 
 const applyValidStrictTies = (
   state: ThreadsState,
-  rawBlocks: Record<string, Block>,
+  rawPlacements: Record<string, BlockPlacement>,
 ): ThreadsState => {
   let nextState = state;
-  for (const blockId of state.blockOrder) {
-    const rawBlock = rawBlocks[blockId];
-    if (!rawBlock) continue;
-    if (rawBlock.strictTies.before) {
+  for (const placementId of state.blockPlacementOrder) {
+    const rawPlacement = rawPlacements[placementId];
+    if (!rawPlacement) continue;
+    if (rawPlacement.strictTies.before) {
       nextState = setStrictTie(
         nextState,
-        blockId,
+        placementId,
         "before",
-        rawBlock.strictTies.before,
+        rawPlacement.strictTies.before,
       ).state;
     }
-    if (rawBlock.strictTies.after) {
+    if (rawPlacement.strictTies.after) {
       nextState = setStrictTie(
         nextState,
-        blockId,
+        placementId,
         "after",
-        rawBlock.strictTies.after,
+        rawPlacement.strictTies.after,
       ).state;
     }
   }
@@ -716,6 +855,8 @@ const normalizeThreadsState = (
   threadOrderInput: unknown,
   rawBlocks: Record<string, Block>,
   blockOrderInput: unknown,
+  rawPlacements: Record<string, BlockPlacement>,
+  placementOrderInput: unknown,
   rawCrossThreadLooseTies: Record<string, CrossThreadLooseTie> = {},
   crossThreadLooseTieOrderInput: unknown = [],
 ): ThreadsState => {
@@ -729,25 +870,57 @@ const normalizeThreadsState = (
     if (!threadOrder.includes(threadId)) threadOrder.push(threadId);
   }
 
-  const blockOrder = uniqueExistingIds(blockOrderInput, (id) => Boolean(rawBlocks[id]));
-  for (const blockId of Object.keys(rawBlocks)) {
-    if (!blockOrder.includes(blockId)) blockOrder.push(blockId);
+  const sourcePlacementOrder = uniqueExistingIds(
+    placementOrderInput,
+    (id) => Boolean(rawPlacements[id]),
+  );
+  for (const placementId of Object.keys(rawPlacements)) {
+    if (!sourcePlacementOrder.includes(placementId)) sourcePlacementOrder.push(placementId);
   }
 
-  const blocks = Object.fromEntries(
-    Object.values(rawBlocks).map((block) => [
-      block.id,
-      { ...block, strictTies: emptyStrictTies() },
-    ]),
+  const blockPlacements: Record<string, BlockPlacement> = {};
+  const seenThreadBlocks = new Set<string>();
+  for (const placementId of sourcePlacementOrder) {
+    const placement = rawPlacements[placementId];
+    if (
+      !placement
+      || !rawBlocks[placement.blockId]
+      || !threads[placement.threadId]
+    ) {
+      continue;
+    }
+    const threadBlockKey = `${placement.threadId}:${placement.blockId}`;
+    if (seenThreadBlocks.has(threadBlockKey)) continue;
+    seenThreadBlocks.add(threadBlockKey);
+    blockPlacements[placementId] = {
+      ...placement,
+      strictTies: emptyStrictTies(),
+    };
+  }
+  const blockPlacementOrder = sourcePlacementOrder.filter((id) => Boolean(blockPlacements[id]));
+  const usedBlockIds = new Set(
+    Object.values(blockPlacements).map((placement) => placement.blockId),
   );
+
+  const blocks: Record<string, Block> = {};
+  for (const [blockId, block] of Object.entries(rawBlocks)) {
+    if (usedBlockIds.has(blockId)) {
+      blocks[blockId] = block;
+    }
+  }
+
+  const blockOrder = uniqueExistingIds(blockOrderInput, (id) => Boolean(blocks[id]));
+  for (const blockId of Object.keys(blocks)) {
+    if (!blockOrder.includes(blockId)) blockOrder.push(blockId);
+  }
 
   const crossThreadLooseTies: Record<string, CrossThreadLooseTie> = {};
   for (const [tieId, tie] of Object.entries(rawCrossThreadLooseTies)) {
     if (
       tie.id === tieId
       && tie.sourceBlockId !== tie.targetBlockId
-      && Boolean(rawBlocks[tie.sourceBlockId])
-      && Boolean(rawBlocks[tie.targetBlockId])
+      && Boolean(blocks[tie.sourceBlockId])
+      && Boolean(blocks[tie.targetBlockId])
     ) {
       crossThreadLooseTies[tieId] = tie;
     }
@@ -765,17 +938,57 @@ const normalizeThreadsState = (
 
   return applyValidStrictTies(
     {
-      version: 3,
+      version: 4,
       projects,
       projectOrder,
       threads,
       threadOrder,
       blocks,
       blockOrder,
+      blockPlacements,
+      blockPlacementOrder,
       crossThreadLooseTies,
       crossThreadLooseTieOrder,
     },
-    rawBlocks,
+    rawPlacements,
+  );
+};
+
+const normalizeLegacyThreadsState = (
+  projects: Record<string, Project>,
+  projectOrderInput: unknown,
+  threads: Record<string, Thread>,
+  threadOrderInput: unknown,
+  rawLegacyBlocks: Record<string, LegacyBlock>,
+  blockOrderInput: unknown,
+  rawCrossThreadLooseTies: Record<string, CrossThreadLooseTie> = {},
+  crossThreadLooseTieOrderInput: unknown = [],
+): ThreadsState => {
+  const blocks: Record<string, Block> = {};
+  const placements: Record<string, BlockPlacement> = {};
+  for (const legacyBlock of Object.values(rawLegacyBlocks)) {
+    blocks[legacyBlock.id] = {
+      id: legacyBlock.id,
+      text: legacyBlock.text,
+    };
+    placements[legacyBlock.id] = {
+      id: legacyBlock.id,
+      blockId: legacyBlock.id,
+      threadId: legacyBlock.threadId,
+      strictTies: legacyBlock.strictTies,
+    };
+  }
+  return normalizeThreadsState(
+    projects,
+    projectOrderInput,
+    threads,
+    threadOrderInput,
+    blocks,
+    blockOrderInput,
+    placements,
+    blockOrderInput,
+    rawCrossThreadLooseTies,
+    crossThreadLooseTieOrderInput,
   );
 };
 
@@ -824,10 +1037,59 @@ const parseThreadRecord = (
 const parseBlockRecord = (
   value: unknown,
   id: string,
-  threads: Record<string, Thread>,
 ): Block | null => {
   if (!value || typeof value !== "object") return null;
-  const candidate = value as Partial<Block> & {
+  const candidate = value as Partial<Block>;
+  if (
+    candidate.id !== id
+    || typeof candidate.text !== "string"
+  ) {
+    return null;
+  }
+  return {
+    id,
+    text: candidate.text.trim() || "Untitled Block",
+  };
+};
+
+const parsePlacementRecord = (
+  value: unknown,
+  id: string,
+  blocks: Record<string, Block>,
+  threads: Record<string, Thread>,
+): BlockPlacement | null => {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<BlockPlacement>;
+  if (
+    candidate.id !== id
+    || typeof candidate.blockId !== "string"
+    || typeof candidate.threadId !== "string"
+    || !blocks[candidate.blockId]
+    || !threads[candidate.threadId]
+  ) {
+    return null;
+  }
+  const strictTiesSource = candidate.strictTies && typeof candidate.strictTies === "object"
+    ? candidate.strictTies as Partial<BlockStrictTies>
+    : {};
+  return {
+    id,
+    blockId: candidate.blockId,
+    threadId: candidate.threadId,
+    strictTies: {
+      before: typeof strictTiesSource.before === "string" ? strictTiesSource.before : null,
+      after: typeof strictTiesSource.after === "string" ? strictTiesSource.after : null,
+    },
+  };
+};
+
+const parseLegacyBlockRecord = (
+  value: unknown,
+  id: string,
+  threads: Record<string, Thread>,
+): LegacyBlock | null => {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<LegacyBlock> & {
     ties?: unknown;
     strictTies?: unknown;
   };
@@ -841,7 +1103,9 @@ const parseBlockRecord = (
   }
   const strictTiesSource = candidate.strictTies && typeof candidate.strictTies === "object"
     ? candidate.strictTies as Partial<BlockStrictTies>
-    : {};
+    : candidate.ties && typeof candidate.ties === "object"
+      ? candidate.ties as Partial<BlockStrictTies>
+      : {};
   return {
     id,
     threadId: candidate.threadId,
@@ -853,39 +1117,10 @@ const parseBlockRecord = (
   };
 };
 
-const parseV2BlockRecord = (
-  value: unknown,
-  id: string,
-  threads: Record<string, Thread>,
-): Block | null => {
-  if (!value || typeof value !== "object") return null;
-  const candidate = value as Partial<Block> & { ties?: unknown };
-  if (
-    candidate.id !== id
-    || typeof candidate.text !== "string"
-    || typeof candidate.threadId !== "string"
-    || !threads[candidate.threadId]
-  ) {
-    return null;
-  }
-  const ties = candidate.ties && typeof candidate.ties === "object"
-    ? candidate.ties as Partial<BlockStrictTies>
-    : {};
-  return {
-    id,
-    threadId: candidate.threadId,
-    text: candidate.text.trim() || "Untitled Block",
-    strictTies: {
-      before: typeof ties.before === "string" ? ties.before : null,
-      after: typeof ties.after === "string" ? ties.after : null,
-    },
-  };
-};
-
 const parseCrossThreadLooseTieRecord = (
   value: unknown,
   id: string,
-  blocks: Record<string, Block>,
+  blocks: Record<string, Block> | Record<string, LegacyBlock>,
 ): CrossThreadLooseTie | null => {
   if (!value || typeof value !== "object") return null;
   const candidate = value as Partial<CrossThreadLooseTie>;
@@ -917,17 +1152,24 @@ export const parseThreadsState = (raw: string | null): ThreadsState => {
       threadOrder?: unknown;
       blocks?: unknown;
       blockOrder?: unknown;
+      blockPlacements?: unknown;
+      blockPlacementOrder?: unknown;
       crossThreadLooseTies?: unknown;
       crossThreadLooseTieOrder?: unknown;
     };
+    if (parsed.version === 3) {
+      return migrateV3ThreadsState(raw) ?? createEmptyThreadsState();
+    }
     if (
-      parsed.version !== 3
+      parsed.version !== 4
       || !parsed.projects
       || typeof parsed.projects !== "object"
       || !parsed.threads
       || typeof parsed.threads !== "object"
       || !parsed.blocks
       || typeof parsed.blocks !== "object"
+      || !parsed.blockPlacements
+      || typeof parsed.blockPlacements !== "object"
     ) {
       return createEmptyThreadsState();
     }
@@ -946,8 +1188,14 @@ export const parseThreadsState = (raw: string | null): ThreadsState => {
 
     const blocks: Record<string, Block> = {};
     for (const [id, value] of Object.entries(parsed.blocks)) {
-      const block = parseBlockRecord(value, id, threads);
+      const block = parseBlockRecord(value, id);
       if (block) blocks[id] = block;
+    }
+
+    const blockPlacements: Record<string, BlockPlacement> = {};
+    for (const [id, value] of Object.entries(parsed.blockPlacements)) {
+      const placement = parsePlacementRecord(value, id, blocks, threads);
+      if (placement) blockPlacements[id] = placement;
     }
 
     const crossThreadLooseTies: Record<string, CrossThreadLooseTie> = {};
@@ -965,6 +1213,8 @@ export const parseThreadsState = (raw: string | null): ThreadsState => {
       parsed.threadOrder,
       blocks,
       parsed.blockOrder,
+      blockPlacements,
+      parsed.blockPlacementOrder,
       crossThreadLooseTies,
       parsed.crossThreadLooseTieOrder,
     );
@@ -974,7 +1224,7 @@ export const parseThreadsState = (raw: string | null): ThreadsState => {
 };
 
 const getV2ThreadDisplayBlockIds = (
-  blocks: Record<string, Block>,
+  blocks: Record<string, LegacyBlock>,
   blockOrder: string[],
   threadId: string,
 ): string[] => {
@@ -1013,6 +1263,73 @@ const getV2ThreadDisplayBlockIds = (
   return [...orderedBlockIds, ...unplacedBlockIds];
 };
 
+const migrateV3ThreadsState = (raw: string | null): ThreadsState | null => {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as {
+      version?: unknown;
+      projects?: unknown;
+      projectOrder?: unknown;
+      threads?: unknown;
+      threadOrder?: unknown;
+      blocks?: unknown;
+      blockOrder?: unknown;
+      crossThreadLooseTies?: unknown;
+      crossThreadLooseTieOrder?: unknown;
+    };
+    if (
+      parsed.version !== 3
+      || !parsed.projects
+      || typeof parsed.projects !== "object"
+      || !parsed.threads
+      || typeof parsed.threads !== "object"
+      || !parsed.blocks
+      || typeof parsed.blocks !== "object"
+    ) {
+      return null;
+    }
+
+    const projects: Record<string, Project> = {};
+    for (const [id, value] of Object.entries(parsed.projects)) {
+      const project = parseProjectRecord(value, id);
+      if (project) projects[id] = project;
+    }
+
+    const threads: Record<string, Thread> = {};
+    for (const [id, value] of Object.entries(parsed.threads)) {
+      const thread = parseThreadRecord(value, id, projects);
+      if (thread) threads[id] = thread;
+    }
+
+    const blocks: Record<string, LegacyBlock> = {};
+    for (const [id, value] of Object.entries(parsed.blocks)) {
+      const block = parseLegacyBlockRecord(value, id, threads);
+      if (block) blocks[id] = block;
+    }
+
+    const crossThreadLooseTies: Record<string, CrossThreadLooseTie> = {};
+    if (parsed.crossThreadLooseTies && typeof parsed.crossThreadLooseTies === "object") {
+      for (const [id, value] of Object.entries(parsed.crossThreadLooseTies)) {
+        const tie = parseCrossThreadLooseTieRecord(value, id, blocks);
+        if (tie) crossThreadLooseTies[id] = tie;
+      }
+    }
+
+    return normalizeLegacyThreadsState(
+      projects,
+      parsed.projectOrder,
+      threads,
+      parsed.threadOrder,
+      blocks,
+      parsed.blockOrder,
+      crossThreadLooseTies,
+      parsed.crossThreadLooseTieOrder,
+    );
+  } catch {
+    return createEmptyThreadsState();
+  }
+};
+
 const migrateV2ThreadsState = (raw: string | null): ThreadsState | null => {
   if (!raw) return null;
   try {
@@ -1049,9 +1366,9 @@ const migrateV2ThreadsState = (raw: string | null): ThreadsState | null => {
       if (thread) threads[id] = thread;
     }
 
-    const blocks: Record<string, Block> = {};
+    const blocks: Record<string, LegacyBlock> = {};
     for (const [id, value] of Object.entries(parsed.blocks)) {
-      const block = parseV2BlockRecord(value, id, threads);
+      const block = parseLegacyBlockRecord(value, id, threads);
       if (block) blocks[id] = block;
     }
 
@@ -1079,7 +1396,7 @@ const migrateV2ThreadsState = (raw: string | null): ThreadsState | null => {
       if (!migratedBlockOrderSet.has(blockId)) migratedBlockOrder.push(blockId);
     }
 
-    return normalizeThreadsState(
+    return normalizeLegacyThreadsState(
       projects,
       parsed.projectOrder,
       threads,
@@ -1116,7 +1433,7 @@ const migrateLegacyProjectRecords = (
         const project = parseProjectRecord(value, id);
         if (project) projects[id] = project;
       }
-      return normalizeThreadsState(projects, parsed.threadOrder, {}, [], {}, []);
+      return normalizeThreadsState(projects, parsed.threadOrder, {}, [], {}, [], {}, []);
     }
 
     if (
@@ -1130,7 +1447,7 @@ const migrateLegacyProjectRecords = (
         const project = parseProjectRecord(value, id);
         if (project) projects[id] = project;
       }
-      return normalizeThreadsState(projects, parsed.projectOrder, {}, [], {}, []);
+      return normalizeThreadsState(projects, parsed.projectOrder, {}, [], {}, [], {}, []);
     }
 
     if (parsed.blocks && typeof parsed.blocks === "object") {
@@ -1148,12 +1465,16 @@ const migrateLegacyProjectRecords = (
 };
 
 export const migrateLegacyThreadsState = (
-  threadsV2Raw: string | null,
+  threadsV3Raw: string | null,
+  threadsV2Raw: string | null = null,
   threadsV1Raw: string | null = null,
   groupedRaw: string | null = null,
   globalRaw: string | null = null,
 ): ThreadsState => {
-  return migrateV2ThreadsState(threadsV2Raw)
+  return migrateV3ThreadsState(threadsV3Raw)
+    ?? migrateV2ThreadsState(threadsV3Raw)
+    ?? migrateV2ThreadsState(threadsV2Raw)
+    ?? migrateLegacyProjectRecords(threadsV2Raw)
     ?? migrateLegacyProjectRecords(threadsV1Raw)
     ?? migrateLegacyProjectRecords(groupedRaw)
     ?? migrateLegacyProjectRecords(globalRaw)

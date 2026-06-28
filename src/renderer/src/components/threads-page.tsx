@@ -16,32 +16,38 @@ import {
   LEGACY_THREADS_SOURCE_GLOBAL_STORAGE_KEY,
   LEGACY_THREADS_SOURCE_STORAGE_KEY,
   LEGACY_THREADS_STORAGE_KEY,
+  LEGACY_THREADS_V3_STORAGE_KEY,
   LEGACY_THREADS_V2_STORAGE_KEY,
   THREADS_STORAGE_KEY,
+  addExistingBlockPlacement,
   clearStrictTie,
+  countBlockPlacements,
   countProjectThreads,
   countThreadBlocks,
   createBlock,
   createCrossThreadLooseTie,
   createProject,
   createThread,
-  deleteBlock,
+  deleteBlockEverywhere,
   deleteCrossThreadLooseTie,
   deleteThread,
   getCategoryProjects,
+  getBlockPlacementIds,
   getIncomingCrossThreadLooseTies,
   getOutgoingCrossThreadLooseTies,
   getProjectThreads,
-  getThreadDisplayBlockIds,
+  getThreadDisplayPlacementIds,
   migrateLegacyThreadsState,
   moveBlockInThread,
   moveThreadInProject,
   parseThreadsState,
+  removeBlockPlacement,
   setStrictTie,
   updateProject,
   updateBlockText,
   updateThread,
   type Block,
+  type BlockPlacement,
   type CrossThreadLooseTie,
   type MoveDirection,
   type Project,
@@ -75,6 +81,16 @@ type DeleteDialogState =
     threadId: string;
     name: string;
     blockCount: number;
+    orphanedBlockCount: number;
+    callbackLinkCount: number;
+    strictTieCount: number;
+  }
+  | {
+    type: "placement";
+    placementId: string;
+    blockId: string;
+    text: string;
+    isFinalPlacement: boolean;
     callbackLinkCount: number;
     strictTieCount: number;
   }
@@ -82,6 +98,7 @@ type DeleteDialogState =
     type: "block";
     blockId: string;
     text: string;
+    placementCount: number;
     callbackLinkCount: number;
     strictTieCount: number;
   }
@@ -89,6 +106,7 @@ type DeleteDialogState =
 
 interface BlockLocation {
   block: Block;
+  placement: BlockPlacement;
   thread: Thread;
   project: Project;
 }
@@ -96,7 +114,7 @@ interface BlockLocation {
 const THREAD_SORT_STORAGE_KEY = "programs.threads.sortMode";
 const THREAD_SORT_MODES: ThreadSortMode[] = ["manual", "name", "quantity"];
 
-const createId = (prefix: "project" | "thread" | "block" | "cross-link"): string =>
+const createId = (prefix: "project" | "thread" | "block" | "placement" | "cross-link"): string =>
   typeof crypto.randomUUID === "function"
     ? `${prefix}-${crypto.randomUUID()}`
     : `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -129,6 +147,7 @@ const loadState = (): ThreadsState => {
     const current = localStorage.getItem(THREADS_STORAGE_KEY);
     if (current !== null) return parseThreadsState(current);
     return migrateLegacyThreadsState(
+      localStorage.getItem(LEGACY_THREADS_V3_STORAGE_KEY),
       localStorage.getItem(LEGACY_THREADS_V2_STORAGE_KEY),
       localStorage.getItem(LEGACY_THREADS_STORAGE_KEY),
       localStorage.getItem(LEGACY_THREADS_SOURCE_STORAGE_KEY),
@@ -186,12 +205,26 @@ const sortThreads = (
   );
 };
 
-const getThreadBlockIdSet = (state: ThreadsState, threadId: string): Set<string> =>
+const getThreadPlacementIdSet = (state: ThreadsState, threadId: string): Set<string> =>
   new Set(
-    Object.values(state.blocks)
-      .filter((block) => block.threadId === threadId)
-      .map((block) => block.id),
+    Object.values(state.blockPlacements)
+      .filter((placement) => placement.threadId === threadId)
+      .map((placement) => placement.id),
   );
+
+const getDeletedBlockIdsAfterRemovingPlacements = (
+  state: ThreadsState,
+  deletedPlacementIds: Set<string>,
+): Set<string> => {
+  const remainingBlockIds = new Set(
+    Object.values(state.blockPlacements)
+      .filter((placement) => !deletedPlacementIds.has(placement.id))
+      .map((placement) => placement.blockId),
+  );
+  return new Set(
+    Object.keys(state.blocks).filter((blockId) => !remainingBlockIds.has(blockId)),
+  );
+};
 
 const countAffectedCallbackLinks = (
   state: ThreadsState,
@@ -203,17 +236,17 @@ const countAffectedCallbackLinks = (
       && (deletedBlockIds.has(tie.sourceBlockId) || deletedBlockIds.has(tie.targetBlockId));
   }).length;
 
-const countAffectedStrictTies = (
+const countAffectedPlacementStrictTies = (
   state: ThreadsState,
-  deletedBlockIds: Set<string>,
+  deletedPlacementIds: Set<string>,
 ): number => {
   const affectedPairs = new Set<string>();
-  for (const blockId of deletedBlockIds) {
-    const block = state.blocks[blockId];
-    if (!block) continue;
-    for (const targetBlockId of [block.strictTies.before, block.strictTies.after]) {
-      if (!targetBlockId || !state.blocks[targetBlockId]) continue;
-      const pair = [blockId, targetBlockId].sort().join(":");
+  for (const placementId of deletedPlacementIds) {
+    const placement = state.blockPlacements[placementId];
+    if (!placement) continue;
+    for (const targetPlacementId of [placement.strictTies.before, placement.strictTies.after]) {
+      if (!targetPlacementId || !state.blockPlacements[targetPlacementId]) continue;
+      const pair = [placementId, targetPlacementId].sort().join(":");
       affectedPairs.add(pair);
     }
   }
@@ -224,46 +257,94 @@ const createThreadDeleteDialogState = (
   state: ThreadsState,
   thread: Thread,
 ): Exclude<DeleteDialogState, null> => {
-  const deletedBlockIds = getThreadBlockIdSet(state, thread.id);
+  const deletedPlacementIds = getThreadPlacementIdSet(state, thread.id);
+  const deletedBlockIds = getDeletedBlockIdsAfterRemovingPlacements(state, deletedPlacementIds);
   return {
     type: "thread",
     threadId: thread.id,
     name: thread.name,
-    blockCount: deletedBlockIds.size,
+    blockCount: deletedPlacementIds.size,
+    orphanedBlockCount: deletedBlockIds.size,
     callbackLinkCount: countAffectedCallbackLinks(state, deletedBlockIds),
-    strictTieCount: countAffectedStrictTies(state, deletedBlockIds),
+    strictTieCount: countAffectedPlacementStrictTies(state, deletedPlacementIds),
   };
 };
 
-const createBlockDeleteDialogState = (
+const createPlacementDeleteDialogState = (
+  state: ThreadsState,
+  placement: BlockPlacement,
+): Exclude<DeleteDialogState, null> => {
+  const block = state.blocks[placement.blockId];
+  const deletedPlacementIds = new Set([placement.id]);
+  const deletedBlockIds = getDeletedBlockIdsAfterRemovingPlacements(state, deletedPlacementIds);
+  return {
+    type: "placement",
+    placementId: placement.id,
+    blockId: placement.blockId,
+    text: block?.text ?? "Missing Block",
+    isFinalPlacement: deletedBlockIds.has(placement.blockId),
+    callbackLinkCount: countAffectedCallbackLinks(state, deletedBlockIds),
+    strictTieCount: countAffectedPlacementStrictTies(state, deletedPlacementIds),
+  };
+};
+
+const createBlockDeleteEverywhereDialogState = (
   state: ThreadsState,
   block: Block,
 ): Exclude<DeleteDialogState, null> => {
+  const deletedPlacementIds = new Set(getBlockPlacementIds(state, block.id));
   const deletedBlockIds = new Set([block.id]);
   return {
     type: "block",
     blockId: block.id,
     text: block.text,
+    placementCount: deletedPlacementIds.size,
     callbackLinkCount: countAffectedCallbackLinks(state, deletedBlockIds),
-    strictTieCount: countAffectedStrictTies(state, deletedBlockIds),
+    strictTieCount: countAffectedPlacementStrictTies(state, deletedPlacementIds),
   };
 };
 
-const getBlockLocation = (
+const getBlockLocations = (
   state: ThreadsState,
   blockId: string,
-): BlockLocation | null => {
+): BlockLocation[] => {
   const block = state.blocks[blockId];
-  const thread = block ? state.threads[block.threadId] : null;
-  const project = thread ? state.projects[thread.projectId] : null;
-  return block && thread && project ? { block, thread, project } : null;
+  if (!block) return [];
+  return state.blockPlacementOrder
+    .map((placementId) => state.blockPlacements[placementId])
+    .filter((placement): placement is BlockPlacement =>
+      Boolean(placement) && placement.blockId === blockId,
+    )
+    .map((placement) => {
+      const thread = state.threads[placement.threadId] ?? null;
+      const project = thread ? state.projects[thread.projectId] ?? null : null;
+      return thread && project ? { block, placement, thread, project } : null;
+    })
+    .filter((location): location is BlockLocation => Boolean(location));
 };
 
-const getBlockPath = (state: ThreadsState, blockId: string): string => {
-  const location = getBlockLocation(state, blockId);
-  if (!location) return "Missing block";
-  const category = getCreativeCategory(location.project.categoryId);
-  return `${category.label} / ${location.project.name} / ${location.thread.name}`;
+const getBlockPathSummary = (state: ThreadsState, blockId: string): string => {
+  const paths = getBlockLocations(state, blockId).map((location) => {
+    const category = getCreativeCategory(location.project.categoryId);
+    return `${category.label} / ${location.project.name} / ${location.thread.name}`;
+  });
+  if (paths.length === 0) return "Missing block";
+  if (paths.length === 1) return paths[0];
+  return `${paths[0]} (+${paths.length - 1} more)`;
+};
+
+const getOtherPlacementTitle = (
+  state: ThreadsState,
+  blockId: string,
+  placementId: string,
+): string | undefined => {
+  const paths = getBlockLocations(state, blockId)
+    .filter((location) => location.placement.id !== placementId)
+    .map((location) => {
+      const category = getCreativeCategory(location.project.categoryId);
+      return `${category.label} / ${location.project.name} / ${location.thread.name}`;
+    });
+  return paths.length > 0 ? `Also in ${paths.join("; ")}` : undefined;
 };
 
 export function ThreadsPage() {
@@ -550,9 +631,20 @@ export function ThreadsPage() {
     if (!isEditMode) return;
     const text = newBlockText.trim();
     if (!text) return;
-    setState((current) => createBlock(current, thread.id, text, createId("block")));
+    setState((current) => createBlock(current, thread.id, text, createId("block"), createId("placement")));
     setNewBlockText("");
     setBlockWarning(null);
+  };
+
+  const addExistingBlockToThread = (thread: Thread, blockId: string) => {
+    if (!isEditMode) return;
+    const result = addExistingBlockPlacement(
+      state,
+      thread.id,
+      blockId,
+      createId("placement"),
+    );
+    applyMutationResult(result);
   };
 
   const startEditBlock = (block: Block) => {
@@ -579,23 +671,23 @@ export function ThreadsPage() {
     setEditingText("");
   };
 
-  const moveBlock = (blockId: string, direction: MoveDirection) => {
+  const moveBlock = (placementId: string, direction: MoveDirection) => {
     if (!isEditMode) return;
-    applyMutationResult(moveBlockInThread(state, blockId, direction));
+    applyMutationResult(moveBlockInThread(state, placementId, direction));
   };
 
   const tieStrict = (
-    blockId: string,
+    placementId: string,
     position: TiePosition,
-    targetBlockId: string,
+    targetPlacementId: string,
   ) => {
     if (!isEditMode) return;
-    applyMutationResult(setStrictTie(state, blockId, position, targetBlockId));
+    applyMutationResult(setStrictTie(state, placementId, position, targetPlacementId));
   };
 
-  const untieStrict = (blockId: string, position: TiePosition) => {
+  const untieStrict = (placementId: string, position: TiePosition) => {
     if (!isEditMode) return;
-    setState((current) => clearStrictTie(current, blockId, position));
+    setState((current) => clearStrictTie(current, placementId, position));
     setBlockWarning(null);
   };
 
@@ -646,9 +738,14 @@ export function ThreadsPage() {
     setDeleteDialog(dialog);
   };
 
-  const requestDeleteBlock = (block: Block) => {
+  const requestRemovePlacement = (placement: BlockPlacement) => {
     if (!isEditMode) return;
-    setDeleteDialog(createBlockDeleteDialogState(state, block));
+    setDeleteDialog(createPlacementDeleteDialogState(state, placement));
+  };
+
+  const requestDeleteBlockEverywhere = (block: Block) => {
+    if (!isEditMode) return;
+    setDeleteDialog(createBlockDeleteEverywhereDialogState(state, block));
   };
 
   const confirmDelete = () => {
@@ -658,9 +755,19 @@ export function ThreadsPage() {
       setState((current) => deleteThread(current, threadId));
       if (expandedThreadId === threadId) setExpandedThreadId(null);
       clearEditState();
+    } else if (deleteDialog.type === "placement") {
+      const { placementId, blockId } = deleteDialog;
+      setState((current) => removeBlockPlacement(current, placementId));
+      if (editingBlockId === blockId) {
+        setEditingBlockId(null);
+        setEditingText("");
+      }
+      setLinkDialog(null);
+      setLinkSearch("");
+      setDeleteDialog(null);
     } else {
       const blockId = deleteDialog.blockId;
-      setState((current) => deleteBlock(current, blockId));
+      setState((current) => deleteBlockEverywhere(current, blockId));
       if (editingBlockId === blockId) {
         setEditingBlockId(null);
         setEditingText("");
@@ -674,7 +781,7 @@ export function ThreadsPage() {
   };
 
   const jumpToBlock = (blockId: string) => {
-    const location = getBlockLocation(state, blockId);
+    const location = getBlockLocations(state, blockId)[0] ?? null;
     if (!location) return;
     setView({
       level: "threads",
@@ -816,6 +923,7 @@ export function ThreadsPage() {
           onToggleThread={toggleThread}
           onMoveThread={moveThread}
           onSubmitBlock={submitBlock}
+          onAddExistingBlock={addExistingBlockToThread}
           onStartEditBlock={startEditBlock}
           onSaveBlockEdit={saveBlockEdit}
           onCancelBlockEdit={cancelBlockEdit}
@@ -825,7 +933,8 @@ export function ThreadsPage() {
           onOpenLinkDialog={openLinkDialog}
           onDeleteCrossThreadLooseTie={removeCallbackLink}
           onRequestDeleteThread={requestDeleteThread}
-          onRequestDeleteBlock={requestDeleteBlock}
+          onRequestRemovePlacement={requestRemovePlacement}
+          onRequestDeleteBlockEverywhere={requestDeleteBlockEverywhere}
           onJumpToBlock={jumpToBlock}
         />
       ) : null}
@@ -1179,6 +1288,7 @@ function ThreadList({
   onToggleThread,
   onMoveThread,
   onSubmitBlock,
+  onAddExistingBlock,
   onStartEditBlock,
   onSaveBlockEdit,
   onCancelBlockEdit,
@@ -1188,7 +1298,8 @@ function ThreadList({
   onOpenLinkDialog,
   onDeleteCrossThreadLooseTie,
   onRequestDeleteThread,
-  onRequestDeleteBlock,
+  onRequestRemovePlacement,
+  onRequestDeleteBlockEverywhere,
   onJumpToBlock,
 }: {
   state: ThreadsState;
@@ -1218,20 +1329,22 @@ function ThreadList({
   onToggleThread: (threadId: string) => void;
   onMoveThread: (threadId: string, direction: MoveDirection) => void;
   onSubmitBlock: (thread: Thread, event: FormEvent) => void;
+  onAddExistingBlock: (thread: Thread, blockId: string) => void;
   onStartEditBlock: (block: Block) => void;
   onSaveBlockEdit: (blockId: string) => void;
   onCancelBlockEdit: () => void;
-  onMoveBlock: (blockId: string, direction: MoveDirection) => void;
+  onMoveBlock: (placementId: string, direction: MoveDirection) => void;
   onSetStrictTie: (
-    blockId: string,
+    placementId: string,
     position: TiePosition,
-    targetBlockId: string,
+    targetPlacementId: string,
   ) => void;
-  onClearStrictTie: (blockId: string, position: TiePosition) => void;
+  onClearStrictTie: (placementId: string, position: TiePosition) => void;
   onOpenLinkDialog: (sourceBlockId: string) => void;
   onDeleteCrossThreadLooseTie: (tieId: string) => void;
   onRequestDeleteThread: (thread: Thread) => void;
-  onRequestDeleteBlock: (block: Block) => void;
+  onRequestRemovePlacement: (placement: BlockPlacement) => void;
+  onRequestDeleteBlockEverywhere: (block: Block) => void;
   onJumpToBlock: (blockId: string) => void;
 }) {
   return (
@@ -1353,6 +1466,7 @@ function ThreadList({
                 onNewBlockTextChange={onNewBlockTextChange}
                 onEditingTextChange={onEditingTextChange}
                 onSubmitBlock={onSubmitBlock}
+                onAddExistingBlock={onAddExistingBlock}
                 onStartEditBlock={onStartEditBlock}
                 onSaveBlockEdit={onSaveBlockEdit}
                 onCancelBlockEdit={onCancelBlockEdit}
@@ -1361,7 +1475,8 @@ function ThreadList({
                 onClearStrictTie={onClearStrictTie}
                 onOpenLinkDialog={onOpenLinkDialog}
                 onDeleteCrossThreadLooseTie={onDeleteCrossThreadLooseTie}
-                onRequestDeleteBlock={onRequestDeleteBlock}
+                onRequestRemovePlacement={onRequestRemovePlacement}
+                onRequestDeleteBlockEverywhere={onRequestDeleteBlockEverywhere}
                 onJumpToBlock={onJumpToBlock}
               />
             ) : null}
@@ -1384,6 +1499,7 @@ function ThreadAccordion({
   onNewBlockTextChange,
   onEditingTextChange,
   onSubmitBlock,
+  onAddExistingBlock,
   onStartEditBlock,
   onSaveBlockEdit,
   onCancelBlockEdit,
@@ -1392,7 +1508,8 @@ function ThreadAccordion({
   onClearStrictTie,
   onOpenLinkDialog,
   onDeleteCrossThreadLooseTie,
-  onRequestDeleteBlock,
+  onRequestRemovePlacement,
+  onRequestDeleteBlockEverywhere,
   onJumpToBlock,
 }: {
   state: ThreadsState;
@@ -1406,57 +1523,136 @@ function ThreadAccordion({
   onNewBlockTextChange: (text: string) => void;
   onEditingTextChange: (text: string) => void;
   onSubmitBlock: (thread: Thread, event: FormEvent) => void;
+  onAddExistingBlock: (thread: Thread, blockId: string) => void;
   onStartEditBlock: (block: Block) => void;
   onSaveBlockEdit: (blockId: string) => void;
   onCancelBlockEdit: () => void;
-  onMoveBlock: (blockId: string, direction: MoveDirection) => void;
+  onMoveBlock: (placementId: string, direction: MoveDirection) => void;
   onSetStrictTie: (
-    blockId: string,
+    placementId: string,
     position: TiePosition,
-    targetBlockId: string,
+    targetPlacementId: string,
   ) => void;
-  onClearStrictTie: (blockId: string, position: TiePosition) => void;
+  onClearStrictTie: (placementId: string, position: TiePosition) => void;
   onOpenLinkDialog: (sourceBlockId: string) => void;
   onDeleteCrossThreadLooseTie: (tieId: string) => void;
-  onRequestDeleteBlock: (block: Block) => void;
+  onRequestRemovePlacement: (placement: BlockPlacement) => void;
+  onRequestDeleteBlockEverywhere: (block: Block) => void;
   onJumpToBlock: (blockId: string) => void;
 }) {
-  const blockIds = getThreadDisplayBlockIds(state, thread.id);
+  const [addMode, setAddMode] = useState<"new" | "existing">("new");
+  const [existingBlockSearch, setExistingBlockSearch] = useState("");
+  const placementIds = getThreadDisplayPlacementIds(state, thread.id);
+  const placedBlockIds = new Set(
+    placementIds
+      .map((placementId) => state.blockPlacements[placementId]?.blockId)
+      .filter((blockId): blockId is string => Boolean(blockId)),
+  );
+  const normalizedExistingSearch = existingBlockSearch.trim().toLowerCase();
+  const existingBlockCandidates = state.blockOrder
+    .map((blockId) => state.blocks[blockId])
+    .filter((block): block is Block => Boolean(block) && !placedBlockIds.has(block.id))
+    .filter((block) => {
+      if (!normalizedExistingSearch) return true;
+      const paths = getBlockLocations(state, block.id)
+        .map((location) => {
+          const category = getCreativeCategory(location.project.categoryId);
+          return `${category.label} / ${location.project.name} / ${location.thread.name}`;
+        })
+        .join(" ");
+      return `${paths} ${block.text}`.toLowerCase().includes(normalizedExistingSearch);
+    });
+
   return (
     <div className="threadsAccordion">
       {isEditMode ? (
-        <form
-          className="threadsAddBlockForm"
-          onSubmit={(event) => onSubmitBlock(thread, event)}
-        >
-          <textarea
-            value={newBlockText}
-            onChange={(event) => onNewBlockTextChange(event.target.value)}
-            placeholder="Block text"
-            aria-label="Block text"
-            rows={3}
-          />
-          <button type="submit" disabled={!newBlockText.trim()}>
-            Add Block
-          </button>
-        </form>
+        <div className="threadsAddBlockForm">
+          <div className="threadsAddBlockModeTabs" role="tablist" aria-label="Add Block mode">
+            <button
+              type="button"
+              className={addMode === "new" ? "active" : ""}
+              aria-pressed={addMode === "new"}
+              onClick={() => setAddMode("new")}
+            >
+              New
+            </button>
+            <button
+              type="button"
+              className={addMode === "existing" ? "active" : ""}
+              aria-pressed={addMode === "existing"}
+              onClick={() => setAddMode("existing")}
+            >
+              Existing
+            </button>
+          </div>
+
+          {addMode === "new" ? (
+            <form
+              className="threadsAddBlockFields"
+              onSubmit={(event) => onSubmitBlock(thread, event)}
+            >
+              <textarea
+                value={newBlockText}
+                onChange={(event) => onNewBlockTextChange(event.target.value)}
+                placeholder="Block text"
+                aria-label="Block text"
+                rows={3}
+              />
+              <button type="submit" disabled={!newBlockText.trim()}>
+                Add Block
+              </button>
+            </form>
+          ) : (
+            <div className="threadsExistingBlockPicker">
+              <input
+                autoFocus
+                value={existingBlockSearch}
+                onChange={(event) => setExistingBlockSearch(event.target.value)}
+                placeholder="Search blocks"
+                aria-label="Search existing Blocks"
+              />
+              <div className="threadsLinkResults">
+                {existingBlockCandidates.length > 0 ? (
+                  existingBlockCandidates.map((block) => (
+                    <button
+                      key={block.id}
+                      type="button"
+                      className="threadsLinkResult"
+                      onClick={() => {
+                        onAddExistingBlock(thread, block.id);
+                        setExistingBlockSearch("");
+                      }}
+                    >
+                      <span>{truncateBlockText(block.text)}</span>
+                      <small>{getBlockPathSummary(state, block.id)}</small>
+                    </button>
+                  ))
+                ) : (
+                  <div className="threadsEmptyBlocks">No matching Blocks</div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
       ) : null}
 
       {isEditMode && blockWarning ? (
         <div className="threadsBlockWarning">{blockWarning}</div>
       ) : null}
 
-      {blockIds.length > 0 ? (
+      {placementIds.length > 0 ? (
         <div className="threadsBlockList">
-          {blockIds.map((blockId, index) => {
-            const block = state.blocks[blockId];
-            return block ? (
+          {placementIds.map((placementId, index) => {
+            const placement = state.blockPlacements[placementId];
+            const block = placement ? state.blocks[placement.blockId] : null;
+            return placement && block ? (
               <BlockRow
-                key={block.id}
+                key={placement.id}
                 state={state}
+                placement={placement}
                 block={block}
-                previousBlockId={blockIds[index - 1] ?? null}
-                nextBlockId={blockIds[index + 1] ?? null}
+                previousPlacementId={placementIds[index - 1] ?? null}
+                nextPlacementId={placementIds[index + 1] ?? null}
                 isEditMode={isEditMode}
                 isEditing={editingBlockId === block.id}
                 editingText={editingText}
@@ -1470,7 +1666,8 @@ function ThreadAccordion({
                 onClearStrictTie={onClearStrictTie}
                 onOpenLinkDialog={onOpenLinkDialog}
                 onDeleteCrossThreadLooseTie={onDeleteCrossThreadLooseTie}
-                onRequestDeleteBlock={onRequestDeleteBlock}
+                onRequestRemovePlacement={onRequestRemovePlacement}
+                onRequestDeleteBlockEverywhere={onRequestDeleteBlockEverywhere}
                 onJumpToBlock={onJumpToBlock}
               />
             ) : null;
@@ -1485,9 +1682,10 @@ function ThreadAccordion({
 
 function BlockRow({
   state,
+  placement,
   block,
-  previousBlockId,
-  nextBlockId,
+  previousPlacementId,
+  nextPlacementId,
   isEditMode,
   isEditing,
   editingText,
@@ -1501,13 +1699,15 @@ function BlockRow({
   onClearStrictTie,
   onOpenLinkDialog,
   onDeleteCrossThreadLooseTie,
-  onRequestDeleteBlock,
+  onRequestRemovePlacement,
+  onRequestDeleteBlockEverywhere,
   onJumpToBlock,
 }: {
   state: ThreadsState;
+  placement: BlockPlacement;
   block: Block;
-  previousBlockId: string | null;
-  nextBlockId: string | null;
+  previousPlacementId: string | null;
+  nextPlacementId: string | null;
   isEditMode: boolean;
   isEditing: boolean;
   editingText: string;
@@ -1516,26 +1716,29 @@ function BlockRow({
   onStartEditBlock: (block: Block) => void;
   onSaveBlockEdit: (blockId: string) => void;
   onCancelBlockEdit: () => void;
-  onMoveBlock: (blockId: string, direction: MoveDirection) => void;
+  onMoveBlock: (placementId: string, direction: MoveDirection) => void;
   onSetStrictTie: (
-    blockId: string,
+    placementId: string,
     position: TiePosition,
-    targetBlockId: string,
+    targetPlacementId: string,
   ) => void;
-  onClearStrictTie: (blockId: string, position: TiePosition) => void;
+  onClearStrictTie: (placementId: string, position: TiePosition) => void;
   onOpenLinkDialog: (sourceBlockId: string) => void;
   onDeleteCrossThreadLooseTie: (tieId: string) => void;
-  onRequestDeleteBlock: (block: Block) => void;
+  onRequestRemovePlacement: (placement: BlockPlacement) => void;
+  onRequestDeleteBlockEverywhere: (block: Block) => void;
   onJumpToBlock: (blockId: string) => void;
 }) {
-  const strictBefore = previousBlockId
-    ? block.strictTies.before === previousBlockId
+  const strictBefore = previousPlacementId
+    ? placement.strictTies.before === previousPlacementId
     : false;
-  const strictAfter = nextBlockId
-    ? block.strictTies.after === nextBlockId
+  const strictAfter = nextPlacementId
+    ? placement.strictTies.after === nextPlacementId
     : false;
   const outgoingLinks = getOutgoingCrossThreadLooseTies(state, block.id);
   const incomingLinks = getIncomingCrossThreadLooseTies(state, block.id);
+  const isShared = countBlockPlacements(state, block.id) > 1;
+  const sharedTitle = isShared ? getOtherPlacementTitle(state, block.id, placement.id) : undefined;
 
   return (
     <article
@@ -1549,8 +1752,8 @@ function BlockRow({
       {isEditMode ? (
         <StrictTieControl
           label="after"
-          block={block}
-          targetBlockId={nextBlockId}
+          placement={placement}
+          targetPlacementId={nextPlacementId}
           isTied={strictAfter}
           onSetStrictTie={onSetStrictTie}
           onClearStrictTie={onClearStrictTie}
@@ -1594,13 +1797,16 @@ function BlockRow({
         ) : isEditMode ? (
           <button
             type="button"
-            className="threadsBlockTextButton"
+            className={`threadsBlockTextButton${isShared ? " shared" : ""}`}
+            title={sharedTitle}
             onClick={() => onStartEditBlock(block)}
           >
             {block.text}
           </button>
         ) : (
-          <div className="threadsBlockTextReadOnly">{block.text}</div>
+          <div className={`threadsBlockTextReadOnly${isShared ? " shared" : ""}`} title={sharedTitle}>
+            {block.text}
+          </div>
         )}
 
         {isEditMode ? (
@@ -1612,6 +1818,15 @@ function BlockRow({
             >
               Link
             </button>
+            {isShared ? (
+              <button
+                type="button"
+                className="threadsMetaButton danger"
+                onClick={() => onRequestDeleteBlockEverywhere(block)}
+              >
+                Delete everywhere
+              </button>
+            ) : null}
           </div>
         ) : null}
 
@@ -1631,7 +1846,7 @@ function BlockRow({
             type="button"
             className="threadsIconButton"
             aria-label="Move Block up"
-            onClick={() => onMoveBlock(block.id, "up")}
+            onClick={() => onMoveBlock(placement.id, "up")}
           >
             <ArrowUpIcon />
           </button>
@@ -1639,15 +1854,15 @@ function BlockRow({
             type="button"
             className="threadsIconButton"
             aria-label="Move Block down"
-            onClick={() => onMoveBlock(block.id, "down")}
+            onClick={() => onMoveBlock(placement.id, "down")}
           >
             <ArrowDownIcon />
           </button>
           <button
             type="button"
             className="threadsIconButton threadsDeleteButton"
-            aria-label="Delete Block"
-            onClick={() => onRequestDeleteBlock(block)}
+            aria-label="Remove Block from Thread"
+            onClick={() => onRequestRemovePlacement(placement)}
           >
             <XIcon />
           </button>
@@ -1659,24 +1874,24 @@ function BlockRow({
 
 function StrictTieControl({
   label,
-  block,
-  targetBlockId,
+  placement,
+  targetPlacementId,
   isTied,
   onSetStrictTie,
   onClearStrictTie,
 }: {
   label: TiePosition;
-  block: Block;
-  targetBlockId: string | null;
+  placement: BlockPlacement;
+  targetPlacementId: string | null;
   isTied: boolean;
   onSetStrictTie: (
-    blockId: string,
+    placementId: string,
     position: TiePosition,
-    targetBlockId: string,
+    targetPlacementId: string,
   ) => void;
-  onClearStrictTie: (blockId: string, position: TiePosition) => void;
+  onClearStrictTie: (placementId: string, position: TiePosition) => void;
 }) {
-  if (!targetBlockId && !isTied) return null;
+  if (!targetPlacementId && !isTied) return null;
   const actionLabel = isTied
     ? `Cut strict tie ${label}`
     : `Create strict tie ${label}`;
@@ -1691,9 +1906,9 @@ function StrictTieControl({
       aria-label={actionLabel}
       onClick={() => {
         if (isTied) {
-          onClearStrictTie(block.id, label);
-        } else if (targetBlockId) {
-          onSetStrictTie(block.id, label, targetBlockId);
+          onClearStrictTie(placement.id, label);
+        } else if (targetPlacementId) {
+          onSetStrictTie(placement.id, label, targetPlacementId);
         }
       }}
     >
@@ -1730,7 +1945,7 @@ function CallbackLinks({
           <span key={tie.id} className="threadsCallbackChip outgoing">
             <button
               type="button"
-              title={getBlockPath(state, target.id)}
+              title={getBlockPathSummary(state, target.id)}
               onClick={() => onJumpToBlock(target.id)}
             >
               Callback to {truncateBlockText(target.text)}
@@ -1754,7 +1969,7 @@ function CallbackLinks({
           <span key={tie.id} className="threadsCallbackChip incoming">
             <button
               type="button"
-              title={getBlockPath(state, source.id)}
+              title={getBlockPathSummary(state, source.id)}
               onClick={() => onJumpToBlock(source.id)}
             >
               Callback from {truncateBlockText(source.text)}
@@ -1797,7 +2012,13 @@ function CrossThreadLinkDialog({
     .filter((block): block is Block => Boolean(block) && block.id !== sourceBlockId)
     .filter((block) => {
       if (!normalizedSearch) return true;
-      const searchable = `${getBlockPath(state, block.id)} ${block.text}`.toLowerCase();
+      const paths = getBlockLocations(state, block.id)
+        .map((location) => {
+          const category = getCreativeCategory(location.project.categoryId);
+          return `${category.label} / ${location.project.name} / ${location.thread.name}`;
+        })
+        .join(" ");
+      const searchable = `${paths} ${block.text}`.toLowerCase();
       return searchable.includes(normalizedSearch);
     });
 
@@ -1825,7 +2046,7 @@ function CrossThreadLinkDialog({
                 onClick={() => onCreateLink(sourceBlockId, block.id)}
               >
                 <span>{truncateBlockText(block.text)}</span>
-                <small>{getBlockPath(state, block.id)}</small>
+                <small>{getBlockPathSummary(state, block.id)}</small>
               </button>
             ))
           ) : (
@@ -1846,9 +2067,30 @@ function DeleteConfirmationDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const title = dialog.type === "thread"
+    ? "Delete Thread"
+    : dialog.type === "placement"
+      ? "Remove Block"
+      : "Delete Block Everywhere";
+  const headline = dialog.type === "thread"
+    ? `Delete "${dialog.name}"?`
+    : dialog.type === "placement"
+      ? "Remove this Block from this Thread?"
+      : "Delete this Block everywhere?";
+  const body = dialog.type === "thread"
+    ? "This removes the Thread and only the Block placements inside it."
+    : truncateBlockText(dialog.text);
+  const confirmLabel = dialog.type === "placement"
+    ? "Remove from Thread"
+    : dialog.type === "block"
+      ? "Delete everywhere"
+      : "Delete";
   const impactItems = dialog.type === "thread"
     ? [
-      `${formatCount(dialog.blockCount, "Block")} will be deleted`,
+      `${formatCount(dialog.blockCount, "Block placement")} will be removed`,
+      dialog.orphanedBlockCount > 0
+        ? `${formatCount(dialog.orphanedBlockCount, "unshared Block")} will be deleted`
+        : null,
       dialog.callbackLinkCount > 0
         ? `${formatCount(dialog.callbackLinkCount, "callback link")} will be removed`
         : null,
@@ -1856,34 +2098,37 @@ function DeleteConfirmationDialog({
         ? `${formatCount(dialog.strictTieCount, "strict tie")} will be cleared`
         : null,
     ].filter((item): item is string => Boolean(item))
-    : [
-      "1 Block will be deleted",
-      dialog.callbackLinkCount > 0
-        ? `${formatCount(dialog.callbackLinkCount, "callback link")} will be removed`
-        : null,
-      dialog.strictTieCount > 0
-        ? `${formatCount(dialog.strictTieCount, "strict tie")} will be cleared`
-        : null,
-    ].filter((item): item is string => Boolean(item));
+    : dialog.type === "placement"
+      ? [
+        "1 Block placement will be removed",
+        dialog.isFinalPlacement ? "This is the final placement, so the Block content will be deleted" : null,
+        dialog.callbackLinkCount > 0
+          ? `${formatCount(dialog.callbackLinkCount, "callback link")} will be removed`
+          : null,
+        dialog.strictTieCount > 0
+          ? `${formatCount(dialog.strictTieCount, "strict tie")} will be cleared`
+          : null,
+      ].filter((item): item is string => Boolean(item))
+      : [
+        `${formatCount(dialog.placementCount, "Block placement")} will be removed`,
+        dialog.callbackLinkCount > 0
+          ? `${formatCount(dialog.callbackLinkCount, "callback link")} will be removed`
+          : null,
+        dialog.strictTieCount > 0
+          ? `${formatCount(dialog.strictTieCount, "strict tie")} will be cleared`
+          : null,
+      ].filter((item): item is string => Boolean(item));
 
   return (
     <Modal
-      title={dialog.type === "thread" ? "Delete Thread" : "Delete Block"}
+      title={title}
       onClose={onCancel}
       compact
     >
       <div className="threadsConfirmDelete">
         <div className="dangerCard">
-          <strong>
-            {dialog.type === "thread"
-              ? `Delete "${dialog.name}"?`
-              : "Delete this Block?"}
-          </strong>
-          <p>
-            {dialog.type === "thread"
-              ? "This removes the Thread and its saved content."
-              : truncateBlockText(dialog.text)}
-          </p>
+          <strong>{headline}</strong>
+          <p>{body}</p>
         </div>
         <ul className="threadsDeleteImpactList">
           {impactItems.map((item) => (
@@ -1896,7 +2141,7 @@ function DeleteConfirmationDialog({
             Cancel
           </button>
           <button type="button" className="secondaryButton dangerButton" onClick={onConfirm}>
-            Delete
+            {confirmLabel}
           </button>
         </div>
       </div>

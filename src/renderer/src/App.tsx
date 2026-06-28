@@ -62,7 +62,7 @@ import {
 } from "./components/icons";
 import { HomeProjectTile } from "./components/home-tiles";
 import { ConstellationHomepage } from "./components/constellation-homepage";
-import { SystemsSyntaxPage } from "./components/systems-syntax-page";
+import { ThreadsPage } from "./components/threads-page";
 import { ProjectOptionsSheet } from "./components/project-options-sheet";
 import { SettingsModal } from "./components/settings-modal";
 import { UsageOverviewSheet } from "./components/usage-panel";
@@ -3022,8 +3022,8 @@ function App() {
                 </>
               }
             />
-          ) : activePage === "systems-syntax" ? (
-            <SystemsSyntaxPage />
+          ) : activePage === "threads" ? (
+            <ThreadsPage />
           ) : activePage === "agents" ? (
             <AgentsPage
               projects={projects}

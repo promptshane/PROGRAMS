@@ -1,4 +1,5 @@
-export type AppPage = "homepage" | "systems-syntax" | "projects" | "agents";
+export type AppPage = "homepage" | "threads" | "projects" | "agents";
+export type LegacyAppPage = "systems-syntax";
 
 export interface AppPageDefinition {
   id: AppPage;
@@ -7,11 +8,12 @@ export interface AppPageDefinition {
 
 export const APP_PAGE_OPTIONS: AppPageDefinition[] = [
   { id: "homepage", label: "Homepage" },
-  { id: "systems-syntax", label: "Systems Syntax" },
+  { id: "threads", label: "Threads" },
   { id: "projects", label: "Projects" },
   { id: "agents", label: "Agents" },
 ];
 
 export const getVisibleAppPageOptions = (): AppPageDefinition[] => APP_PAGE_OPTIONS;
 
-export const resolveVisibleAppPage = (page: AppPage): AppPage => page;
+export const resolveVisibleAppPage = (page: AppPage | LegacyAppPage): AppPage =>
+  page === "systems-syntax" ? "threads" : page;

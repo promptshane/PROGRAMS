@@ -10784,8 +10784,8 @@ select {
   border: 0;
 }
 
-/* ── Systems Syntax ── */
-.systemsSyntaxPage {
+/* -- Threads -- */
+.threadsPage {
   min-height: calc(100vh - 48px);
   display: flex;
   flex-direction: column;
@@ -10793,7 +10793,7 @@ select {
   padding: 22px 24px 28px;
 }
 
-.systemsSyntaxHeader {
+.threadsHeader {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -10803,23 +10803,16 @@ select {
   margin: 0 auto;
 }
 
-.systemsSyntaxHeader h1 {
+.threadsHeader h1 {
   margin: 5px 0 4px;
   font-size: clamp(1.7rem, 3vw, 2.35rem);
-  letter-spacing: -0.04em;
 }
 
-.systemsSyntaxHeader p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.9rem;
-}
-
-.systemsSyntaxNewProjectButton {
+.threadsNewThreadButton {
   min-height: 42px;
   padding: 0 17px;
   border: 1px solid color-mix(in srgb, var(--accent) 44%, var(--border));
-  border-radius: 12px;
+  border-radius: 8px;
   background: color-mix(in srgb, var(--accent) 20%, var(--panel));
   color: var(--text);
   font: inherit;
@@ -10828,11 +10821,11 @@ select {
   box-shadow: none;
 }
 
-.systemsSyntaxNewProjectButton:hover {
+.threadsNewThreadButton:hover {
   background: color-mix(in srgb, var(--accent) 28%, var(--panel));
 }
 
-.systemsSyntaxLayout {
+.threadsLayout {
   flex: 1;
   min-height: 0;
   display: grid;
@@ -10843,21 +10836,21 @@ select {
   margin: 0 auto;
 }
 
-.systemsSyntaxFinder,
-.systemsSyntaxEditor {
+.threadsFinder,
+.threadsEditor {
   border: 1px solid var(--border);
-  border-radius: 18px;
+  border-radius: 8px;
   background: color-mix(in srgb, var(--panel) 88%, transparent);
 }
 
-.systemsSyntaxFinder {
+.threadsFinder {
   min-height: 0;
   max-height: calc(100vh - 142px);
   overflow-y: auto;
   padding: 12px;
 }
 
-.systemsSyntaxOverviewButton {
+.threadsOverviewButton {
   width: 100%;
   min-height: 40px;
   display: flex;
@@ -10866,7 +10859,7 @@ select {
   gap: 12px;
   padding: 9px 11px;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: 8px;
   background: transparent;
   color: var(--text);
   font: inherit;
@@ -10876,50 +10869,18 @@ select {
   box-shadow: none;
 }
 
-.systemsSyntaxOverviewButton > span:last-child {
+.threadsOverviewButton > span:last-child {
   color: var(--muted);
   font-size: 0.7rem;
 }
 
-.systemsSyntaxOverviewButton:hover,
-.systemsSyntaxOverviewButton.active {
+.threadsOverviewButton:hover,
+.threadsOverviewButton.active {
   border-color: color-mix(in srgb, var(--text) 12%, transparent);
   background: color-mix(in srgb, var(--text) 8%, transparent);
 }
 
-.systemsSyntaxSortControl {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 3px;
-  margin-top: 8px;
-  padding: 3px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--text) 3%, transparent);
-}
-
-.systemsSyntaxSortControl button {
-  min-width: 0;
-  min-height: 28px;
-  padding: 0 8px;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-size: 0.68rem;
-  font-weight: 760;
-  box-shadow: none;
-}
-
-.systemsSyntaxSortControl button:hover,
-.systemsSyntaxSortControl button.active {
-  border-color: color-mix(in srgb, var(--text) 14%, var(--border));
-  background: color-mix(in srgb, var(--text) 8%, transparent);
-  color: var(--text);
-}
-
-.systemsSyntaxProjectGroups {
+.threadGroups {
   display: grid;
   gap: 9px;
   margin-top: 15px;
@@ -10927,20 +10888,14 @@ select {
   border-top: 1px solid var(--border);
 }
 
-.systemsSyntaxProjectGroup {
+.threadGroup {
   min-width: 0;
   padding: 4px;
   border: 1px solid transparent;
-  border-radius: 10px;
-  transition: background 130ms ease, border-color 130ms ease;
+  border-radius: 8px;
 }
 
-.systemsSyntaxProjectGroup.projectDropTarget {
-  border-color: color-mix(in srgb, var(--systems-syntax-category) 62%, var(--border));
-  background: color-mix(in srgb, var(--systems-syntax-category) 10%, transparent);
-}
-
-.systemsSyntaxProjectGroupTitle {
+.threadGroupTitle {
   width: 100%;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
@@ -10958,107 +10913,73 @@ select {
   text-transform: uppercase;
   text-align: left;
   box-shadow: none;
-  cursor: pointer;
-  transition: background 100ms ease, color 100ms ease;
 }
 
-.systemsSyntaxProjectGroupTitle:hover {
+.threadGroupTitle:hover {
   background: color-mix(in srgb, var(--text) 5%, transparent);
   color: var(--text);
 }
 
-.systemsSyntaxCategoryCount {
+.threadGroupCount,
+.threadCollapseChevron {
+  color: var(--muted);
   font-size: 0.62rem;
 }
 
-.systemsSyntaxCollapseChevron {
-  font-size: 0.72rem;
-  opacity: 0.6;
-  transition: opacity 100ms ease;
-}
-
-.systemsSyntaxProjectGroupTitle:hover .systemsSyntaxCollapseChevron {
-  opacity: 1;
-}
-
-.systemsSyntaxCategoryDot {
+.threadsCategoryDot {
   width: 7px;
   height: 7px;
   flex: 0 0 auto;
   border-radius: 50%;
-  background: var(--systems-syntax-category);
-  box-shadow: 0 0 10px color-mix(in srgb, var(--systems-syntax-category) 70%, transparent);
+  background: var(--threads-category);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--threads-category) 70%, transparent);
 }
 
-.systemsSyntaxProjectList {
+.threadList,
+.threadsOverviewList,
+.threadUnplacedList {
   display: grid;
-  gap: 2px;
+  gap: 6px;
 }
 
-.systemsSyntaxProjectRow {
+.threadRow {
   width: 100%;
   min-width: 0;
-  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 6px;
   border: 1px solid transparent;
-  border-radius: 9px;
+  border-radius: 8px;
   background: transparent;
   color: var(--text);
   font: inherit;
-  opacity: 0.72;
+  opacity: 0.78;
   transition: background 130ms ease, border-color 130ms ease, opacity 130ms ease;
 }
 
-.systemsSyntaxProjectRow.priority {
-  cursor: grab;
-}
-
-.systemsSyntaxProjectRow.priority:active {
-  cursor: grabbing;
-}
-
-.systemsSyntaxProjectRow.dragging {
-  opacity: 0.36;
-}
-
-.systemsSyntaxProjectRow.dropBefore::before,
-.systemsSyntaxProjectRow.dropAfter::after {
-  content: "";
-  position: absolute;
-  left: 7px;
-  right: 7px;
-  height: 3px;
-  border-radius: 999px;
-  background: var(--systems-syntax-category);
-  pointer-events: none;
-}
-
-.systemsSyntaxProjectRow.dropBefore::before {
-  top: -5px;
-}
-
-.systemsSyntaxProjectRow.dropAfter::after {
-  bottom: -5px;
-}
-
-.systemsSyntaxProjectRow.sidebar {
+.threadRow.sidebar {
   min-height: 34px;
   padding: 3px 5px 3px 18px;
   font-size: 0.79rem;
 }
 
-.systemsSyntaxProjectRow.overview {
+.threadRow.overview {
   min-height: 38px;
   padding: 4px 6px 4px 10px;
-  border-color: color-mix(in srgb, var(--systems-syntax-category) 14%, var(--border));
+  border-color: color-mix(in srgb, var(--threads-category) 14%, var(--border));
   background: color-mix(in srgb, var(--page-solid) 46%, transparent);
   font-size: 0.79rem;
 }
 
-.systemsSyntaxProjectOpenButton {
+.threadRow:hover,
+.threadRow.active {
+  opacity: 1;
+  border-color: color-mix(in srgb, var(--threads-category) 28%, var(--border));
+  background: color-mix(in srgb, var(--threads-category) 8%, transparent);
+}
+
+.threadOpenButton {
   min-width: 0;
   padding: 4px 0;
   border: none;
@@ -11069,7 +10990,7 @@ select {
   box-shadow: none;
 }
 
-.systemsSyntaxProjectOpenButton > span {
+.threadOpenButton > span {
   display: -webkit-box;
   min-width: 0;
   overflow: hidden;
@@ -11077,271 +10998,122 @@ select {
   -webkit-box-orient: vertical;
 }
 
-.systemsSyntaxProjectMeta {
-  flex: 0 0 auto;
+.threadCountBadge {
+  min-width: 22px;
+  height: 20px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+  border-radius: 999px;
   color: var(--muted);
   font-size: 0.65rem;
 }
 
-
-.systemsSyntaxProjectRow:hover,
-.systemsSyntaxProjectRow.active,
-.systemsSyntaxProjectRow.renaming {
-  opacity: 1;
-  border-color: color-mix(in srgb, var(--systems-syntax-category) 28%, var(--border));
-  background: color-mix(in srgb, var(--systems-syntax-category) 8%, transparent);
-}
-
-.systemsSyntaxProjectDropZone {
-  height: 12px;
-  position: relative;
-}
-
-.systemsSyntaxProjectDropZone::after {
-  content: "";
-  position: absolute;
-  top: 5px;
-  left: 7px;
-  right: 7px;
-  height: 3px;
-  border-radius: 999px;
-  background: transparent;
-  transition: background 100ms ease;
-}
-
-.systemsSyntaxProjectDropZone.active::after {
-  background: var(--systems-syntax-category);
-}
-
-.systemsSyntaxEmptyCategoryButton {
-  width: 100%;
-  padding: 5px 8px 5px 22px;
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-size: 0.7rem;
-  text-align: left;
-  box-shadow: none;
-  opacity: 0.7;
-}
-
-.systemsSyntaxEmptyCategoryButton:hover {
-  color: var(--text);
-  opacity: 1;
-}
-
-.systemsSyntaxBlockTreeSection {
-  margin-top: 16px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
-}
-
-.systemsSyntaxPanelTitle {
-  padding: 4px 10px 10px;
-  color: var(--muted);
-  font-size: 0.72rem;
-  font-weight: 750;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.systemsSyntaxTree {
-  display: grid;
-  gap: 2px;
-  list-style: none;
-  margin: 0;
+.threadIconButton {
+  width: 26px;
+  height: 24px;
+  display: inline-grid;
+  place-items: center;
   padding: 0;
-}
-
-.systemsSyntaxTreeRoot {
-  margin-top: 2px;
-}
-
-.systemsSyntaxTreeItem {
-  width: 100%;
-  min-height: 34px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 7px 10px;
   border: 1px solid transparent;
-  border-radius: 9px;
+  border-radius: 7px;
   background: transparent;
-  color: var(--text);
+  color: var(--muted);
   font: inherit;
-  font-size: 0.82rem;
-  text-align: left;
   box-shadow: none;
-  opacity: 0.72;
-  transition: background 130ms ease, border-color 130ms ease, opacity 130ms ease;
 }
 
-.systemsSyntaxTreeItem:hover {
-  opacity: 1;
+.threadIconButton:hover {
+  color: var(--text);
+  border-color: color-mix(in srgb, var(--text) 18%, var(--border));
   background: color-mix(in srgb, var(--text) 6%, transparent);
 }
 
-.systemsSyntaxTreeItem.active {
-  opacity: 1;
-  background: color-mix(in srgb, var(--text) 10%, transparent);
-  border-color: color-mix(in srgb, var(--text) 12%, transparent);
-}
-
-.systemsSyntaxTreeItem.dropTarget {
-  opacity: 1;
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
-}
-
-.systemsSyntaxTreeItem > span:first-child {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.systemsSyntaxTreeCount {
-  flex: 0 0 auto;
-  color: var(--muted);
-  font-size: 0.68rem;
-}
-
-.systemsSyntaxEditor {
-  min-width: 0;
-  padding: clamp(20px, 4vw, 38px);
-  overflow: hidden;
-}
-
-.systemsSyntaxBreadcrumbs {
-  min-height: 28px;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 7px;
-  margin-bottom: 22px;
-  color: var(--muted);
-}
-
-.systemsSyntaxBreadcrumbs span {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.systemsSyntaxBreadcrumbs button {
-  padding: 2px 0;
+.threadsEmptyCategoryButton,
+.threadsCategoryAdd {
   border: none;
   background: transparent;
-  color: inherit;
-  font: inherit;
-  font-size: 0.78rem;
-  box-shadow: none;
-}
-
-.systemsSyntaxBreadcrumbs button:hover {
-  color: var(--text);
-}
-
-.systemsSyntaxBreadcrumbs button.current {
-  color: var(--text);
-  font-weight: 700;
-}
-
-.systemsSyntaxCategoryGrid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.systemsSyntaxCategoryCard {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  padding: 15px;
-  border: 1px solid color-mix(in srgb, var(--systems-syntax-category) 22%, var(--border));
-  border-radius: 14px;
-  background:
-    linear-gradient(
-      145deg,
-      color-mix(in srgb, var(--systems-syntax-category) 7%, transparent),
-      transparent 58%
-    ),
-    color-mix(in srgb, var(--text) 2%, transparent);
-  transition: background 130ms ease, border-color 130ms ease;
-}
-
-.systemsSyntaxCategoryCard.projectDropTarget {
-  border-color: color-mix(in srgb, var(--systems-syntax-category) 62%, var(--border));
-  background:
-    linear-gradient(
-      145deg,
-      color-mix(in srgb, var(--systems-syntax-category) 13%, transparent),
-      transparent 58%
-    ),
-    color-mix(in srgb, var(--systems-syntax-category) 8%, transparent);
-}
-
-.systemsSyntaxCategoryCardHeader {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.systemsSyntaxCategoryCardHeader > div {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.systemsSyntaxCategoryCardHeader h3 {
-  margin: 0;
-  font-size: 0.92rem;
-}
-
-.systemsSyntaxCategoryCardHeader > span {
-  flex: 0 0 auto;
-  color: var(--muted);
-  font-size: 0.68rem;
-}
-
-.systemsSyntaxOverviewProjects {
-  display: grid;
-  gap: 5px;
-}
-
-.systemsSyntaxOverviewProjects .systemsSyntaxProjectRow:hover,
-.systemsSyntaxOverviewProjects .systemsSyntaxProjectRow.active {
-  border-color: color-mix(in srgb, var(--systems-syntax-category) 42%, var(--border));
-  background: color-mix(in srgb, var(--systems-syntax-category) 9%, transparent);
-}
-
-.systemsSyntaxCategoryEmpty {
-  min-height: 42px;
-  display: flex;
-  align-items: center;
-  color: var(--muted);
-  font-size: 0.75rem;
-}
-
-.systemsSyntaxCategoryAdd {
-  align-self: flex-start;
-  margin-top: auto;
-  padding: 2px 0;
-  border: none;
-  background: transparent;
-  color: var(--systems-syntax-category);
+  color: var(--threads-category);
   font: inherit;
   font-size: 0.72rem;
   font-weight: 720;
   box-shadow: none;
 }
 
-.systemsSyntaxCurrentHeader {
+.threadsEmptyCategoryButton {
+  width: 100%;
+  padding: 5px 8px 5px 22px;
+  color: var(--muted);
+  text-align: left;
+  opacity: 0.7;
+}
+
+.threadsEmptyCategoryButton:hover {
+  color: var(--text);
+  opacity: 1;
+}
+
+.threadsEditor {
+  min-width: 0;
+  padding: clamp(20px, 4vw, 38px);
+  overflow: hidden;
+}
+
+.threadsCategoryGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.threadsCategoryCard {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 15px;
+  border: 1px solid color-mix(in srgb, var(--threads-category) 22%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text) 2%, transparent);
+}
+
+.threadsCategoryCardHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.threadsCategoryCardHeader > div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.threadsCategoryCardHeader h3 {
+  margin: 0;
+  font-size: 0.92rem;
+}
+
+.threadsCategoryCardHeader > span,
+.threadsCategoryEmpty {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.threadsCategoryEmpty {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+}
+
+.threadsCategoryAdd {
+  align-self: flex-start;
+  margin-top: auto;
+  padding: 2px 0;
+}
+
+.threadCurrentHeader {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -11350,7 +11122,11 @@ select {
   border-bottom: 1px solid var(--border);
 }
 
-.systemsSyntaxEyebrow {
+.threadCurrentIdentity {
+  min-width: 0;
+}
+
+.threadsEyebrow {
   margin-bottom: 4px;
   color: var(--muted);
   font-size: 0.72rem;
@@ -11359,54 +11135,34 @@ select {
   text-transform: uppercase;
 }
 
-.systemsSyntaxCategoryEyebrow {
+.threadsCategoryEyebrow {
   display: flex;
   align-items: center;
   gap: 7px;
 }
 
-.systemsSyntaxCurrentIdentity {
-  min-width: 0;
-}
-
-.systemsSyntaxEditableHeading {
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.systemsSyntaxCurrentHeader h2 {
+.threadCurrentHeader h2 {
   min-width: 0;
   margin: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: clamp(1.35rem, 2.5vw, 1.8rem);
-  letter-spacing: -0.035em;
   white-space: nowrap;
 }
 
-.systemsSyntaxProjectStats {
+.threadStats {
   display: block;
   margin-top: 6px;
   color: var(--muted);
   font-size: 0.72rem;
 }
 
-.systemsSyntaxHeaderActions {
-  flex: 0 1 540px;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
-.systemsSyntaxEditButton {
+.threadEditButton {
   height: 40px;
   flex: 0 0 auto;
   padding: 0 13px;
   border: 1px solid var(--border);
-  border-radius: 11px;
+  border-radius: 8px;
   background: transparent;
   color: var(--muted);
   font: inherit;
@@ -11415,83 +11171,25 @@ select {
   box-shadow: none;
 }
 
-.systemsSyntaxEditButton:hover {
+.threadEditButton:hover {
   color: var(--text);
   border-color: color-mix(in srgb, var(--text) 22%, var(--border));
   background: color-mix(in srgb, var(--text) 5%, transparent);
 }
 
-.systemsSyntaxInlineEditButton {
-  width: 24px;
-  height: 24px;
-  flex: 0 0 auto;
-  display: inline-grid;
-  place-items: center;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-size: 0.78rem;
-  box-shadow: none;
-  opacity: 0;
-  transition: opacity 100ms ease, border-color 100ms ease, background 100ms ease, color 100ms ease;
+.threadCreateBlockForm {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  margin-top: 18px;
 }
 
-.systemsSyntaxProjectRow:hover .systemsSyntaxInlineEditButton,
-.systemsSyntaxProjectRow.active .systemsSyntaxInlineEditButton,
-.systemsSyntaxProjectRow.renaming .systemsSyntaxInlineEditButton {
-  opacity: 1;
-}
-
-.systemsSyntaxInlineEditButton:hover,
-.systemsSyntaxInlineEditButton:focus-visible {
-  color: var(--text);
-  border-color: color-mix(in srgb, var(--text) 18%, var(--border));
-  background: color-mix(in srgb, var(--text) 6%, transparent);
-  opacity: 1;
-}
-
-.systemsSyntaxHeadingEditButton {
-  margin-top: 2px;
-  opacity: 1;
-}
-
-.systemsSyntaxInlineNameInput {
+.threadCreateBlockForm textarea {
   min-width: 0;
-  width: 100%;
-  height: 30px;
-  padding: 0 8px;
-  border: 1px solid color-mix(in srgb, var(--accent) 58%, var(--border));
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--page-solid) 82%, transparent);
-  color: var(--text);
-  font: inherit;
-  font-weight: 700;
-  outline: none;
-}
-
-.systemsSyntaxEditableHeading .systemsSyntaxInlineNameInput {
-  max-width: min(560px, 100%);
-  height: 42px;
-  font-size: clamp(1.1rem, 2vw, 1.45rem);
-}
-
-.systemsSyntaxCreateForm {
-  min-width: 0;
-  flex: 1 1 390px;
-  display: flex;
-  gap: 8px;
-}
-
-.systemsSyntaxCreateForm input {
-  min-width: 0;
-  flex: 1;
-  height: 40px;
-  padding: 0 12px;
+  resize: vertical;
+  padding: 11px 12px;
   border: 1px solid var(--border);
-  border-radius: 11px;
+  border-radius: 8px;
   background: color-mix(in srgb, var(--page-solid) 70%, transparent);
   color: var(--text);
   font: inherit;
@@ -11499,203 +11197,173 @@ select {
   outline: none;
 }
 
-.systemsSyntaxCreateForm input:focus {
+.threadCreateBlockForm textarea:focus {
   border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
 }
 
-.systemsSyntaxCreateForm button {
-  height: 40px;
+.threadCreateBlockForm button {
+  align-self: stretch;
   padding: 0 15px;
   border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
-  border-radius: 11px;
+  border-radius: 8px;
   background: color-mix(in srgb, var(--accent) 18%, var(--panel));
   color: var(--text);
   font-weight: 700;
   box-shadow: none;
 }
 
-.systemsSyntaxCreateForm button:disabled {
+.threadCreateBlockForm button:disabled {
   cursor: default;
   opacity: 0.38;
 }
 
-.systemsSyntaxChildren {
-  display: flex;
-  flex-direction: column;
-  padding-top: 18px;
+.threadBlockSections {
+  display: grid;
+  gap: 18px;
+  margin-top: 22px;
 }
 
-.systemsSyntaxBlockCard {
-  position: relative;
-  display: flex;
-  align-items: stretch;
-  min-height: 64px;
-  border: 1px solid var(--border);
-  border-radius: 13px;
-  background: color-mix(in srgb, var(--text) 3%, transparent);
-  cursor: grab;
-  transition: background 130ms ease, border-color 130ms ease, transform 130ms ease;
+.threadBlockSection {
+  display: grid;
+  gap: 10px;
 }
 
-.systemsSyntaxBlockCard:active {
-  cursor: grabbing;
-}
-
-.systemsSyntaxBlockCard:hover {
-  border-color: color-mix(in srgb, var(--text) 18%, var(--border));
-  background: color-mix(in srgb, var(--text) 5%, transparent);
-}
-
-.systemsSyntaxBlockCard.dropTarget {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 9%, transparent);
-  transform: translateY(-1px);
-}
-
-.systemsSyntaxBlockCard.dragging {
-  opacity: 0.36;
-}
-
-.systemsSyntaxBlockCard.dropBefore::before,
-.systemsSyntaxBlockCard.dropAfter::after {
-  content: "";
-  position: absolute;
-  left: 10px;
-  right: 10px;
-  height: 3px;
-  z-index: 2;
-  border-radius: 999px;
-  background: var(--accent);
-  pointer-events: none;
-}
-
-.systemsSyntaxBlockCard.dropBefore::before {
-  top: -7px;
-}
-
-.systemsSyntaxBlockCard.dropAfter::after {
-  bottom: -7px;
-}
-
-
-.systemsSyntaxBlockOpenButton {
-  min-width: 0;
-  flex: 1;
+.threadBlockSectionHeader {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  padding: 14px 48px 14px 16px;
-  border: none;
-  background: transparent;
+  gap: 12px;
+  color: var(--muted);
+}
+
+.threadBlockSectionHeader h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.92rem;
+}
+
+.threadBlockSectionHeader span {
+  font-size: 0.72rem;
+}
+
+.threadOrderedList {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding-left: 24px;
+}
+
+.threadOrderedList > li::marker {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.threadBlockCard {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.7fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 64px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text) 3%, transparent);
+}
+
+.threadBlockText {
+  min-width: 0;
+  color: var(--text);
+  font-size: 0.9rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.threadTieControls {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.threadTieControls label {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.threadTieControls select {
+  min-width: 0;
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--page-solid) 70%, transparent);
   color: var(--text);
   font: inherit;
-  text-align: left;
-  box-shadow: none;
-  cursor: grab;
+  font-size: 0.78rem;
+  outline: none;
 }
 
-.systemsSyntaxBlockCard:active .systemsSyntaxBlockOpenButton {
-  cursor: grabbing;
+.threadTieControls select:focus {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
 }
 
-.systemsSyntaxBlockName {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: 0.94rem;
-  font-weight: 680;
-  white-space: nowrap;
-}
-
-.systemsSyntaxBlockMeta {
-  flex: 0 0 auto;
-  color: var(--muted);
-  font-size: 0.75rem;
-}
-
-.systemsSyntaxBlockDeleteButton {
-  position: absolute;
-  top: 50%;
-  right: 12px;
-  width: 26px;
-  height: 26px;
-  display: inline-grid;
-  place-items: center;
-  padding: 0;
+.threadDeleteBlockButton {
+  min-height: 34px;
+  padding: 0 10px;
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: 8px;
   background: transparent;
   color: var(--muted);
   font: inherit;
-  font-size: 1rem;
+  font-size: 0.74rem;
+  font-weight: 700;
   box-shadow: none;
-  transform: translateY(-50%);
-  opacity: 0;
-  transition: opacity 100ms ease, border-color 100ms ease, background 100ms ease, color 100ms ease;
 }
 
-.systemsSyntaxBlockCard:hover .systemsSyntaxBlockDeleteButton {
-  opacity: 1;
-}
-
-.systemsSyntaxBlockDeleteButton:hover {
+.threadDeleteBlockButton:hover {
   border-color: color-mix(in srgb, var(--error) 40%, var(--border));
   background: color-mix(in srgb, var(--error) 10%, transparent);
   color: var(--error);
-  opacity: 1;
 }
 
-.systemsSyntaxDropZone {
-  height: 8px;
-  position: relative;
-  flex: 0 0 auto;
-}
-
-.systemsSyntaxDropZone::after {
-  content: "";
-  position: absolute;
-  top: 3px;
-  left: 8px;
-  right: 8px;
-  height: 2px;
-  border-radius: 999px;
-  background: transparent;
-  transition: background 100ms ease;
-}
-
-.systemsSyntaxDropZone.active::after {
-  background: var(--accent);
-}
-
-.systemsSyntaxEmpty {
-  min-height: 190px;
+.threadsEmpty {
+  min-height: 132px;
   display: grid;
   place-content: center;
   justify-items: center;
   gap: 7px;
-  padding: 28px;
+  padding: 24px;
   border: 1px dashed var(--border);
-  border-radius: 14px;
+  border-radius: 8px;
   color: var(--muted);
   text-align: center;
 }
 
-.systemsSyntaxEmpty strong {
+.threadsEmpty.compact {
+  min-height: 70px;
+}
+
+.threadsEmpty strong {
   color: var(--text);
   font-size: 0.9rem;
 }
 
-.systemsSyntaxEmpty span {
+.threadsEmpty span {
   font-size: 0.8rem;
 }
 
-.systemsSyntaxDialogForm {
+.threadDialogForm {
   display: grid;
   gap: 20px;
 }
 
-.systemsSyntaxDialogForm > label {
+.threadDialogForm > label {
   display: grid;
   gap: 8px;
   color: var(--muted);
@@ -11703,44 +11371,44 @@ select {
   font-weight: 700;
 }
 
-.systemsSyntaxDialogForm input[type="text"],
-.systemsSyntaxDialogForm > label > input {
+.threadDialogForm input[type="text"],
+.threadDialogForm > label > input {
   width: 100%;
   min-height: 42px;
   padding: 0 12px;
   border: 1px solid var(--border);
-  border-radius: 11px;
+  border-radius: 8px;
   background: color-mix(in srgb, var(--page-solid) 70%, transparent);
   color: var(--text);
   font: inherit;
   outline: none;
 }
 
-.systemsSyntaxDialogForm input:focus {
+.threadDialogForm input:focus {
   border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
 }
 
-.systemsSyntaxDialogForm fieldset {
+.threadDialogForm fieldset {
   min-width: 0;
   margin: 0;
   padding: 0;
   border: none;
 }
 
-.systemsSyntaxDialogForm legend {
+.threadDialogForm legend {
   margin-bottom: 9px;
   color: var(--muted);
   font-size: 0.74rem;
   font-weight: 700;
 }
 
-.systemsSyntaxCategoryPicker {
+.threadsCategoryPicker {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 7px;
 }
 
-.systemsSyntaxCategoryPicker label {
+.threadsCategoryPicker label {
   min-width: 0;
   min-height: 38px;
   display: flex;
@@ -11748,20 +11416,20 @@ select {
   gap: 8px;
   padding: 8px 10px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
   color: var(--muted);
   font-size: 0.72rem;
   cursor: pointer;
 }
 
-.systemsSyntaxCategoryPicker label:hover,
-.systemsSyntaxCategoryPicker label.active {
-  border-color: color-mix(in srgb, var(--systems-syntax-category) 48%, var(--border));
-  background: color-mix(in srgb, var(--systems-syntax-category) 9%, transparent);
+.threadsCategoryPicker label:hover,
+.threadsCategoryPicker label.active {
+  border-color: color-mix(in srgb, var(--threads-category) 48%, var(--border));
+  background: color-mix(in srgb, var(--threads-category) 9%, transparent);
   color: var(--text);
 }
 
-.systemsSyntaxCategoryPicker input {
+.threadsCategoryPicker input {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -11769,7 +11437,7 @@ select {
   pointer-events: none;
 }
 
-.systemsSyntaxDialogActions {
+.threadDialogActions {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -11777,12 +11445,12 @@ select {
   padding-top: 4px;
 }
 
-.systemsSyntaxDialogActions > div {
+.threadDialogActions > div {
   display: flex;
   gap: 8px;
 }
 
-.systemsSyntaxDeleteTextButton {
+.threadDeleteTextButton {
   padding: 4px 0;
   border: none;
   background: transparent;
@@ -11793,69 +11461,656 @@ select {
   box-shadow: none;
 }
 
-.systemsSyntaxConfirmDelete {
+.threadsConfirmDelete {
   display: grid;
   gap: 16px;
 }
 
-.systemsSyntaxConfirmDelete .dangerCard strong {
+.threadsConfirmDelete .dangerCard strong {
   display: block;
   margin-bottom: 6px;
 }
 
-.systemsSyntaxConfirmDelete .modalActions {
+.threadsConfirmDelete .modalActions {
   justify-content: flex-end;
 }
 
-@media (max-width: 820px) {
-  .systemsSyntaxPage {
-    padding-inline: 16px;
-  }
-
-  .systemsSyntaxHeader {
-    align-items: flex-start;
-  }
-
-  .systemsSyntaxLayout {
+@media (max-width: 920px) {
+  .threadBlockCard {
     grid-template-columns: 1fr;
   }
 
-  .systemsSyntaxFinder {
+  .threadTieControls {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 820px) {
+  .threadsPage {
+    padding-inline: 16px;
+  }
+
+  .threadsHeader {
+    align-items: flex-start;
+  }
+
+  .threadsLayout {
+    grid-template-columns: 1fr;
+  }
+
+  .threadsFinder {
     max-height: 220px;
   }
 
-  .systemsSyntaxCurrentHeader {
+  .threadCurrentHeader {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .systemsSyntaxHeaderActions {
-    flex-basis: auto;
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .systemsSyntaxCreateForm {
-    flex-basis: auto;
+  .threadCreateBlockForm {
+    grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 620px) {
-  .systemsSyntaxHeader {
+  .threadsHeader {
     flex-direction: column;
   }
 
-  .systemsSyntaxCategoryGrid,
-  .systemsSyntaxCategoryPicker {
+  .threadsCategoryGrid,
+  .threadsCategoryPicker {
     grid-template-columns: 1fr;
   }
 
-  .systemsSyntaxDialogActions {
+  .threadDialogActions {
     align-items: stretch;
     flex-direction: column-reverse;
   }
 
-  .systemsSyntaxDialogActions > div {
+  .threadDialogActions > div {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+/* -- Threads drill-down -- */
+.threadsPage {
+  width: 100%;
+  max-width: 820px;
+  min-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  margin: 0 auto;
+  padding: 32px 24px 48px;
+}
+
+.threadsScreenHeader {
+  width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.threadsTitleBlock {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.threadsTitleBlock h1 {
+  margin: 0;
+  color: var(--text);
+  font-size: clamp(2rem, 5vw, 3.1rem);
+  font-weight: 780;
+  line-height: 1;
+}
+
+.threadsBreadcrumb {
+  min-height: 18px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  color: color-mix(in srgb, var(--threads-category, var(--muted)) 52%, var(--muted));
+  font-size: 0.76rem;
+  font-weight: 650;
+}
+
+.threadsBackButton,
+.threadsAddButton {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  box-shadow: none;
+}
+
+.threadsBackButton {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  font-size: 1.35rem;
+  line-height: 1;
+}
+
+.threadsBackButton:hover,
+.threadsAddButton:hover {
+  color: var(--text);
+  background: transparent;
+}
+
+.threadsAddButton {
+  flex: 0 0 auto;
+  padding: 7px 0;
+  font-size: 0.8rem;
+  font-weight: 720;
+}
+
+.threadsList {
+  width: 100%;
+  display: grid;
+}
+
+.threadsRow {
+  width: 100%;
+  min-width: 0;
+  min-height: 66px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 2px;
+  border: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  box-shadow: none;
+}
+
+.threadsRow:hover,
+.threadsRow.active {
+  background: transparent;
+}
+
+.threadsRow:hover .threadsRowName,
+.threadsRow.active .threadsRowName {
+  color: color-mix(in srgb, var(--threads-category, var(--accent)) 62%, var(--text));
+}
+
+.threadsRowName {
+  min-width: 0;
+  color: var(--text);
+  font-size: clamp(1.02rem, 2vw, 1.22rem);
+  font-weight: 740;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.threadsRowCount {
+  color: color-mix(in srgb, var(--muted) 82%, transparent);
+  font-size: 0.72rem;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.threadsThreadGroup {
+  border-bottom: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+}
+
+.threadsThreadGroup > .threadsRow {
+  border-bottom: none;
+}
+
+.threadsAccordion {
+  display: grid;
+  gap: 20px;
+  padding: 0 0 24px;
+}
+
+.threadsAddBlockForm {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.threadsAddBlockForm textarea {
+  min-width: 0;
+  resize: vertical;
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--text) 13%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--page-solid) 72%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.88rem;
+  line-height: 1.4;
+  outline: none;
+}
+
+.threadsAddBlockForm textarea:focus {
+  border-color: color-mix(in srgb, var(--accent) 52%, var(--border));
+}
+
+.threadsAddBlockForm button {
+  align-self: stretch;
+  padding: 0 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 720;
+  box-shadow: none;
+}
+
+.threadsAddBlockForm button:disabled {
+  cursor: default;
+  opacity: 0.38;
+}
+
+.threadsBlockList {
+  display: grid;
+}
+
+.threadsBlockText {
+  min-width: 0;
+  padding: 15px 0;
+  border-top: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
+  color: color-mix(in srgb, var(--text) 90%, var(--muted));
+  font-size: 0.94rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.threadsBlockWarning {
+  padding: 9px 0;
+  color: color-mix(in srgb, var(--warning, #f6c66f) 82%, var(--text));
+  font-size: 0.78rem;
+}
+
+.threadsBlockRow {
+  position: relative;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  padding: 16px 0;
+  border-top: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
+}
+
+.threadsBlockRow.highlighted {
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.threadsStrictConnector {
+  position: absolute;
+  left: -14px;
+  width: 8px;
+  border-left: 1px solid color-mix(in srgb, var(--accent) 58%, transparent);
+}
+
+.threadsStrictConnector.before {
+  top: -1px;
+  height: 18px;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 58%, transparent);
+}
+
+.threadsStrictConnector.after {
+  bottom: -1px;
+  height: 18px;
+  border-top: 1px solid color-mix(in srgb, var(--accent) 58%, transparent);
+}
+
+.threadsBlockMain {
+  min-width: 0;
+  display: grid;
+  gap: 9px;
+}
+
+.threadsBlockTextButton {
+  min-width: 0;
+  display: block;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: color-mix(in srgb, var(--text) 90%, var(--muted));
+  font: inherit;
+  font-size: 0.94rem;
+  line-height: 1.55;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  box-shadow: none;
+}
+
+.threadsBlockTextButton:hover {
+  color: var(--text);
+  background: transparent;
+}
+
+.threadsBlockEditForm {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.threadsBlockEditForm textarea {
+  min-width: 0;
+  resize: vertical;
+  padding: 10px 11px;
+  border: 1px solid color-mix(in srgb, var(--accent) 46%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--page-solid) 72%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: 1.45;
+  outline: none;
+}
+
+.threadsBlockEditActions,
+.threadsBlockReorder {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+}
+
+.threadsIconButton {
+  width: 28px;
+  height: 28px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+}
+
+.threadsIconButton svg {
+  width: 15px;
+  height: 15px;
+}
+
+.threadsIconButton:hover {
+  border-color: color-mix(in srgb, var(--text) 14%, var(--border));
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  color: var(--text);
+}
+
+.threadsIconButton:disabled {
+  cursor: default;
+  opacity: 0.35;
+}
+
+.threadsBlockMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.threadsMetaButton {
+  min-height: 24px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.68rem;
+  font-weight: 680;
+  box-shadow: none;
+}
+
+.threadsMetaButton:hover {
+  border-color: color-mix(in srgb, var(--text) 18%, var(--border));
+  color: var(--text);
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+
+.threadsMetaButton.strict.active {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  color: color-mix(in srgb, var(--accent) 64%, var(--text));
+}
+
+.threadsCallbackLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.threadsCallbackChip {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 100%;
+  border: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+  border-radius: 7px;
+  color: var(--muted);
+}
+
+.threadsCallbackChip.outgoing {
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--border));
+}
+
+.threadsCallbackChip.incoming {
+  border-color: color-mix(in srgb, var(--threads-category, var(--muted)) 26%, var(--border));
+}
+
+.threadsCallbackChip button {
+  min-width: 0;
+  min-height: 24px;
+  padding: 0 6px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.68rem;
+  box-shadow: none;
+}
+
+.threadsCallbackChip button:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.threadsCallbackChip button:last-child {
+  width: 22px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0;
+}
+
+.threadsCallbackChip svg {
+  width: 12px;
+  height: 12px;
+}
+
+.threadsCallbackChip button:hover {
+  color: var(--text);
+}
+
+.threadsEmptyState,
+.threadsEmptyBlocks,
+.threadsDialogContext {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.threadsEmptyState {
+  padding: 20px 2px;
+  border-bottom: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+}
+
+.threadsEmptyBlocks {
+  padding: 8px 0 4px;
+}
+
+.threadsDialogContext {
+  margin-top: -6px;
+}
+
+.threadsLinkDialog {
+  display: grid;
+  gap: 12px;
+}
+
+.threadsLinkDialog input {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--page-solid) 70%, transparent);
+  color: var(--text);
+  font: inherit;
+  outline: none;
+}
+
+.threadsLinkDialog input:focus {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+}
+
+.threadsLinkResults {
+  max-height: min(380px, 56vh);
+  display: grid;
+  overflow-y: auto;
+  border-top: 1px solid color-mix(in srgb, var(--text) 9%, transparent);
+}
+
+.threadsLinkResult {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: 11px 0;
+  border: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--text) 8%, transparent);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  box-shadow: none;
+}
+
+.threadsLinkResult:hover {
+  background: transparent;
+}
+
+.threadsLinkResult span,
+.threadsLinkResult small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.threadsLinkResult span {
+  font-size: 0.86rem;
+}
+
+.threadsLinkResult small {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.threadDialogForm {
+  display: grid;
+  gap: 18px;
+}
+
+.threadDialogForm > label {
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.threadDialogForm > label > input {
+  width: 100%;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--page-solid) 70%, transparent);
+  color: var(--text);
+  font: inherit;
+  outline: none;
+}
+
+.threadDialogForm > label > input:focus {
+  border-color: color-mix(in srgb, var(--accent) 58%, var(--border));
+}
+
+.threadDialogActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 2px;
+}
+
+.threadDialogActions > div {
+  display: flex;
+  gap: 8px;
+}
+
+@media (max-width: 640px) {
+  .threadsPage {
+    gap: 24px;
+    padding: 24px 16px 40px;
+  }
+
+  .threadsScreenHeader {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .threadsTitleBlock {
+    flex-basis: calc(100% - 48px);
+  }
+
+  .threadsAddButton {
+    margin-left: 48px;
+  }
+
+  .threadsRow {
+    min-height: 60px;
+    gap: 12px;
+    padding: 16px 0;
+  }
+
+  .threadsAddBlockForm {
+    grid-template-columns: 1fr;
+  }
+
+  .threadsBlockRow,
+  .threadsBlockEditForm {
+    grid-template-columns: 1fr;
+  }
+
+  .threadsBlockReorder {
+    display: flex;
+  }
+
+  .threadDialogActions {
+    align-items: stretch;
+    flex-direction: column-reverse;
+  }
+
+  .threadDialogActions > div {
     display: grid;
     grid-template-columns: 1fr 1fr;
   }

@@ -22,6 +22,7 @@ import {
   getThreadDisplayBlockIds,
   migrateLegacyThreadsState,
   moveBlockInThread,
+  moveThreadInProject,
   parseThreadsState,
   setStrictTie,
   updateBlockText,
@@ -66,13 +67,17 @@ test("Projects create, order, edit, group, and delete by category", () => {
   assert.deepEqual(state.projectOrder, ["first", "second", "third"]);
 
   state = updateProject(state, "second", {
-    name: "Second renamed",
+    name: " Second renamed ",
     categoryId: "games",
   });
 
   assert.deepEqual(state.projectOrder, ["first", "second", "third"]);
   assert.equal(state.projects.second.name, "Second renamed");
   assert.equal(state.projects.second.categoryId, "games");
+
+  const unchanged = updateProject(state, "second", { name: "   " });
+  assert.equal(unchanged, state);
+
   assert.deepEqual(
     getCategoryProjects(state, "games").map((project) => project.id),
     ["second"],
@@ -117,7 +122,7 @@ test("Threads create, order, edit, count, group, and delete under Projects", () 
   );
 
   state = updateThread(state, "second", {
-    name: "Second renamed",
+    name: " Second renamed ",
     projectId: "other-project",
   });
 
@@ -127,11 +132,67 @@ test("Threads create, order, edit, count, group, and delete under Projects", () 
   assert.equal(countProjectThreads(state, "project"), 1);
   assert.equal(countProjectThreads(state, "other-project"), 2);
 
+  const unchanged = updateThread(state, "second", { name: "   " });
+  assert.equal(unchanged, state);
+
   state = createBlock(state, "second", "Removed Block", "removed-block");
   state = deleteThread(state, "second");
   assert.equal(state.threads.second, undefined);
   assert.equal(state.blocks["removed-block"], undefined);
   assert.deepEqual(state.threadOrder, ["first", "third"]);
+});
+
+test("Manual Thread reorder affects only one Project's Thread slots", () => {
+  let state = createEmptyThreadsState();
+  state = createProject(state, "Project", "stories", "project");
+  state = createProject(state, "Other Project", "tools", "other-project");
+  state = createThread(state, "First", "project", "first");
+  state = createThread(state, "Other First", "other-project", "other-first");
+  state = createThread(state, "Second", "project", "second");
+  state = createThread(state, "Other Second", "other-project", "other-second");
+  state = createThread(state, "Third", "project", "third");
+
+  let result = moveThreadInProject(state, "second", "up");
+  assert.equal(result.error, null);
+  state = result.state;
+  assert.deepEqual(state.threadOrder, [
+    "second",
+    "other-first",
+    "first",
+    "other-second",
+    "third",
+  ]);
+  assert.deepEqual(
+    getProjectThreads(state, "project").map((thread) => thread.id),
+    ["second", "first", "third"],
+  );
+  assert.deepEqual(
+    getProjectThreads(state, "other-project").map((thread) => thread.id),
+    ["other-first", "other-second"],
+  );
+
+  result = moveThreadInProject(state, "second", "up");
+  assert.equal(result.state, state);
+  assert.match(result.error ?? "", /top/);
+
+  result = moveThreadInProject(state, "first", "down");
+  assert.equal(result.error, null);
+  state = result.state;
+  assert.deepEqual(state.threadOrder, [
+    "second",
+    "other-first",
+    "third",
+    "other-second",
+    "first",
+  ]);
+
+  state = deleteThread(state, "third");
+  assert.deepEqual(state.threadOrder, [
+    "second",
+    "other-first",
+    "other-second",
+    "first",
+  ]);
 });
 
 test("Blocks are created, edited, counted, and deleted inside one Thread", () => {

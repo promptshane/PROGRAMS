@@ -11536,20 +11536,89 @@ select {
 /* -- Threads drill-down -- */
 .threadsPage {
   width: 100%;
-  max-width: 820px;
+  max-width: none;
   min-height: calc(100vh - 48px);
   display: flex;
   flex-direction: column;
-  gap: 28px;
-  margin: 0 auto;
-  padding: 32px 24px 48px;
+  gap: 0;
+  margin: 0;
+  padding: calc(var(--page-chrome-divider-offset) + 19px) 0 48px;
+}
+
+.threadsChromeMask {
+  position: fixed;
+  top: 0;
+  left: var(--sidebar-width);
+  right: 0;
+  z-index: 37;
+  height: calc(
+    var(--page-chrome-toolbar-top) +
+    var(--page-chrome-toolbar-height) +
+    var(--page-chrome-divider-gap)
+  );
+  background: var(--page-solid);
+  pointer-events: none;
+}
+
+.threadsTopBar {
+  position: fixed;
+  top: 8px;
+  left: max(140px, calc(var(--sidebar-width) + 24px));
+  right: 24px;
+  z-index: 39;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.threadsPageDivider {
+  position: fixed;
+  top: calc(
+    var(--page-chrome-toolbar-top) +
+    var(--page-chrome-toolbar-height) +
+    var(--page-chrome-divider-gap)
+  );
+  left: calc(var(--sidebar-width) + 24px);
+  right: 24px;
+  z-index: 38;
+  width: auto;
+  margin: 0;
+  pointer-events: none;
 }
 
 .threadsScreenHeader {
   width: 100%;
   display: flex;
-  align-items: flex-start;
+  align-items: center;
+  justify-content: space-between;
   gap: 14px;
+  min-width: 0;
+}
+
+.threadsTopBarPrimary,
+.threadsTopBarActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.threadsTopBarPrimary {
+  flex: 1 1 auto;
+}
+
+.threadsTopBarActions {
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.threadsTitleWarning,
+.threadsList {
+  width: min(920px, calc(100% - 48px));
+  margin-inline: auto;
 }
 
 .threadsTitleBlock {
@@ -11560,69 +11629,50 @@ select {
 .threadsTitleBlock h1 {
   margin: 0;
   color: var(--text);
-  font-size: clamp(2rem, 5vw, 3.1rem);
-  font-weight: 780;
-  line-height: 1;
+  font-size: 0.98rem;
+  font-weight: 680;
+  line-height: 1.1;
 }
 
 .threadsBreadcrumb {
-  min-height: 18px;
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-bottom: 2px;
   color: color-mix(in srgb, var(--threads-category, var(--muted)) 52%, var(--muted));
-  font-size: 0.76rem;
-  font-weight: 650;
+  font-size: 0.68rem;
+  font-weight: 620;
 }
 
 .threadsBackButton,
-.threadsAddButton {
-  border: none;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  box-shadow: none;
-}
-
-.threadsBackButton {
-  width: 34px;
-  height: 34px;
+.threadsAddButton,
+.threadsModeButton {
   flex: 0 0 auto;
-  display: inline-grid;
-  place-items: center;
-  padding: 0;
-  font-size: 1.35rem;
-  line-height: 1;
+  margin: 0;
 }
 
-.threadsBackButton:hover,
-.threadsAddButton:hover {
+.threadsSortButton {
+  flex: 0 0 auto;
+}
+
+.threadsModeButton.active {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
   color: var(--text);
-  background: transparent;
-}
-
-.threadsAddButton {
-  flex: 0 0 auto;
-  padding: 7px 0;
-  font-size: 0.8rem;
-  font-weight: 720;
 }
 
 .threadsList {
-  width: 100%;
   display: grid;
 }
 
 .threadsRow {
   width: 100%;
   min-width: 0;
-  min-height: 66px;
+  min-height: 54px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 16px;
-  padding: 18px 2px;
+  gap: 18px;
+  padding: 13px 2px;
   border: none;
   border-bottom: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
   border-radius: 0;
@@ -11638,25 +11688,154 @@ select {
   background: transparent;
 }
 
+.threadsRowClickable {
+  cursor: pointer;
+}
+
+.threadsRowClickable:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--text) 24%, transparent);
+  outline-offset: -2px;
+}
+
 .threadsRow:hover .threadsRowName,
 .threadsRow.active .threadsRowName {
   color: color-mix(in srgb, var(--threads-category, var(--accent)) 62%, var(--text));
 }
 
+.threadsRow.muted .threadsRowName {
+  color: color-mix(in srgb, var(--muted) 68%, var(--page-solid));
+}
+
+.threadsRow.muted:hover .threadsRowName {
+  color: color-mix(in srgb, var(--muted) 86%, var(--text));
+}
+
+.threadsRow.muted .threadsRowCountButton {
+  opacity: 0.62;
+}
+
 .threadsRowName {
   min-width: 0;
   color: var(--text);
-  font-size: clamp(1.02rem, 2vw, 1.22rem);
-  font-weight: 740;
+  font-size: clamp(0.92rem, 1.4vw, 1.04rem);
+  font-weight: 660;
   line-height: 1.25;
   overflow-wrap: anywhere;
 }
 
-.threadsRowCount {
+.threadsEditableName {
+  display: inline-block;
+  justify-self: start;
+  width: auto;
+  max-width: 100%;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  box-shadow: none;
+  cursor: text;
+}
+
+.threadsEditableName:hover {
+  background: transparent;
+}
+
+.threadsRowCount,
+.threadsRowCountButton {
   color: color-mix(in srgb, var(--muted) 82%, transparent);
   font-size: 0.72rem;
   font-weight: 650;
   white-space: nowrap;
+}
+
+.threadsRowCountButton {
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--text) 10%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+  box-shadow: none;
+}
+
+.threadsRowCountButton:hover {
+  border-color: color-mix(in srgb, var(--text) 18%, var(--border));
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  color: var(--text);
+}
+
+.threadsRowActions,
+.threadsInlineEditActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.threadsInlineEdit {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.threadsInlineEdit input {
+  min-width: 0;
+  width: 100%;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 44%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--page-solid) 72%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.94rem;
+  outline: none;
+}
+
+.threadsInlineEdit input:focus {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
+}
+
+.threadsAddThreadGroup {
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.threadsAddThreadRow .threadsRowName {
+  color: color-mix(in srgb, var(--accent) 62%, var(--muted));
+}
+
+.threadsAddThreadRow:hover .threadsRowName {
+  color: var(--text);
+}
+
+.threadsInlineAddThreadForm {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.threadsInlineAddThreadForm input {
+  min-width: 0;
+  width: 100%;
+  min-height: 36px;
+  padding: 0 11px;
+  border: 1px solid color-mix(in srgb, var(--accent) 44%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--page-solid) 72%, transparent);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.94rem;
+  outline: none;
+}
+
+.threadsInlineAddThreadForm input:focus {
+  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
+}
+
+.threadsTitleWarning {
+  margin: -4px 0 10px;
+  color: color-mix(in srgb, var(--warning, #f6c66f) 82%, var(--text));
+  font-size: 0.78rem;
 }
 
 .threadsThreadGroup {
@@ -11750,23 +11929,101 @@ select {
   background: color-mix(in srgb, var(--accent) 7%, transparent);
 }
 
-.threadsStrictConnector {
+.threadsTieButton {
   position: absolute;
-  left: -14px;
+  left: -30px;
+  z-index: 2;
+  width: 40px;
+  height: 48px;
+  display: block;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: color-mix(in srgb, var(--accent) 58%, transparent);
+  box-shadow: none;
+  transition: opacity 140ms ease, color 140ms ease;
+}
+
+.threadsTieButton.before {
+  top: -24px;
+}
+
+.threadsTieButton.after {
+  bottom: -24px;
+}
+
+.threadsTieButton.candidate {
+  opacity: 0;
+}
+
+.threadsTieButton.candidate:hover,
+.threadsTieButton.candidate:focus-visible {
+  opacity: 0.38;
+}
+
+.threadsTieButton.tied {
+  opacity: 1;
+}
+
+.threadsTieButton:hover,
+.threadsTieButton:focus-visible {
+  background: transparent;
+  color: color-mix(in srgb, var(--accent) 58%, transparent);
+}
+
+.threadsTieGlyph {
+  position: absolute;
+  top: 7px;
+  left: 16px;
   width: 8px;
-  border-left: 1px solid color-mix(in srgb, var(--accent) 58%, transparent);
+  height: 34px;
+  border-left: 1px solid currentColor;
+  border-top: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  opacity: 1;
+  pointer-events: none;
 }
 
-.threadsStrictConnector.before {
-  top: -1px;
-  height: 18px;
-  border-bottom: 1px solid color-mix(in srgb, var(--accent) 58%, transparent);
+.threadsTieButton.before .threadsTieGlyph {
+  top: 7px;
 }
 
-.threadsStrictConnector.after {
-  bottom: -1px;
-  height: 18px;
-  border-top: 1px solid color-mix(in srgb, var(--accent) 58%, transparent);
+.threadsTieButton.after .threadsTieGlyph {
+  top: 7px;
+}
+
+.threadsTieCut {
+  position: absolute;
+  top: 50%;
+  left: 1px;
+  width: 14px;
+  height: 14px;
+  display: grid;
+  place-items: center;
+  border: none;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--page-solid) 82%, transparent);
+  color: var(--error);
+  opacity: 0;
+  transform: translateY(-50%) scale(0.86);
+  transition: opacity 140ms ease, transform 140ms ease;
+  pointer-events: none;
+}
+
+.threadsTieCut svg {
+  width: 11px;
+  height: 11px;
+}
+
+.threadsTieButton.tied:hover .threadsTieCut,
+.threadsTieButton.tied:focus-visible .threadsTieCut {
+  opacity: 0.92;
+  transform: translateY(-50%) scale(1);
+}
+
+.threadsTieButton.candidate .threadsTieCut {
+  display: none;
 }
 
 .threadsBlockMain {
@@ -11796,6 +12053,15 @@ select {
   background: transparent;
 }
 
+.threadsBlockTextReadOnly {
+  min-width: 0;
+  color: color-mix(in srgb, var(--text) 90%, var(--muted));
+  font-size: 0.94rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .threadsBlockEditForm {
   min-width: 0;
   display: grid;
@@ -11820,7 +12086,7 @@ select {
 .threadsBlockEditActions,
 .threadsBlockReorder {
   display: grid;
-  gap: 6px;
+  gap: 8px;
   align-content: start;
 }
 
@@ -11848,6 +12114,16 @@ select {
   color: var(--text);
 }
 
+.threadsDeleteButton {
+  color: color-mix(in srgb, var(--error) 72%, var(--muted));
+}
+
+.threadsDeleteButton:hover {
+  border-color: color-mix(in srgb, var(--error) 28%, var(--border));
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 8%, transparent);
+}
+
 .threadsIconButton:disabled {
   cursor: default;
   opacity: 0.35;
@@ -11856,7 +12132,7 @@ select {
 .threadsBlockMeta {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
 }
 
 .threadsMetaButton {
@@ -11886,7 +12162,7 @@ select {
 .threadsCallbackLinks {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
 }
 
 .threadsCallbackChip {
@@ -11926,7 +12202,7 @@ select {
   white-space: nowrap;
 }
 
-.threadsCallbackChip button:last-child {
+.threadsCallbackChip button + button {
   width: 22px;
   display: inline-grid;
   place-items: center;
@@ -11940,6 +12216,20 @@ select {
 
 .threadsCallbackChip button:hover {
   color: var(--text);
+}
+
+.threadsDeleteImpactList {
+  margin: 0;
+  padding-left: 18px;
+  color: color-mix(in srgb, var(--text) 88%, var(--muted));
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.threadsDeleteWarning {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.78rem;
 }
 
 .threadsEmptyState,
@@ -12069,38 +12359,67 @@ select {
 
 @media (max-width: 640px) {
   .threadsPage {
-    gap: 24px;
-    padding: 24px 16px 40px;
+    padding: calc(var(--page-chrome-divider-offset) + 19px) 0 40px;
   }
 
+  .threadsTopBar,
   .threadsScreenHeader {
-    align-items: flex-start;
+    align-items: stretch;
     flex-wrap: wrap;
   }
 
+  .threadsTopBar {
+    right: 16px;
+  }
+
+  .threadsPageDivider {
+    left: calc(var(--sidebar-width) + 16px);
+    right: 16px;
+  }
+
+  .threadsTitleWarning,
+  .threadsList {
+    width: min(100%, calc(100% - 32px));
+  }
+
+  .threadsTopBarPrimary,
+  .threadsTopBarActions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
   .threadsTitleBlock {
-    flex-basis: calc(100% - 48px);
+    flex: 1 1 auto;
   }
 
   .threadsAddButton {
-    margin-left: 48px;
+    margin-left: 0;
   }
 
   .threadsRow {
-    min-height: 60px;
+    min-height: 58px;
+    grid-template-columns: minmax(0, 1fr) auto;
     gap: 12px;
     padding: 16px 0;
+  }
+
+  .threadsRowActions {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
   }
 
   .threadsAddBlockForm {
     grid-template-columns: 1fr;
   }
 
+  .threadsInlineEdit,
+  .threadsInlineAddThreadForm,
   .threadsBlockRow,
   .threadsBlockEditForm {
     grid-template-columns: 1fr;
   }
 
+  .threadsInlineEditActions,
   .threadsBlockReorder {
     display: flex;
   }

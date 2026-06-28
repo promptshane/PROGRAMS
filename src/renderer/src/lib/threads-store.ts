@@ -347,6 +347,39 @@ export const updateThread = (
   };
 };
 
+export const moveThreadInProject = (
+  state: ThreadsState,
+  threadId: string,
+  direction: MoveDirection,
+): ThreadsMutationResult => {
+  const thread = state.threads[threadId];
+  if (!thread) return mutationResult(state, "Thread not found.");
+
+  const projectThreadIds = state.threadOrder.filter((id) =>
+    state.threads[id]?.projectId === thread.projectId,
+  );
+  const currentIndex = projectThreadIds.indexOf(threadId);
+  if (currentIndex === -1) return mutationResult(state, "Thread not found.");
+
+  const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+  if (targetIndex < 0 || targetIndex >= projectThreadIds.length) {
+    return mutationResult(state, direction === "up" ? "Already at the top." : "Already at the bottom.");
+  }
+
+  const nextProjectThreadIds = [...projectThreadIds];
+  const [movedThreadId] = nextProjectThreadIds.splice(currentIndex, 1);
+  nextProjectThreadIds.splice(targetIndex, 0, movedThreadId);
+
+  let replacementIndex = 0;
+  const threadOrder = state.threadOrder.map((id) => {
+    const current = state.threads[id];
+    if (current?.projectId !== thread.projectId) return id;
+    return nextProjectThreadIds[replacementIndex++] ?? id;
+  });
+
+  return mutationResult({ ...state, threadOrder });
+};
+
 export const deleteThread = (
   state: ThreadsState,
   threadId: string,

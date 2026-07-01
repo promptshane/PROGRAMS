@@ -5,6 +5,7 @@ import {
 
 export type TiePosition = "before" | "after";
 export type MoveDirection = "up" | "down";
+export type LinearSegmentTier = "season" | "episode";
 
 export interface BlockStrictTies {
   before: string | null;
@@ -41,8 +42,87 @@ export interface CrossThreadLooseTie {
   targetBlockId: string;
 }
 
+export interface LinearSequence {
+  id: string;
+  projectId: string;
+  entryOrder: string[];
+}
+
+export type LinearSequenceEntry =
+  | {
+    id: string;
+    sequenceId: string;
+    type: "placement";
+    placementId: string;
+  }
+  | {
+    id: string;
+    sequenceId: string;
+    type: "blank";
+    note: string;
+  }
+  | {
+    id: string;
+    sequenceId: string;
+    type: "segment";
+    title: string;
+    tier?: LinearSegmentTier;
+  };
+
+export interface LinearOutlineNode {
+  kind: LinearSegmentTier;
+  entryId: string;
+  title: string;
+  startIndex: number;
+  endIndex: number;
+  parentEntryId: string | null;
+  episodes: LinearOutlineNode[];
+}
+
+export interface LinearOutlineEntryInfo {
+  depth: 0 | 1 | 2;
+  seasonEntryId: string | null;
+  episodeEntryId: string | null;
+}
+
+export interface LinearOutline {
+  nodes: LinearOutlineNode[];
+  entryInfo: LinearOutlineEntryInfo[];
+}
+
+export type ScriptElementType =
+  | "scene_heading"
+  | "action"
+  | "character"
+  | "dialogue"
+  | "parenthetical"
+  | "transition";
+
+export const SCRIPT_ELEMENT_TYPES: ScriptElementType[] = [
+  "scene_heading",
+  "action",
+  "character",
+  "dialogue",
+  "parenthetical",
+  "transition",
+];
+
+export interface ScriptElement {
+  id: string;
+  documentId: string;
+  type: ScriptElementType;
+  text: string;
+  linkedEntryId?: string;
+}
+
+export interface ScriptDocument {
+  id: string;
+  projectId: string;
+  elementOrder: string[];
+}
+
 export interface ThreadsState {
-  version: 4;
+  version: 5;
   projects: Record<string, Project>;
   projectOrder: string[];
   threads: Record<string, Thread>;
@@ -53,6 +133,12 @@ export interface ThreadsState {
   blockPlacementOrder: string[];
   crossThreadLooseTies: Record<string, CrossThreadLooseTie>;
   crossThreadLooseTieOrder: string[];
+  linearSequences: Record<string, LinearSequence>;
+  linearSequenceOrder: string[];
+  linearSequenceEntries: Record<string, LinearSequenceEntry>;
+  scriptDocuments: Record<string, ScriptDocument>;
+  scriptDocumentOrder: string[];
+  scriptElements: Record<string, ScriptElement>;
 }
 
 export interface ThreadBlockOrder {
@@ -72,7 +158,8 @@ interface LegacyBlock {
   strictTies: BlockStrictTies;
 }
 
-export const THREADS_STORAGE_KEY = "programs.threads.v4";
+export const THREADS_STORAGE_KEY = "programs.threads.v5";
+export const LEGACY_THREADS_V4_STORAGE_KEY = "programs.threads.v4";
 export const LEGACY_THREADS_V3_STORAGE_KEY = "programs.threads.v3";
 export const LEGACY_THREADS_V2_STORAGE_KEY = "programs.threads.v2";
 export const LEGACY_THREADS_STORAGE_KEY = "programs.threads.v1";
@@ -81,7 +168,7 @@ export const LEGACY_THREADS_SOURCE_GLOBAL_STORAGE_KEY = "programs.systems-syntax
 export const IMPORTED_LEGACY_PROJECT_ID = "imported-syntax";
 
 export const createEmptyThreadsState = (): ThreadsState => ({
-  version: 4,
+  version: 5,
   projects: {},
   projectOrder: [],
   threads: {},
@@ -92,6 +179,12 @@ export const createEmptyThreadsState = (): ThreadsState => ({
   blockPlacementOrder: [],
   crossThreadLooseTies: {},
   crossThreadLooseTieOrder: [],
+  linearSequences: {},
+  linearSequenceOrder: [],
+  linearSequenceEntries: {},
+  scriptDocuments: {},
+  scriptDocumentOrder: [],
+  scriptElements: {},
 });
 
 const uniqueExistingIds = (
@@ -117,6 +210,236 @@ const mutationResult = (
   error: string | null = null,
 ): ThreadsMutationResult => ({ state, error });
 
+const createLinearSequenceId = (
+  projectId: string,
+  existingIds: Set<string> = new Set(),
+): string => {
+  const baseId = `linear-${projectId}`;
+  if (!existingIds.has(baseId)) return baseId;
+  let index = 2;
+  while (existingIds.has(`${baseId}-${index}`)) index += 1;
+  return `${baseId}-${index}`;
+};
+
+const normalizeLinearData = (
+  projects: Record<string, Project>,
+  projectOrder: string[],
+  threads: Record<string, Thread>,
+  blockPlacements: Record<string, BlockPlacement>,
+  rawSequences: Record<string, LinearSequence> = {},
+  sequenceOrderInput: unknown = [],
+  rawEntries: Record<string, LinearSequenceEntry> = {},
+): Pick<ThreadsState, "linearSequences" | "linearSequenceOrder" | "linearSequenceEntries"> => {
+  const sourceSequenceOrder = uniqueExistingIds(
+    sequenceOrderInput,
+    (id) => Boolean(rawSequences[id]),
+  );
+  for (const sequenceId of Object.keys(rawSequences)) {
+    if (!sourceSequenceOrder.includes(sequenceId)) sourceSequenceOrder.push(sequenceId);
+  }
+
+  const sequencesByProject = new Map<string, LinearSequence>();
+  const sequenceIds = new Set<string>();
+  for (const sequenceId of sourceSequenceOrder) {
+    const sequence = rawSequences[sequenceId];
+    if (
+      !sequence
+      || sequence.id !== sequenceId
+      || typeof sequence.projectId !== "string"
+      || !projects[sequence.projectId]
+      || sequencesByProject.has(sequence.projectId)
+    ) {
+      continue;
+    }
+    const entryOrder = uniqueExistingIds(
+      sequence.entryOrder,
+      (entryId) => Boolean(rawEntries[entryId]),
+    );
+    for (const entryId of Object.keys(rawEntries)) {
+      if (rawEntries[entryId]?.sequenceId === sequenceId && !entryOrder.includes(entryId)) {
+        entryOrder.push(entryId);
+      }
+    }
+    const normalizedSequence = { ...sequence, entryOrder };
+    sequencesByProject.set(sequence.projectId, normalizedSequence);
+    sequenceIds.add(sequenceId);
+  }
+
+  for (const projectId of projectOrder) {
+    if (!projects[projectId] || sequencesByProject.has(projectId)) continue;
+    const sequenceId = createLinearSequenceId(projectId, sequenceIds);
+    sequenceIds.add(sequenceId);
+    sequencesByProject.set(projectId, {
+      id: sequenceId,
+      projectId,
+      entryOrder: [],
+    });
+  }
+
+  const linearSequences: Record<string, LinearSequence> = {};
+  const linearSequenceEntries: Record<string, LinearSequenceEntry> = {};
+  const linearSequenceOrder: string[] = [];
+
+  for (const projectId of projectOrder) {
+    const sequence = sequencesByProject.get(projectId);
+    if (!sequence) continue;
+    const seenPlacementIds = new Set<string>();
+    const entryOrder: string[] = [];
+    for (const entryId of sequence.entryOrder) {
+      const entry = rawEntries[entryId];
+      if (!entry || entry.id !== entryId || entry.sequenceId !== sequence.id) continue;
+      if (entry.type === "placement") {
+        const placement = blockPlacements[entry.placementId];
+        const thread = placement ? threads[placement.threadId] : null;
+        if (!placement || !thread || thread.projectId !== projectId) continue;
+        if (seenPlacementIds.has(entry.placementId)) continue;
+        seenPlacementIds.add(entry.placementId);
+        linearSequenceEntries[entryId] = entry;
+        entryOrder.push(entryId);
+      } else if (entry.type === "blank") {
+        linearSequenceEntries[entryId] = {
+          ...entry,
+          note: entry.note.trim(),
+        };
+        entryOrder.push(entryId);
+      } else if (entry.type === "segment") {
+        const title = entry.title.trim();
+        if (!title) continue;
+        linearSequenceEntries[entryId] = {
+          ...entry,
+          title,
+          tier: entry.tier === "season" || entry.tier === "episode" ? entry.tier : undefined,
+        };
+        entryOrder.push(entryId);
+      }
+    }
+    linearSequences[sequence.id] = { ...sequence, entryOrder };
+    linearSequenceOrder.push(sequence.id);
+  }
+
+  return { linearSequences, linearSequenceOrder, linearSequenceEntries };
+};
+
+const pruneLinearData = (
+  state: ThreadsState,
+): Pick<ThreadsState, "linearSequences" | "linearSequenceOrder" | "linearSequenceEntries"> =>
+  normalizeLinearData(
+    state.projects,
+    state.projectOrder,
+    state.threads,
+    state.blockPlacements,
+    state.linearSequences,
+    state.linearSequenceOrder,
+    state.linearSequenceEntries,
+  );
+
+const createScriptDocumentId = (
+  projectId: string,
+  existingIds: Set<string> = new Set(),
+): string => {
+  const baseId = `script-${projectId}`;
+  if (!existingIds.has(baseId)) return baseId;
+  let index = 2;
+  while (existingIds.has(`${baseId}-${index}`)) index += 1;
+  return `${baseId}-${index}`;
+};
+
+const normalizeScriptData = (
+  projects: Record<string, Project>,
+  projectOrder: string[],
+  linearSequenceEntries: Record<string, LinearSequenceEntry>,
+  rawDocuments: Record<string, ScriptDocument> = {},
+  documentOrderInput: unknown = [],
+  rawElements: Record<string, ScriptElement> = {},
+): Pick<ThreadsState, "scriptDocuments" | "scriptDocumentOrder" | "scriptElements"> => {
+  const sourceDocumentOrder = uniqueExistingIds(
+    documentOrderInput,
+    (id) => Boolean(rawDocuments[id]),
+  );
+  for (const documentId of Object.keys(rawDocuments)) {
+    if (!sourceDocumentOrder.includes(documentId)) sourceDocumentOrder.push(documentId);
+  }
+
+  const documentsByProject = new Map<string, ScriptDocument>();
+  const documentIds = new Set<string>();
+  for (const documentId of sourceDocumentOrder) {
+    const doc = rawDocuments[documentId];
+    if (
+      !doc
+      || doc.id !== documentId
+      || typeof doc.projectId !== "string"
+      || !projects[doc.projectId]
+      || documentsByProject.has(doc.projectId)
+    ) {
+      continue;
+    }
+    const elementOrder = uniqueExistingIds(
+      doc.elementOrder,
+      (elementId) => Boolean(rawElements[elementId]),
+    );
+    for (const elementId of Object.keys(rawElements)) {
+      if (rawElements[elementId]?.documentId === documentId && !elementOrder.includes(elementId)) {
+        elementOrder.push(elementId);
+      }
+    }
+    documentsByProject.set(doc.projectId, { ...doc, elementOrder });
+    documentIds.add(documentId);
+  }
+
+  for (const projectId of projectOrder) {
+    if (!projects[projectId] || documentsByProject.has(projectId)) continue;
+    const documentId = createScriptDocumentId(projectId, documentIds);
+    documentIds.add(documentId);
+    documentsByProject.set(projectId, { id: documentId, projectId, elementOrder: [] });
+  }
+
+  const scriptDocuments: Record<string, ScriptDocument> = {};
+  const scriptElements: Record<string, ScriptElement> = {};
+  const scriptDocumentOrder: string[] = [];
+
+  for (const projectId of projectOrder) {
+    const doc = documentsByProject.get(projectId);
+    if (!doc) continue;
+    const elementOrder: string[] = [];
+    for (const elementId of doc.elementOrder) {
+      const element = rawElements[elementId];
+      if (!element || element.id !== elementId || element.documentId !== doc.id) continue;
+      const linkedEntryId =
+        element.linkedEntryId && linearSequenceEntries[element.linkedEntryId]
+          ? element.linkedEntryId
+          : undefined;
+      scriptElements[elementId] = { ...element, text: element.text.trim(), linkedEntryId };
+      elementOrder.push(elementId);
+    }
+    scriptDocuments[doc.id] = { ...doc, elementOrder };
+    scriptDocumentOrder.push(doc.id);
+  }
+
+  return { scriptDocuments, scriptDocumentOrder, scriptElements };
+};
+
+const pruneScriptData = (
+  state: ThreadsState,
+): Pick<ThreadsState, "scriptDocuments" | "scriptDocumentOrder" | "scriptElements"> =>
+  normalizeScriptData(
+    state.projects,
+    state.projectOrder,
+    state.linearSequenceEntries,
+    state.scriptDocuments,
+    state.scriptDocumentOrder,
+    state.scriptElements,
+  );
+
+const getProjectLinearSequence = (
+  state: ThreadsState,
+  projectId: string,
+): LinearSequence | null => {
+  const sequenceId = state.linearSequenceOrder.find(
+    (id) => state.linearSequences[id]?.projectId === projectId,
+  );
+  return sequenceId ? state.linearSequences[sequenceId] ?? null : null;
+};
+
 const copyPlacementWithStrictTie = (
   blockPlacements: Record<string, BlockPlacement>,
   placementId: string,
@@ -140,6 +463,7 @@ const copyPlacementWithStrictTie = (
 const removeBlockPlacements = (
   state: ThreadsState,
   deletedPlacementIds: Set<string>,
+  deletedProjectIds: Set<string> = new Set(),
 ): Pick<
   ThreadsState,
   "blocks"
@@ -148,6 +472,12 @@ const removeBlockPlacements = (
   | "blockPlacementOrder"
   | "crossThreadLooseTies"
   | "crossThreadLooseTieOrder"
+  | "linearSequences"
+  | "linearSequenceOrder"
+  | "linearSequenceEntries"
+  | "scriptDocuments"
+  | "scriptDocumentOrder"
+  | "scriptElements"
 > => {
   const blockPlacements: Record<string, BlockPlacement> = {};
   for (const [placementId, placement] of Object.entries(state.blockPlacements)) {
@@ -184,7 +514,11 @@ const removeBlockPlacements = (
     crossThreadLooseTies[tieId] = tie;
   }
 
-  return {
+  const nextState = {
+    ...state,
+    projects: Object.fromEntries(
+      Object.entries(state.projects).filter(([projectId]) => !deletedProjectIds.has(projectId)),
+    ),
     blocks,
     blockOrder: state.blockOrder.filter((id) => Boolean(blocks[id])),
     blockPlacements,
@@ -193,6 +527,20 @@ const removeBlockPlacements = (
     crossThreadLooseTieOrder: state.crossThreadLooseTieOrder.filter((id) =>
       Boolean(crossThreadLooseTies[id]),
     ),
+  };
+
+  const linearPruned = pruneLinearData(nextState);
+  const stateForScriptPrune = { ...nextState, ...linearPruned };
+
+  return {
+    blocks: nextState.blocks,
+    blockOrder: nextState.blockOrder,
+    blockPlacements: nextState.blockPlacements,
+    blockPlacementOrder: nextState.blockPlacementOrder,
+    crossThreadLooseTies: nextState.crossThreadLooseTies,
+    crossThreadLooseTieOrder: nextState.crossThreadLooseTieOrder,
+    ...linearPruned,
+    ...pruneScriptData(stateForScriptPrune),
   };
 };
 
@@ -273,6 +621,8 @@ export const createProject = (
   if (!trimmedName || !id || state.projects[id] || !isCreativeCategoryId(categoryId)) {
     return state;
   }
+  const sequenceId = createLinearSequenceId(id, new Set(Object.keys(state.linearSequences)));
+  const scriptDocumentId = createScriptDocumentId(id, new Set(Object.keys(state.scriptDocuments)));
   return {
     ...state,
     projects: {
@@ -280,6 +630,16 @@ export const createProject = (
       [id]: { id, name: trimmedName, categoryId },
     },
     projectOrder: [...state.projectOrder, id],
+    linearSequences: {
+      ...state.linearSequences,
+      [sequenceId]: { id: sequenceId, projectId: id, entryOrder: [] },
+    },
+    linearSequenceOrder: [...state.linearSequenceOrder, sequenceId],
+    scriptDocuments: {
+      ...state.scriptDocuments,
+      [scriptDocumentId]: { id: scriptDocumentId, projectId: id, elementOrder: [] },
+    },
+    scriptDocumentOrder: [...state.scriptDocumentOrder, scriptDocumentId],
   };
 };
 
@@ -338,7 +698,7 @@ export const deleteProject = (
     projectOrder: state.projectOrder.filter((id) => id !== projectId),
     threads,
     threadOrder: state.threadOrder.filter((id) => !deletedThreadIds.has(id)),
-    ...removeBlockPlacements(state, deletedPlacementIds),
+    ...removeBlockPlacements(state, deletedPlacementIds, new Set([projectId])),
   };
 };
 
@@ -373,7 +733,7 @@ export const updateThread = (
   const nextProjectId = updates.projectId ?? thread.projectId;
   if (!nextName || !state.projects[nextProjectId]) return state;
   if (nextName === thread.name && nextProjectId === thread.projectId) return state;
-  return {
+  const nextState = {
     ...state,
     threads: {
       ...state.threads,
@@ -384,6 +744,9 @@ export const updateThread = (
       },
     },
   };
+  if (nextProjectId === thread.projectId) return nextState;
+  const withLinearPruned = { ...nextState, ...pruneLinearData(nextState) };
+  return { ...withLinearPruned, ...pruneScriptData(withLinearPruned) };
 };
 
 export const moveThreadInProject = (
@@ -820,6 +1183,522 @@ export const getThreadDisplayBlockIds = (
   threadId: string,
 ): string[] => getThreadBlockIds(state, threadId);
 
+export const getProjectLinearSequenceEntries = (
+  state: ThreadsState,
+  projectId: string,
+): LinearSequenceEntry[] => {
+  const sequence = getProjectLinearSequence(state, projectId);
+  if (!sequence) return [];
+  return sequence.entryOrder
+    .map((entryId) => state.linearSequenceEntries[entryId])
+    .filter((entry): entry is LinearSequenceEntry => Boolean(entry));
+};
+
+export const deriveLinearOutline = (entries: LinearSequenceEntry[]): LinearOutline => {
+  const nodes: LinearOutlineNode[] = [];
+  const entryInfo: LinearOutlineEntryInfo[] = new Array(entries.length);
+  let currentSeason: LinearOutlineNode | null = null;
+  let currentEpisode: LinearOutlineNode | null = null;
+
+  const closeEpisode = (uptoIndex: number) => {
+    if (currentEpisode) currentEpisode.endIndex = uptoIndex;
+    currentEpisode = null;
+  };
+  const closeSeason = (uptoIndex: number) => {
+    closeEpisode(uptoIndex);
+    if (currentSeason) currentSeason.endIndex = uptoIndex;
+    currentSeason = null;
+  };
+
+  entries.forEach((entry, index) => {
+    if (entry.type === "segment" && entry.tier === "season") {
+      closeSeason(index - 1);
+      const node: LinearOutlineNode = {
+        kind: "season",
+        entryId: entry.id,
+        title: entry.title,
+        startIndex: index,
+        endIndex: index,
+        parentEntryId: null,
+        episodes: [],
+      };
+      nodes.push(node);
+      currentSeason = node;
+      entryInfo[index] = { depth: 0, seasonEntryId: null, episodeEntryId: null };
+      return;
+    }
+    if (entry.type === "segment" && entry.tier === "episode") {
+      closeEpisode(index - 1);
+      const node: LinearOutlineNode = {
+        kind: "episode",
+        entryId: entry.id,
+        title: entry.title,
+        startIndex: index,
+        endIndex: index,
+        parentEntryId: currentSeason ? currentSeason.entryId : null,
+        episodes: [],
+      };
+      if (currentSeason) {
+        currentSeason.episodes.push(node);
+        entryInfo[index] = { depth: 1, seasonEntryId: currentSeason.entryId, episodeEntryId: null };
+      } else {
+        nodes.push(node);
+        entryInfo[index] = { depth: 0, seasonEntryId: null, episodeEntryId: null };
+      }
+      currentEpisode = node;
+      return;
+    }
+    if (currentEpisode) {
+      entryInfo[index] = {
+        depth: currentSeason ? 2 : 1,
+        seasonEntryId: currentSeason ? currentSeason.entryId : null,
+        episodeEntryId: currentEpisode.entryId,
+      };
+    } else if (currentSeason) {
+      entryInfo[index] = { depth: 1, seasonEntryId: currentSeason.entryId, episodeEntryId: null };
+    } else {
+      entryInfo[index] = { depth: 0, seasonEntryId: null, episodeEntryId: null };
+    }
+  });
+  closeSeason(entries.length - 1);
+  return { nodes, entryInfo };
+};
+
+export const getLinearOutline = (
+  state: ThreadsState,
+  projectId: string,
+): LinearOutline => deriveLinearOutline(getProjectLinearSequenceEntries(state, projectId));
+
+export const isLinearEntryCollapsed = (
+  outline: LinearOutline,
+  index: number,
+  collapsedEntryIds: ReadonlySet<string>,
+): boolean => {
+  const info = outline.entryInfo[index];
+  if (!info) return false;
+  return (
+    (info.seasonEntryId !== null && collapsedEntryIds.has(info.seasonEntryId))
+    || (info.episodeEntryId !== null && collapsedEntryIds.has(info.episodeEntryId))
+  );
+};
+
+export const addLinearBlockPlacementEntry = (
+  state: ThreadsState,
+  projectId: string,
+  placementId: string,
+  entryId: string,
+): ThreadsMutationResult => {
+  if (!state.projects[projectId]) return mutationResult(state, "Project not found.");
+  const sequence = getProjectLinearSequence(state, projectId);
+  if (!sequence) return mutationResult(state, "Linear Sequence not found.");
+  const placement = state.blockPlacements[placementId];
+  const thread = placement ? state.threads[placement.threadId] : null;
+  if (!placement || !thread || thread.projectId !== projectId) {
+    return mutationResult(state, "Choose a Block from this Project.");
+  }
+  if (!entryId || state.linearSequenceEntries[entryId]) {
+    return mutationResult(state, "Could not add Block to Linear View.");
+  }
+  const duplicate = sequence.entryOrder.some((existingEntryId) => {
+    const entry = state.linearSequenceEntries[existingEntryId];
+    return entry?.type === "placement" && entry.placementId === placementId;
+  });
+  if (duplicate) {
+    return mutationResult(state, "That Block placement is already in Linear View.");
+  }
+  return mutationResult({
+    ...state,
+    linearSequences: {
+      ...state.linearSequences,
+      [sequence.id]: {
+        ...sequence,
+        entryOrder: [...sequence.entryOrder, entryId],
+      },
+    },
+    linearSequenceEntries: {
+      ...state.linearSequenceEntries,
+      [entryId]: {
+        id: entryId,
+        sequenceId: sequence.id,
+        type: "placement",
+        placementId,
+      },
+    },
+  });
+};
+
+export const addLinearBlankEntry = (
+  state: ThreadsState,
+  projectId: string,
+  note: string,
+  entryId: string,
+): ThreadsMutationResult => {
+  if (!state.projects[projectId]) return mutationResult(state, "Project not found.");
+  const sequence = getProjectLinearSequence(state, projectId);
+  if (!sequence) return mutationResult(state, "Linear Sequence not found.");
+  if (!entryId || state.linearSequenceEntries[entryId]) {
+    return mutationResult(state, "Could not add Blank to Linear View.");
+  }
+  return mutationResult({
+    ...state,
+    linearSequences: {
+      ...state.linearSequences,
+      [sequence.id]: {
+        ...sequence,
+        entryOrder: [...sequence.entryOrder, entryId],
+      },
+    },
+    linearSequenceEntries: {
+      ...state.linearSequenceEntries,
+      [entryId]: {
+        id: entryId,
+        sequenceId: sequence.id,
+        type: "blank",
+        note: note.trim(),
+      },
+    },
+  });
+};
+
+export const addLinearSegmentEntry = (
+  state: ThreadsState,
+  projectId: string,
+  title: string,
+  entryId: string,
+  tier?: LinearSegmentTier,
+): ThreadsMutationResult => {
+  if (!state.projects[projectId]) return mutationResult(state, "Project not found.");
+  const sequence = getProjectLinearSequence(state, projectId);
+  if (!sequence) return mutationResult(state, "Linear Sequence not found.");
+  const trimmedTitle = title.trim();
+  if (!trimmedTitle) return mutationResult(state, "Segment title cannot be empty.");
+  if (!entryId || state.linearSequenceEntries[entryId]) {
+    return mutationResult(state, "Could not add Segment to Linear View.");
+  }
+  return mutationResult({
+    ...state,
+    linearSequences: {
+      ...state.linearSequences,
+      [sequence.id]: {
+        ...sequence,
+        entryOrder: [...sequence.entryOrder, entryId],
+      },
+    },
+    linearSequenceEntries: {
+      ...state.linearSequenceEntries,
+      [entryId]: {
+        id: entryId,
+        sequenceId: sequence.id,
+        type: "segment",
+        title: trimmedTitle,
+        tier,
+      },
+    },
+  });
+};
+
+export const updateLinearBlankEntryNote = (
+  state: ThreadsState,
+  entryId: string,
+  note: string,
+): ThreadsState => {
+  const entry = state.linearSequenceEntries[entryId];
+  if (!entry || entry.type !== "blank") return state;
+  const nextNote = note.trim();
+  if (entry.note === nextNote) return state;
+  return {
+    ...state,
+    linearSequenceEntries: {
+      ...state.linearSequenceEntries,
+      [entryId]: { ...entry, note: nextNote },
+    },
+  };
+};
+
+export const updateLinearSegmentEntryTitle = (
+  state: ThreadsState,
+  entryId: string,
+  title: string,
+): ThreadsState => {
+  const entry = state.linearSequenceEntries[entryId];
+  if (!entry || entry.type !== "segment") return state;
+  const nextTitle = title.trim();
+  if (!nextTitle || entry.title === nextTitle) return state;
+  return {
+    ...state,
+    linearSequenceEntries: {
+      ...state.linearSequenceEntries,
+      [entryId]: { ...entry, title: nextTitle },
+    },
+  };
+};
+
+export const updateLinearSegmentEntryTier = (
+  state: ThreadsState,
+  entryId: string,
+  tier: LinearSegmentTier | null,
+): ThreadsState => {
+  const entry = state.linearSequenceEntries[entryId];
+  if (!entry || entry.type !== "segment") return state;
+  const nextTier = tier ?? undefined;
+  if ((entry.tier ?? undefined) === nextTier) return state;
+  return {
+    ...state,
+    linearSequenceEntries: {
+      ...state.linearSequenceEntries,
+      [entryId]: { ...entry, tier: nextTier },
+    },
+  };
+};
+
+export const moveLinearEntry = (
+  state: ThreadsState,
+  entryId: string,
+  direction: MoveDirection,
+): ThreadsMutationResult => {
+  const entry = state.linearSequenceEntries[entryId];
+  const sequence = entry ? state.linearSequences[entry.sequenceId] : null;
+  if (!entry || !sequence) return mutationResult(state, "Linear entry not found.");
+  const currentIndex = sequence.entryOrder.indexOf(entryId);
+  if (currentIndex === -1) return mutationResult(state, "Linear entry not found.");
+  const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+  if (targetIndex < 0 || targetIndex >= sequence.entryOrder.length) {
+    return mutationResult(state, direction === "up" ? "Already at the top." : "Already at the bottom.");
+  }
+  const entryOrder = [...sequence.entryOrder];
+  const [movedEntryId] = entryOrder.splice(currentIndex, 1);
+  entryOrder.splice(targetIndex, 0, movedEntryId);
+  return mutationResult({
+    ...state,
+    linearSequences: {
+      ...state.linearSequences,
+      [sequence.id]: { ...sequence, entryOrder },
+    },
+  });
+};
+
+export const removeLinearEntry = (
+  state: ThreadsState,
+  entryId: string,
+): ThreadsState => {
+  const entry = state.linearSequenceEntries[entryId];
+  const sequence = entry ? state.linearSequences[entry.sequenceId] : null;
+  if (!entry || !sequence) return state;
+  const linearSequenceEntries = { ...state.linearSequenceEntries };
+  delete linearSequenceEntries[entryId];
+  const scriptElements = { ...state.scriptElements };
+  for (const [elementId, element] of Object.entries(scriptElements)) {
+    if (element.linkedEntryId === entryId) {
+      scriptElements[elementId] = { ...element, linkedEntryId: undefined };
+    }
+  }
+  return {
+    ...state,
+    linearSequences: {
+      ...state.linearSequences,
+      [sequence.id]: {
+        ...sequence,
+        entryOrder: sequence.entryOrder.filter((id) => id !== entryId),
+      },
+    },
+    linearSequenceEntries,
+    scriptElements,
+  };
+};
+
+const getProjectScriptDocument = (
+  state: ThreadsState,
+  projectId: string,
+): ScriptDocument | null =>
+  Object.values(state.scriptDocuments).find((doc) => doc.projectId === projectId) ?? null;
+
+export const getProjectScriptElements = (
+  state: ThreadsState,
+  projectId: string,
+): ScriptElement[] => {
+  const doc = getProjectScriptDocument(state, projectId);
+  if (!doc) return [];
+  return doc.elementOrder
+    .map((id) => state.scriptElements[id])
+    .filter((element): element is ScriptElement => Boolean(element));
+};
+
+export const addScriptElement = (
+  state: ThreadsState,
+  projectId: string,
+  type: ScriptElementType,
+  text: string,
+  elementId: string,
+  afterElementId?: string,
+): ThreadsMutationResult => {
+  if (!state.projects[projectId]) return mutationResult(state, "Project not found.");
+  const doc = getProjectScriptDocument(state, projectId);
+  if (!doc) return mutationResult(state, "Script not found.");
+  if (!elementId || state.scriptElements[elementId]) {
+    return mutationResult(state, "Could not add to Script.");
+  }
+  const elementOrder = [...doc.elementOrder];
+  if (afterElementId) {
+    const index = elementOrder.indexOf(afterElementId);
+    if (index === -1) return mutationResult(state, "Script element not found.");
+    elementOrder.splice(index + 1, 0, elementId);
+  } else {
+    elementOrder.push(elementId);
+  }
+  return mutationResult({
+    ...state,
+    scriptDocuments: {
+      ...state.scriptDocuments,
+      [doc.id]: { ...doc, elementOrder },
+    },
+    scriptElements: {
+      ...state.scriptElements,
+      [elementId]: { id: elementId, documentId: doc.id, type, text, linkedEntryId: undefined },
+    },
+  });
+};
+
+export const updateScriptElementText = (
+  state: ThreadsState,
+  elementId: string,
+  text: string,
+): ThreadsState => {
+  const element = state.scriptElements[elementId];
+  if (!element || element.text === text) return state;
+  return {
+    ...state,
+    scriptElements: {
+      ...state.scriptElements,
+      [elementId]: { ...element, text },
+    },
+  };
+};
+
+export const updateScriptElementType = (
+  state: ThreadsState,
+  elementId: string,
+  type: ScriptElementType,
+): ThreadsState => {
+  const element = state.scriptElements[elementId];
+  if (!element || element.type === type) return state;
+  return {
+    ...state,
+    scriptElements: {
+      ...state.scriptElements,
+      [elementId]: { ...element, type },
+    },
+  };
+};
+
+export const moveScriptElement = (
+  state: ThreadsState,
+  elementId: string,
+  direction: MoveDirection,
+): ThreadsMutationResult => {
+  const element = state.scriptElements[elementId];
+  const doc = element ? state.scriptDocuments[element.documentId] : null;
+  if (!element || !doc) return mutationResult(state, "Script element not found.");
+  const currentIndex = doc.elementOrder.indexOf(elementId);
+  if (currentIndex === -1) return mutationResult(state, "Script element not found.");
+  const targetIndex = direction === "up" ? currentIndex - 1 : currentIndex + 1;
+  if (targetIndex < 0 || targetIndex >= doc.elementOrder.length) {
+    return mutationResult(state, direction === "up" ? "Already at the top." : "Already at the bottom.");
+  }
+  const elementOrder = [...doc.elementOrder];
+  const [movedElementId] = elementOrder.splice(currentIndex, 1);
+  elementOrder.splice(targetIndex, 0, movedElementId);
+  return mutationResult({
+    ...state,
+    scriptDocuments: {
+      ...state.scriptDocuments,
+      [doc.id]: { ...doc, elementOrder },
+    },
+  });
+};
+
+export const removeScriptElement = (
+  state: ThreadsState,
+  elementId: string,
+): ThreadsState => {
+  const element = state.scriptElements[elementId];
+  const doc = element ? state.scriptDocuments[element.documentId] : null;
+  if (!element || !doc) return state;
+  const scriptElements = { ...state.scriptElements };
+  delete scriptElements[elementId];
+  return {
+    ...state,
+    scriptDocuments: {
+      ...state.scriptDocuments,
+      [doc.id]: {
+        ...doc,
+        elementOrder: doc.elementOrder.filter((id) => id !== elementId),
+      },
+    },
+    scriptElements,
+  };
+};
+
+export const linkScriptElementToEntry = (
+  state: ThreadsState,
+  elementId: string,
+  entryId: string,
+): ThreadsMutationResult => {
+  const element = state.scriptElements[elementId];
+  if (!element) return mutationResult(state, "Script element not found.");
+  const doc = state.scriptDocuments[element.documentId];
+  const entry = state.linearSequenceEntries[entryId];
+  const sequence = entry ? state.linearSequences[entry.sequenceId] : null;
+  if (!doc || !entry || !sequence || sequence.projectId !== doc.projectId) {
+    return mutationResult(state, "Choose a Linear View entry from this Project.");
+  }
+  return mutationResult({
+    ...state,
+    scriptElements: {
+      ...state.scriptElements,
+      [elementId]: { ...element, linkedEntryId: entryId },
+    },
+  });
+};
+
+export const unlinkScriptElement = (
+  state: ThreadsState,
+  elementId: string,
+): ThreadsState => {
+  const element = state.scriptElements[elementId];
+  if (!element || !element.linkedEntryId) return state;
+  return {
+    ...state,
+    scriptElements: {
+      ...state.scriptElements,
+      [elementId]: { ...element, linkedEntryId: undefined },
+    },
+  };
+};
+
+export const createBlockFromScriptElement = (
+  state: ThreadsState,
+  elementId: string,
+  threadId: string,
+  blockId: string,
+  placementId: string,
+  linearEntryId: string,
+): ThreadsMutationResult => {
+  const element = state.scriptElements[elementId];
+  if (!element) return mutationResult(state, "Script element not found.");
+  const doc = state.scriptDocuments[element.documentId];
+  const thread = doc ? state.threads[threadId] : null;
+  if (!doc || !thread || thread.projectId !== doc.projectId) {
+    return mutationResult(state, "Choose a Thread from this Project.");
+  }
+  const trimmedText = element.text.trim();
+  if (!trimmedText) return mutationResult(state, "Script text is empty.");
+  const withBlock = createBlock(state, threadId, trimmedText, blockId, placementId);
+  if (withBlock === state) return mutationResult(state, "Could not create Block.");
+  const withLinearEntry = addLinearBlockPlacementEntry(withBlock, doc.projectId, placementId, linearEntryId);
+  if (withLinearEntry.error) return withLinearEntry;
+  return linkScriptElementToEntry(withLinearEntry.state, elementId, linearEntryId);
+};
+
 const applyValidStrictTies = (
   state: ThreadsState,
   rawPlacements: Record<string, BlockPlacement>,
@@ -859,6 +1738,12 @@ const normalizeThreadsState = (
   placementOrderInput: unknown,
   rawCrossThreadLooseTies: Record<string, CrossThreadLooseTie> = {},
   crossThreadLooseTieOrderInput: unknown = [],
+  rawLinearSequences: Record<string, LinearSequence> = {},
+  linearSequenceOrderInput: unknown = [],
+  rawLinearSequenceEntries: Record<string, LinearSequenceEntry> = {},
+  rawScriptDocuments: Record<string, ScriptDocument> = {},
+  scriptDocumentOrderInput: unknown = [],
+  rawScriptElements: Record<string, ScriptElement> = {},
 ): ThreadsState => {
   const projectOrder = uniqueExistingIds(projectOrderInput, (id) => Boolean(projects[id]));
   for (const projectId of Object.keys(projects)) {
@@ -936,9 +1821,9 @@ const normalizeThreadsState = (
     }
   }
 
-  return applyValidStrictTies(
+  const stateWithStrictTies = applyValidStrictTies(
     {
-      version: 4,
+      version: 5,
       projects,
       projectOrder,
       threads,
@@ -949,9 +1834,38 @@ const normalizeThreadsState = (
       blockPlacementOrder,
       crossThreadLooseTies,
       crossThreadLooseTieOrder,
+      linearSequences: {},
+      linearSequenceOrder: [],
+      linearSequenceEntries: {},
+      scriptDocuments: {},
+      scriptDocumentOrder: [],
+      scriptElements: {},
     },
     rawPlacements,
   );
+
+  const linearData = normalizeLinearData(
+    projects,
+    projectOrder,
+    threads,
+    stateWithStrictTies.blockPlacements,
+    rawLinearSequences,
+    linearSequenceOrderInput,
+    rawLinearSequenceEntries,
+  );
+
+  return {
+    ...stateWithStrictTies,
+    ...linearData,
+    ...normalizeScriptData(
+      projects,
+      projectOrder,
+      linearData.linearSequenceEntries,
+      rawScriptDocuments,
+      scriptDocumentOrderInput,
+      rawScriptElements,
+    ),
+  };
 };
 
 const normalizeLegacyThreadsState = (
@@ -1141,6 +2055,126 @@ const parseCrossThreadLooseTieRecord = (
   };
 };
 
+const parseLinearSequenceRecord = (
+  value: unknown,
+  id: string,
+  projects: Record<string, Project>,
+): LinearSequence | null => {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<LinearSequence>;
+  if (
+    candidate.id !== id
+    || typeof candidate.projectId !== "string"
+    || !projects[candidate.projectId]
+  ) {
+    return null;
+  }
+  return {
+    id,
+    projectId: candidate.projectId,
+    entryOrder: Array.isArray(candidate.entryOrder)
+      ? candidate.entryOrder.filter((entryId): entryId is string => typeof entryId === "string")
+      : [],
+  };
+};
+
+const parseLinearSequenceEntryRecord = (
+  value: unknown,
+  id: string,
+): LinearSequenceEntry | null => {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<LinearSequenceEntry>;
+  if (
+    candidate.id !== id
+    || typeof candidate.sequenceId !== "string"
+    || typeof candidate.type !== "string"
+  ) {
+    return null;
+  }
+  if (candidate.type === "placement") {
+    const placementEntry = candidate as Partial<Extract<LinearSequenceEntry, { type: "placement" }>>;
+    if (typeof placementEntry.placementId !== "string") return null;
+    return {
+      id,
+      sequenceId: candidate.sequenceId,
+      type: "placement",
+      placementId: placementEntry.placementId,
+    };
+  }
+  if (candidate.type === "blank") {
+    const blankEntry = candidate as Partial<Extract<LinearSequenceEntry, { type: "blank" }>>;
+    return {
+      id,
+      sequenceId: candidate.sequenceId,
+      type: "blank",
+      note: typeof blankEntry.note === "string" ? blankEntry.note.trim() : "",
+    };
+  }
+  if (candidate.type === "segment") {
+    const segmentEntry = candidate as Partial<Extract<LinearSequenceEntry, { type: "segment" }>>;
+    const title = typeof segmentEntry.title === "string" ? segmentEntry.title.trim() : "";
+    if (!title) return null;
+    const tier =
+      segmentEntry.tier === "season" || segmentEntry.tier === "episode"
+        ? segmentEntry.tier
+        : undefined;
+    return {
+      id,
+      sequenceId: candidate.sequenceId,
+      type: "segment",
+      title,
+      tier,
+    };
+  }
+  return null;
+};
+
+const parseScriptDocumentRecord = (
+  value: unknown,
+  id: string,
+  projects: Record<string, Project>,
+): ScriptDocument | null => {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<ScriptDocument>;
+  if (
+    candidate.id !== id
+    || typeof candidate.projectId !== "string"
+    || !projects[candidate.projectId]
+  ) {
+    return null;
+  }
+  return {
+    id,
+    projectId: candidate.projectId,
+    elementOrder: Array.isArray(candidate.elementOrder)
+      ? candidate.elementOrder.filter((elementId): elementId is string => typeof elementId === "string")
+      : [],
+  };
+};
+
+const parseScriptElementRecord = (
+  value: unknown,
+  id: string,
+): ScriptElement | null => {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as Partial<ScriptElement>;
+  if (
+    candidate.id !== id
+    || typeof candidate.documentId !== "string"
+    || typeof candidate.type !== "string"
+    || !SCRIPT_ELEMENT_TYPES.includes(candidate.type as ScriptElementType)
+  ) {
+    return null;
+  }
+  return {
+    id,
+    documentId: candidate.documentId,
+    type: candidate.type as ScriptElementType,
+    text: typeof candidate.text === "string" ? candidate.text : "",
+    linkedEntryId: typeof candidate.linkedEntryId === "string" ? candidate.linkedEntryId : undefined,
+  };
+};
+
 export const parseThreadsState = (raw: string | null): ThreadsState => {
   if (!raw) return createEmptyThreadsState();
   try {
@@ -1156,10 +2190,136 @@ export const parseThreadsState = (raw: string | null): ThreadsState => {
       blockPlacementOrder?: unknown;
       crossThreadLooseTies?: unknown;
       crossThreadLooseTieOrder?: unknown;
+      linearSequences?: unknown;
+      linearSequenceOrder?: unknown;
+      linearSequenceEntries?: unknown;
+      scriptDocuments?: unknown;
+      scriptDocumentOrder?: unknown;
+      scriptElements?: unknown;
     };
+    if (parsed.version === 4) {
+      return migrateV4ThreadsState(raw) ?? createEmptyThreadsState();
+    }
     if (parsed.version === 3) {
       return migrateV3ThreadsState(raw) ?? createEmptyThreadsState();
     }
+    if (
+      parsed.version !== 5
+      || !parsed.projects
+      || typeof parsed.projects !== "object"
+      || !parsed.threads
+      || typeof parsed.threads !== "object"
+      || !parsed.blocks
+      || typeof parsed.blocks !== "object"
+      || !parsed.blockPlacements
+      || typeof parsed.blockPlacements !== "object"
+    ) {
+      return createEmptyThreadsState();
+    }
+
+    const projects: Record<string, Project> = {};
+    for (const [id, value] of Object.entries(parsed.projects)) {
+      const project = parseProjectRecord(value, id);
+      if (project) projects[id] = project;
+    }
+
+    const threads: Record<string, Thread> = {};
+    for (const [id, value] of Object.entries(parsed.threads)) {
+      const thread = parseThreadRecord(value, id, projects);
+      if (thread) threads[id] = thread;
+    }
+
+    const blocks: Record<string, Block> = {};
+    for (const [id, value] of Object.entries(parsed.blocks)) {
+      const block = parseBlockRecord(value, id);
+      if (block) blocks[id] = block;
+    }
+
+    const blockPlacements: Record<string, BlockPlacement> = {};
+    for (const [id, value] of Object.entries(parsed.blockPlacements)) {
+      const placement = parsePlacementRecord(value, id, blocks, threads);
+      if (placement) blockPlacements[id] = placement;
+    }
+
+    const crossThreadLooseTies: Record<string, CrossThreadLooseTie> = {};
+    if (parsed.crossThreadLooseTies && typeof parsed.crossThreadLooseTies === "object") {
+      for (const [id, value] of Object.entries(parsed.crossThreadLooseTies)) {
+        const tie = parseCrossThreadLooseTieRecord(value, id, blocks);
+        if (tie) crossThreadLooseTies[id] = tie;
+      }
+    }
+
+    const linearSequences: Record<string, LinearSequence> = {};
+    if (parsed.linearSequences && typeof parsed.linearSequences === "object") {
+      for (const [id, value] of Object.entries(parsed.linearSequences)) {
+        const sequence = parseLinearSequenceRecord(value, id, projects);
+        if (sequence) linearSequences[id] = sequence;
+      }
+    }
+
+    const linearSequenceEntries: Record<string, LinearSequenceEntry> = {};
+    if (parsed.linearSequenceEntries && typeof parsed.linearSequenceEntries === "object") {
+      for (const [id, value] of Object.entries(parsed.linearSequenceEntries)) {
+        const entry = parseLinearSequenceEntryRecord(value, id);
+        if (entry) linearSequenceEntries[id] = entry;
+      }
+    }
+
+    const scriptDocuments: Record<string, ScriptDocument> = {};
+    if (parsed.scriptDocuments && typeof parsed.scriptDocuments === "object") {
+      for (const [id, value] of Object.entries(parsed.scriptDocuments)) {
+        const doc = parseScriptDocumentRecord(value, id, projects);
+        if (doc) scriptDocuments[id] = doc;
+      }
+    }
+
+    const scriptElements: Record<string, ScriptElement> = {};
+    if (parsed.scriptElements && typeof parsed.scriptElements === "object") {
+      for (const [id, value] of Object.entries(parsed.scriptElements)) {
+        const element = parseScriptElementRecord(value, id);
+        if (element) scriptElements[id] = element;
+      }
+    }
+
+    return normalizeThreadsState(
+      projects,
+      parsed.projectOrder,
+      threads,
+      parsed.threadOrder,
+      blocks,
+      parsed.blockOrder,
+      blockPlacements,
+      parsed.blockPlacementOrder,
+      crossThreadLooseTies,
+      parsed.crossThreadLooseTieOrder,
+      linearSequences,
+      parsed.linearSequenceOrder,
+      linearSequenceEntries,
+      scriptDocuments,
+      parsed.scriptDocumentOrder,
+      scriptElements,
+    );
+  } catch {
+    return createEmptyThreadsState();
+  }
+};
+
+const migrateV4ThreadsState = (raw: string | null): ThreadsState | null => {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as {
+      version?: unknown;
+      projects?: unknown;
+      projectOrder?: unknown;
+      threads?: unknown;
+      threadOrder?: unknown;
+      blocks?: unknown;
+      blockOrder?: unknown;
+      blockPlacements?: unknown;
+      blockPlacementOrder?: unknown;
+      crossThreadLooseTies?: unknown;
+      crossThreadLooseTieOrder?: unknown;
+    };
     if (
       parsed.version !== 4
       || !parsed.projects
@@ -1171,7 +2331,7 @@ export const parseThreadsState = (raw: string | null): ThreadsState => {
       || !parsed.blockPlacements
       || typeof parsed.blockPlacements !== "object"
     ) {
-      return createEmptyThreadsState();
+      return null;
     }
 
     const projects: Record<string, Project> = {};
@@ -1465,14 +2625,19 @@ const migrateLegacyProjectRecords = (
 };
 
 export const migrateLegacyThreadsState = (
-  threadsV3Raw: string | null,
+  currentRaw: string | null,
+  threadsV3Raw: string | null = null,
   threadsV2Raw: string | null = null,
   threadsV1Raw: string | null = null,
   groupedRaw: string | null = null,
   globalRaw: string | null = null,
 ): ThreadsState => {
-  return migrateV3ThreadsState(threadsV3Raw)
+  return migrateV4ThreadsState(currentRaw)
+    ?? migrateV3ThreadsState(currentRaw)
+    ?? migrateV2ThreadsState(currentRaw)
+    ?? migrateV3ThreadsState(threadsV3Raw)
     ?? migrateV2ThreadsState(threadsV3Raw)
+    ?? migrateLegacyProjectRecords(threadsV3Raw)
     ?? migrateV2ThreadsState(threadsV2Raw)
     ?? migrateLegacyProjectRecords(threadsV2Raw)
     ?? migrateLegacyProjectRecords(threadsV1Raw)

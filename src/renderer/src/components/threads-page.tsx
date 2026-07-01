@@ -16,15 +16,22 @@ import {
   LEGACY_THREADS_SOURCE_GLOBAL_STORAGE_KEY,
   LEGACY_THREADS_SOURCE_STORAGE_KEY,
   LEGACY_THREADS_STORAGE_KEY,
+  LEGACY_THREADS_V4_STORAGE_KEY,
   LEGACY_THREADS_V3_STORAGE_KEY,
   LEGACY_THREADS_V2_STORAGE_KEY,
+  SCRIPT_ELEMENT_TYPES,
   THREADS_STORAGE_KEY,
   addExistingBlockPlacement,
+  addLinearBlankEntry,
+  addLinearBlockPlacementEntry,
+  addLinearSegmentEntry,
+  addScriptElement,
   clearStrictTie,
   countBlockPlacements,
   countProjectThreads,
   countThreadBlocks,
   createBlock,
+  createBlockFromScriptElement,
   createCrossThreadLooseTie,
   createProject,
   createThread,
@@ -34,29 +41,50 @@ import {
   getCategoryProjects,
   getBlockPlacementIds,
   getIncomingCrossThreadLooseTies,
+  getLinearOutline,
   getOutgoingCrossThreadLooseTies,
+  getProjectLinearSequenceEntries,
+  getProjectScriptElements,
   getProjectThreads,
   getThreadDisplayPlacementIds,
+  isLinearEntryCollapsed,
+  linkScriptElementToEntry,
   migrateLegacyThreadsState,
+  moveLinearEntry,
   moveBlockInThread,
+  moveScriptElement,
   moveThreadInProject,
   parseThreadsState,
+  removeLinearEntry,
   removeBlockPlacement,
+  removeScriptElement,
   setStrictTie,
+  unlinkScriptElement,
+  updateLinearBlankEntryNote,
+  updateLinearSegmentEntryTier,
+  updateLinearSegmentEntryTitle,
   updateProject,
   updateBlockText,
+  updateScriptElementText,
+  updateScriptElementType,
   updateThread,
   type Block,
   type BlockPlacement,
   type CrossThreadLooseTie,
+  type LinearOutline,
+  type LinearOutlineNode,
+  type LinearSegmentTier,
+  type LinearSequenceEntry,
   type MoveDirection,
   type Project,
+  type ScriptElement,
+  type ScriptElementType,
   type Thread,
   type ThreadsMutationResult,
   type ThreadsState,
   type TiePosition,
 } from "../lib/threads-store";
-import { ArrowDownIcon, ArrowUpIcon, CheckIcon, XIcon } from "./icons";
+import { ArrowDownIcon, ArrowUpIcon, CheckIcon, ChevronDownIcon, XIcon } from "./icons";
 import { Modal } from "./ui-primitives";
 
 type ThreadsView =
@@ -71,6 +99,8 @@ type CreateDialogState =
 
 type LinkDialogState = { sourceBlockId: string } | null;
 type ThreadSortMode = "manual" | "name" | "quantity";
+type ProjectScreenMode = "threads" | "linear" | "script";
+type ThreadsDisplayMode = "list" | "cards";
 type TitleEditTarget =
   | { type: "project"; id: string }
   | { type: "thread"; id: string }
@@ -112,15 +142,22 @@ interface BlockLocation {
 }
 
 const THREAD_SORT_STORAGE_KEY = "programs.threads.sortMode";
+const THREAD_DISPLAY_MODE_STORAGE_KEY = "programs.threads.displayMode";
 const THREAD_SORT_MODES: ThreadSortMode[] = ["manual", "name", "quantity"];
 
-const createId = (prefix: "project" | "thread" | "block" | "placement" | "cross-link"): string =>
+const createId = (prefix: "project" | "thread" | "block" | "placement" | "cross-link" | "linear-entry" | "script-element"): string =>
   typeof crypto.randomUUID === "function"
     ? `${prefix}-${crypto.randomUUID()}`
     : `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 
 const categoryStyle = (color: string): CSSProperties =>
   ({ "--threads-category": color }) as CSSProperties;
+
+const cardStyle = (categoryColor: string, cardColor: string): CSSProperties =>
+  ({
+    "--threads-category": categoryColor,
+    "--threads-card": cardColor,
+  }) as CSSProperties;
 
 const formatCount = (count: number, singular: string): string =>
   `${count} ${singular}${count === 1 ? "" : "s"}`;
@@ -130,6 +167,18 @@ const truncateBlockText = (text: string): string =>
 
 const isThreadSortMode = (value: string | null): value is ThreadSortMode =>
   value === "manual" || value === "name" || value === "quantity";
+
+const isThreadsDisplayMode = (value: string | null): value is ThreadsDisplayMode =>
+  value === "list" || value === "cards";
+
+const getCardColor = (seed: string, index: number): string => {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = (hash * 31 + seed.charCodeAt(i)) | 0;
+  }
+  const hue = (Math.abs(hash) + index * 137) % 360;
+  return `hsl(${hue} 62% 56%)`;
+};
 
 const formatThreadSortMode = (mode: ThreadSortMode): string => {
   switch (mode) {
@@ -147,6 +196,7 @@ const loadState = (): ThreadsState => {
     const current = localStorage.getItem(THREADS_STORAGE_KEY);
     if (current !== null) return parseThreadsState(current);
     return migrateLegacyThreadsState(
+      localStorage.getItem(LEGACY_THREADS_V4_STORAGE_KEY),
       localStorage.getItem(LEGACY_THREADS_V3_STORAGE_KEY),
       localStorage.getItem(LEGACY_THREADS_V2_STORAGE_KEY),
       localStorage.getItem(LEGACY_THREADS_STORAGE_KEY),
@@ -167,6 +217,15 @@ const loadThreadSortMode = (): ThreadSortMode => {
   }
 };
 
+const loadThreadsDisplayMode = (): ThreadsDisplayMode => {
+  try {
+    const stored = localStorage.getItem(THREAD_DISPLAY_MODE_STORAGE_KEY);
+    return isThreadsDisplayMode(stored) ? stored : "list";
+  } catch {
+    return "list";
+  }
+};
+
 const saveState = (state: ThreadsState): void => {
   try {
     localStorage.setItem(THREADS_STORAGE_KEY, JSON.stringify(state));
@@ -180,6 +239,14 @@ const saveThreadSortMode = (mode: ThreadSortMode): void => {
     localStorage.setItem(THREAD_SORT_STORAGE_KEY, mode);
   } catch {
     // Sorting remains usable in-memory if renderer storage is unavailable.
+  }
+};
+
+const saveThreadsDisplayMode = (mode: ThreadsDisplayMode): void => {
+  try {
+    localStorage.setItem(THREAD_DISPLAY_MODE_STORAGE_KEY, mode);
+  } catch {
+    // Display mode remains usable in-memory if renderer storage is unavailable.
   }
 };
 
@@ -350,7 +417,9 @@ const getOtherPlacementTitle = (
 export function ThreadsPage() {
   const [state, setState] = useState<ThreadsState>(loadState);
   const [view, setView] = useState<ThreadsView>({ level: "categories" });
+  const [projectScreenMode, setProjectScreenMode] = useState<ProjectScreenMode>("threads");
   const [threadSortMode, setThreadSortMode] = useState<ThreadSortMode>(loadThreadSortMode);
+  const [displayMode, setDisplayMode] = useState<ThreadsDisplayMode>(loadThreadsDisplayMode);
   const [isEditMode, setIsEditMode] = useState(false);
   const [expandedThreadId, setExpandedThreadId] = useState<string | null>(null);
   const [isAddingThread, setIsAddingThread] = useState(false);
@@ -364,12 +433,18 @@ export function ThreadsPage() {
   const [titleWarning, setTitleWarning] = useState<string | null>(null);
   const [editingBlockId, setEditingBlockId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState("");
+  const [editingLinearBlankId, setEditingLinearBlankId] = useState<string | null>(null);
+  const [editingLinearNote, setEditingLinearNote] = useState("");
+  const [editingLinearSegmentId, setEditingLinearSegmentId] = useState<string | null>(null);
+  const [editingLinearSegmentTitle, setEditingLinearSegmentTitle] = useState("");
+  const [editingLinearSegmentTier, setEditingLinearSegmentTier] = useState<LinearSegmentTier | undefined>(undefined);
   const [blockWarning, setBlockWarning] = useState<string | null>(null);
   const [highlightedBlockId, setHighlightedBlockId] = useState<string | null>(null);
   const [deleteDialog, setDeleteDialog] = useState<DeleteDialogState>(null);
 
   useEffect(() => saveState(state), [state]);
   useEffect(() => saveThreadSortMode(threadSortMode), [threadSortMode]);
+  useEffect(() => saveThreadsDisplayMode(displayMode), [displayMode]);
 
   useEffect(() => {
     if (!highlightedBlockId) return undefined;
@@ -397,6 +472,10 @@ export function ThreadsPage() {
       setTitleWarning(null);
       setEditingBlockId(null);
       setEditingText("");
+      setEditingLinearBlankId(null);
+      setEditingLinearNote("");
+      setEditingLinearSegmentId(null);
+      setEditingLinearSegmentTitle("");
       setLinkDialog(null);
       setLinkSearch("");
       setDeleteDialog(null);
@@ -425,6 +504,23 @@ export function ThreadsPage() {
       setTitleWarning(null);
     }
   }, [editingTitle, state.projects, state.threads]);
+
+  useEffect(() => {
+    if (!editingLinearBlankId || state.linearSequenceEntries[editingLinearBlankId]?.type === "blank") {
+      return;
+    }
+    setEditingLinearBlankId(null);
+    setEditingLinearNote("");
+  }, [editingLinearBlankId, state.linearSequenceEntries]);
+
+  useEffect(() => {
+    if (!editingLinearSegmentId || state.linearSequenceEntries[editingLinearSegmentId]?.type === "segment") {
+      return;
+    }
+    setEditingLinearSegmentId(null);
+    setEditingLinearSegmentTitle("");
+    setEditingLinearSegmentTier(undefined);
+  }, [editingLinearSegmentId, state.linearSequenceEntries]);
 
   const projects = useMemo(
     () =>
@@ -464,6 +560,10 @@ export function ThreadsPage() {
     setNewBlockText("");
     setEditingBlockId(null);
     setEditingText("");
+    setEditingLinearBlankId(null);
+    setEditingLinearNote("");
+    setEditingLinearSegmentId(null);
+    setEditingLinearSegmentTitle("");
     setLinkDialog(null);
     setLinkSearch("");
     setDeleteDialog(null);
@@ -486,6 +586,7 @@ export function ThreadsPage() {
     setExpandedThreadId(null);
     clearEditState();
     setIsEditMode(false);
+    setProjectScreenMode("threads");
     setTitleWarning(null);
     setBlockWarning(null);
     if (view.level === "threads") {
@@ -499,6 +600,7 @@ export function ThreadsPage() {
     setExpandedThreadId(null);
     clearEditState();
     setIsEditMode(false);
+    setProjectScreenMode("threads");
     setTitleWarning(null);
     setBlockWarning(null);
     setView({ level: "projects", categoryId });
@@ -508,6 +610,7 @@ export function ThreadsPage() {
     setExpandedThreadId(null);
     clearEditState();
     setIsEditMode(false);
+    setProjectScreenMode("threads");
     setTitleWarning(null);
     setBlockWarning(null);
     setView({
@@ -598,6 +701,10 @@ export function ThreadsPage() {
     clearTitleEdit();
     setEditingBlockId(null);
     setEditingText("");
+    setEditingLinearBlankId(null);
+    setEditingLinearNote("");
+    setEditingLinearSegmentId(null);
+    setEditingLinearSegmentTitle("");
     setIsAddingThread(true);
     setNewThreadName("");
     setTitleWarning(null);
@@ -719,6 +826,124 @@ export function ThreadsPage() {
     setBlockWarning(null);
   };
 
+  const setProjectMode = (mode: ProjectScreenMode) => {
+    if (projectScreenMode === mode) return;
+    setProjectScreenMode(mode);
+    setExpandedThreadId(null);
+    setIsAddingThread(false);
+    setNewThreadName("");
+    setNewBlockText("");
+    setEditingBlockId(null);
+    setEditingText("");
+    setEditingLinearBlankId(null);
+    setEditingLinearNote("");
+    setEditingLinearSegmentId(null);
+    setEditingLinearSegmentTitle("");
+    setLinkDialog(null);
+    setLinkSearch("");
+    setBlockWarning(null);
+    setTitleWarning(null);
+  };
+
+  const addLinearPlacementToProject = (projectId: string, placementId: string) => {
+    if (!isEditMode) return;
+    applyMutationResult(addLinearBlockPlacementEntry(
+      state,
+      projectId,
+      placementId,
+      createId("linear-entry"),
+    ));
+  };
+
+  const addLinearBlankToProject = (projectId: string, note: string) => {
+    if (!isEditMode) return;
+    applyMutationResult(addLinearBlankEntry(
+      state,
+      projectId,
+      note,
+      createId("linear-entry"),
+    ));
+  };
+
+  const addLinearSegmentToProject = (projectId: string, title: string, tier?: LinearSegmentTier) => {
+    if (!isEditMode) return;
+    applyMutationResult(addLinearSegmentEntry(
+      state,
+      projectId,
+      title,
+      createId("linear-entry"),
+      tier,
+    ));
+  };
+
+  const startEditLinearBlank = (entry: Extract<LinearSequenceEntry, { type: "blank" }>) => {
+    if (!isEditMode) return;
+    setEditingLinearBlankId(entry.id);
+    setEditingLinearNote(entry.note);
+    setBlockWarning(null);
+  };
+
+  const saveLinearBlankNote = (entryId: string) => {
+    if (!isEditMode) return;
+    setState((current) => updateLinearBlankEntryNote(current, entryId, editingLinearNote));
+    setEditingLinearBlankId(null);
+    setEditingLinearNote("");
+    setBlockWarning(null);
+  };
+
+  const cancelLinearBlankEdit = () => {
+    setEditingLinearBlankId(null);
+    setEditingLinearNote("");
+    setBlockWarning(null);
+  };
+
+  const startEditLinearSegment = (entry: Extract<LinearSequenceEntry, { type: "segment" }>) => {
+    if (!isEditMode) return;
+    setEditingLinearSegmentId(entry.id);
+    setEditingLinearSegmentTitle(entry.title);
+    setEditingLinearSegmentTier(entry.tier);
+    setBlockWarning(null);
+  };
+
+  const saveLinearSegmentTitle = (entryId: string) => {
+    if (!isEditMode) return;
+    setState((current) => {
+      const withTitle = updateLinearSegmentEntryTitle(current, entryId, editingLinearSegmentTitle);
+      return updateLinearSegmentEntryTier(withTitle, entryId, editingLinearSegmentTier ?? null);
+    });
+    setEditingLinearSegmentId(null);
+    setEditingLinearSegmentTitle("");
+    setEditingLinearSegmentTier(undefined);
+    setBlockWarning(null);
+  };
+
+  const cancelLinearSegmentEdit = () => {
+    setEditingLinearSegmentId(null);
+    setEditingLinearSegmentTitle("");
+    setEditingLinearSegmentTier(undefined);
+    setBlockWarning(null);
+  };
+
+  const moveLinearSequenceEntry = (entryId: string, direction: MoveDirection) => {
+    if (!isEditMode) return;
+    applyMutationResult(moveLinearEntry(state, entryId, direction));
+  };
+
+  const removeLinearSequenceEntry = (entryId: string) => {
+    if (!isEditMode) return;
+    setState((current) => removeLinearEntry(current, entryId));
+    if (editingLinearBlankId === entryId) {
+      setEditingLinearBlankId(null);
+      setEditingLinearNote("");
+    }
+    if (editingLinearSegmentId === entryId) {
+      setEditingLinearSegmentId(null);
+      setEditingLinearSegmentTitle("");
+      setEditingLinearSegmentTier(undefined);
+    }
+    setBlockWarning(null);
+  };
+
   const requestDeleteThread = (thread: Thread) => {
     if (!isEditMode) return;
     const dialog = createThreadDeleteDialogState(state, thread);
@@ -828,13 +1053,46 @@ export function ThreadsPage() {
                 ? "Threads"
                 : view.level === "projects"
                   ? "Projects"
-                  : "Threads"}
+                  : projectScreenMode === "linear"
+                    ? "Linear View"
+                    : projectScreenMode === "script"
+                      ? "Script"
+                      : "Threads"}
             </h1>
           </div>
         </div>
 
         <div className="threadsTopBarActions">
           {view.level === "threads" ? (
+            <div className="threadsProjectModeTabs" role="tablist" aria-label="Project view">
+              <button
+                type="button"
+                className={projectScreenMode === "threads" ? "active" : ""}
+                aria-pressed={projectScreenMode === "threads"}
+                onClick={() => setProjectMode("threads")}
+              >
+                Threads
+              </button>
+              <button
+                type="button"
+                className={projectScreenMode === "linear" ? "active" : ""}
+                aria-pressed={projectScreenMode === "linear"}
+                onClick={() => setProjectMode("linear")}
+              >
+                Linear View
+              </button>
+              <button
+                type="button"
+                className={projectScreenMode === "script" ? "active" : ""}
+                aria-pressed={projectScreenMode === "script"}
+                onClick={() => setProjectMode("script")}
+              >
+                Script
+              </button>
+            </div>
+          ) : null}
+
+          {view.level === "threads" && projectScreenMode === "threads" ? (
             <button
               type="button"
               className="projectBrowseSortBadge projectBrowseBadgeClickable threadsSortButton"
@@ -842,6 +1100,27 @@ export function ThreadsPage() {
             >
               Sort: {formatThreadSortMode(threadSortMode)}
             </button>
+          ) : null}
+
+          {view.level !== "threads" || projectScreenMode === "threads" ? (
+            <div className="threadsDisplayModeTabs" role="tablist" aria-label="Threads display mode">
+              <button
+                type="button"
+                className={displayMode === "list" ? "active" : ""}
+                aria-pressed={displayMode === "list"}
+                onClick={() => setDisplayMode("list")}
+              >
+                List
+              </button>
+              <button
+                type="button"
+                className={displayMode === "cards" ? "active" : ""}
+                aria-pressed={displayMode === "cards"}
+                onClick={() => setDisplayMode("cards")}
+              >
+                Cards
+              </button>
+            </div>
           ) : null}
 
           {view.level === "projects" ? (
@@ -876,7 +1155,11 @@ export function ThreadsPage() {
       ) : null}
 
       {view.level === "categories" ? (
-        <CategoryList onOpenCategory={openCategory} />
+        <CategoryList
+          state={state}
+          displayMode={displayMode}
+          onOpenCategory={openCategory}
+        />
       ) : null}
 
       {view.level === "projects" && selectedCategory ? (
@@ -884,6 +1167,7 @@ export function ThreadsPage() {
           state={state}
           projects={projects}
           categoryId={selectedCategory.id}
+          displayMode={displayMode}
           editingTitle={editingTitle}
           editingTitleText={editingTitleText}
           onOpenProject={openProject}
@@ -894,11 +1178,12 @@ export function ThreadsPage() {
         />
       ) : null}
 
-      {view.level === "threads" && selectedProject ? (
+      {view.level === "threads" && selectedProject && projectScreenMode === "threads" ? (
         <ThreadList
           state={state}
           threads={sortedThreads}
           sortMode={threadSortMode}
+          displayMode={displayMode}
           isEditMode={isEditMode}
           isAddingThread={isAddingThread}
           expandedThreadId={expandedThreadId}
@@ -939,6 +1224,44 @@ export function ThreadsPage() {
         />
       ) : null}
 
+      {view.level === "threads" && selectedProject && projectScreenMode === "linear" ? (
+        <LinearView
+          state={state}
+          project={selectedProject}
+          isEditMode={isEditMode}
+          blockWarning={blockWarning}
+          editingBlankId={editingLinearBlankId}
+          editingBlankNote={editingLinearNote}
+          editingSegmentId={editingLinearSegmentId}
+          editingSegmentTitle={editingLinearSegmentTitle}
+          editingSegmentTier={editingLinearSegmentTier}
+          onEditingBlankNoteChange={setEditingLinearNote}
+          onEditingSegmentTitleChange={setEditingLinearSegmentTitle}
+          onEditingSegmentTierChange={setEditingLinearSegmentTier}
+          onAddPlacement={addLinearPlacementToProject}
+          onAddBlank={addLinearBlankToProject}
+          onAddSegment={addLinearSegmentToProject}
+          onStartEditBlank={startEditLinearBlank}
+          onSaveBlank={saveLinearBlankNote}
+          onCancelBlank={cancelLinearBlankEdit}
+          onStartEditSegment={startEditLinearSegment}
+          onSaveSegment={saveLinearSegmentTitle}
+          onCancelSegment={cancelLinearSegmentEdit}
+          onMoveEntry={moveLinearSequenceEntry}
+          onRemoveEntry={removeLinearSequenceEntry}
+        />
+      ) : null}
+
+      {view.level === "threads" && selectedProject && projectScreenMode === "script" ? (
+        <ScriptView
+          state={state}
+          project={selectedProject}
+          isEditMode={isEditMode}
+          onSetState={setState}
+          onApplyMutation={applyMutationResult}
+        />
+      ) : null}
+
       {createDialog ? (
         <CreateDialog
           dialog={createDialog}
@@ -972,22 +1295,53 @@ export function ThreadsPage() {
   );
 }
 
+function CardDots({ count, label }: { count: number; label: string }) {
+  if (count <= 0) return null;
+  return (
+    <span className="threadsCardDots" aria-label={label}>
+      {Array.from({ length: count }, (_, index) => (
+        <span key={index} aria-hidden="true" />
+      ))}
+    </span>
+  );
+}
+
 function CategoryList({
+  state,
+  displayMode,
   onOpenCategory,
 }: {
+  state: ThreadsState;
+  displayMode: ThreadsDisplayMode;
   onOpenCategory: (categoryId: CreativeCategoryId) => void;
 }) {
   return (
-    <div className="threadsList" aria-label="Categories">
+    <div
+      className={displayMode === "cards" ? "threadsList threadsCardGrid" : "threadsList"}
+      aria-label="Categories"
+    >
       {CREATIVE_CATEGORIES.map((category) => (
         <button
           key={category.id}
           type="button"
-          className="threadsRow"
-          style={categoryStyle(category.color)}
+          className={displayMode === "cards" ? "threadsCard threadsCategoryCard" : "threadsRow"}
+          style={cardStyle(category.color, category.color)}
           onClick={() => onOpenCategory(category.id)}
         >
-          <span className="threadsRowName">{category.label}</span>
+          <span className={displayMode === "cards" ? "threadsCardName" : "threadsRowName"}>
+            {category.label}
+          </span>
+          {displayMode === "cards" ? (
+            <>
+              <CardDots
+                count={getCategoryProjects(state, category.id).length}
+                label={`${category.label} projects`}
+              />
+              <span className="threadsCardCount">
+                {formatCount(getCategoryProjects(state, category.id).length, "Project")}
+              </span>
+            </>
+          ) : null}
         </button>
       ))}
     </div>
@@ -1108,6 +1462,7 @@ function ProjectList({
   state,
   projects,
   categoryId,
+  displayMode,
   editingTitle,
   editingTitleText,
   onOpenProject,
@@ -1119,6 +1474,7 @@ function ProjectList({
   state: ThreadsState;
   projects: Project[];
   categoryId: CreativeCategoryId;
+  displayMode: ThreadsDisplayMode;
   editingTitle: TitleEditTarget;
   editingTitleText: string;
   onOpenProject: (project: Project) => void;
@@ -1137,12 +1493,19 @@ function ProjectList({
   }
 
   return (
-    <div className="threadsList" aria-label={`${category.label} projects`}>
-      {projects.map((project) => (
+    <div
+      className={displayMode === "cards" ? "threadsList threadsCardGrid" : "threadsList"}
+      aria-label={`${category.label} projects`}
+    >
+      {projects.map((project, index) => {
+        const threadCount = countProjectThreads(state, project.id);
+        return (
         <article
           key={project.id}
-          className="threadsRow threadsRowClickable"
-          style={categoryStyle(category.color)}
+          className={displayMode === "cards" ? "threadsCard threadsProjectCard" : "threadsRow threadsRowClickable"}
+          style={displayMode === "cards"
+            ? cardStyle(category.color, getCardColor(project.id || project.name, index))
+            : categoryStyle(category.color)}
           role="button"
           tabIndex={0}
           onClick={() => onOpenProject(project)}
@@ -1166,24 +1529,36 @@ function ProjectList({
             onSave={onSaveTitleEdit}
             onCancel={onCancelTitleEdit}
           />
-          <button
-            type="button"
-            className="threadsRowCountButton"
-            onClick={(event) => {
-              event.stopPropagation();
-              onOpenProject(project);
-            }}
-          >
-            {formatCount(countProjectThreads(state, project.id), "Thread")}
-          </button>
+          {displayMode === "cards" ? (
+            <>
+              <CardDots
+                count={threadCount}
+                label={`${project.name} threads`}
+              />
+              <span className="threadsCardCount">{formatCount(threadCount, "Thread")}</span>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="threadsRowCountButton"
+              onClick={(event) => {
+                event.stopPropagation();
+                onOpenProject(project);
+              }}
+            >
+              {formatCount(threadCount, "Thread")}
+            </button>
+          )}
         </article>
-      ))}
+        );
+      })}
     </div>
   );
 }
 
 function InlineAddThreadRow({
   isAdding,
+  displayMode,
   value,
   onStart,
   onValueChange,
@@ -1191,6 +1566,7 @@ function InlineAddThreadRow({
   onCancel,
 }: {
   isAdding: boolean;
+  displayMode: ThreadsDisplayMode;
   value: string;
   onStart: () => void;
   onValueChange: (value: string) => void;
@@ -1207,22 +1583,34 @@ function InlineAddThreadRow({
 
   if (!isAdding) {
     return (
-      <section className="threadsThreadGroup threadsAddThreadGroup">
+      <section className={displayMode === "cards"
+        ? "threadsThreadGroup threadsAddThreadGroup threadsCardAddGroup"
+        : "threadsThreadGroup threadsAddThreadGroup"}
+      >
         <button
           type="button"
-          className="threadsRow threadsRowClickable threadsAddThreadRow"
+          className={displayMode === "cards"
+            ? "threadsCard threadsAddThreadCard threadsAddThreadRow"
+            : "threadsRow threadsRowClickable threadsAddThreadRow"}
           onClick={onStart}
         >
-          <span className="threadsRowName">Add Thread</span>
+          <span className={displayMode === "cards" ? "threadsCardName" : "threadsRowName"}>
+            Add Thread
+          </span>
         </button>
       </section>
     );
   }
 
   return (
-    <section className="threadsThreadGroup threadsAddThreadGroup">
+    <section className={displayMode === "cards"
+      ? "threadsThreadGroup threadsAddThreadGroup threadsCardAddGroup"
+      : "threadsThreadGroup threadsAddThreadGroup"}
+    >
       <form
-        className="threadsRow threadsInlineAddThreadForm"
+        className={displayMode === "cards"
+          ? "threadsCard threadsInlineAddThreadForm threadsAddThreadCard"
+          : "threadsRow threadsInlineAddThreadForm"}
         onClick={(event) => event.stopPropagation()}
         onSubmit={(event) => {
           event.preventDefault();
@@ -1264,6 +1652,7 @@ function ThreadList({
   state,
   threads,
   sortMode,
+  displayMode,
   isEditMode,
   isAddingThread,
   expandedThreadId,
@@ -1305,6 +1694,7 @@ function ThreadList({
   state: ThreadsState;
   threads: Thread[];
   sortMode: ThreadSortMode;
+  displayMode: ThreadsDisplayMode;
   isEditMode: boolean;
   isAddingThread: boolean;
   expandedThreadId: string | null;
@@ -1348,10 +1738,14 @@ function ThreadList({
   onJumpToBlock: (blockId: string) => void;
 }) {
   return (
-    <div className="threadsList" aria-label="Project threads">
+    <div
+      className={displayMode === "cards" ? "threadsList threadsCardGrid threadsThreadCardGrid" : "threadsList"}
+      aria-label="Project threads"
+    >
       {isEditMode ? (
         <InlineAddThreadRow
           isAdding={isAddingThread}
+          displayMode={displayMode}
           value={newThreadName}
           onStart={onStartAddingThread}
           onValueChange={onNewThreadNameChange}
@@ -1365,12 +1759,23 @@ function ThreadList({
       ) : threads.map((thread, index) => {
         const isExpanded = expandedThreadId === thread.id;
         const isMuted = Boolean(expandedThreadId) && !isExpanded;
+        const blockCount = countThreadBlocks(state, thread.id);
+        const threadColor = getCardColor(thread.id || thread.name, index);
         return (
-          <section key={thread.id} className="threadsThreadGroup">
+          <section
+            key={thread.id}
+            className={[
+              "threadsThreadGroup",
+              displayMode === "cards" ? "threadsThreadCardGroup" : "",
+              displayMode === "cards" && isExpanded ? "expanded" : "",
+              displayMode === "cards" && isMuted ? "muted" : "",
+            ].filter(Boolean).join(" ")}
+            style={displayMode === "cards" ? cardStyle(threadColor, threadColor) : undefined}
+          >
             <div
               className={[
-                "threadsRow",
-                "threadsRowClickable",
+                displayMode === "cards" ? "threadsCard threadsThreadCard" : "threadsRow",
+                displayMode === "cards" ? "" : "threadsRowClickable",
                 isExpanded ? "active" : "",
                 isMuted ? "muted" : "",
               ].filter(Boolean).join(" ")}
@@ -1398,17 +1803,24 @@ function ThreadList({
                 onSave={onSaveTitleEdit}
                 onCancel={onCancelTitleEdit}
               />
-              <button
-                type="button"
-                className="threadsRowCountButton"
-                aria-expanded={isExpanded}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onToggleThread(thread.id);
-                }}
-              >
-                {formatCount(countThreadBlocks(state, thread.id), "Block")}
-              </button>
+              {displayMode === "cards" ? (
+                <>
+                  <CardDots count={blockCount} label={`${thread.name} Blocks`} />
+                  <span className="threadsCardCount">{formatCount(blockCount, "Block")}</span>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  className="threadsRowCountButton"
+                  aria-expanded={isExpanded}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onToggleThread(thread.id);
+                  }}
+                >
+                  {formatCount(blockCount, "Block")}
+                </button>
+              )}
               {isEditMode ? (
                 <div className="threadsRowActions" aria-label="Thread actions">
                   {sortMode === "manual" ? (
@@ -1483,6 +1895,1224 @@ function ThreadList({
           </section>
         );
       })}
+    </div>
+  );
+}
+
+function LinearView({
+  state,
+  project,
+  isEditMode,
+  blockWarning,
+  editingBlankId,
+  editingBlankNote,
+  editingSegmentId,
+  editingSegmentTitle,
+  editingSegmentTier,
+  onEditingBlankNoteChange,
+  onEditingSegmentTitleChange,
+  onEditingSegmentTierChange,
+  onAddPlacement,
+  onAddBlank,
+  onAddSegment,
+  onStartEditBlank,
+  onSaveBlank,
+  onCancelBlank,
+  onStartEditSegment,
+  onSaveSegment,
+  onCancelSegment,
+  onMoveEntry,
+  onRemoveEntry,
+}: {
+  state: ThreadsState;
+  project: Project;
+  isEditMode: boolean;
+  blockWarning: string | null;
+  editingBlankId: string | null;
+  editingBlankNote: string;
+  editingSegmentId: string | null;
+  editingSegmentTitle: string;
+  editingSegmentTier: LinearSegmentTier | undefined;
+  onEditingBlankNoteChange: (note: string) => void;
+  onEditingSegmentTitleChange: (title: string) => void;
+  onEditingSegmentTierChange: (tier: LinearSegmentTier | undefined) => void;
+  onAddPlacement: (projectId: string, placementId: string) => void;
+  onAddBlank: (projectId: string, note: string) => void;
+  onAddSegment: (projectId: string, title: string, tier?: LinearSegmentTier) => void;
+  onStartEditBlank: (entry: Extract<LinearSequenceEntry, { type: "blank" }>) => void;
+  onSaveBlank: (entryId: string) => void;
+  onCancelBlank: () => void;
+  onStartEditSegment: (entry: Extract<LinearSequenceEntry, { type: "segment" }>) => void;
+  onSaveSegment: (entryId: string) => void;
+  onCancelSegment: () => void;
+  onMoveEntry: (entryId: string, direction: MoveDirection) => void;
+  onRemoveEntry: (entryId: string) => void;
+}) {
+  const [addMode, setAddMode] = useState<"block" | "blank" | "segment">("block");
+  const [placementSearch, setPlacementSearch] = useState("");
+  const [blankNote, setBlankNote] = useState("");
+  const [segmentTitle, setSegmentTitle] = useState("");
+  const [segmentTier, setSegmentTier] = useState<LinearSegmentTier | undefined>(undefined);
+  const [collapsedEntryIds, setCollapsedEntryIds] = useState<Set<string>>(new Set());
+  const [isOutlinePanelOpen, setIsOutlinePanelOpen] = useState(true);
+  const [pendingScrollEntryId, setPendingScrollEntryId] = useState<string | null>(null);
+  const entries = getProjectLinearSequenceEntries(state, project.id);
+  const outline = useMemo(() => getLinearOutline(state, project.id), [state, project.id]);
+  const outlineNodesByEntryId = useMemo(() => {
+    const map = new Map<string, LinearOutlineNode>();
+    const visit = (node: LinearOutlineNode) => {
+      map.set(node.entryId, node);
+      node.episodes.forEach(visit);
+    };
+    outline.nodes.forEach(visit);
+    return map;
+  }, [outline]);
+
+  useEffect(() => {
+    if (!pendingScrollEntryId) return;
+    const element = document.getElementById(`linear-entry-${pendingScrollEntryId}`);
+    element?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setPendingScrollEntryId(null);
+  }, [pendingScrollEntryId]);
+
+  const toggleCollapsed = (entryId: string) => {
+    setCollapsedEntryIds((current) => {
+      const next = new Set(current);
+      if (next.has(entryId)) next.delete(entryId);
+      else next.add(entryId);
+      return next;
+    });
+  };
+
+  const jumpToEntry = (node: LinearOutlineNode) => {
+    const parentId = node.parentEntryId;
+    if (parentId) {
+      setCollapsedEntryIds((current) => {
+        if (!current.has(parentId)) return current;
+        const next = new Set(current);
+        next.delete(parentId);
+        return next;
+      });
+    }
+    setPendingScrollEntryId(node.entryId);
+  };
+
+  const existingPlacementIds = new Set(
+    entries
+      .filter((entry): entry is Extract<LinearSequenceEntry, { type: "placement" }> =>
+        entry.type === "placement",
+      )
+      .map((entry) => entry.placementId),
+  );
+  const normalizedSearch = placementSearch.trim().toLowerCase();
+  const placementCandidates = state.blockPlacementOrder
+    .map((placementId) => state.blockPlacements[placementId])
+    .filter((placement): placement is BlockPlacement => {
+      if (!placement || existingPlacementIds.has(placement.id)) return false;
+      const thread = state.threads[placement.threadId];
+      return Boolean(thread) && thread.projectId === project.id;
+    })
+    .filter((placement) => {
+      if (!normalizedSearch) return true;
+      const block = state.blocks[placement.blockId];
+      const thread = state.threads[placement.threadId];
+      return `${thread?.name ?? ""} ${block?.text ?? ""}`.toLowerCase().includes(normalizedSearch);
+    });
+
+  const submitBlank = (event: FormEvent) => {
+    event.preventDefault();
+    onAddBlank(project.id, blankNote);
+    setBlankNote("");
+  };
+
+  const submitSegment = (event: FormEvent) => {
+    event.preventDefault();
+    if (!segmentTitle.trim()) return;
+    onAddSegment(project.id, segmentTitle, segmentTier);
+    setSegmentTitle("");
+  };
+
+  return (
+    <div className="threadsList threadsLinearList" aria-label="Project Linear View">
+      {isEditMode ? (
+        <div className="threadsAddBlockForm threadsLinearAddPanel">
+          <div className="threadsAddBlockModeTabs" role="tablist" aria-label="Add Linear entry mode">
+            <button
+              type="button"
+              className={addMode === "block" ? "active" : ""}
+              aria-pressed={addMode === "block"}
+              onClick={() => setAddMode("block")}
+            >
+              Block
+            </button>
+            <button
+              type="button"
+              className={addMode === "blank" ? "active" : ""}
+              aria-pressed={addMode === "blank"}
+              onClick={() => setAddMode("blank")}
+            >
+              Blank
+            </button>
+            <button
+              type="button"
+              className={addMode === "segment" ? "active" : ""}
+              aria-pressed={addMode === "segment"}
+              onClick={() => setAddMode("segment")}
+            >
+              Segment
+            </button>
+          </div>
+
+          {addMode === "block" ? (
+            <div className="threadsExistingBlockPicker">
+              <input
+                autoFocus
+                value={placementSearch}
+                onChange={(event) => setPlacementSearch(event.target.value)}
+                placeholder="Search blocks"
+                aria-label="Search project Blocks"
+              />
+              <div className="threadsLinkResults">
+                {placementCandidates.length > 0 ? (
+                  placementCandidates.map((placement) => {
+                    const block = state.blocks[placement.blockId];
+                    const thread = state.threads[placement.threadId];
+                    if (!block || !thread) return null;
+                    return (
+                      <button
+                        key={placement.id}
+                        type="button"
+                        className="threadsLinkResult"
+                        onClick={() => {
+                          onAddPlacement(project.id, placement.id);
+                          setPlacementSearch("");
+                        }}
+                      >
+                        <span>{truncateBlockText(block.text)}</span>
+                        <small>{thread.name}</small>
+                      </button>
+                    );
+                  })
+                ) : (
+                  <div className="threadsEmptyBlocks">No matching Blocks</div>
+                )}
+              </div>
+            </div>
+          ) : addMode === "blank" ? (
+            <form className="threadsAddBlockFields" onSubmit={submitBlank}>
+              <textarea
+                autoFocus
+                value={blankNote}
+                onChange={(event) => setBlankNote(event.target.value)}
+                placeholder="Blank note (optional)"
+                aria-label="Blank note"
+                rows={2}
+              />
+              <button type="submit">Add Blank</button>
+            </form>
+          ) : (
+            <form className="threadsAddBlockFields" onSubmit={submitSegment}>
+              <div className="threadsLinearTierPicker" role="radiogroup" aria-label="Segment tier">
+                <button
+                  type="button"
+                  className={!segmentTier ? "active" : ""}
+                  aria-pressed={!segmentTier}
+                  onClick={() => setSegmentTier(undefined)}
+                >
+                  Plain
+                </button>
+                <button
+                  type="button"
+                  className={segmentTier === "season" ? "active" : ""}
+                  aria-pressed={segmentTier === "season"}
+                  onClick={() => setSegmentTier("season")}
+                >
+                  Season
+                </button>
+                <button
+                  type="button"
+                  className={segmentTier === "episode" ? "active" : ""}
+                  aria-pressed={segmentTier === "episode"}
+                  onClick={() => setSegmentTier("episode")}
+                >
+                  Episode
+                </button>
+              </div>
+              <input
+                autoFocus
+                value={segmentTitle}
+                onChange={(event) => setSegmentTitle(event.target.value)}
+                placeholder={
+                  segmentTier === "season"
+                    ? "Season name (e.g. Season 1)"
+                    : segmentTier === "episode"
+                      ? "Episode name (e.g. Episode 3)"
+                      : "Segment name"
+                }
+                aria-label="Segment name"
+              />
+              <button type="submit" disabled={!segmentTitle.trim()}>
+                {segmentTier === "season" ? "Add Season" : segmentTier === "episode" ? "Add Episode" : "Add Segment"}
+              </button>
+            </form>
+          )}
+        </div>
+      ) : null}
+
+      {isEditMode && blockWarning ? (
+        <div className="threadsBlockWarning">{blockWarning}</div>
+      ) : null}
+
+      {outline.nodes.length > 0 ? (
+        <LinearOutlinePanel
+          outline={outline}
+          collapsedEntryIds={collapsedEntryIds}
+          isOpen={isOutlinePanelOpen}
+          onToggleOpen={() => setIsOutlinePanelOpen((open) => !open)}
+          onToggleCollapse={toggleCollapsed}
+          onJumpToEntry={jumpToEntry}
+        />
+      ) : null}
+
+      {entries.length > 0 ? (
+        <div className="threadsLinearRows">
+          {entries.map((entry, index) => {
+            if (isLinearEntryCollapsed(outline, index, collapsedEntryIds)) return null;
+            const info = outline.entryInfo[index];
+            const outlineNode =
+              entry.type === "segment" && entry.tier ? outlineNodesByEntryId.get(entry.id) : undefined;
+            return (
+              <LinearEntryRow
+                key={entry.id}
+                state={state}
+                entry={entry}
+                index={index}
+                total={entries.length}
+                depth={info ? info.depth : 0}
+                outlineNode={outlineNode}
+                isCollapsed={collapsedEntryIds.has(entry.id)}
+                onToggleCollapse={toggleCollapsed}
+                isEditMode={isEditMode}
+                isEditingBlank={editingBlankId === entry.id}
+                editingBlankNote={editingBlankNote}
+                isEditingSegment={editingSegmentId === entry.id}
+                editingSegmentTitle={editingSegmentTitle}
+                editingSegmentTier={editingSegmentTier}
+                onEditingBlankNoteChange={onEditingBlankNoteChange}
+                onEditingSegmentTitleChange={onEditingSegmentTitleChange}
+                onEditingSegmentTierChange={onEditingSegmentTierChange}
+                onStartEditBlank={onStartEditBlank}
+                onSaveBlank={onSaveBlank}
+                onCancelBlank={onCancelBlank}
+                onStartEditSegment={onStartEditSegment}
+                onSaveSegment={onSaveSegment}
+                onCancelSegment={onCancelSegment}
+                onMoveEntry={onMoveEntry}
+                onRemoveEntry={onRemoveEntry}
+              />
+            );
+          })}
+        </div>
+      ) : (
+        <div className="threadsEmptyState">No Linear entries</div>
+      )}
+    </div>
+  );
+}
+
+function LinearOutlinePanel({
+  outline,
+  collapsedEntryIds,
+  isOpen,
+  onToggleOpen,
+  onToggleCollapse,
+  onJumpToEntry,
+}: {
+  outline: LinearOutline;
+  collapsedEntryIds: ReadonlySet<string>;
+  isOpen: boolean;
+  onToggleOpen: () => void;
+  onToggleCollapse: (entryId: string) => void;
+  onJumpToEntry: (node: LinearOutlineNode) => void;
+}) {
+  const totalSeasons = outline.nodes.filter((node) => node.kind === "season").length;
+  const totalEpisodes = outline.nodes.reduce(
+    (sum, node) => sum + (node.kind === "season" ? node.episodes.length : 1),
+    0,
+  );
+
+  const renderNode = (node: LinearOutlineNode) => {
+    const isCollapsed = collapsedEntryIds.has(node.entryId);
+    const entryCount = node.endIndex - node.startIndex;
+    return (
+      <div key={node.entryId} className="threadsLinearOutlineNode">
+        <div className="threadsLinearOutlineNodeRow">
+          <button
+            type="button"
+            className="threadsIconButton threadsLinearCollapseToggle"
+            aria-label={isCollapsed ? `Expand ${node.title}` : `Collapse ${node.title}`}
+            aria-expanded={!isCollapsed}
+            onClick={() => onToggleCollapse(node.entryId)}
+          >
+            <span className={`threadsLinearChevron${isCollapsed ? " collapsed" : ""}`}>
+              <ChevronDownIcon />
+            </span>
+          </button>
+          <button
+            type="button"
+            className="threadsLinearOutlineJumpButton"
+            onClick={() => onJumpToEntry(node)}
+          >
+            <span className="threadsLinearOutlineNodeTitle">{node.title}</span>
+            {node.kind === "season" ? (
+              <span className="threadsLinearCountBadge">{formatCount(node.episodes.length, "Episode")}</span>
+            ) : null}
+            <span className="threadsLinearCountBadge">{formatCount(entryCount, "Row")}</span>
+          </button>
+        </div>
+        {node.kind === "season" && node.episodes.length > 0 ? (
+          <div className="threadsLinearOutlineChildren">
+            {node.episodes.map((episode) => renderNode(episode))}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
+  return (
+    <div className="threadsLinearOutlinePanel">
+      <button
+        type="button"
+        className="threadsLinearOutlineToggle"
+        aria-expanded={isOpen}
+        onClick={onToggleOpen}
+      >
+        <span className={`threadsLinearChevron${isOpen ? "" : " collapsed"}`}>
+          <ChevronDownIcon />
+        </span>
+        <span>Outline</span>
+        <span className="threadsLinearCountBadge">{formatCount(totalSeasons, "Season")}</span>
+        <span className="threadsLinearCountBadge">{formatCount(totalEpisodes, "Episode")}</span>
+      </button>
+      {isOpen ? (
+        <div className="threadsLinearOutlineTree">
+          {outline.nodes.map((node) => renderNode(node))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function LinearEntryRow({
+  state,
+  entry,
+  index,
+  total,
+  depth,
+  outlineNode,
+  isCollapsed,
+  onToggleCollapse,
+  isEditMode,
+  isEditingBlank,
+  editingBlankNote,
+  isEditingSegment,
+  editingSegmentTitle,
+  editingSegmentTier,
+  onEditingBlankNoteChange,
+  onEditingSegmentTitleChange,
+  onEditingSegmentTierChange,
+  onStartEditBlank,
+  onSaveBlank,
+  onCancelBlank,
+  onStartEditSegment,
+  onSaveSegment,
+  onCancelSegment,
+  onMoveEntry,
+  onRemoveEntry,
+}: {
+  state: ThreadsState;
+  entry: LinearSequenceEntry;
+  index: number;
+  total: number;
+  depth: 0 | 1 | 2;
+  outlineNode: LinearOutlineNode | undefined;
+  isCollapsed: boolean;
+  onToggleCollapse: (entryId: string) => void;
+  isEditMode: boolean;
+  isEditingBlank: boolean;
+  editingBlankNote: string;
+  isEditingSegment: boolean;
+  editingSegmentTitle: string;
+  editingSegmentTier: LinearSegmentTier | undefined;
+  onEditingBlankNoteChange: (note: string) => void;
+  onEditingSegmentTitleChange: (title: string) => void;
+  onEditingSegmentTierChange: (tier: LinearSegmentTier | undefined) => void;
+  onStartEditBlank: (entry: Extract<LinearSequenceEntry, { type: "blank" }>) => void;
+  onSaveBlank: (entryId: string) => void;
+  onCancelBlank: () => void;
+  onStartEditSegment: (entry: Extract<LinearSequenceEntry, { type: "segment" }>) => void;
+  onSaveSegment: (entryId: string) => void;
+  onCancelSegment: () => void;
+  onMoveEntry: (entryId: string, direction: MoveDirection) => void;
+  onRemoveEntry: (entryId: string) => void;
+}) {
+  const depthClass = depth === 2 ? " threadsLinearDepth2" : depth === 1 ? " threadsLinearDepth1" : "";
+
+  const renderActions = () => isEditMode ? (
+    <div className="threadsBlockReorder" aria-label="Linear entry actions">
+      <button
+        type="button"
+        className="threadsIconButton"
+        aria-label="Move Linear entry up"
+        onClick={() => onMoveEntry(entry.id, "up")}
+        disabled={index === 0}
+      >
+        <ArrowUpIcon />
+      </button>
+      <button
+        type="button"
+        className="threadsIconButton"
+        aria-label="Move Linear entry down"
+        onClick={() => onMoveEntry(entry.id, "down")}
+        disabled={index === total - 1}
+      >
+        <ArrowDownIcon />
+      </button>
+      <button
+        type="button"
+        className="threadsIconButton threadsDeleteButton"
+        aria-label="Remove Linear entry"
+        onClick={() => onRemoveEntry(entry.id)}
+      >
+        <XIcon />
+      </button>
+    </div>
+  ) : null;
+
+  if (entry.type === "placement") {
+    const placement = state.blockPlacements[entry.placementId];
+    const block = placement ? state.blocks[placement.blockId] : null;
+    const thread = placement ? state.threads[placement.threadId] : null;
+    if (!placement || !block || !thread) return null;
+    const isShared = countBlockPlacements(state, block.id) > 1;
+    const sharedTitle = isShared ? getOtherPlacementTitle(state, block.id, placement.id) : undefined;
+    return (
+      <article className={`threadsBlockRow threadsLinearEntryRow${depthClass}`}>
+        <div className="threadsBlockMain">
+          <div className={`threadsBlockTextReadOnly${isShared ? " shared" : ""}`} title={sharedTitle}>
+            {block.text}
+          </div>
+          <div className="threadsBlockMeta">
+            <span className="threadsLinearThreadTag" title={`Thread: ${thread.name}`}>
+              {thread.name}
+            </span>
+          </div>
+        </div>
+        {renderActions()}
+      </article>
+    );
+  }
+
+  if (entry.type === "segment") {
+    const tier = entry.tier;
+    const tierRowClass =
+      tier === "season" ? " threadsLinearSeasonRow" : tier === "episode" ? " threadsLinearEpisodeRow" : "";
+    const entryCount = outlineNode ? outlineNode.endIndex - outlineNode.startIndex : 0;
+    const titleClass =
+      tier === "season" ? "threadsLinearSeasonTitle" : tier === "episode" ? "threadsLinearEpisodeTitle" : "threadsLinearSegmentTitle";
+    const isEditingThis = isEditMode && isEditingSegment;
+
+    return (
+      <article
+        id={`linear-entry-${entry.id}`}
+        className={`threadsBlockRow threadsLinearEntryRow threadsLinearSegmentRow${tierRowClass}${depthClass}`}
+      >
+        <div className="threadsBlockMain">
+          <div className="threadsLinearSegmentHeaderRow">
+            {outlineNode ? (
+              <button
+                type="button"
+                className="threadsIconButton threadsLinearCollapseToggle"
+                aria-label={isCollapsed ? `Expand ${entry.title}` : `Collapse ${entry.title}`}
+                aria-expanded={!isCollapsed}
+                onClick={() => onToggleCollapse(entry.id)}
+              >
+                <span className={`threadsLinearChevron${isCollapsed ? " collapsed" : ""}`}>
+                  <ChevronDownIcon />
+                </span>
+              </button>
+            ) : null}
+            {isEditingThis ? (
+              <form
+                className="threadsBlockEditForm"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  onSaveSegment(entry.id);
+                }}
+              >
+                <div className="threadsLinearTierPicker" role="radiogroup" aria-label="Segment tier">
+                  <button
+                    type="button"
+                    className={!editingSegmentTier ? "active" : ""}
+                    aria-pressed={!editingSegmentTier}
+                    onClick={() => onEditingSegmentTierChange(undefined)}
+                  >
+                    Plain
+                  </button>
+                  <button
+                    type="button"
+                    className={editingSegmentTier === "season" ? "active" : ""}
+                    aria-pressed={editingSegmentTier === "season"}
+                    onClick={() => onEditingSegmentTierChange("season")}
+                  >
+                    Season
+                  </button>
+                  <button
+                    type="button"
+                    className={editingSegmentTier === "episode" ? "active" : ""}
+                    aria-pressed={editingSegmentTier === "episode"}
+                    onClick={() => onEditingSegmentTierChange("episode")}
+                  >
+                    Episode
+                  </button>
+                </div>
+                <input
+                  autoFocus
+                  value={editingSegmentTitle}
+                  onChange={(event) => onEditingSegmentTitleChange(event.target.value)}
+                  placeholder="Segment name"
+                />
+                <div className="threadsBlockEditActions">
+                  <button
+                    type="submit"
+                    className="threadsIconButton"
+                    aria-label="Save Segment name"
+                    disabled={!editingSegmentTitle.trim()}
+                  >
+                    <CheckIcon />
+                  </button>
+                  <button
+                    type="button"
+                    className="threadsIconButton"
+                    aria-label="Cancel Segment edit"
+                    onClick={onCancelSegment}
+                  >
+                    <XIcon />
+                  </button>
+                </div>
+              </form>
+            ) : isEditMode ? (
+              <button
+                type="button"
+                className={titleClass}
+                onClick={() => onStartEditSegment(entry)}
+              >
+                {entry.title}
+              </button>
+            ) : (
+              <div className={titleClass}>{entry.title}</div>
+            )}
+          </div>
+          {outlineNode && !isEditingThis ? (
+            <div className="threadsLinearNodeBadges">
+              {isCollapsed ? (
+                <span className="threadsLinearCountBadge">{entryCount} hidden</span>
+              ) : (
+                <>
+                  {outlineNode.kind === "season" ? (
+                    <span className="threadsLinearCountBadge">{formatCount(outlineNode.episodes.length, "Episode")}</span>
+                  ) : null}
+                  <span className="threadsLinearCountBadge">{formatCount(entryCount, "Row")}</span>
+                </>
+              )}
+            </div>
+          ) : null}
+        </div>
+        {renderActions()}
+      </article>
+    );
+  }
+
+  const blankLabel = entry.note || "Blank - to be filled";
+  return (
+    <article className={`threadsBlockRow threadsLinearEntryRow threadsLinearBlankRow${depthClass}`}>
+      <div className="threadsBlockMain">
+        {isEditMode && isEditingBlank ? (
+          <form
+            className="threadsBlockEditForm"
+            onSubmit={(event) => {
+              event.preventDefault();
+              onSaveBlank(entry.id);
+            }}
+          >
+            <textarea
+              autoFocus
+              value={editingBlankNote}
+              onChange={(event) => onEditingBlankNoteChange(event.target.value)}
+              placeholder="Blank note"
+              rows={2}
+            />
+            <div className="threadsBlockEditActions">
+              <button
+                type="submit"
+                className="threadsIconButton"
+                aria-label="Save Blank note"
+              >
+                <CheckIcon />
+              </button>
+              <button
+                type="button"
+                className="threadsIconButton"
+                aria-label="Cancel Blank note edit"
+                onClick={onCancelBlank}
+              >
+                <XIcon />
+              </button>
+            </div>
+          </form>
+        ) : isEditMode ? (
+          <button
+            type="button"
+            className="threadsLinearBlankButton"
+            onClick={() => onStartEditBlank(entry)}
+          >
+            {blankLabel}
+          </button>
+        ) : (
+          <div className="threadsLinearBlankText">{blankLabel}</div>
+        )}
+      </div>
+      {renderActions()}
+    </article>
+  );
+}
+
+const SCRIPT_ELEMENT_LABELS: Record<ScriptElementType, string> = {
+  scene_heading: "Scene",
+  action: "Action",
+  character: "Character",
+  dialogue: "Dialogue",
+  parenthetical: "Parenthetical",
+  transition: "Transition",
+};
+
+const SCRIPT_ELEMENT_PLACEHOLDERS: Record<ScriptElementType, string> = {
+  scene_heading: "INT. LOCATION - DAY",
+  action: "Describe the action...",
+  character: "CHARACTER NAME",
+  dialogue: "What they say...",
+  parenthetical: "(how they say it)",
+  transition: "CUT TO:",
+};
+
+const nextScriptElementType = (type: ScriptElementType): ScriptElementType => {
+  switch (type) {
+    case "scene_heading":
+      return "action";
+    case "character":
+      return "dialogue";
+    case "dialogue":
+      return "action";
+    case "parenthetical":
+      return "dialogue";
+    case "transition":
+      return "scene_heading";
+    default:
+      return "action";
+  }
+};
+
+const autoGrowTextarea = (element: HTMLTextAreaElement) => {
+  element.style.height = "auto";
+  element.style.height = `${element.scrollHeight}px`;
+};
+
+function ScriptView({
+  state,
+  project,
+  isEditMode,
+  onSetState,
+  onApplyMutation,
+}: {
+  state: ThreadsState;
+  project: Project;
+  isEditMode: boolean;
+  onSetState: (updater: (current: ThreadsState) => ThreadsState) => void;
+  onApplyMutation: (result: ThreadsMutationResult) => void;
+}) {
+  const elements = getProjectScriptElements(state, project.id);
+  const linearEntries = getProjectLinearSequenceEntries(state, project.id);
+  const projectThreads = getProjectThreads(state, project.id);
+
+  const [selectedElementId, setSelectedElementId] = useState<string | null>(null);
+  const [pendingFocusElementId, setPendingFocusElementId] = useState<string | null>(null);
+  const [pendingScrollElementId, setPendingScrollElementId] = useState<string | null>(null);
+  const [isTaggedPanelOpen, setIsTaggedPanelOpen] = useState(true);
+  const [tagPickerElementId, setTagPickerElementId] = useState<string | null>(null);
+  const [tagSearch, setTagSearch] = useState("");
+  const [blockThreadElementId, setBlockThreadElementId] = useState<string | null>(null);
+  const [blockThreadId, setBlockThreadId] = useState("");
+
+  useEffect(() => {
+    if (!pendingFocusElementId) return;
+    const element = document.getElementById(`script-textarea-${pendingFocusElementId}`);
+    (element as HTMLTextAreaElement | null)?.focus();
+    setPendingFocusElementId(null);
+  }, [pendingFocusElementId]);
+
+  useEffect(() => {
+    if (!pendingScrollElementId) return;
+    document
+      .getElementById(`script-element-${pendingScrollElementId}`)
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setPendingScrollElementId(null);
+  }, [pendingScrollElementId]);
+
+  const addElement = (type: ScriptElementType, afterElementId?: string) => {
+    const newId = createId("script-element");
+    onApplyMutation(addScriptElement(state, project.id, type, "", newId, afterElementId));
+    setSelectedElementId(newId);
+    setPendingFocusElementId(newId);
+  };
+
+  const existingLinkedEntryIds = new Set(
+    elements.map((element) => element.linkedEntryId).filter((id): id is string => Boolean(id)),
+  );
+
+  const normalizedTagSearch = tagSearch.trim().toLowerCase();
+  const tagCandidates = linearEntries.filter((entry) => {
+    if (existingLinkedEntryIds.has(entry.id)) return false;
+    if (entry.type === "placement") {
+      const placement = state.blockPlacements[entry.placementId];
+      const block = placement ? state.blocks[placement.blockId] : null;
+      if (!block) return false;
+      return !normalizedTagSearch || block.text.toLowerCase().includes(normalizedTagSearch);
+    }
+    if (entry.type === "segment") {
+      return !normalizedTagSearch || entry.title.toLowerCase().includes(normalizedTagSearch);
+    }
+    return false;
+  });
+
+  const openTagPicker = (elementId: string) => {
+    setTagPickerElementId(elementId);
+    setTagSearch("");
+  };
+
+  const openBlockCreate = (elementId: string) => {
+    setBlockThreadElementId(elementId);
+    setBlockThreadId(projectThreads[0]?.id ?? "");
+  };
+
+  const handleCreateBlock = (element: ScriptElement) => {
+    if (!blockThreadId) return;
+    onApplyMutation(
+      createBlockFromScriptElement(
+        state,
+        element.id,
+        blockThreadId,
+        createId("block"),
+        createId("placement"),
+        createId("linear-entry"),
+      ),
+    );
+    setBlockThreadElementId(null);
+  };
+
+  const jumpToTaggedElement = (entryId: string) => {
+    const element = elements.find((candidate) => candidate.linkedEntryId === entryId);
+    if (!element) return;
+    setSelectedElementId(element.id);
+    setPendingScrollElementId(element.id);
+  };
+
+  return (
+    <div className="threadsList threadsScriptLayout" aria-label="Project Script">
+      <div className="threadsScriptMain">
+        {elements.length === 0 ? (
+          isEditMode ? (
+            <button
+              type="button"
+              className="threadsScriptAddFirst"
+              onClick={() => addElement("scene_heading")}
+            >
+              Start writing — add the first line
+            </button>
+          ) : (
+            <div className="threadsEmptyState">No script yet</div>
+          )
+        ) : (
+          elements.map((element) => (
+            <ScriptElementRow
+              key={element.id}
+              state={state}
+              element={element}
+              isEditMode={isEditMode}
+              isSelected={selectedElementId === element.id}
+              isTagPickerOpen={tagPickerElementId === element.id}
+              isBlockCreateOpen={blockThreadElementId === element.id}
+              tagSearch={tagSearch}
+              tagCandidates={tagCandidates}
+              projectThreads={projectThreads}
+              blockThreadId={blockThreadId}
+              onSelect={() => setSelectedElementId(element.id)}
+              onTextChange={(text) => onSetState((current) => updateScriptElementText(current, element.id, text))}
+              onTypeChange={(type) => onSetState((current) => updateScriptElementType(current, element.id, type))}
+              onEnter={() => addElement(nextScriptElementType(element.type), element.id)}
+              onMove={(direction) => onApplyMutation(moveScriptElement(state, element.id, direction))}
+              onRemove={() => {
+                onSetState((current) => removeScriptElement(current, element.id));
+                if (selectedElementId === element.id) setSelectedElementId(null);
+              }}
+              onOpenTagPicker={() => openTagPicker(element.id)}
+              onCloseTagPicker={() => setTagPickerElementId(null)}
+              onTagSearchChange={setTagSearch}
+              onLinkEntry={(entryId) => {
+                onApplyMutation(linkScriptElementToEntry(state, element.id, entryId));
+                setTagPickerElementId(null);
+              }}
+              onUnlink={() => onSetState((current) => unlinkScriptElement(current, element.id))}
+              onOpenBlockCreate={() => openBlockCreate(element.id)}
+              onCloseBlockCreate={() => setBlockThreadElementId(null)}
+              onBlockThreadChange={setBlockThreadId}
+              onCreateBlock={() => handleCreateBlock(element)}
+            />
+          ))
+        )}
+        {isEditMode && elements.length > 0 ? (
+          <button
+            type="button"
+            className="threadsScriptAddLine"
+            onClick={() => addElement(nextScriptElementType(elements[elements.length - 1].type))}
+          >
+            + Add line
+          </button>
+        ) : null}
+      </div>
+
+      {isEditMode ? (
+        <ScriptTaggedPanel
+          state={state}
+          linearEntries={linearEntries}
+          taggedEntryIds={existingLinkedEntryIds}
+          isOpen={isTaggedPanelOpen}
+          onToggleOpen={() => setIsTaggedPanelOpen((open) => !open)}
+          onJumpToEntry={jumpToTaggedElement}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function ScriptElementRow({
+  state,
+  element,
+  isEditMode,
+  isSelected,
+  isTagPickerOpen,
+  isBlockCreateOpen,
+  tagSearch,
+  tagCandidates,
+  projectThreads,
+  blockThreadId,
+  onSelect,
+  onTextChange,
+  onTypeChange,
+  onEnter,
+  onMove,
+  onRemove,
+  onOpenTagPicker,
+  onCloseTagPicker,
+  onTagSearchChange,
+  onLinkEntry,
+  onUnlink,
+  onOpenBlockCreate,
+  onCloseBlockCreate,
+  onBlockThreadChange,
+  onCreateBlock,
+}: {
+  state: ThreadsState;
+  element: ScriptElement;
+  isEditMode: boolean;
+  isSelected: boolean;
+  isTagPickerOpen: boolean;
+  isBlockCreateOpen: boolean;
+  tagSearch: string;
+  tagCandidates: LinearSequenceEntry[];
+  projectThreads: Thread[];
+  blockThreadId: string;
+  onSelect: () => void;
+  onTextChange: (text: string) => void;
+  onTypeChange: (type: ScriptElementType) => void;
+  onEnter: () => void;
+  onMove: (direction: MoveDirection) => void;
+  onRemove: () => void;
+  onOpenTagPicker: () => void;
+  onCloseTagPicker: () => void;
+  onTagSearchChange: (value: string) => void;
+  onLinkEntry: (entryId: string) => void;
+  onUnlink: () => void;
+  onOpenBlockCreate: () => void;
+  onCloseBlockCreate: () => void;
+  onBlockThreadChange: (threadId: string) => void;
+  onCreateBlock: () => void;
+}) {
+  const linkedEntry = element.linkedEntryId ? state.linearSequenceEntries[element.linkedEntryId] : null;
+  const linkedLabel = (() => {
+    if (!linkedEntry) return null;
+    if (linkedEntry.type === "placement") {
+      const placement = state.blockPlacements[linkedEntry.placementId];
+      const block = placement ? state.blocks[placement.blockId] : null;
+      return block ? truncateBlockText(block.text) : "Linked Block";
+    }
+    if (linkedEntry.type === "segment") return linkedEntry.title;
+    return "Linked entry";
+  })();
+
+  if (!isEditMode) {
+    return (
+      <div
+        id={`script-element-${element.id}`}
+        className={`threadsScriptElement threadsScriptElement-${element.type}`}
+      >
+        {element.text || " "}
+      </div>
+    );
+  }
+
+  return (
+    <div
+      id={`script-element-${element.id}`}
+      className={`threadsScriptElementRow threadsScriptElement-${element.type}${isSelected ? " selected" : ""}`}
+    >
+      <textarea
+        id={`script-textarea-${element.id}`}
+        ref={(node) => {
+          if (node) autoGrowTextarea(node);
+        }}
+        className="threadsScriptTextarea"
+        value={element.text}
+        rows={1}
+        onFocus={onSelect}
+        onChange={(event) => {
+          onTextChange(event.target.value);
+          autoGrowTextarea(event.target);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" && !event.shiftKey) {
+            event.preventDefault();
+            onEnter();
+          }
+        }}
+        placeholder={SCRIPT_ELEMENT_PLACEHOLDERS[element.type]}
+      />
+      {isSelected ? (
+        <div className="threadsScriptToolbar">
+          <select
+            className="threadsScriptTypeSelect"
+            value={element.type}
+            onChange={(event) => onTypeChange(event.target.value as ScriptElementType)}
+            aria-label="Element type"
+          >
+            {SCRIPT_ELEMENT_TYPES.map((type) => (
+              <option key={type} value={type}>
+                {SCRIPT_ELEMENT_LABELS[type]}
+              </option>
+            ))}
+          </select>
+
+          {linkedEntry ? (
+            <span className="threadsScriptTagChip">
+              <span>{linkedLabel}</span>
+              <button
+                type="button"
+                className="threadsIconButton"
+                aria-label="Remove tag"
+                onClick={onUnlink}
+              >
+                <XIcon />
+              </button>
+            </span>
+          ) : (
+            <>
+              <button type="button" className="threadsScriptTagButton" onClick={onOpenTagPicker}>
+                Tag Block
+              </button>
+              <button type="button" className="threadsScriptTagButton" onClick={onOpenBlockCreate}>
+                Make Block
+              </button>
+            </>
+          )}
+
+          <div className="threadsBlockReorder threadsScriptRowActions">
+            <button
+              type="button"
+              className="threadsIconButton"
+              aria-label="Move line up"
+              onClick={() => onMove("up")}
+            >
+              <ArrowUpIcon />
+            </button>
+            <button
+              type="button"
+              className="threadsIconButton"
+              aria-label="Move line down"
+              onClick={() => onMove("down")}
+            >
+              <ArrowDownIcon />
+            </button>
+            <button
+              type="button"
+              className="threadsIconButton threadsDeleteButton"
+              aria-label="Remove line"
+              onClick={onRemove}
+            >
+              <XIcon />
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {isTagPickerOpen ? (
+        <div className="threadsScriptTagPicker">
+          <input
+            autoFocus
+            value={tagSearch}
+            onChange={(event) => onTagSearchChange(event.target.value)}
+            placeholder="Search Linear View entries"
+            aria-label="Search Linear View entries"
+          />
+          <div className="threadsLinkResults">
+            {tagCandidates.length > 0 ? (
+              tagCandidates.map((entry) => {
+                const label =
+                  entry.type === "placement"
+                    ? (() => {
+                        const placement = state.blockPlacements[entry.placementId];
+                        const block = placement ? state.blocks[placement.blockId] : null;
+                        return block ? truncateBlockText(block.text) : null;
+                      })()
+                    : entry.type === "segment"
+                      ? entry.title
+                      : null;
+                if (!label) return null;
+                return (
+                  <button
+                    key={entry.id}
+                    type="button"
+                    className="threadsLinkResult"
+                    onClick={() => onLinkEntry(entry.id)}
+                  >
+                    <span>{label}</span>
+                  </button>
+                );
+              })
+            ) : (
+              <div className="threadsEmptyBlocks">No matching entries</div>
+            )}
+          </div>
+          <button type="button" className="threadsScriptTagPickerClose" onClick={onCloseTagPicker}>
+            Cancel
+          </button>
+        </div>
+      ) : null}
+
+      {isBlockCreateOpen ? (
+        <div className="threadsScriptTagPicker">
+          {projectThreads.length > 0 ? (
+            <>
+              <select
+                value={blockThreadId}
+                onChange={(event) => onBlockThreadChange(event.target.value)}
+                aria-label="Thread for new Block"
+              >
+                {projectThreads.map((thread) => (
+                  <option key={thread.id} value={thread.id}>
+                    {thread.name}
+                  </option>
+                ))}
+              </select>
+              <button type="button" onClick={onCreateBlock} disabled={!element.text.trim()}>
+                Create Block
+              </button>
+            </>
+          ) : (
+            <div className="threadsEmptyBlocks">Add a Thread first</div>
+          )}
+          <button type="button" className="threadsScriptTagPickerClose" onClick={onCloseBlockCreate}>
+            Cancel
+          </button>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ScriptTaggedPanel({
+  state,
+  linearEntries,
+  taggedEntryIds,
+  isOpen,
+  onToggleOpen,
+  onJumpToEntry,
+}: {
+  state: ThreadsState;
+  linearEntries: LinearSequenceEntry[];
+  taggedEntryIds: ReadonlySet<string>;
+  isOpen: boolean;
+  onToggleOpen: () => void;
+  onJumpToEntry: (entryId: string) => void;
+}) {
+  const rows = linearEntries.filter(
+    (entry): entry is Extract<LinearSequenceEntry, { type: "placement" | "segment" }> =>
+      entry.type === "placement" || entry.type === "segment",
+  );
+
+  return (
+    <div className="threadsScriptOutlinePanel">
+      <button
+        type="button"
+        className="threadsLinearOutlineToggle"
+        aria-expanded={isOpen}
+        onClick={onToggleOpen}
+      >
+        <span className={`threadsLinearChevron${isOpen ? "" : " collapsed"}`}>
+          <ChevronDownIcon />
+        </span>
+        <span>Linear View</span>
+        <span className="threadsLinearCountBadge">{formatCount(taggedEntryIds.size, "Tagged")}</span>
+      </button>
+      {isOpen ? (
+        <div className="threadsLinearOutlineTree threadsScriptOutlineTree">
+          {rows.length === 0 ? (
+            <div className="threadsEmptyBlocks">No Linear View entries yet</div>
+          ) : (
+            rows.map((entry) => {
+              const isTagged = taggedEntryIds.has(entry.id);
+              const label =
+                entry.type === "placement"
+                  ? (() => {
+                      const placement = state.blockPlacements[entry.placementId];
+                      const block = placement ? state.blocks[placement.blockId] : null;
+                      return block ? truncateBlockText(block.text) : "Block";
+                    })()
+                  : entry.title;
+              return (
+                <button
+                  key={entry.id}
+                  type="button"
+                  className={`threadsLinearOutlineJumpButton threadsScriptOutlineRow${isTagged ? " tagged" : " untagged"}`}
+                  onClick={() => (isTagged ? onJumpToEntry(entry.id) : undefined)}
+                  disabled={!isTagged}
+                >
+                  <span className="threadsLinearOutlineNodeTitle">{label}</span>
+                  {!isTagged ? <span className="threadsLinearCountBadge">Untagged</span> : null}
+                </button>
+              );
+            })
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }
